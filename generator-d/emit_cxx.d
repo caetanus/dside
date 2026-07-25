@@ -1135,6 +1135,17 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         bool[string] seenF;
         int opIdx;
         collectValueFields(cur, fields, seenF);   // base fields flattened in first (layout order)
+        // A value type whose ONLY data member is an anonymous union / bitfield struct
+        // (e.g. QSizePolicy's `union { Bits bits; quint32 data; }`) yields NO nameable
+        // field — libclang reports the union instance as an implicit, empty-named FieldDecl
+        // that collectValueFields can't emit. The D struct would then be size 0 and any
+        // (now-trampolined) setter would scribble past it. Give it a correctly-aligned blob
+        // matching the C++ size so pass-by-value and the setters stay in-bounds.
+        if (fields.length == 0) {
+            auto ct = clang_getCursorType(cur);
+            auto vsz = clang_Type_getSizeOf(ct), val = clang_Type_getAlignOf(ct);
+            if (vsz > 0) fields ~= format("    align(%d) ubyte[%d] __data;", val > 0 ? val : 1, vsz);
+        }
         foreach (c; children(cur)) {
             if (!isPublic(c) || c.kind != CXCursor_CXXMethod) continue;
             auto mn = clang_getCursorSpelling(c).str;
