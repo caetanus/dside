@@ -441,6 +441,10 @@ void main(string[] args) {
             std.file.write(buildPath(dsub, modBase(en) ~ ".d"), emitEnumModule(decl, dpkg, manifest));
             cxxGen[en] = true;
         }
+        // `qt` aggregator: bare-name aliases for Qt-namespace enum values (2-part `Qt::X` in
+        // .ui). Emitted after the enums so QT_ALIASES is fully collected.
+        auto agg = qtAggregator(dpkg, manifest);
+        if (agg.length) std.file.write(buildPath(dsub, "qt.d"), agg);
         foreach (tid, e; QLISTS) {    // QList<T> instantiations -> per-T D modules
             std.file.write(buildPath(dsub, "qlist_" ~ tid ~ ".d"), emitQListModule(tid, e, dpkg, manifest, qt5));
             cxxGen["qlist_" ~ tid] = true;

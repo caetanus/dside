@@ -38,6 +38,7 @@ mixin(uiForm(import("sizepolicy.ui")));  // Ui_SizePolForm
 mixin(uiForm(import("palette.ui")));   // Ui_PaletteForm
 mixin(uiForm(import("connect.ui")));   // Ui_ConnForm
 mixin(uiForm(import("buddy.ui")));     // Ui_BuddyForm
+mixin(uiForm(import("embeddeddialog.ui")));      // Ui_embeddedDialog (real corpus: Qt:: 2-part enums + buddy)
 mixin(uiForm(import("bookwindow.ui")));  // Ui_BookWindow
 
 __gshared int fails;
@@ -74,6 +75,7 @@ void main() {
     check!Ui_PaletteForm("tests/uic/palette.ui", QWidget_new());
     check!Ui_ConnForm("tests/uic/connect.ui", QWidget_new());
     check!Ui_BuddyForm("tests/uic/buddy.ui", QWidget_new());
+    check!Ui_embeddedDialog("tests/uic/embeddeddialog.ui", QDialog_new());
     check!Ui_BookWindow("tests/uic/bookwindow.ui", QMainWindow_new());
 
     // Behavioral: the <connection> must actually fire (string-based QObject.connect ->

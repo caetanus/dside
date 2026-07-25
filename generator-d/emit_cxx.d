@@ -13,6 +13,13 @@ import std.stdio, std.string, std.array, std.algorithm, std.conv, std.format;
 // Enums referenced in signatures this run — emitted as their own modules at the
 // end. D enums are ABI-identical to C++ (value AND, with extern(C++,ns), mangling).
 __gshared CXCursor[string] ENUMS;    // unqualified enum name -> decl cursor
+// Old-style 2-part Qt enums (`Qt::Horizontal`, dominant in real .ui files vs the 3-part
+// `Qt::Orientation::Horizontal`) name a value without its enum. D named-enum members need
+// qualification (`Orientation.Horizontal`), so we emit a `qt` aggregator module of
+// `alias Horizontal = Orientation.Horizontal;` for every Qt-namespace value (the Qt namespace
+// is flat -> names are unique -> no clashes). The uic imports it and emits the bare name.
+__gshared string[] QT_ALIASES;
+__gshared bool[string] QT_ALIAS_MODS;   // enum modules the aggregator must import
 
 // QList<T>/QVector<T> instantiations seen this run -> a per-T D struct that reads
 // the layout {d, T* ptr, size}, converts each element, and releases the array by
@@ -2182,9 +2189,14 @@ string emitEnumModule(CXCursor decl, string dpkg, string manifest) {
     auto dut = ut in PRIM ? PRIM[ut] : "int";
     string[] members;
     foreach (ch; children(decl))
-        if (ch.kind == CXCursor_EnumConstantDecl)
-            members ~= format("    %s = cast(%s) %d,", dname(clang_getCursorSpelling(ch).str), dut,
-                clang_getEnumConstantDeclValue(ch));
+        if (ch.kind == CXCursor_EnumConstantDecl) {
+            auto mn = dname(clang_getCursorSpelling(ch).str);
+            members ~= format("    %s = cast(%s) %d,", mn, dut, clang_getEnumConstantDeclValue(ch));
+            if (sc == "Qt") {   // Qt-namespace value -> aggregate a bare-name alias
+                QT_ALIASES ~= format("alias %s = %s.%s;", mn, n, mn);
+                QT_ALIAS_MODS[n] = true;
+            }
+        }
     // Qt's empty strong-typedef enums (enum class QCborTag : quint64 {}) have no
     // members; a D enum needs >=1, so emit an ABI-identical alias to the underlying.
     if (!members.length)
@@ -2815,6 +2827,15 @@ string containersD(string manifest, string dpkg) {
         ~ "extern (C) nothrow {\n" ~ decls ~ "}\n"
         ~ rets
         ~ helpers;
+}
+
+// The `qt` aggregator: bare-name aliases for every Qt-namespace enum value, so the uic can
+// resolve the old 2-part `Qt::Horizontal` form (see QT_ALIASES). "" if none were collected.
+string qtAggregator(string dpkg, string manifest) {
+    if (!QT_ALIASES.length) return "";
+    auto imps = QT_ALIAS_MODS.byKey.array.sort
+        .map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+    return format("%s\nmodule %s.qt;\n%s\n\n%s\n", manifest, dpkg, imps, QT_ALIASES.join("\n"));
 }
 
 // The one shared runtime module: C++ operator new / delete by their real
