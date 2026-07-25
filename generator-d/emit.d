@@ -469,7 +469,8 @@ void main(string[] args) {
         if (TRAMPS.length) cxxGen["qtvirt"] = true;
         // Out-of-line copy-ctor/dtor (gap: std:: by value) + inline-ctor shims (gap: no symbol).
         std.file.write(buildPath(outDir, "qtdctor.cpp"), ctorCpp(manifest, sigInc));
-        if (CTORCOPY.length || CTORSHIM.length || METHODSHIM.length || ITEROPS.length) cxxGen["qtctor"] = true;
+        if (CTORCOPY.length || CTORSHIM.length || METHODSHIM.length || ITEROPS.length || GUARDS.length)
+            cxxGen["qtctor"] = true;
         // wrapper lifetime holder — fixed sources copied from runtime/holder/* (top-level
         // module `holder`); reggae compiles qtd_holder.cpp + holder.d.
         if (WRAPPER) {

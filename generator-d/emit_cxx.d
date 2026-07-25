@@ -293,6 +293,72 @@ __gshared CtorShim[] CTORSHIM;
 struct MethodShim { string shimFn, cppName, cppRet, method; string[] cppParams, argNames; bool isStatic, isConst; }
 __gshared MethodShim[] METHODSHIM;
 
+// ============================================================================================
+// EXCEPTION GUARDS  (the "how does this witchcraft work" section — read this before editing)
+// ============================================================================================
+// PROBLEM. When a spec has "exceptions": true we must catch C++ exceptions that Qt throws
+// (std::bad_alloc, QException, ...) and re-raise them as a D `QtCppException`, instead of
+// letting a C++ exception unwind into D as undefined behaviour. To catch a C++ exception there
+// MUST be a C++ `try/catch` around the actual Qt call. Our normal out-of-line methods are bound
+// as `pragma(mangle) final <ret> method(params);` — D calls the Qt symbol DIRECTLY, so there is
+// no C++ frame to put a try/catch in.
+//
+// NAIVE FIX. Emit one C++ trampoline per method: `<ret> qtd_m(void* self, params){ try { return
+// self->method(args);} catch(...){...} }`. Correct, but that is ~8000 near-identical functions
+// for QtWidgets — a giant qtdctor.cpp and slow to compile.
+//
+// WHAT WE DO INSTEAD — one guard per SIGNATURE, shared across every method of that shape.
+// Key trick (Itanium C++ ABI): a non-virtual member function `R C::m(A...)` is ABI-identical to
+// a free function `R(void* self, A...)` — the implicit `this` is simply the first argument, same
+// registers, same calling convention. And calling a virtual method through its out-of-line
+// SYMBOL (not the vtable) is exactly what `pragma(mangle)` already does. So we can:
+//   1. take the ADDRESS of the Qt method's symbol on the D side (a nullary
+//      `pragma(mangle,"<sym>") extern(C++) void __raw_X();` — declared only so `&__raw_X` yields
+//      the symbol address; its declared type is irrelevant, we never CALL __raw_X), and
+//   2. pass that address + self + args to ONE shared C++ guard for the (return, params) shape,
+//      which `reinterpret_cast`s the pointer to the exact signature and calls it in try/catch:
+//        <cppRet> qtd_g_N(void* fn, void* self, <cppParams>) {
+//            try { return reinterpret_cast<cppRet(*)(void*, cppParams)>(fn)(self, args); }
+//            catch (...) { qtd_lippincott(); }   // classifies + re-raises as a D exception
+//        }
+// Because the guard's C++ signature is TYPED (not void*/varargs), the compiler emits the correct
+// ABI for value-type params, sret value RETURNS (QString text() etc.), floats — all of it. That
+// is why per-signature, not per-arity-void* (which can't express sret / xmm). One guard serves
+// every `void(bool)` method (setDefault/setFlat/...), every `QString() const` getter, etc.
+//
+// THREE GOTCHAS that will bite you (all learned the hard way):
+//  (a) The D forwarder MUST be `extern(D)`. It lives inside an `extern(C++) class`, so without
+//      it D would mangle `gesture(GestureType) const` to the *exact* Qt symbol `__raw` points at
+//      — the forwarder would both COLLIDE with __raw and REDEFINE the C++ method. extern(D) makes
+//      it a plain D method whose name never touches the C++ symbol table.
+//  (b) Forwarders are DEFINITIONS, so two that collapse to the same D signature (e.g.
+//      `scroller(QObject*)` and `scroller(const QObject*)`, both -> `scroller(QObject)`) conflict.
+//      Direct `pragma(mangle)` DECLS could coexist; definitions can't. So we dedup by D signature.
+//  (c) `&__raw_X` FORCES a reference to the symbol even if the method is never called (defeating
+//      some DCE). Fine for real methods (they resolve from Qt), but `qt_check_for_QGADGET_macro`
+//      is DECLARED-but-never-DEFINED by Q_GADGET -> undefined reference. We skip that one.
+//
+// Ctors reuse the void-return guards: a constructor's ABI is `void(void* self, A...)` (the object
+// is heap-allocated by __cpp_new first, then the ctor runs on it), i.e. the same shape as a
+// void-returning non-static method.
+//
+// SCOPE: only when EXCEPTIONS is on. Methods/ctors whose signature the guard can't express stay
+// on the direct path (fn-pointer return/params, container-param, QList-returning methods).
+struct Guard { string name, cppRet, retD; string[] cppTypes, dParams; bool isStatic; }
+__gshared Guard[string] GUARDS;   // key "(s)|cppRet|cppTypes" -> the ONE guard for that shape
+
+// Register-once (dedup by signature) and return the guard's function name. cppTypes = canonical
+// C++ param types WITHOUT names (for the reinterpret_cast target + the guard's own C++ params);
+// dParams = D param decls ("int a0", "ref const(QString) a1", for the guard's extern(C) D decl);
+// retD = the D return type. Static methods have no `self`, so they key separately.
+string guardFor(string cppRet, string[] cppTypes, string retD, string[] dParams, bool isStatic) {
+    auto key = (isStatic ? "s|" : "|") ~ cppRet ~ "|" ~ cppTypes.join(",");
+    if (auto g = key in GUARDS) return g.name;
+    auto nm = format("qtd_g_%d", cast(int) GUARDS.length);
+    GUARDS[key] = Guard(nm, cppRet, retD, cppTypes.dup, dParams.dup, isStatic);
+    return nm;
+}
+
 // All overridable virtuals of a class (own + inherited, most-derived kept, deduped
 // by name+param types) — the vtable a D subclass can override.
 void collectVirtuals(CXCursor cls, ref CXCursor[] result, ref bool[string] seen) {
@@ -1665,6 +1731,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
 
     string[] methodLines;
     string[] shimDecls;     // module-scope extern(C) decls for inline-method trampolines
+    int guardRawIdx;        // per-class counter for __raw_<name>_<i> symbol-address decls
+    bool[string] guardDeclsEmitted;   // per-module dedup of the shared guards' extern(C) decls
+    bool[string] seenGuardSig;        // guard forwarders are DEFINITIONS -> dedup by D signature
+                                      // (pragma(mangle) DECLs may share a sig; definitions can't)
     bool[string] aliasNames;   // base names we shadow with a new overload -> re-alias to un-hide
     bool[string] seenMethodShimSig;   // dedupe inline overloads that collapse to one D sig
     bool[string] seenSig;   // dedupe overloaded signals (one connect<Sig> per name)
@@ -1687,6 +1757,11 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         if (c.kind != CXCursor_CXXMethod) continue;
         auto mn = clang_getCursorSpelling(c).str;
         if (mn.startsWith("operator")) continue;
+        // Q_GADGET/Q_OBJECT emit `static void qt_check_for_QGADGET_macro()` — DECLARED but
+        // never DEFINED (a compile-time check helper). A plain decl was harmless, but the
+        // guard forwarder takes `&__raw` (its address) -> forces a reference to a symbol that
+        // doesn't exist in the Qt lib -> link error (surfaces on dmd's whole-program link).
+        if (mn == "qt_check_for_QGADGET_macro") continue;
         // Qt signal -> a connect<Signal>(delegate) method (via a gen-phase functor
         // shim), NOT a callable binding. Non-overloaded; args marshaled to the delegate.
         if (isSignal(c)) {
@@ -1808,7 +1883,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             string imp;
             auto retD = mapCxxType(clang_getCursorResultType(c), imp);
             if (imp.length) impSet[imp] = true;
-            string[] ps, pds;
+            string[] ps, pds, cppTypes;   // cppTypes: canonical C++ param types (for the guard)
+            bool guardable = EXCEPTIONS;
             auto na = clang_Cursor_getNumArguments(c);
             foreach (i; 0 .. na) {
                 auto a = clang_Cursor_getArgument(c, i);
@@ -1817,21 +1893,68 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     impSet["qtcontainers"] = true;      // raw takes the container ptr as void*
                     ps ~= format("void* a%d", i);
                     pds ~= "C:" ~ helper ~ ":" ~ idiom;
+                    guardable = false;                  // container-param methods stay direct
                 } else {
                     string pimp;
                     auto pd = mapCxxType(clang_getCursorType(a), pimp);
                     if (pimp.length) impSet[pimp] = true;
                     ps ~= format("%s a%d", pd, i);
                     pds ~= pd;
+                    auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
+                    if (cpps.canFind("(*")) guardable = false;   // fn-ptr param: can't reinterpret cleanly
+                    cppTypes ~= cpps;
                 }
             }
             auto kw = clang_CXXMethod_isStatic(c) ? "static " : "final ";
             auto cst = clang_CXXMethod_isConst(c) ? " const" : "";
-            // pragma(mangle) with clang's exact symbol -> identical on ldc & dmd
-            // (D's own extern(C++) mangling diverges on Itanium substitutions).
             auto mg = clang_Cursor_getMangling(c).str;
-            methodLines ~= format("    pragma(mangle, \"%s\") %s%s %s(%s)%s;",
-                mg, kw, retD, dname(mn), ps.join(", "), cst);
+            auto cppRet = retD == "void" ? "void"
+                : clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
+            if (cppRet.canFind("(*")) guardable = false;   // fn-ptr return can't be a guard sig
+            // EXCEPTIONS on -> route this out-of-line method through its per-signature guard
+            // instead of binding the Qt symbol directly. See the big block at `struct Guard`
+            // for the full rationale; this just emits the three pieces for THIS method.
+            if (guardable) {
+                // Gotcha (b): forwarders are DEFINITIONS -> two that collapse to the same D
+                // signature would clash. Keep only the first (the extra overload is anyway
+                // indistinguishable to a D caller).
+                auto dsig = dname(mn) ~ "|" ~ ps.join(",") ~ "|"
+                    ~ (clang_CXXMethod_isStatic(c) ? "s" : "") ~ cst;
+                if (dsig in seenGuardSig) continue;
+                seenGuardSig[dsig] = true;
+            }
+            if (guardable) {
+                bool isStat = clang_CXXMethod_isStatic(c) != 0;
+                auto gn = guardFor(cppRet, cppTypes, retD, ps, isStat);
+                // (1) the shared guard's D-side extern(C) decl (once per module it's used in).
+                //     Its D param types (ps) are ABI-identical to the guard's C++ params.
+                if (gn !in guardDeclsEmitted) {
+                    guardDeclsEmitted[gn] = true;
+                    auto selfP = isStat ? "" : (ps.length ? "void* self, " : "void* self");
+                    shimDecls ~= format("extern(C) private %s %s(void* fn%s%s);",
+                        retD, gn, ps.length || !isStat ? ", " : "", selfP ~ ps.join(", "));
+                }
+                // (2) a nullary decl whose ONLY purpose is `&__raw` = the Qt symbol's address
+                //     (its declared type is a lie we never call — see the Guard block).
+                auto raw = format("__raw_%s_%d", name, guardRawIdx++);
+                shimDecls ~= format("private pragma(mangle, \"%s\") extern(C++) void %s();", mg, raw);
+                // (3) the extern(D) forwarder (gotcha (a): extern(D) so it doesn't mangle to the
+                //     Qt symbol): pass &sym + self + args to the guard, which try/catches.
+                string[] callArgs = ["cast(void*)&" ~ raw];
+                if (!isStat) callArgs ~= "cast(void*) this";
+                foreach (i; 0 .. na) callArgs ~= format("a%d", i);
+                auto retkw = retD == "void" ? "" : "return ";
+                // extern(D): the forwarder is a D-only method — without it, an extern(C++)
+                // member mangles to the very Qt symbol __raw points at (collision + it would
+                // redefine the C++ method).
+                methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
+                    kw, retD, dname(mn), ps.join(", "), cst, retkw, gn, callArgs.join(", "));
+            } else {
+                // pragma(mangle) with clang's exact symbol -> identical on ldc & dmd
+                // (D's own extern(C++) mangling diverges on Itanium substitutions).
+                methodLines ~= format("    pragma(mangle, \"%s\") %s%s %s(%s)%s;",
+                    mg, kw, retD, dname(mn), ps.join(", "), cst);
+            }
             auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
             if (ov.length) methodLines ~= ov;
         } catch (Unmappable) { /* skip method with an unmapped type */ }
@@ -1865,7 +1988,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // Fn-pointer params are still skipped (the C++ declarator needs the name in parens).
         bool viaShim = isInline(c);
         try {
-            string[] sig, callArgs, dparams, pdtypes, cppPs;
+            string[] sig, callArgs, dparams, pdtypes, cppPs, cppT;
             bool okParams = true;
             auto na = clang_Cursor_getNumArguments(c);
             foreach (i; 0 .. na) {
@@ -1876,6 +1999,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 auto _cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
                 if (_cpps.canFind("(*")) okParams = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
                 cppPs ~= format("%s a%d", _cpps, i);
+                cppT ~= _cpps;
                 pdtypes ~= pd;
                 sig ~= format("%s a%d", pd, i);
                 // Carry C++ defaults so ordering stays legal (D: once a param is
@@ -1903,10 +2027,26 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 CTORSHIM ~= CtorShim(name, cppName, ctorFn, cppPs, callArgs);
                 ctorHelpers ~= format("extern(C) private void %s(%s self%s);",
                     ctorFn, selfTy, sig.length ? ", " ~ sig.join(", ") : "");
-            } else {
+            }
+            // Exceptions on, heap object ctor: route the ctor call through a void-guard too
+            // (a ctor's ABI is void(self, args), so it reuses the void-return guards) — this
+            // covers `new QButton()`. Value-type ctors keep the direct/shim path.
+            bool ctorGuard = EXCEPTIONS && !valueType && !viaShim && okParams && !nestedInaccessible(cur);
+            if (!viaShim && !ctorGuard) {
                 auto mangled = clang_Cursor_getMangling(c).str;
                 ctorHelpers ~= format(`private pragma(mangle, "%s") extern(C++) void %s(%s self%s);`,
                     mangled, ctorFn, selfTy, sig.length ? ", " ~ sig.join(", ") : "");
+            }
+            string cgn;   // guard name for the ctor, if guarded
+            if (ctorGuard) {
+                cgn = guardFor("void", cppT, "void", sig, false);
+                if (cgn !in guardDeclsEmitted) {
+                    guardDeclsEmitted[cgn] = true;
+                    ctorHelpers ~= format("extern(C) private void %s(void* fn, void* self%s);",
+                        cgn, sig.length ? ", " ~ sig.join(", ") : "");
+                }
+                ctorHelpers ~= format(`private pragma(mangle, "%s") extern(C++) void %s();`,
+                    clang_Cursor_getMangling(c).str, ctorFn);
             }
             ctorHelpers ~= format("%s %s_new(%s) {", name, name, dparams.join(", "));
             if (valueType) {                                // by-value on the stack
@@ -1914,7 +2054,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 ctorHelpers ~= format("    %s(&self%s);", ctorFn, callTail);
             } else {                                        // C++ heap (Qt owns/deletes)
                 ctorHelpers ~= format("    auto self = cast(%s) __cpp_new(__traits(classInstanceSize, %s));", name, name);
-                ctorHelpers ~= format("    %s(self%s);", ctorFn, callTail);
+                if (ctorGuard)
+                    ctorHelpers ~= format("    %s(cast(void*)&%s, cast(void*) self%s);", cgn, ctorFn, callTail);
+                else
+                    ctorHelpers ~= format("    %s(self%s);", ctorFn, callTail);
             }
             ctorHelpers ~= "    return self;";
             ctorHelpers ~= "}";
@@ -2415,7 +2558,8 @@ string miD(string manifest, string dpkg) {
 // instantiated here and gets a symbol. std::destroy_at calls the right dtor without
 // having to write the unqualified name. The D decls live at module scope (extern(C)).
 string ctorCpp(string manifest, string includeLine) {
-    if (!CTORCOPY.length && !CTORSHIM.length && !METHODSHIM.length && !ITEROPS.length) return manifest ~ "\n";
+    if (!CTORCOPY.length && !CTORSHIM.length && !METHODSHIM.length && !ITEROPS.length && !GUARDS.length)
+        return manifest ~ "\n";
     // Templated helpers with if constexpr: if a type (surprisingly) isn't copyable/
     // destructible, they degrade to a no-op instead of breaking the whole lib's compile
     // (one bad class must not take down the other 150).
@@ -2476,6 +2620,23 @@ string ctorCpp(string manifest, string includeLine) {
             op.iName, op.iCpp);
         body ~= format("bool qtd_ine_%s(void* a, void* b) { return *static_cast<%s*>(a) != *static_cast<%s*>(b); }\n",
             op.iName, op.iCpp, op.iCpp);
+    }
+    // The per-signature exception guards (see the big block at `struct Guard` in this file).
+    // Each is: reinterpret the passed Qt symbol address `fn` to this exact signature (Itanium
+    // ABI: the object `self` is just argument 0), call it, and translate any C++ exception via
+    // the Lippincott handler. ONE guard is shared by every method/ctor of the same shape.
+    //   decl   = the guard's own C++ parameters:      (void* self, int a0, ...)   [self if !static]
+    //   castTs = the fn-pointer's parameter TYPES:    (void*, int, ...)            [what we cast to]
+    //   callAs = the arguments forwarded to the call: (self, a0, ...)
+    foreach (g; GUARDS) {
+        string[] decl, castTs, callAs;
+        if (!g.isStatic) { decl ~= "void* self"; castTs ~= "void*"; callAs ~= "self"; }
+        foreach (i, t; g.cppTypes) { decl ~= format("%s a%d", t, i); castTs ~= t; callAs ~= format("a%d", i); }
+        auto ret = g.cppRet == "void" ? "" : "return ";
+        body ~= format("%s %s(void* fn%s%s) { try { %sreinterpret_cast<%s(*)(%s)>(fn)(%s); }"
+                ~ " catch (...) { qtd_lippincott(); } }\n",
+            g.cppRet, g.name, decl.length ? ", " : "", decl.join(", "),
+            ret, g.cppRet, castTs.join(", "), callAs.join(", "));
     }
     return manifest ~ "\n#include <new>\n#include <memory>\n#include <type_traits>\n"
         ~ "#include <exception>\n#include <typeinfo>\n" ~ includeLine
