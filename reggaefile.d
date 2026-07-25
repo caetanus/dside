@@ -59,6 +59,7 @@ Build reggaeBuild() {
             all ~= qtdTest(baseName(app).stripExtension.replace("_test", "") ~ "-" ~ dc,
                 t("uic", app), ex, dc, uicExtra);
     all ~= uicheckTargets(root, ex);   // our uic == QUiLoader (differential oracle)
+    all ~= corpusCheckTargets(root, ex);   // whole Qt baseline .ui corpus vs QUiLoader
 
     // --- CTFE qrc: a .qrc + import()ed files -> Qt .rcc blob, registered (no rcc tool) ---
     auto qrcExtra = buildPath(root, "runtime", "qrc", "qrc.d")
@@ -104,6 +105,32 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]);
         ts ~= Target.phony("uicheck-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+    }
+    return ts;
+}
+
+// The whole Qt baseline .ui corpus (tests/uic/corpus/*.ui) run through the same differential
+// oracle as uicheck. Reuses the uidump.o harness; each form is diffed against QUiLoader.
+Target[] corpusCheckTargets(string root, QtdBinding ex) {
+    auto here = buildPath(root, "tests", "uic");
+    auto cf = pkgCflags(["Qt6UiTools", "Qt6Widgets"]) ~ " -std=c++17 -fPIC -O2";
+    auto libs = pkgLibs(["Qt6UiTools", "Qt6Widgets"]);
+    auto uiformD = buildPath(root, "runtime", "uic", "uiform.d");
+    auto qrcD = buildPath(root, "runtime", "qrc", "qrc.d");
+    auto checkD = buildPath(here, "corpus_check.d");
+    Target[] ts;
+    foreach (dc; DCS) {
+        auto uidumpO = buildPath(ex.bdir, "uidump-" ~ dc ~ ".o");
+        auto uidumpT = Target(uidumpO,
+            "clang++ " ~ cf ~ " -c " ~ buildPath(here, "qtd_uidump.cpp") ~ " -o $out", []);
+        auto lib = qtdBindLib(ex, dc);
+        auto bin = Target("corpus-check-" ~ dc ~ "-bin",
+            dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
+            ~ " -I" ~ ex.genDir ~ " -I" ~ buildPath(root, "runtime", "qrc")
+            ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
+            ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
+            [Target(checkD), uidumpT, lib, ex.shims]);
+        ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
     }
     return ts;
 }

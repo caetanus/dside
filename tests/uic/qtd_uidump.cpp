@@ -56,7 +56,7 @@ static std::string propsOf(QObject *o) {
         "alignment", "wordWrap", "enabled", "checkable", "checked", "readOnly", "flat",
         "orientation", "echoMode", "frameShape", "frameShadow", "lineWidth", "maximum",
         "minimum", "singleStep", "pageStep", "value", "decimals", "currentIndex", "maxLength",
-        "placeholderText", "autoDefault", "default", "spacing", "margin", "toolTip",
+        "placeholderText", "autoDefault", "default", "spacing", "toolTip",
         "shortcut", "sizePolicy", "iconSize", "movable", "floatable", "scaledContents",
     };
     std::vector<std::string> kv;

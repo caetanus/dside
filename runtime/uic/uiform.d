@@ -213,6 +213,7 @@ private struct Gen {
     string[2][] buddyList;   // (label, targetName): <property name="buddy"><cstring>…; set at
                              // the END of setupUi, once every widget the buddy names exists
     int nameCounter;         // synthesizes field names for unnamed elements (spacers, …)
+    string context;          // the <class> name — translation context for QCoreApplication.translate
 }
 
 // Every generated type lives in the widgets package; ensure its module is imported.
@@ -349,8 +350,25 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
             g.setup ~= genPalette(g, v, var);
             continue;
         }
+        // currentIndex must be applied AFTER the items/pages exist (adding the first item resets
+        // it to 0), so it's deferred to the end of genWidget — skip it in the generic pass.
+        if (name == "currentIndex") continue;
         if (v.tag == "string" && isTr(name)) {
-            g.trans ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(\"" ~ esc(v.text) ~ "\");\n";
+            // A translatable string routes through QCoreApplication.translate(context, source)
+            // exactly like Qt's own uic, so an installed .qm gives the localized text (this is
+            // what makes us match QUiLoader, which also translates). notr="true" opts out; a
+            // <string comment="…"> supplies the disambiguation. The QString is an lvalue temp
+            // because the setters take `ref const(QString)`.
+            if (v.attr("notr") == "true")
+                g.trans ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(\"" ~ esc(v.text) ~ "\");\n";
+            else {
+                need(g, "QCoreApplication");
+                string disamb = v.attr("comment").length
+                    ? "\"" ~ esc(v.attr("comment")) ~ "\".ptr" : "null";
+                g.trans ~= "        { auto _t = QCoreApplication.translate(\""
+                    ~ esc(g.context) ~ "\".ptr, \"" ~ esc(v.text) ~ "\".ptr, " ~ disamb
+                    ~ ", -1); " ~ var ~ ".set" ~ cap(name) ~ "(_t); }\n";
+            }
             continue;
         }
         string val = value(g, v);
@@ -403,10 +421,15 @@ private string genSizePolicy(ref Gen g, Node sp, string var) {
         case "verstretch": vs = c.text; break;
         default: break;
     }
-    if (!hp.length || !vp.length || isDigits(hp) || isDigits(vp)) return "";
+    if (!hp.length || !vp.length) return "";
+    // Old Designer forms give the policy as a raw enum value (<hsizetype>5</hsizetype>);
+    // modern forms give the enum NAME (hsizetype="Preferred"). Cast the numeric form.
+    string pol(string s) {
+        return isDigits(s) ? "cast(QSizePolicy.Policy)(" ~ s ~ ")" : "QSizePolicy.Policy." ~ s;
+    }
     return "        { auto _sp = QSizePolicy_new();"
-        ~ " _sp.setHorizontalPolicy(QSizePolicy.Policy." ~ hp ~ ");"
-        ~ " _sp.setVerticalPolicy(QSizePolicy.Policy." ~ vp ~ ");"
+        ~ " _sp.setHorizontalPolicy(" ~ pol(hp) ~ ");"
+        ~ " _sp.setVerticalPolicy(" ~ pol(vp) ~ ");"
         ~ " _sp.setHorizontalStretch(" ~ hs ~ "); _sp.setVerticalStretch(" ~ vs ~ ");"
         ~ " " ~ var ~ ".setSizePolicy(_sp); }\n";
 }
@@ -512,22 +535,30 @@ private string genSpacer(ref Gen g, Node sp) {
 // the layout's D variable name.
 private string genLayout(ref Gen g, Node lay, string parentVar) {
     string cls = lay.attr("class");
-    string name = lay.attr("name");
-    if (!name.length) name = "__lay" ~ itos(g.nameCounter++);   // unique (nested unnamed layouts
-                                                                // would collide on parentVar_lay)
+    // objectName comes from the `name` attribute (modern forms) OR a <property name="objectName">
+    // (old Designer forms, where the value is often the literal "unnamed" and NOT unique).
+    string objName = lay.attr("name");
+    foreach (p; lay.childrenOf("property"))
+        if (p.attr("name") == "objectName") objName = firstElem(p).text;
+    // The D FIELD name must be a UNIQUE valid identifier; a missing or duplicate-prone
+    // objectName ("unnamed") gets a synthetic field, but setObjectName keeps the real name so
+    // the tree still matches QUiLoader (which does name the layout, e.g. "unnamed").
+    string name = (objName.length && isValidDId(objName) && objName != "unnamed")
+        ? objName : "__lay" ~ itos(g.nameCounter++);
     bool grid = cls == "QGridLayout";
     bool form = cls == "QFormLayout";
     need(g, cls);
     g.fields ~= "    " ~ cls ~ " " ~ name ~ ";\n";
     g.setup ~= "        " ~ name ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
-    if (lay.attr("name").length)   // named in the .ui -> QUiLoader sets it too (a nameless one stays nameless)
-        g.setup ~= "        " ~ name ~ ".setObjectName(\"" ~ name ~ "\");\n";
+    if (objName.length)   // named in the .ui -> QUiLoader sets it too (a nameless one stays nameless)
+        g.setup ~= "        " ~ name ~ ".setObjectName(\"" ~ esc(objName) ~ "\");\n";
     // spacing + the four *Margin props collapse to setContentsMargins(l, t, r, b).
     string ml = "0", mt = "0", mr = "0", mb = "0";
     bool anyMargin;
     foreach (p; lay.childrenOf("property")) {
         string pn = p.attr("name"), pv = firstElem(p).text;
         if (pn == "spacing") g.setup ~= "        " ~ name ~ ".setSpacing(" ~ pv ~ ");\n";
+        else if (pn == "margin") { ml = mt = mr = mb = pv; anyMargin = true; }  // old single-value margin
         else if (pn == "leftMargin") { ml = pv; anyMargin = true; }
         else if (pn == "topMargin") { mt = pv; anyMargin = true; }
         else if (pn == "rightMargin") { mr = pv; anyMargin = true; }
@@ -734,6 +765,21 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
             idx++;
         }
     }
+    // Absolute-positioned direct child <widget>s: a plain container (the root, a QGroupBox,
+    // QFrame, …) can hold children placed by geometry instead of a layout. Layout children live
+    // under <layout><item>, so they are NOT direct <widget> kids and aren't caught here; the
+    // dedicated container types above already consumed their pages. genProps' setGeometry places
+    // each one, mirroring QUiLoader.
+    // QMenuBar/QMenu/QToolBar hold <widget class="QMenu"> children that genMenu already built;
+    // don't recreate them here.
+    else if (wcls != "QComboBox" && wcls != "QMenuBar" && wcls != "QMenu" && wcls != "QToolBar") {
+        foreach (child; w.childrenOf("widget"))
+            genWidget(g, child, var, false);
+    }
+    // Deferred currentIndex (see genProps): now that the items/pages are in place, select one.
+    foreach (p; w.childrenOf("property"))
+        if (p.attr("name") == "currentIndex")
+            g.setup ~= "        " ~ var ~ ".setCurrentIndex(" ~ firstElem(p).text ~ ");\n";
     return var;
 }
 
@@ -772,14 +818,22 @@ private void genConnections(ref Gen g, Node conns, string rootName) {
 // Turn `.ui` XML into the source of `struct Ui_<name>` (fields + setupUi + retranslateUi),
 // preceded by the imports it needs. CTFE-evaluable; use as mixin(uiForm(import("x.ui"))).
 string uiForm(string xml) {
-    auto root = parseUi(xml).child("widget");
+    auto ui = parseUi(xml);
+    auto root = ui.child("widget");
     string rootCls = root.attr("class");
-    string className = root.attr("name");
+    // The generated struct is named after the top-level <class> element (matches Qt's uic),
+    // which is NOT always the root widget's objectName — e.g. imagedialog.ui has
+    // <class>ImageDialog</class> but a nameless root <widget class="QDialog">.
+    string className = ui.child("class").text;
+    if (!className.length) className = root.attr("name");
+    string objName = root.attr("name");   // root's objectName (may be absent)
     Gen g;
+    g.context = className;    // translation context for QCoreApplication.translate (Qt's uic uses <class>)
     collectMenus(root, g);    // so <addaction> can distinguish submenus from actions
     collectGroups(root, g);   // unique buttonGroup names
     need(g, rootCls);
-    g.setup ~= "        root.setObjectName(\"" ~ className ~ "\");\n";
+    if (objName.length)
+        g.setup ~= "        root.setObjectName(\"" ~ objName ~ "\");\n";
     emitGroups(g);            // QButtonGroups exist before the buttons add to them
     genWidget(g, root, "", true);
     // Buddies, now that every widget exists: <label>.setBuddy(<target>). Skip a target that
@@ -788,7 +842,7 @@ string uiForm(string xml) {
         if (hasField(g, b[1]))
             g.setup ~= "        " ~ b[0] ~ ".setBuddy(" ~ b[1] ~ ");\n";
     genTabOrder(g, parseUi(xml).child("tabstops"));
-    genConnections(g, parseUi(xml).child("connections"), className);
+    genConnections(g, ui.child("connections"), objName.length ? objName : className);
     // connectSlotsByName wires the host's on_<object>_<signal>() slots (QUiLoader always
     // calls it); a no-op unless `root` is a moc'd QObject that declares such slots.
     need(g, "QMetaObject");
