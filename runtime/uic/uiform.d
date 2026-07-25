@@ -331,9 +331,7 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
             continue;
         }
         if (v.tag == "sizepolicy") {   // <sizepolicy hsizetype=… vsizetype=…><horstretch/>…
-            string sp = genSizePolicy(g, v, var);
-            if (sp.length) { g.setup ~= sp; continue; }
-            // stretch != 0 not yet expressible (QSizePolicy stretch setters unbound) -> skip
+            g.setup ~= genSizePolicy(g, v, var);
             continue;
         }
         if (v.tag == "palette") {   // <palette><active><colorrole role=…><brush><color/>…
@@ -374,9 +372,9 @@ private string genFont(ref Gen g, Node f, string var) {
     return "        { auto _f = QFont_new();" ~ body ~ " " ~ var ~ ".setFont(_f); }\n";
 }
 
-// A <sizepolicy> property. Common case (stretch 0) -> setSizePolicy(hPolicy, vPolicy), the
-// QWidget convenience overload. Returns "" when a non-zero stretch is present (that needs the
-// QSizePolicy stretch setters, which are inline value-type methods still unbound).
+// A <sizepolicy> property -> QSizePolicy_new() + the (now-bound) inline setters for policies
+// and stretches, then setSizePolicy. Mirrors QUiLoader (which builds QSizePolicy(h,v), sets
+// the stretches, then setSizePolicy). Returns "" only if the policy names are missing/numeric.
 private string genSizePolicy(ref Gen g, Node sp, string var) {
     need(g, "QSizePolicy");
     string hp = sp.attr("hsizetype"), vp = sp.attr("vsizetype");   // modern attribute form
@@ -389,9 +387,11 @@ private string genSizePolicy(ref Gen g, Node sp, string var) {
         default: break;
     }
     if (!hp.length || !vp.length || isDigits(hp) || isDigits(vp)) return "";
-    if (hs != "0" || vs != "0") return "";
-    return "        " ~ var ~ ".setSizePolicy(QSizePolicy.Policy." ~ hp
-        ~ ", QSizePolicy.Policy." ~ vp ~ ");\n";
+    return "        { auto _sp = QSizePolicy_new();"
+        ~ " _sp.setHorizontalPolicy(QSizePolicy.Policy." ~ hp ~ ");"
+        ~ " _sp.setVerticalPolicy(QSizePolicy.Policy." ~ vp ~ ");"
+        ~ " _sp.setHorizontalStretch(" ~ hs ~ "); _sp.setVerticalStretch(" ~ vs ~ ");"
+        ~ " " ~ var ~ ".setSizePolicy(_sp); }\n";
 }
 
 private bool isDigits(string s) {

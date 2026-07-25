@@ -9,8 +9,8 @@
     <widget class="QPushButton" name="expandingButton">
      <property name="sizePolicy">
       <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-       <horstretch>0</horstretch>
-       <verstretch>0</verstretch>
+       <horstretch>3</horstretch>
+       <verstretch>1</verstretch>
       </sizepolicy>
      </property>
      <property name="text">
