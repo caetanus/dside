@@ -3,6 +3,13 @@
 Status: **not started** (Linux is the only verified platform). This is a design
 roadmap, not a record of work done.
 
+**Scope: x64 ONLY.** win32 is explicitly out (owner's decision). This matters: win32's
+`__thiscall`/`__stdcall`/`__cdecl` zoo was the scary part of every "call a member via a
+raw pointer" trick here. x64 Windows has **exactly one** calling convention (`this` in
+RCX = the first integer arg; sret is a hidden pointer ordered `[RCX=retptr, RDX=this,
+R8…]`), so the member-as-free-function tricks below become well-trodden instead of
+convention-dependent guesswork.
+
 ## The one thing that makes this tractable
 
 The generator does **not** hand-roll Itanium mangling — it asks libclang for every
@@ -55,7 +62,8 @@ build mechanics in `qtd_build.d` are POSIX-hardcoded and must be parametrized:
 | `-L--start-group … --end-group` | **link.exe / lld-link have no group** — list the archive twice, or merge into one `.lib` |
 | `pkg-config --cflags/--libs` | qmake / `QTDIR` (MSVC Qt ships no pkg-config) |
 | `flock` | no native equivalent → `mkdir`-based atomic lock, or `--single` |
-| ~3 hardcoded Itanium literals (`_ZN10QArrayData…`, `_ZN9QListData…` at `emit_cxx.d:145,170,185`) | fetch via libclang too, or emit per-ABI |
+| hardcoded Itanium literals: `_ZN10QArrayData…`/`_ZN9QListData…` (`emit_cxx.d`) **and `_Znwm`/`_ZdlPv`** (operator new/delete in the generated `cxxrt.d` — `cxxRuntime()`) | fetch via libclang, or emit per-ABI (`??2@YAPEAX_K@Z` / `??3@YAXPEAX@Z` on MSVC) |
+| link: `-L--gc-sections -L--as-needed` + shim compile `-ffunction-sections -fdata-sections` | `/OPT:REF` (drops unreferenced fns/data — **on by default in release**, and each fn is already a COMDAT so no `-ffunction-sections` needed); `--as-needed` has no analogue (Windows import libs only import referenced symbols). The à-la-carte binary is basically free on MSVC. |
 
 ### Two deep risks — de-risk these BEFORE touching the mechanics
 
@@ -93,6 +101,45 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
 - [ ] `set QT_QPA_PLATFORM=offscreen&& app` for cmd (or keep requiring `sh`).
 
 ---
+
+## Tier 2.5 — the exception + guard layer (added 2026-07; the newest x64-critical bits)
+
+Since this roadmap was first written, the binding gained C++/Qt→D **exception translation**,
+gated by the spec's `"exceptions": true` flag (on for `spec_cxx_qtwidgets.json`). It leans on
+two mechanisms that need Windows validation — see [[cpp-exception-translation]] for the full
+design. Both were proven on Linux with a ~10-line experiment; **each needs the SAME experiment
+re-run on a Windows box** before trusting exceptions there.
+
+### (A) The per-signature guard = deep risk #1, amplified
+Every out-of-line method AND heap object ctor now routes through a shared C++ guard that does
+`reinterpret_cast<Ret(*)(void*, Args…)>(fn)(self, args)` — i.e. it calls the Qt member through
+its symbol address as if it were a free function with `this` as arg 0 (`emit_cxx.d`, `struct
+Guard`). This is exactly deep-risk #1 (MS x64 `this`/sret ordering) but now on the hot path for
+~every call, not just ctors. GOOD NEWS with x64-only: one convention, and `this`-as-arg-0 +
+sret ordering `[retptr, this, args]` is consistent between a member and a free-function-with-
+explicit-self on MS x64 — so the guard's typed `reinterpret_cast` *should* generate the right
+ABI (the guard is TYPED, not `void*`/varargs, so the compiler does the per-ABI passing). Still:
+**re-prove sret + const + value-param member calls via a guard on ldc AND dmd `-windows-msvc`**
+(the Linux proof: `/tmp` guardproto — a throwing member called through a fn-ptr guard, caught).
+
+### (B) Cross-language exception unwinding under SEH = the ONE genuinely new risk
+The guard's `catch(...)` calls a `[[noreturn]] qtd_lippincott()` which calls back into D
+(`qtd_throw_d`, in `cxxrt.d`) to `throw new QtCppException`. **On Linux this D exception unwinds
+cleanly back through the C++ guard frame to the D caller — verified on ldc AND dmd (shared
+DWARF/libunwind).** Windows x64 uses **table-based SEH** (`.pdata`/`.xdata` + `RtlUnwindEx`), not
+DWARF. LDC/DMD targeting MSVC-x64 use SEH too, so the D throw and the C++ `catch(...)` go through
+the same machinery and it *may* just work — but a D `Throwable` crossing an MSVC C++ catch funclet
+back to a D handler is NOT guaranteed. **Decisive experiment (run on Windows):** C++ shim
+`try { throw std::runtime_error("x"); } catch(...) { qtd_throw_d(...); }`, D `qtd_throw_d` does
+`throw new QtCppException`, D caller `try { shim(); } catch (QtCppException e) {…}` — assert
+caught, on ldc AND dmd. If it FAILS: fall back to the mechanism rejected on Linux — C++ catches
+into a thread-local, D checks it after each guarded call and throws there (SEH-independent, but
+adds a per-call check). The guard forwarders already funnel through one place, so swapping the
+translation mechanism is localized.
+
+### Note: the Q_GADGET skip is portable
+`qt_check_for_QGADGET_macro` is DECLARED-but-never-DEFINED by Qt; we skip it because `&__raw`
+forces a symbol reference to a nonexistent symbol (link error). Same on any platform — keep it.
 
 ## Cross-cutting decision: shell dialect
 
