@@ -650,6 +650,14 @@ string mapCxxType(CXType t, ref string imp) {
             auto n = nestedInClass(pt) ? registerNested(pt) : lastNs(pc); imp = n;
             return konst ? "ref const(" ~ n ~ ")" : "ref " ~ n;
         }
+        // object-type record by reference (const QPixmap&, const QIcon&…): a C++ reference is
+        // ABI-a-pointer, and a D `extern(C++) class` IS already a pointer, so pass the class
+        // directly — exactly like an X* pointer param (const-ness doesn't change the ABI).
+        // Unblocks e.g. QLabel::setPixmap(const QPixmap&).
+        if (isRecord(pt) && !nestedInClass(pt)) {
+            auto n = lastNs(pc); imp = n;
+            return n;
+        }
         throw new Unmappable("ref to " ~ clang_getTypeSpelling(pt).str);
     }
     // value-type record BY VALUE (QPoint/QSize/QRect) -> the extern(C++) struct
