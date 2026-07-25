@@ -336,6 +336,10 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
             // stretch != 0 not yet expressible (QSizePolicy stretch setters unbound) -> skip
             continue;
         }
+        if (v.tag == "palette") {   // <palette><active><colorrole role=…><brush><color/>…
+            g.setup ~= genPalette(g, v, var);
+            continue;
+        }
         if (v.tag == "string" && isTr(name)) {
             g.trans ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(\"" ~ esc(v.text) ~ "\");\n";
             continue;
@@ -394,6 +398,57 @@ private bool isDigits(string s) {
     if (!s.length) return false;
     foreach (c; s) if (c < '0' || c > '9') return false;
     return true;
+}
+
+// A .ui <palette> group tag -> QPalette.ColorGroup member ("" if unknown).
+private string groupEnum(string tag) {
+    switch (tag) {
+        case "active":   return "Active";
+        case "inactive": return "Inactive";
+        case "disabled": return "Disabled";
+        default:         return "";
+    }
+}
+
+// A <colorrole role="…"> name -> QPalette.ColorRole member. Old .ui uses the deprecated
+// Foreground/Background aliases -> map to WindowText/Window.
+private string roleEnum(string role) {
+    switch (role) {
+        case "Foreground": return "WindowText";
+        case "Background": return "Window";
+        default:           return role;
+    }
+}
+
+// A <palette> property. Each group (<active>/<inactive>/<disabled>) carries <colorrole>s; each
+// holds a <brush> with a <color>. We build QPalette_new() and setBrush(group, role, QBrush(color))
+// for every SolidPattern colorrole, then setPalette. Non-solid brushes (gradient/texture) are
+// rare and skipped (they'd need QGradient); the harness would flag any that a real form needs.
+private string genPalette(ref Gen g, Node pal, string var) {
+    need(g, "QPalette"); need(g, "QColor"); need(g, "QBrush");
+    string body;
+    foreach (grp; pal.kids) {
+        string cg = groupEnum(grp.tag);
+        if (!cg.length) continue;
+        foreach (cr; grp.childrenOf("colorrole")) {
+            string role = roleEnum(cr.attr("role"));
+            if (!role.length) continue;
+            Node brush = cr.child("brush");
+            if (!brush.ok) continue;
+            string bs = brush.attr("brushstyle");
+            if (bs.length && bs != "SolidPattern") continue;   // only color brushes for now
+            Node col = brush.child("color");
+            if (!col.ok) continue;
+            string a = col.attr("alpha").length ? col.attr("alpha") : "255";
+            string r = col.child("red").text, gc = col.child("green").text, b = col.child("blue").text;
+            if (!r.length || !gc.length || !b.length) continue;
+            body ~= "            { auto _c = QColor_new(" ~ r ~ ", " ~ gc ~ ", " ~ b ~ ", " ~ a
+                ~ "); auto _b = QBrush_new(_c); _p.setBrush(QPalette.ColorGroup." ~ cg
+                ~ ", QPalette.ColorRole." ~ role ~ ", _b); }\n";
+        }
+    }
+    if (!body.length) return "";
+    return "        { auto _p = QPalette_new();\n" ~ body ~ "            " ~ var ~ ".setPalette(_p); }\n";
 }
 
 // A <spacer> -> QSpacerItem(w, h, hPolicy, vPolicy). Orientation picks which axis expands

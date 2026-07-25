@@ -16,6 +16,8 @@
 #include <QIcon>
 #include <QFont>
 #include <QSizePolicy>
+#include <QPalette>
+#include <QColor>
 #include <QFile>
 #include <QUiLoader>
 #include <QList>
@@ -80,6 +82,23 @@ static std::string propsOf(QObject *o) {
             kv.push_back("sp.v=" + std::to_string(int(sp.verticalPolicy())));
             kv.push_back("sp.hs=" + std::to_string(sp.horizontalStretch()));
             kv.push_back("sp.vs=" + std::to_string(sp.verticalStretch()));
+        }
+    }
+    // QPalette: dump ONLY the (group, role) brushes explicitly set (isBrushSet) with their
+    // ARGB — both trees start from the same default palette, so the set-brush set is exactly
+    // what each side applied. A role our uic misses (or over-sets) shows up as a diff.
+    {
+        QVariant v = o->property("palette");
+        if (v.isValid() && v.canConvert<QPalette>()) {
+            QPalette p = v.value<QPalette>();
+            const QPalette::ColorGroup groups[] = {QPalette::Active, QPalette::Inactive, QPalette::Disabled};
+            for (QPalette::ColorGroup gr : groups)
+                for (int r = 0; r < QPalette::NColorRoles; r++) {
+                    QPalette::ColorRole role = QPalette::ColorRole(r);
+                    if (p.isBrushSet(gr, role))
+                        kv.push_back("pal." + std::to_string(int(gr)) + "." + std::to_string(r)
+                                     + "=" + u8(p.color(gr, role).name(QColor::HexArgb)));
+                }
         }
     }
     std::sort(kv.begin(), kv.end());

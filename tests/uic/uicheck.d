@@ -19,6 +19,7 @@ mixin(qrcRegister(import("icons.qrc")));  // register :/ui/* so both trees resol
 mixin(uiForm(import("icon.ui")));      // Ui_IconForm
 mixin(uiForm(import("font.ui")));      // Ui_FontForm
 mixin(uiForm(import("sizepolicy.ui")));  // Ui_SizePolForm
+mixin(uiForm(import("palette.ui")));   // Ui_PaletteForm
 mixin(uiForm(import("bookwindow.ui")));  // Ui_BookWindow
 
 __gshared int fails;
@@ -52,6 +53,7 @@ void main() {
     check!Ui_IconForm("tests/uic/icon.ui", QWidget_new());
     check!Ui_FontForm("tests/uic/font.ui", QWidget_new());
     check!Ui_SizePolForm("tests/uic/sizepolicy.ui", QWidget_new());
+    check!Ui_PaletteForm("tests/uic/palette.ui", QWidget_new());
     check!Ui_BookWindow("tests/uic/bookwindow.ui", QMainWindow_new());
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }
