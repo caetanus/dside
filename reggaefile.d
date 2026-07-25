@@ -11,7 +11,7 @@ import reggae;
 import qtd_build;
 import std.file : getcwd, exists, dirEntries, SpanMode;
 import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
-import std.array : array;
+import std.array : array, replace;
 import std.algorithm : map, filter, sort;
 import std.process : execute;
 
@@ -47,11 +47,13 @@ Build reggaeBuild() {
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension ~ "-" ~ dc, app, ex, dc);
 
-    // --- CTFE uic: a .ui -> typed Ui struct (mixin), built against the widgets binding ---
+    // --- CTFE uic: .ui -> typed Ui struct (mixin), built against the widgets binding ---
     auto uicExtra = buildPath(root, "runtime", "uic", "uiform.d")
         ~ " -I" ~ buildPath(root, "runtime", "uic") ~ " -J=" ~ buildPath(root, "tests", "uic");
-    foreach (dc; DCS)
-        all ~= qtdTest("uic-" ~ dc, t("uic", "uic_test.d"), ex, dc, uicExtra);
+    foreach (app; ["uic_test.d", "dialog_test.d"])   // synthetic box form + real corpus grid form
+        foreach (dc; DCS)
+            all ~= qtdTest(baseName(app).stripExtension.replace("_test", "") ~ "-" ~ dc,
+                t("uic", app), ex, dc, uicExtra);
 
     // --- QtWebEngineCore: link+run a smoke test against the real .so (whole-program) ---
     auto we = qtdBinding(root, "spec_cxx_webengine.json", ["Qt6WebEngineCore"]);

@@ -109,8 +109,10 @@ struct Ui_<class> {
       + `value()` dispatch (string/number/double/bool/rect/size/enum/set); retranslateUi
       split; objectName/resize/connectSlotsByName skeleton; box-layout parenting. Covers
       simple dialogs + most forms. (`dialog.ui`, `device.ui`.)
-- [ ] **B — layouts.** QGridLayout, QFormLayout, contentsMargins/spacing, nested layouts,
-      spacers. (`bookwindow.ui`, `modbusclient/mainwindow.ui`.)
+- [x] **B — layouts.** QGridLayout (row/col/span) + QFormLayout (Label/FieldRole) + nested
+      layouts (addLayout) done; verified on the real `dialog.ui` (grid). Needed a generator
+      fix first: derived overloads sharing an inherited name (QGridLayout::addWidget(w,r,c,…))
+      were being dropped. Still TODO in B: contentsMargins/spacing, spacers.
 - [ ] **C — item widgets.** combo/list items, tab/stacked pages, groupbox. (`camera.ui`,
       `documentviewer`.)
 - [ ] **D — mainwindow chrome.** actions, menus, toolbars, statusbar. (`documentviewer`.)

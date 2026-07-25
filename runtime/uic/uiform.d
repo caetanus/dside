@@ -239,20 +239,46 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
     }
 }
 
-// A box <layout> and its item widgets. `parentVar` is the container's D variable.
-private void genBoxLayout(ref Gen g, Node lay, string parentVar) {
+// A <layout> and its <item>s. `parentVar` is the container's D variable; item widgets are
+// parented to it. Dispatches on the layout class: box (add order), grid (row/col/span),
+// form (LabelRole/FieldRole). Nested layouts recurse and are added via addLayout. Returns
+// the layout's D variable name.
+private string genLayout(ref Gen g, Node lay, string parentVar) {
     string cls = lay.attr("class");
     string name = lay.attr("name");
-    if (!name.length) name = parentVar ~ "Layout";
+    if (!name.length) name = parentVar ~ "_lay";
+    bool grid = cls == "QGridLayout";
+    bool form = cls == "QFormLayout";
     need(g, cls);
     g.fields ~= "    " ~ cls ~ " " ~ name ~ ";\n";
     g.setup ~= "        " ~ name ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
     foreach (item; lay.childrenOf("item")) {
+        string row = item.attr("row").length ? item.attr("row") : "0";
+        string col = item.attr("column").length ? item.attr("column") : "0";
+        string rs = item.attr("rowspan").length ? item.attr("rowspan") : "1";
+        string cs = item.attr("colspan").length ? item.attr("colspan") : "1";
         auto w = item.child("widget");
-        if (!w.ok) continue;                            // spacers / nested layouts: Phase B
-        string wn = genWidget(g, w, parentVar, false);
-        g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ");\n";
+        auto sub = item.child("layout");
+        if (w.ok) {
+            string wn = genWidget(g, w, parentVar, false);
+            if (grid)
+                g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ", " ~ row ~ ", " ~ col
+                    ~ ", " ~ rs ~ ", " ~ cs ~ ", 0);\n";
+            else if (form)
+                g.setup ~= "        " ~ name ~ ".setWidget(" ~ row ~ ", QFormLayout.ItemRole."
+                    ~ (col == "0" ? "LabelRole" : "FieldRole") ~ ", " ~ wn ~ ");\n";
+            else
+                g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ");\n";
+        } else if (sub.ok) {
+            string sn = genLayout(g, sub, parentVar);
+            if (grid)
+                g.setup ~= "        " ~ name ~ ".addLayout(" ~ sn ~ ", " ~ row ~ ", " ~ col
+                    ~ ", " ~ rs ~ ", " ~ cs ~ ", 0);\n";
+            else if (!form)
+                g.setup ~= "        " ~ name ~ ".addLayout(" ~ sn ~ ", 0);\n";
+        }
     }
+    return name;
 }
 
 // Emit a widget: field + construction (unless root) + properties + its layout. Returns the
@@ -271,7 +297,7 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
     }
     genProps(g, w, var, isRoot);
     auto lay = w.child("layout");
-    if (lay.ok) genBoxLayout(g, lay, var);
+    if (lay.ok) genLayout(g, lay, var);
     return var;
 }
 
