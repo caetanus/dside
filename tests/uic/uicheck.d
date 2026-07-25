@@ -3,11 +3,26 @@
 // The dump + the oracle load live in qtd_uidump.cpp; we just diff the two strings.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widgets.qmainwindow;
 import qt.widgets.qcheckbox, qt.widgets.qcborarray, qt.widgets.qcborvalue;
+import qt.widgets.qjsondocument, qt.widgets.qjsonparseerror;
 import cxxrt, uiform, qrc, std.stdio, std.string;
+
+// Error-return -> typed D exception (the json/png case). Qt reports bad JSON via a
+// QJsonParseError OUT-PARAM (not a C++ exception, so the Lippincott net never fires); a
+// thin wrapper checks it and throws. Same shape for QImage (isNull), QFile (error()), etc.
+class JsonParseException : Exception { this(string m) { super(m); } }
+QJsonDocument parseJsonOrThrow(string json) {
+    QJsonParseError err;                                  // default-inits to NoError (0)
+    auto doc = QJsonDocument.fromJson(json, &err);
+    auto code = *cast(QJsonParseError.ParseError*) &err.error[0];
+    if (code != QJsonParseError.ParseError.NoError)
+        throw new JsonParseException(err.errorString().toString);
+    return doc;
+}
 
 pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 extern (C) const(char)* qtd_ui_dump(void*);
 extern (C) const(char)* qtd_ui_load_and_dump(const(char)*);
+extern (C) void qtd_test_throw();   // raises a C++ exception via the Lippincott path
 
 // one struct per form (distinct <class> names)
 mixin(uiForm(import("dialog.ui")));    // Ui_Dialog
@@ -82,6 +97,26 @@ void main() {
         if (n == 3 && sum == 60)
             writeln("  RANGE     QCborArray: foreach (v; arr[]) -> ", n, " items, sum ", sum);
         else { writeln("  RANGEFAIL QCborArray iteration: n=", n, " sum=", sum); fails++; }
+    }
+
+    // C++ exception -> D: a thrown C++ exception is classified by the Lippincott shim and
+    // re-raised as a D QtCppException, unwinding back through the C++ trampoline frame.
+    {
+        bool caught = false; string msg;
+        try { qtd_test_throw(); }
+        catch (QtCppException e) { caught = true; msg = e.msg; }
+        if (caught) writeln("  EXC       C++ exception -> QtCppException: ", msg);
+        else { writeln("  EXCFAIL   C++ exception not translated to D"); fails++; }
+    }
+
+    // Error-return -> typed D exception: bad JSON throws JsonParseException; valid parses.
+    {
+        bool caught = false; string msg;
+        try { parseJsonOrThrow("{ not valid json ]"); }
+        catch (JsonParseException e) { caught = true; msg = e.msg; }
+        cast(void) parseJsonOrThrow(`{"a":1}`);   // valid -> must NOT throw
+        if (caught) writeln("  JSONERR   bad JSON -> JsonParseException: ", msg);
+        else { writeln("  JSONFAIL  bad JSON not caught"); fails++; }
     }
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }

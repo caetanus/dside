@@ -33,6 +33,11 @@ __gshared bool QT5;    // Qt5 target: QVector<T> has a distinct layout from QLis
 // pinned when parented, invalidated on destroyed()). Off = the legacy extern(C++)
 // class-ref-is-the-pointer form. Gated so both coexist during the rollout.
 __gshared bool WRAPPER;
+// Translate C++ exceptions crossing a trampoline into D QtCppException (Lippincott).
+// Opt-in per spec ("exceptions": true): a binding for a Qt built with QT_NO_EXCEPTIONS —
+// or a non-Qt lib — leaves it off (no try/catch overhead, no exception runtime in cxxrt,
+// which also keeps the fragile whole-program DCE of such bindings undisturbed).
+__gshared bool EXCEPTIONS;
 
 bool qlistElem(CXType elem, ref QListElem o) {
     auto ck = clang_getCanonicalType(elem);
@@ -2410,7 +2415,7 @@ string miD(string manifest, string dpkg) {
 // instantiated here and gets a symbol. std::destroy_at calls the right dtor without
 // having to write the unqualified name. The D decls live at module scope (extern(C)).
 string ctorCpp(string manifest, string includeLine) {
-    if (!CTORCOPY.length && !CTORSHIM.length && !METHODSHIM.length) return manifest ~ "\n";
+    if (!CTORCOPY.length && !CTORSHIM.length && !METHODSHIM.length && !ITEROPS.length) return manifest ~ "\n";
     // Templated helpers with if constexpr: if a type (surprisingly) isn't copyable/
     // destructible, they degrade to a no-op instead of breaking the whole lib's compile
     // (one bad class must not take down the other 150).
@@ -2421,7 +2426,20 @@ string ctorCpp(string manifest, string includeLine) {
         ~ "template<class T> static inline void qtd_dt(void* p) {\n"
         ~ "    if constexpr (std::is_destructible_v<T>) std::destroy_at(static_cast<T*>(p)); }\n"
         ~ "template<class T, class...A> static inline void qtd_mk(void* self, A...a) {\n"
-        ~ "    if constexpr (std::is_constructible_v<T, A...>) ::new(self) T(a...); }\n";
+        ~ "    if constexpr (std::is_constructible_v<T, A...>) ::new(self) T(a...); }\n"
+        // Lippincott: from a trampoline's catch(...), classify the in-flight C++ exception
+        // and raise a D exception via the qtd_throw_d callback (cxxrt.d). The D exception
+        // unwinds back THROUGH this C++ frame to the D caller — verified on ldc AND dmd.
+        ~ (!EXCEPTIONS ? "" :
+            "extern \"C\" [[noreturn]] void qtd_throw_d(const char* type, const char* msg);\n"
+          ~ "[[noreturn]] static void qtd_lippincott() {\n"
+          ~ "    try { throw; }\n"
+          ~ "    catch (const std::exception& e) { qtd_throw_d(typeid(e).name(), e.what()); }\n"
+          ~ "    catch (...) { qtd_throw_d(\"\", \"unknown C++ exception\"); }\n"
+          ~ "    __builtin_unreachable();\n}\n");
+    // Wrap a trampoline body so a C++ exception becomes a D one (no-op when EXCEPTIONS off).
+    string tryO = EXCEPTIONS ? "try { " : "";
+    string tryC = EXCEPTIONS ? " } catch (...) { qtd_lippincott(); }" : "";
     string body;
     foreach (c; CTORCOPY)
         body ~= format(
@@ -2432,9 +2450,9 @@ string ctorCpp(string manifest, string includeLine) {
     // symbol. Routed through qtd_mk so a rare non-constructible type no-ops instead of
     // breaking the whole lib's compile (see qtd_mk above).
     foreach (c; CTORSHIM)
-        body ~= format("void %s(void* self%s) { qtd_mk<%s>(self%s); }\n",
-            c.shimFn, c.cppParams.length ? ", " ~ c.cppParams.join(", ") : "",
-            c.cppName, c.argNames.length ? ", " ~ c.argNames.join(", ") : "");
+        body ~= format("void %s(void* self%s) { %sqtd_mk<%s>(self%s);%s }\n",
+            c.shimFn, c.cppParams.length ? ", " ~ c.cppParams.join(", ") : "", tryO,
+            c.cppName, c.argNames.length ? ", " ~ c.argNames.join(", ") : "", tryC);
     // Inline methods on object types: out-of-line trampoline calling self->method(args).
     foreach (m; METHODSHIM) {
         auto ret = m.cppRet == "void" ? "" : "return ";
@@ -2447,18 +2465,20 @@ string ctorCpp(string manifest, string includeLine) {
             : format("%s->%s(%s)", selfCast, m.method, m.argNames.join(", "));
         auto ps = m.isStatic ? m.cppParams.join(", ")
             : (m.cppParams.length ? "void* self, " ~ m.cppParams.join(", ") : "void* self");
-        body ~= format("%s %s(%s) { %s%s; }\n", m.cppRet, m.shimFn, ps, ret, call);
+        body ~= format("%s %s(%s) { %s%s%s;%s }\n",
+            m.cppRet, m.shimFn, ps, tryO, ret, call, tryC);
     }
     // Iterator range ops: deref (** = the proxy, converts to value_type), prefix ++, and !=.
     foreach (op; ITEROPS) {
-        body ~= format("%s qtd_ideref_%s(void* self) { return **static_cast<%s*>(self); }\n",
-            op.eCpp, op.iName, op.iCpp);
+        body ~= format("%s qtd_ideref_%s(void* self) { %sreturn **static_cast<%s*>(self);%s }\n",
+            op.eCpp, op.iName, tryO, op.iCpp, tryC);
         body ~= format("void qtd_iincr_%s(void* self) { ++*static_cast<%s*>(self); }\n",
             op.iName, op.iCpp);
         body ~= format("bool qtd_ine_%s(void* a, void* b) { return *static_cast<%s*>(a) != *static_cast<%s*>(b); }\n",
             op.iName, op.iCpp, op.iCpp);
     }
-    return manifest ~ "\n#include <new>\n#include <memory>\n#include <type_traits>\n" ~ includeLine
+    return manifest ~ "\n#include <new>\n#include <memory>\n#include <type_traits>\n"
+        ~ "#include <exception>\n#include <typeinfo>\n" ~ includeLine
         ~ tmpl ~ "extern \"C\" {\n" ~ body ~ "}\n";
 }
 
@@ -2631,7 +2651,27 @@ string containersD(string manifest, string dpkg) {
 // The one shared runtime module: C++ operator new / delete by their real
 // libstdc++ symbols, so construction/destruction match Qt's allocator. No C++.
 string cxxRuntime(string manifest) {
+    auto exc = !EXCEPTIONS ? "" :
+        // NOTE: no Phobos import — cxxrt is linked into EVERY binding; std.utf via
+        // `import std.string` perturbs fragile whole-program DCE. Hand-roll the copy.
+          "private string qtd_fromCStr(const(char)* s) {\n"
+        ~ "    if (s is null) return \"\";\n"
+        ~ "    size_t n = 0; while (s[n]) ++n;\n"
+        ~ "    return s[0 .. n].idup;\n"
+        ~ "}\n"
+        // A C++ exception that crossed a binding trampoline, translated to D. `cppType` is
+        // the mangled std::type_info name (e.g. "St12out_of_range"); `msg` is what().
+        ~ "class QtCppException : Exception {\n"
+        ~ "    string cppType;\n"
+        ~ "    this(string type, string msg) { cppType = type; super(msg.length ? msg : type); }\n"
+        ~ "}\n"
+        // Called by the C++ Lippincott shim from within a trampoline's catch(...): raises a
+        // D exception that unwinds back through the C++ frame to the D caller (ldc + dmd).
+        ~ "extern(C) void qtd_throw_d(const(char)* type, const(char)* msg) {\n"
+        ~ "    throw new QtCppException(qtd_fromCStr(type), qtd_fromCStr(msg));\n"
+        ~ "}\n";
     return manifest ~ "\nmodule cxxrt;\n"
         ~ `pragma(mangle, "_Znwm") extern(C++) void* __cpp_new(size_t);` ~ "\n"
-        ~ `pragma(mangle, "_ZdlPv") extern(C++) void __cpp_delete(void*);` ~ "\n";
+        ~ `pragma(mangle, "_ZdlPv") extern(C++) void __cpp_delete(void*);` ~ "\n"
+        ~ exc;
 }

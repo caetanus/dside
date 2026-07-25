@@ -341,6 +341,7 @@ void main(string[] args) {
     bool qt5 = spec["qt_version"].str.startsWith("5");   // value-type ABI difere Qt5<->Qt6
     QT5 = qt5;   // tryQList needs it to distinguish Qt5 QVector (QArrayData) from QList (QListData)
     WRAPPER = ("wrapper" in spec.object) !is null && spec["wrapper"].type == JSONType.true_;   // GC wrapper mode
+    EXCEPTIONS = ("exceptions" in spec.object) !is null && spec["exceptions"].type == JSONType.true_;   // C++->D exc
     if (cxxAbi) {
         std.file.write(buildPath(outDir, "cxxrt.d"), cxxRuntime(manifest));
         std.file.write(buildPath(dsub, "qstring.d"), qstringRuntime(manifest, dpkg, qt5));
