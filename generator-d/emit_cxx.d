@@ -1497,27 +1497,31 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         }
         if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; continue; }
         // Inline method -> no symbol; can't translate the body (opaque class). Emit an
-        // out-of-line C++ trampoline that calls self->method(args), if ret+params are
-        // ABI-simple (getter/setter shape). Otherwise skip (still a gap).
+        // out-of-line C++ trampoline that calls self->method(args). The return must be
+        // ABI-simple (value-by-value returns need sret we don't do here), but PARAMS can be
+        // anything mapCxxType handles: the shim takes them by their canonical C++ type
+        // (const QString&, const QVariant&, QWidget*, …) — extern "C" allows C++ ref/ptr
+        // params, and D passes them as ref/pointer. This unblocks inline methods like
+        // QComboBox::addItem(QString, QVariant). Fn-pointer params are still skipped (the
+        // C++ declarator needs the name inside the parens).
         if (isInline(c)) {
             try {
                 string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
                 bool simpleRet = retD == "void" || simpleAbiType(retD);
                 bool isStat = clang_CXXMethod_isStatic(c) != 0;
-                string[] rps, ca, cppPs; bool allSimple = true;
+                string[] rps, ca, cppPs; bool okParams = true;
                 auto na = clang_Cursor_getNumArguments(c);
                 foreach (i; 0 .. na) {
                     auto a = clang_Cursor_getArgument(c, i);
                     string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
                     if (pimp.length) impSet[pimp] = true;
-                    if (!simpleAbiType(pd)) allSimple = false;
                     auto _cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
-                    if (_cpps.canFind("(*")) allSimple = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
+                    if (_cpps.canFind("(*")) okParams = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
                     cppPs ~= format("%s a%d", _cpps, i);
                     rps ~= format("%s a%d", pd, i);
                     ca ~= format("a%d", i);
                 }
-                if (!simpleRet || !allSimple || nestedInaccessible(cur)) continue;
+                if (!simpleRet || !okParams || nestedInaccessible(cur)) continue;
                 // dedupe overloads that collapse to one D signature (e.g. setTextAlignment(int)
                 // and setTextAlignment(Qt::Alignment) both map to (int)); keep the first.
                 auto msKey = dname(mn) ~ "|" ~ rps.join(",") ~ "|" ~ (isStat ? "s" : "");

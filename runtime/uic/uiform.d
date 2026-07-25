@@ -440,9 +440,22 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
     }
     auto lay = w.child("layout");
     if (lay.ok) genLayout(g, lay, var);
+    // QComboBox <item>s -> addItem (each item is a model row, not a child QObject). The
+    // QString + empty QVariant are lvalues (the shimmed addItem takes them by const ref).
+    string wcls = w.attr("class");
+    if (wcls == "QComboBox") {
+        need(g, "QVariant");
+        need(g, "QString");
+        foreach (it; w.childrenOf("item")) {
+            string txt;
+            foreach (p; it.childrenOf("property"))
+                if (p.attr("name") == "text") txt = firstElem(p).text;
+            g.setup ~= "        { auto _s = qstr(\"" ~ esc(txt) ~ "\"); auto _v = QVariant_new(); "
+                ~ var ~ ".addItem(_s, _v); }\n";
+        }
+    }
     // Container widgets whose children are direct <widget> pages (not layout items):
     // QTabWidget (addTab + tab title in retranslateUi), QStackedWidget/QSplitter (addWidget).
-    string wcls = w.attr("class");
     if (wcls == "QTabWidget" || wcls == "QStackedWidget" || wcls == "QSplitter") {
         size_t idx = 0;
         foreach (page; w.childrenOf("widget")) {

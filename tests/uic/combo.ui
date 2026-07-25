@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ComboForm</class>
+ <widget class="QWidget" name="ComboForm">
+  <layout class="QVBoxLayout" name="lay">
+   <item>
+    <widget class="QComboBox" name="modeCombo">
+     <item><property name="text"><string>Serial</string></property></item>
+     <item><property name="text"><string>TCP</string></property></item>
+     <item><property name="text"><string>UDP</string></property></item>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
