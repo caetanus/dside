@@ -1634,20 +1634,22 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     if (!valueType && !abstractCls) foreach (c; ctors) {
         if (clang_CXXMethod_isDeleted(c)) continue;   // `= delete` ctor -> not constructible
         // Inline/`= default` ctor -> no symbol. The out-of-line shim (gap 1) does a
-        // placement-new into the heap buffer; only for ABI-simple params.
+        // placement-new into the heap buffer. Params can be anything mapCxxType handles:
+        // the shim takes them by their canonical C++ type and qtd_mk forwards to the ctor
+        // (this unblocks e.g. QSpacerItem(int,int,QSizePolicy::Policy,QSizePolicy::Policy)).
+        // Fn-pointer params are still skipped (the C++ declarator needs the name in parens).
         bool viaShim = isInline(c);
         try {
             string[] sig, callArgs, dparams, pdtypes, cppPs;
-            bool allSimple = true;
+            bool okParams = true;
             auto na = clang_Cursor_getNumArguments(c);
             foreach (i; 0 .. na) {
                 auto a = clang_Cursor_getArgument(c, i);
                 string pimp;
                 auto pd = mapCxxType(clang_getCursorType(a), pimp);
                 if (pimp.length) impSet[pimp] = true;
-                if (!simpleAbiType(pd)) allSimple = false;
                 auto _cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
-                if (_cpps.canFind("(*")) allSimple = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
+                if (_cpps.canFind("(*")) okParams = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
                 cppPs ~= format("%s a%d", _cpps, i);
                 pdtypes ~= pd;
                 sig ~= format("%s a%d", pd, i);
@@ -1664,7 +1666,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 dparams ~= format("%s a%d%s", pd, i, deflt);
                 callArgs ~= format("a%d", i);
             }
-            if (viaShim && (!allSimple || nestedInaccessible(cur))) continue;   // still a gap
+            if (viaShim && (!okParams || nestedInaccessible(cur))) continue;   // still a gap
             auto sigKey = pdtypes.join(",");   // mesma assinatura D -> redefinição; fica só a 1ª
             if (sigKey in seenCtorSig) continue;
             seenCtorSig[sigKey] = true;

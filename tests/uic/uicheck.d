@@ -14,6 +14,7 @@ mixin(uiForm(import("login.ui")));     // Ui_LoginForm
 mixin(uiForm(import("mainwin.ui")));   // Ui_MainWindow
 mixin(uiForm(import("tabs.ui")));      // Ui_TabForm
 mixin(uiForm(import("egroup.ui")));    // Ui_ShapeForm
+mixin(uiForm(import("spacer.ui")));    // Ui_SpacerForm
 
 __gshared int fails;
 
@@ -42,6 +43,7 @@ void main() {
     check!Ui_MainWindow("tests/uic/mainwin.ui", QMainWindow_new());
     check!Ui_TabForm("tests/uic/tabs.ui", QWidget_new());
     check!Ui_ShapeForm("tests/uic/egroup.ui", QWidget_new());
+    check!Ui_SpacerForm("tests/uic/spacer.ui", QWidget_new());
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }
     writeln("uicheck OK: our uic == QUiLoader for every .ui");

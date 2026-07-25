@@ -256,6 +256,30 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
     }
 }
 
+// A <spacer> -> QSpacerItem(w, h, hPolicy, vPolicy). Orientation picks which axis expands
+// (a horizontal spacer expands horizontally, is Minimum vertically). Not a QObject.
+private string genSpacer(ref Gen g, Node sp) {
+    need(g, "QSpacerItem");
+    need(g, "QSizePolicy");
+    string name = sp.attr("name");
+    string w = "0", h = "0", orient = "Horizontal";
+    foreach (p; sp.childrenOf("property")) {
+        string pn = p.attr("name");
+        Node v = firstElem(p);
+        if (pn == "sizeHint" && v.tag == "size") { w = v.child("width").text; h = v.child("height").text; }
+        else if (pn == "orientation" && v.tag == "enum") {
+            auto parts = splitOn(v.text, "::");
+            orient = parts[$ - 1];
+        }
+    }
+    string hp = orient == "Vertical" ? "Minimum" : "Expanding";
+    string vp = orient == "Vertical" ? "Expanding" : "Minimum";
+    g.fields ~= "    QSpacerItem " ~ name ~ ";\n";
+    g.setup ~= "        " ~ name ~ " = QSpacerItem_new(" ~ w ~ ", " ~ h
+        ~ ", QSizePolicy.Policy." ~ hp ~ ", QSizePolicy.Policy." ~ vp ~ ");\n";
+    return name;
+}
+
 // A <layout> and its <item>s. `parentVar` is the container's D variable; item widgets are
 // parented to it. Dispatches on the layout class: box (add order), grid (row/col/span),
 // form (LabelRole/FieldRole). Nested layouts recurse and are added via addLayout. Returns
@@ -291,6 +315,7 @@ private string genLayout(ref Gen g, Node lay, string parentVar) {
         string cs = item.attr("colspan").length ? item.attr("colspan") : "1";
         auto w = item.child("widget");
         auto sub = item.child("layout");
+        auto sp = item.child("spacer");
         if (w.ok) {
             string wn = genWidget(g, w, parentVar, false);
             if (grid)
@@ -301,6 +326,13 @@ private string genLayout(ref Gen g, Node lay, string parentVar) {
                     ~ (col == "0" ? "LabelRole" : "FieldRole") ~ ", " ~ wn ~ ");\n";
             else
                 g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ");\n";
+        } else if (sp.ok) {
+            string spn = genSpacer(g, sp);
+            if (grid)
+                g.setup ~= "        " ~ name ~ ".addItem(" ~ spn ~ ", " ~ row ~ ", " ~ col
+                    ~ ", " ~ rs ~ ", " ~ cs ~ ", 0);\n";
+            else if (!form)
+                g.setup ~= "        " ~ name ~ ".addSpacerItem(" ~ spn ~ ");\n";
         } else if (sub.ok) {
             string sn = genLayout(g, sub, parentVar);
             if (grid)

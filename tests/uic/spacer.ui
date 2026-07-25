@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SpacerForm</class>
+ <widget class="QWidget" name="SpacerForm">
+  <layout class="QHBoxLayout" name="row">
+   <item><widget class="QPushButton" name="leftBtn"><property name="text"><string>Left</string></property></widget></item>
+   <item><spacer name="hSpacer"><property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property><property name="sizeHint"><size><width>40</width><height>20</height></size></property></spacer></item>
+   <item><widget class="QPushButton" name="rightBtn"><property name="text"><string>Right</string></property></widget></item>
+  </layout>
+ </widget>
+</ui>
