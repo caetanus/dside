@@ -11,5 +11,6 @@ void main() {
     Ui_IconForm ui; ui.setupUi(root);
     assert(ui.iconBtn !is null);
     assert(ui.iconBtn.text().toString() == "Connect");
-    writeln("uic OK: <iconset> resource icon set via CTFE qrc (setIcon ran clean)");
+    assert(!ui.iconBtn.icon().isNull(), "icon() value-return getter should work (was the sret crash)");
+    writeln("uic OK: <iconset> icon set AND icon() value-return getter works (sret fixed)");
 }

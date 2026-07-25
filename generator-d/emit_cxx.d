@@ -513,14 +513,32 @@ bool nonTriviallyCopyable(CXType t) {
     if (clang_isPODType(t) != 0) return false;   // POD -> bitwise copy is safe
     auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(t)));
     if (decl.kind != CXCursor_ClassDecl && decl.kind != CXCursor_StructDecl) return false;
-    foreach (c; children(decl))
+    // Criterion (a) is only safe for EXPORTED types: the copy-ctor/~this shims call the real
+    // C++ copy-ctor/dtor, whose symbols must be linkable. A public Q_*_EXPORT type has them
+    // (Default visibility); a Qt-internal one (e.g. QOpenGLVersionFunctionsStorage, Hidden)
+    // does not — marking it non-trivial would emit an unlinkable dtor reference.
+    bool exported = clang_getCursorVisibility(decl) == 3;   // CXVisibility_Default
+    foreach (c; children(decl)) {
+        // (a) a USER-PROVIDED (not =default/=delete) copy-ctor or dtor -> the C++ ABI returns
+        // this type via sret and expects a real copy/dtor. This is the Qt CoW case (QIcon/
+        // QFont/QPen/…: a QFooPrivate* d-pointer + `~QFoo()`). Without the D copy-ctor/~this
+        // the D struct is trivial, D uses the register-return ABI, and a by-value return
+        // (icon(), font(), …) crashes on the ABI mismatch. `= default` copy/dtor (POD-ish
+        // value types like Point) stay trivial and are NOT marked (that would break their ABI).
+        if (exported && c.kind == CXCursor_Destructor
+                && clang_CXXMethod_isDefaulted(c) == 0 && clang_CXXMethod_isDeleted(c) == 0)
+            return true;
+        if (exported && c.kind == CXCursor_Constructor && clang_CXXConstructor_isCopyConstructor(c)
+                && clang_CXXMethod_isDefaulted(c) == 0 && clang_CXXMethod_isDeleted(c) == 0)
+            return true;
+        // (b) a std::-library member by value (std::string SSO / std::vector owning ptr).
         if (c.kind == CXCursor_FieldDecl) {
             auto ft = clang_getCanonicalType(clang_getCursorType(c));
             while (ft.kind == CXType_ConstantArray) ft = clang_getArrayElementType(ft);
-            if (ft.kind == CXType_Record
-                && clang_getTypeSpelling(ft).str.startsWith("std::"))
+            if (ft.kind == CXType_Record && clang_getTypeSpelling(ft).str.startsWith("std::"))
                 return true;   // std:: member by value -> needs a deep copy
         }
+    }
     return false;
 }
 
@@ -1230,12 +1248,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             CTORCOPY ~= CtorCopy(name, cppName);
             // extern(C) decls at MODULE scope (on a static member extern(C) doesn't take
             // C linkage — the name comes out D-mangled); copy-ctor/~this() in the struct.
+            // nothrow: C++ copy-ctors/dtors of Qt value types are noexcept, and the ~this
+            // is called from nothrow contexts (signal trampolines take such types by value).
             ctorFactories ~= format(
-                "extern(C) private void qtd_cctor_%s(void*, const(void)*);\n"
-                ~ "extern(C) private void qtd_dtor_%s(void*);", name, name);
+                "extern(C) private void qtd_cctor_%s(void*, const(void)*) nothrow;\n"
+                ~ "extern(C) private void qtd_dtor_%s(void*) nothrow;", name, name);
             inlineDefs ~= format(
-                "    extern(D) this(ref const(%s) rhs) { qtd_cctor_%s(cast(void*)&this, cast(const(void)*)&rhs); }\n"
-                ~ "    extern(D) ~this() { qtd_dtor_%s(cast(void*)&this); }",
+                "    extern(D) this(ref const(%s) rhs) nothrow { qtd_cctor_%s(cast(void*)&this, cast(const(void)*)&rhs); }\n"
+                ~ "    extern(D) ~this() nothrow { qtd_dtor_%s(cast(void*)&this); }",
                 name, name, name);
         }
         impSet.remove(name);

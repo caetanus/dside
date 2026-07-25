@@ -276,7 +276,10 @@ void main(string[] args) {
     // Make Qt signals detectable: Q_SIGNALS expands to
     // `public QT_ANNOTATE_ACCESS_SPECIFIER(qt_signal)`, so defining the annotation
     // hook tags every signal method with an AnnotateAttr("qt_signal") (shiboken's way).
-    auto argv = ["-x", "c++", "-std=c++17", "-isystem", buildPath(res, "include"),
+    // -fvisibility=hidden: unmarked (internal) classes become Hidden while Q_*_EXPORT ones
+    // stay Default — so clang_getCursorVisibility distinguishes a public type (linkable
+    // dtor/copy-ctor -> safe to mark non-trivial) from an internal one (unlinkable).
+    auto argv = ["-x", "c++", "-std=c++17", "-fvisibility=hidden", "-isystem", buildPath(res, "include"),
         "-DQT_ANNOTATE_ACCESS_SPECIFIER(x)=__attribute__((annotate(#x)))"] ~ cflags ~ extraI;
     auto cargv = argv.map!(a => a.toStringz).array;
 

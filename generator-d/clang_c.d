@@ -71,6 +71,8 @@ uint     clang_CXXConstructor_isCopyConstructor(CXCursor);
 uint     clang_CXXConstructor_isMoveConstructor(CXCursor);
 uint     clang_isPODType(CXType);                // trivially-copyable POD -> bitwise copy safe
 uint     clang_CXXMethod_isDeleted(CXCursor);    // `= delete`d special member
+uint     clang_CXXMethod_isDefaulted(CXCursor);  // `= default`ed special member (trivial)
+int      clang_getCursorVisibility(CXCursor);    // 0=invalid 1=hidden 2=protected 3=default (exported)
 int      clang_Cursor_getNumArguments(CXCursor);
 CXCursor clang_Cursor_getArgument(CXCursor, uint);
 int      clang_Type_getNumTemplateArguments(CXType);
