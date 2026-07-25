@@ -118,7 +118,11 @@ struct Ui_<class> {
       (addWidget), groupbox (title via generic setter) DONE + verified (`tabs.ui`). **Combo/
       list items blocked** on a binding gap: `QComboBox::addItem(const QString&, const
       QVariant& = {})` isn't emitted (QVariant-default overload dropped).
-- [ ] **D — mainwindow chrome.** actions, menus, toolbars, statusbar. (`documentviewer`.)
+- [x] **D — mainwindow chrome.** QMainWindow special-cases its direct children: central
+      widget (setCentralWidget), QMenuBar (+ QMenus + submenus + `<addaction>` incl.
+      separators + `menuAction()`), QToolBar (addToolBar(area) + actions), QStatusBar
+      (setStatusBar); top-level `<action>`s -> QAction. Verified on `mainwin.ui` (ldc2+dmd).
+      (Action shortcuts skipped for now: QKeySequence value-type, Phase E.)
 - [ ] **E — advanced.** connections, button groups, tab order, sizePolicy/font/iconset/
       palette, custom widgets, resources/`.qrc`, connectSlotsByName via moc.
 

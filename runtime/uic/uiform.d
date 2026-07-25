@@ -161,6 +161,7 @@ private struct Gen {
     string fields;      // struct fields
     string setup;       // setupUi body
     string trans;       // retranslateUi body
+    string menuNames;   // "|menuFile|menuHelp|" — so an <addaction> tells a submenu from an action
 }
 
 // Every generated type lives in the widgets package; ensure its module is imported.
@@ -232,6 +233,7 @@ private string tabTitle(Node page) {
 private void genProps(ref Gen g, Node w, string var, bool isRoot) {
     foreach (p; w.childrenOf("property")) {
         string name = p.attr("name");
+        if (name == "shortcut") continue;   // QKeySequence value-type: Phase E
         Node v = firstElem(p);
         if (name == "geometry" && v.tag == "rect") {    // root -> resize; child -> setGeometry
             if (isRoot)
@@ -308,6 +310,50 @@ private string genLayout(ref Gen g, Node lay, string parentVar) {
     return name;
 }
 
+// --- QMainWindow chrome (actions, menus, toolbars) ---
+
+private void collectMenus(Node n, ref Gen g) {
+    if (n.attr("class") == "QMenu" && n.attr("name").length) g.menuNames ~= "|" ~ n.attr("name") ~ "|";
+    foreach (k; n.kids) collectMenus(k, g);
+}
+
+private bool isMenu(ref Gen g, string name) {
+    string key = "|" ~ name ~ "|";
+    foreach (i; 0 .. g.menuNames.length)
+        if (i + key.length <= g.menuNames.length && g.menuNames[i .. i + key.length] == key) return true;
+    return false;
+}
+
+// <addaction name="X"/> -> target.addAction(X) / addAction(X.menuAction()) for a submenu /
+// addSeparator() for the "separator" sentinel.
+private void genAddActions(ref Gen g, Node node, string target) {
+    foreach (aa; node.childrenOf("addaction")) {
+        string an = aa.attr("name");
+        if (an == "separator") g.setup ~= "        " ~ target ~ ".addSeparator();\n";
+        else if (isMenu(g, an)) g.setup ~= "        " ~ target ~ ".addAction(" ~ an ~ ".menuAction());\n";
+        else g.setup ~= "        " ~ target ~ ".addAction(" ~ an ~ ");\n";
+    }
+}
+
+// A top-level <action> -> a QAction field + construction (text/tooltip in retranslateUi).
+private void genAction(ref Gen g, Node act, string parentVar) {
+    need(g, "QAction");
+    string an = act.attr("name");
+    g.fields ~= "    QAction " ~ an ~ ";\n";
+    g.setup ~= "        " ~ an ~ " = QAction_new(" ~ parentVar ~ ");\n";
+    g.setup ~= "        " ~ an ~ ".setObjectName(\"" ~ an ~ "\");\n";
+    genProps(g, act, an, false);
+}
+
+// A <widget class="QMenu">: create it (+ title), its submenus, then wire its <addaction>s.
+private string genMenu(ref Gen g, Node menu, string parentVar) {
+    string cn = genWidget(g, menu, parentVar, false);   // QMenu field + QMenu_new + setTitle (retranslate)
+    foreach (sub; menu.childrenOf("widget"))
+        if (sub.attr("class") == "QMenu") genMenu(g, sub, cn);
+    genAddActions(g, menu, cn);
+    return cn;
+}
+
 // Emit a widget: field + construction (unless root) + properties + its layout. Returns the
 // widget's D variable name ("root" for the root).
 private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
@@ -323,6 +369,31 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ var ~ "\");\n";
     }
     genProps(g, w, var, isRoot);
+    string wcls0 = w.attr("class");
+    // QMainWindow: its direct children are chrome (central widget, menubar, toolbars,
+    // statusbar), not layout items; <action>s are top-level and referenced by <addaction>.
+    if (wcls0 == "QMainWindow") {
+        foreach (act; w.childrenOf("action")) genAction(g, act, var);
+        foreach (child; w.childrenOf("widget")) {
+            string ccls = child.attr("class");
+            string cn = genWidget(g, child, var, false);
+            if (ccls == "QMenuBar") {
+                foreach (m; child.childrenOf("widget"))
+                    if (m.attr("class") == "QMenu") genMenu(g, m, cn);
+                genAddActions(g, child, cn);
+                g.setup ~= "        " ~ var ~ ".setMenuBar(" ~ cn ~ ");\n";
+            } else if (ccls == "QStatusBar") {
+                g.setup ~= "        " ~ var ~ ".setStatusBar(" ~ cn ~ ");\n";
+            } else if (ccls == "QToolBar") {
+                need(g, "ToolBarArea");
+                g.setup ~= "        " ~ var ~ ".addToolBar(ToolBarArea.TopToolBarArea, " ~ cn ~ ");\n";
+                genAddActions(g, child, cn);
+            } else {
+                g.setup ~= "        " ~ var ~ ".setCentralWidget(" ~ cn ~ ");\n";
+            }
+        }
+        return var;
+    }
     auto lay = w.child("layout");
     if (lay.ok) genLayout(g, lay, var);
     // Container widgets whose children are direct <widget> pages (not layout items):
@@ -351,6 +422,7 @@ string uiForm(string xml) {
     string rootCls = root.attr("class");
     string className = root.attr("name");
     Gen g;
+    collectMenus(root, g);   // so <addaction> can distinguish submenus from actions
     need(g, rootCls);
     g.setup ~= "        root.setObjectName(\"" ~ className ~ "\");\n";
     genWidget(g, root, "", true);
