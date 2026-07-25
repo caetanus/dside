@@ -58,6 +58,12 @@ Build reggaeBuild() {
                 t("uic", app), ex, dc, uicExtra);
     all ~= uicheckTargets(root, ex);   // our uic == QUiLoader (differential oracle)
 
+    // --- CTFE qrc: a .qrc + import()ed files -> Qt .rcc blob, registered (no rcc tool) ---
+    auto qrcExtra = buildPath(root, "runtime", "qrc", "qrc.d")
+        ~ " -I" ~ buildPath(root, "runtime", "qrc") ~ " -J=" ~ buildPath(root, "tests", "qrc");
+    foreach (dc; DCS)
+        all ~= qtdTest("qrc-" ~ dc, t("qrc", "qrc_test.d"), ex, dc, qrcExtra);
+
     // --- QtWebEngineCore: link+run a smoke test against the real .so (whole-program) ---
     auto we = qtdBinding(root, "spec_cxx_webengine.json", ["Qt6WebEngineCore"]);
     foreach (dc; DCS)

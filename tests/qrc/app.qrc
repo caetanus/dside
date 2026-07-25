@@ -1,0 +1,6 @@
+<RCC>
+  <qresource prefix="/app">
+    <file>icons/logo.png</file>
+    <file alias="about">data/about.txt</file>
+  </qresource>
+</RCC>
