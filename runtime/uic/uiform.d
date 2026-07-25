@@ -212,6 +212,7 @@ private struct Gen {
     string[] groupList; // unique <attribute name="buttonGroup"> names -> one QButtonGroup each
     string[2][] buddyList;   // (label, targetName): <property name="buddy"><cstring>…; set at
                              // the END of setupUi, once every widget the buddy names exists
+    int nameCounter;         // synthesizes field names for unnamed elements (spacers, …)
 }
 
 // Every generated type lives in the widgets package; ensure its module is imported.
@@ -311,10 +312,10 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
             if (isRoot)
                 g.setup ~= "        " ~ var ~ ".resize(" ~ v.child("width").text
                     ~ ", " ~ v.child("height").text ~ ");\n";
-            else {
-                need(g, "QRect");
-                g.setup ~= "        " ~ var ~ ".setGeometry(" ~ value(g, v) ~ ");\n";
-            }
+            else   // only the 4-arg setGeometry(int,int,int,int) is bound (not the QRect one)
+                g.setup ~= "        " ~ var ~ ".setGeometry(" ~ v.child("x").text ~ ", "
+                    ~ v.child("y").text ~ ", " ~ v.child("width").text ~ ", "
+                    ~ v.child("height").text ~ ");\n";
             continue;
         }
         if (v.tag == "iconset") {   // <iconset theme=…/> or resource (<normaloff>:/…</normaloff>)
@@ -353,8 +354,14 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
             continue;
         }
         string val = value(g, v);
-        if (val.length)
-            g.setup ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(" ~ val ~ ");\n";
+        if (val.length) {
+            // rect/size value types bind to `ref const(T)` setters (setMinimumSize etc.) which
+            // need an LVALUE — a temp. Scalars/strings/enums pass by value directly.
+            if (v.tag == "rect" || v.tag == "size")
+                g.setup ~= "        { auto _v = " ~ val ~ "; " ~ var ~ ".set" ~ cap(name) ~ "(_v); }\n";
+            else
+                g.setup ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(" ~ val ~ ");\n";
+        }
     }
 }
 
@@ -407,6 +414,18 @@ private string genSizePolicy(ref Gen g, Node sp, string var) {
 private bool isDigits(string s) {
     if (!s.length) return false;
     foreach (c; s) if (c < '0' || c > '9') return false;
+    return true;
+}
+
+// A valid D identifier: [A-Za-z_][A-Za-z0-9_]* — .ui object names can contain spaces/dashes
+// (old Qt Designer), which aren't legal D field names.
+private bool isValidDId(string s) {
+    if (!s.length) return false;
+    auto c0 = s[0];
+    if (!((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_')) return false;
+    foreach (c; s[1 .. $])
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+            return false;
     return true;
 }
 
@@ -466,7 +485,9 @@ private string genPalette(ref Gen g, Node pal, string var) {
 private string genSpacer(ref Gen g, Node sp) {
     need(g, "QSpacerItem");
     need(g, "QSizePolicy");
-    string name = sp.attr("name");
+    // Always synthetic: a QSpacerItem is not a QObject (never in the dumped tree), and .ui
+    // spacer names both duplicate (QUiLoader allows it) and are often absent.
+    string name = "__spacer" ~ itos(g.nameCounter++);
     string w = "0", h = "0", orient = "Horizontal";
     foreach (p; sp.childrenOf("property")) {
         string pn = p.attr("name");
@@ -492,7 +513,8 @@ private string genSpacer(ref Gen g, Node sp) {
 private string genLayout(ref Gen g, Node lay, string parentVar) {
     string cls = lay.attr("class");
     string name = lay.attr("name");
-    if (!name.length) name = parentVar ~ "_lay";
+    if (!name.length) name = "__lay" ~ itos(g.nameCounter++);   // unique (nested unnamed layouts
+                                                                // would collide on parentVar_lay)
     bool grid = cls == "QGridLayout";
     bool form = cls == "QFormLayout";
     need(g, cls);
@@ -639,11 +661,17 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         var = "root";
     } else {
         string cls = w.attr("class");
-        var = w.attr("name");
+        string objName = w.attr("name");   // the real objectName (may be empty or have spaces)
+        bool named = objName.length > 0;
+        // The D FIELD name must be a valid identifier; an unnamed or space-containing .ui name
+        // (old Designer allowed spaces) gets a synthetic field, but setObjectName keeps the real
+        // name so the tree still matches QUiLoader.
+        var = (named && isValidDId(objName)) ? objName : "__w" ~ itos(g.nameCounter++);
         need(g, cls);
         g.fields ~= "    " ~ cls ~ " " ~ var ~ ";\n";
         g.setup ~= "        " ~ var ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
-        g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ var ~ "\");\n";
+        if (named)   // unnamed in the .ui -> QUiLoader leaves it nameless; don't setObjectName
+            g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ esc(objName) ~ "\");\n";
     }
     genProps(g, w, var, isRoot);
     if (!isRoot) {
