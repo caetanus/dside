@@ -508,9 +508,12 @@ private string genPalette(ref Gen g, Node pal, string var) {
 private string genSpacer(ref Gen g, Node sp) {
     need(g, "QSpacerItem");
     need(g, "QSizePolicy");
-    // Always synthetic: a QSpacerItem is not a QObject (never in the dumped tree), and .ui
-    // spacer names both duplicate (QUiLoader allows it) and are often absent.
-    string name = "__spacer" ~ itos(g.nameCounter++);
+    // Keep a valid, unique spacer name as the D field (so hand-written forms can reference it);
+    // fall back to a synthetic name when it's absent, not an identifier, or a duplicate (a
+    // QSpacerItem is not a QObject, so it's never in the dumped tree — the name is D-only).
+    string sn = sp.attr("name");
+    string name = (sn.length && isValidDId(sn) && !hasField(g, sn))
+        ? sn : "__spacer" ~ itos(g.nameCounter++);
     string w = "0", h = "0", orient = "Horizontal";
     foreach (p; sp.childrenOf("property")) {
         string pn = p.attr("name");

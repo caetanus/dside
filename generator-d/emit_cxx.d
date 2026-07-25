@@ -1811,15 +1811,24 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             impSet[aliasBase[mn]] = true;   // the aliased base type must be imported
         }
         if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; continue; }
-        // Inline method -> no symbol; can't translate the body (opaque class). Emit an
-        // out-of-line C++ trampoline that calls self->method(args). The return must be
-        // ABI-simple (value-by-value returns need sret we don't do here), but PARAMS can be
-        // anything mapCxxType handles: the shim takes them by their canonical C++ type
-        // (const QString&, const QVariant&, QWidget*, …) — extern "C" allows C++ ref/ptr
-        // params, and D passes them as ref/pointer. This unblocks inline methods like
-        // QComboBox::addItem(QString, QVariant). Fn-pointer params are still skipped (the
-        // C++ declarator needs the name inside the parens).
-        if (isInline(c)) {
+        // Route through a C++ trampoline shim (`static_cast<Class*>(self)->method(args)`) in TWO
+        // cases:
+        //   (1) INLINE methods — no out-of-line symbol exists to pragma(mangle), so we must call
+        //       through C++. Return must be ABI-simple (value-by-value returns need sret we don't
+        //       do here), but PARAMS can be anything mapCxxType handles: the shim takes them by
+        //       canonical C++ type (const QString&, QWidget*, …); extern "C" allows C++ ref/ptr.
+        //   (2) VIRTUAL (non-static) methods — a direct pragma(mangle) call binds the DECLARING
+        //       class's symbol NON-virtually, so an OVERRIDE in a subclass is silently bypassed
+        //       (e.g. QBoxLayout::setSpacing overrides QLayout::setSpacing; calling QLayout's
+        //       symbol writes the wrong storage). The shim's `self->method()` is a real C++ virtual
+        //       call, so the correct override runs even when reached via the base class's method.
+        // The shim body is exception-wrapped identically to the guard (Lippincott). A virtual with
+        // a NON-simple signature (value/container/QList return, fn-ptr) can't use the shim, so it
+        // falls through to the direct guard path below — bound, but non-virtually (a known gap).
+        bool viaShim = isInline(c)
+            || (clang_CXXMethod_isVirtual(c) != 0 && clang_CXXMethod_isStatic(c) == 0);
+        if (viaShim) {
+            bool handled = false;   // emitted, or deliberately skipped -> `continue` (don't fall through)
             try {
                 string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
                 bool simpleRet = retD == "void" || simpleAbiType(retD);
@@ -1836,31 +1845,42 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     rps ~= format("%s a%d", pd, i);
                     ca ~= format("a%d", i);
                 }
-                if (!simpleRet || !okParams || nestedInaccessible(cur)) continue;
-                // dedupe overloads that collapse to one D signature (e.g. setTextAlignment(int)
-                // and setTextAlignment(Qt::Alignment) both map to (int)); keep the first.
-                auto msKey = dname(mn) ~ "|" ~ rps.join(",") ~ "|" ~ (isStat ? "s" : "");
-                if (msKey in seenMethodShimSig) continue;
-                seenMethodShimSig[msKey] = true;
-                if (imp.length) impSet[imp] = true;
-                auto shimFn = format("qtd_m_%s_%d", name, methodLines.length);
-                auto cppRet = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
-                bool isCst = clang_CXXMethod_isConst(c) != 0;
-                METHODSHIM ~= MethodShim(shimFn, cppName, cppRet, mn, cppPs, ca, isStat, isCst);
-                auto kw = isStat ? "static " : "final ";
-                auto cst = isCst ? " const" : "";
-                auto selfDecl = isStat ? "" : "void* self";
-                auto declPs = (selfDecl.length && rps.length) ? selfDecl ~ ", " ~ rps.join(", ")
-                            : selfDecl ~ rps.join(", ");
-                // extern(C) decl at MODULE scope (a static member wouldn't get C linkage)
-                shimDecls ~= format("extern(C) private %s %s(%s);", retD, shimFn, declPs);
-                auto callArgs = isStat ? ca.join(", ")
-                    : (ca.length ? "cast(void*) this, " ~ ca.join(", ") : "cast(void*) this");
-                auto ret = retD == "void" ? "" : "return ";
-                methodLines ~= format("    %s%s %s(%s)%s { %s%s(%s); }",
-                    kw, retD, dname(mn), rps.join(", "), cst, ret, shimFn, callArgs);
-            } catch (Unmappable) {}
-            continue;
+                if (simpleRet && okParams && !nestedInaccessible(cur)) {
+                    // dedupe overloads that collapse to one D signature (e.g. setTextAlignment(int)
+                    // and setTextAlignment(Qt::Alignment) both map to (int)); keep the first.
+                    auto msKey = dname(mn) ~ "|" ~ rps.join(",") ~ "|" ~ (isStat ? "s" : "");
+                    if (msKey in seenMethodShimSig) handled = true;   // overload already covered
+                    else {
+                        seenMethodShimSig[msKey] = true;
+                        if (imp.length) impSet[imp] = true;
+                        auto shimFn = format("qtd_m_%s_%d", name, methodLines.length);
+                        auto cppRet = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
+                        bool isCst = clang_CXXMethod_isConst(c) != 0;
+                        METHODSHIM ~= MethodShim(shimFn, cppName, cppRet, mn, cppPs, ca, isStat, isCst);
+                        auto kw = isStat ? "static " : "final ";
+                        auto cst = isCst ? " const" : "";
+                        auto selfDecl = isStat ? "" : "void* self";
+                        auto declPs = (selfDecl.length && rps.length) ? selfDecl ~ ", " ~ rps.join(", ")
+                                    : selfDecl ~ rps.join(", ");
+                        // extern(C) decl at MODULE scope (a static member wouldn't get C linkage)
+                        shimDecls ~= format("extern(C) private %s %s(%s);", retD, shimFn, declPs);
+                        auto callArgs = isStat ? ca.join(", ")
+                            : (ca.length ? "cast(void*) this, " ~ ca.join(", ") : "cast(void*) this");
+                        auto ret = retD == "void" ? "" : "return ";
+                        // extern(D) is MANDATORY: in an extern(C++) class a bodied method mangles
+                        // to its Qt symbol (e.g. QObject::event) and would DEFINE/interpose it —
+                        // Qt's own calls would then loop through our shim. extern(D) keeps it a
+                        // D-only method (same gotcha the guard forwarder documents). Harmless for
+                        // inline methods (their Qt symbol doesn't exist out-of-line anyway).
+                        methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
+                            kw, retD, dname(mn), rps.join(", "), cst, ret, shimFn, callArgs);
+                        handled = true;
+                    }
+                }
+            } catch (Unmappable) { if (isInline(c)) handled = true; }
+            if (handled) continue;
+            if (isInline(c)) continue;   // opaque inline with no workable shim -> drop (no symbol)
+            // else: a virtual with a complex signature -> fall through to the direct guard path.
         }
         try {
             string ch, cid, crs;   // QHash<K,V> return -> V[K] via sret + iterate shim

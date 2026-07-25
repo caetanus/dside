@@ -37,6 +37,7 @@ mixin(uiForm(import("corpus/plugindialog.ui")));
 mixin(uiForm(import("corpus/previewdialogbase.ui")));
 mixin(uiForm(import("corpus/proxy.ui")));
 mixin(uiForm(import("corpus/qpagesetupwidget.ui")));
+mixin(uiForm(import("corpus/qprintsettingsoutput.ui")));
 mixin(uiForm(import("corpus/qprintwidget.ui")));
 mixin(uiForm(import("corpus/qsqlconnectiondialog.ui")));
 mixin(uiForm(import("corpus/qtgradientview.ui")));
@@ -95,13 +96,12 @@ void main(){ int argc=1; char*[2] argv=[cast(char*)"c".ptr,null]; auto app=cast(
   ck!Ui_PreviewDialogBase("tests/uic/corpus/previewdialogbase.ui", QDialog_new());
   ck!Ui_ProxyDialog("tests/uic/corpus/proxy.ui", QDialog_new());
   ck!Ui_QPageSetupWidget("tests/uic/corpus/qpagesetupwidget.ui", QWidget_new());
-  // EXCLUDED qprintsettingsoutput.ui: a PRIVATE Qt print-dialog widget (not public API, like
-  // qprintpropertieswidget). It's also the one form that trips a known binding limitation —
-  // QBoxLayout::setSpacing is a virtual OVERRIDE of QLayout::setSpacing, but the generator emits
-  // only QLayout's decl, so `layout.setSpacing(4)` calls QLayout::setSpacing via its mangled
-  // symbol NON-virtually, writing QLayoutPrivate instead of QBoxLayoutPrivate; the real (metaobject)
-  // spacing stays at the style default. Fixing it needs true vtable dispatch, which the final+guard
-  // binding strategy deliberately avoids. See memory: uic-feature-complete / cpp-exception-translation.
+  // qprintsettingsoutput.ui specifically guards the override-virtual fix: its QVBoxLayout has an
+  // explicit spacing=4. QBoxLayout::setSpacing OVERRIDES QLayout::setSpacing, so the binding must
+  // dispatch virtually (via the C++ method shim) — a non-virtual call to QLayout's symbol would
+  // write the wrong storage and leave the real spacing at the style default. See emit_cxx.d
+  // (the "route through a C++ trampoline shim" block) and memory: uic-feature-complete.
+  ck!Ui_QPrintSettingsOutput("tests/uic/corpus/qprintsettingsoutput.ui", QWidget_new());
   ck!Ui_QPrintWidget("tests/uic/corpus/qprintwidget.ui", QWidget_new());
   ck!Ui_QSqlConnectionDialogUi("tests/uic/corpus/qsqlconnectiondialog.ui", QDialog_new());
   ck!Ui_QtGradientView("tests/uic/corpus/qtgradientview.ui", QWidget_new());
