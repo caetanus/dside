@@ -50,6 +50,7 @@ CXCursor clang_getTranslationUnitCursor(CXTranslationUnit);
 uint clang_visitChildren(CXCursor parent, CXCursorVisitor, CXClientData);
 
 CXString clang_getCursorSpelling(CXCursor);
+CXString clang_getCursorDisplayName(CXCursor);   // name + params, e.g. "addWidget(QWidget *, int, int)"
 CXType   clang_getCursorType(CXCursor);
 CXType   clang_getCursorResultType(CXCursor);
 CXString clang_getTypeSpelling(CXType);

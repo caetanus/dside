@@ -888,18 +888,33 @@ void verifyInlinesBatched(string outDir, string dpkg) {
     }
 }
 
-// Names of methods declared in any (transitive) base — a derived override would
-// clash with the inherited `final` declaration in D, so we skip it (the base one
-// is inherited and callable).
-void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] seen) {
+// Methods declared in any (transitive) base. `names` = the spellings (a derived method
+// SHARING a base name shadows the inherited overloads in D — we un-hide them with an
+// alias). `sigs` = the full signatures (name+params, via displayName); a derived method
+// with an EXACT base signature is a real override that would clash with the inherited
+// `final`, so it is skipped and the base decl used.
+// `aliasable[name]` + `aliasBase[name]` = the nearest base that declares `name` as an
+// emittable method (not pure-virtual/inline/operator, so it has a linkable D symbol) —
+// the target for the un-hiding alias.
+void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] sigs,
+                     ref bool[string] aliasable, ref string[string] aliasBase, ref bool[string] seen) {
     foreach (b0; baseDecls(node)) {
         auto b = clang_getCursorDefinition(b0);   // base decl -> its definition (has children)
+        auto bn = clang_getCursorSpelling(b).str;
         auto k = clang_getCursorUSR(b).str;
         if (k.length) { if (k in seen) continue; seen[k] = true; }
         foreach (c; children(b))
-            if (c.kind == CXCursor_CXXMethod && isPublic(c))
-                names[clang_getCursorSpelling(c).str] = true;
-        baseMethodNames(b, names, seen);
+            if (c.kind == CXCursor_CXXMethod && isPublic(c)) {
+                auto sp = clang_getCursorSpelling(c).str;
+                names[sp] = true;
+                sigs[clang_getCursorDisplayName(c).str] = true;
+                if (sp !in aliasable && !clang_CXXMethod_isPureVirtual(c) && !isInline(c)
+                        && !sp.startsWith("operator")) {
+                    aliasable[sp] = true;
+                    aliasBase[sp] = bn;
+                }
+            }
+        baseMethodNames(b, names, sigs, aliasable, aliasBase, seen);
     }
 }
 
@@ -1039,8 +1054,9 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             miMethods ~= miCastMethod(name, sbName);
         }
     }
-    bool[string] baseM, seenB;
-    baseMethodNames(cur, baseM, seenB);   // skip overrides of inherited methods
+    bool[string] baseM, baseSig, baseAliasable, seenB;
+    string[string] aliasBase;
+    baseMethodNames(cur, baseM, baseSig, baseAliasable, aliasBase, seenB);
 
     // Subclass trampoline (spec "subclass"): collect the overridable virtuals whose
     // signatures we can marshal, and register a Trampoline emitted into qtvirt.
@@ -1424,6 +1440,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
 
     string[] methodLines;
     string[] shimDecls;     // module-scope extern(C) decls for inline-method trampolines
+    bool[string] aliasNames;   // base names we shadow with a new overload -> re-alias to un-hide
     bool[string] seenMethodShimSig;   // dedupe inline overloads that collapse to one D sig
     bool[string] seenSig;   // dedupe overloaded signals (one connect<Sig> per name)
     int[string] sigNameCount, allNameCount;
@@ -1468,7 +1485,16 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             }
             continue;                                 // never emit a signal as a plain method
         }
-        if (mn in baseM) continue;                    // inherited override -> use the base decl
+        // A virtual redeclaration of a base name is a real override (clashes with the
+        // inherited `final`); an exact-signature match is a redeclaration — both use the
+        // base decl. A method merely SHARING a base name is a NEW overload: emit it, and
+        // re-alias the base's (emittable) overloads it would otherwise hide in D.
+        if ((clang_CXXMethod_isVirtual(c) != 0 && (mn in baseM) !is null)
+                || (clang_getCursorDisplayName(c).str in baseSig)) continue;
+        if ((mn in baseM) !is null && (mn in baseAliasable) !is null) {
+            aliasNames[mn] = true;
+            impSet[aliasBase[mn]] = true;   // the aliased base type must be imported
+        }
         if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; continue; }
         // Inline method -> no symbol; can't translate the body (opaque class). Emit an
         // out-of-line C++ trampoline that calls self->method(args), if ret+params are
@@ -1581,6 +1607,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             if (ov.length) methodLines ~= ov;
         } catch (Unmappable) { /* skip method with an unmapped type */ }
     }
+    // Re-alias base overloads that our new same-name overloads would hide (D name-hiding):
+    // e.g. QGridLayout emits addWidget(w,row,col,...) -> without this, QLayout::addWidget(w)
+    // would be invisible on QGridLayout. The `static if (__traits(hasMember))` guard is a
+    // safety net: the base may have skipped that method (unmappable type) despite declaring
+    // it, in which case there is nothing to un-hide.
+    foreach (an; aliasNames.byKey)
+        methodLines ~= format("    static if (__traits(hasMember, %s, \"%s\")) alias %s = %s.%s;",
+            aliasBase[an], dname(an), dname(an), aliasBase[an], dname(an));
 
     // constructors -> C++-heap construction helpers (operator new + real ctor
     // via its exact mangled symbol). D `new` would GC-allocate, which crashes
