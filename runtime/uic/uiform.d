@@ -269,6 +269,8 @@ private string genLayout(ref Gen g, Node lay, string parentVar) {
     need(g, cls);
     g.fields ~= "    " ~ cls ~ " " ~ name ~ ";\n";
     g.setup ~= "        " ~ name ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
+    if (lay.attr("name").length)   // named in the .ui -> QUiLoader sets it too (a nameless one stays nameless)
+        g.setup ~= "        " ~ name ~ ".setObjectName(\"" ~ name ~ "\");\n";
     // spacing + the four *Margin props collapse to setContentsMargins(l, t, r, b).
     string ml = "0", mt = "0", mr = "0", mb = "0";
     bool anyMargin;
@@ -345,10 +347,11 @@ private void collectGroups(Node n, ref Gen g) {
 // One QButtonGroup per group name, parented to root (created before the buttons add to it).
 private void emitGroups(ref Gen g) {
     if (g.groupList.length) need(g, "QButtonGroup");
+    // NB: no setObjectName on the group — QUiLoader leaves it unnamed, and a QButtonGroup
+    // is a logical grouping, not a rendered child; naming it would diverge from the oracle.
     foreach (grp; g.groupList) {
         g.fields ~= "    QButtonGroup " ~ grp ~ ";\n";
         g.setup ~= "        " ~ grp ~ " = QButtonGroup_new(root);\n";
-        g.setup ~= "        " ~ grp ~ ".setObjectName(\"" ~ grp ~ "\");\n";
     }
 }
 

@@ -56,6 +56,7 @@ Build reggaeBuild() {
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension.replace("_test", "") ~ "-" ~ dc,
                 t("uic", app), ex, dc, uicExtra);
+    all ~= uicheckTargets(root, ex);   // our uic == QUiLoader (differential oracle)
 
     // --- QtWebEngineCore: link+run a smoke test against the real .so (whole-program) ---
     auto we = qtdBinding(root, "spec_cxx_webengine.json", ["Qt6WebEngineCore"]);
@@ -69,6 +70,32 @@ Build reggaeBuild() {
     all ~= libsampleTargets(root, buildNormalizedPath(root, "..", "pyside-setup"));
 
     return Build(all);
+}
+
+// Differential oracle harness: our uic (uiForm) must build a tree identical to
+// QUiLoader.load() for every .ui. The oracle load + the tree serializer live in a C++
+// helper (links Qt6UiTools); the D side just diffs the two dumps. Built against the
+// non-wrap widgets binding `ex`, per compiler.
+Target[] uicheckTargets(string root, QtdBinding ex) {
+    auto here = buildPath(root, "tests", "uic");
+    auto cf = pkgCflags(["Qt6UiTools", "Qt6Widgets"]) ~ " -std=c++17 -fPIC -O2";
+    auto libs = pkgLibs(["Qt6UiTools", "Qt6Widgets"]);
+    auto uiformD = buildPath(root, "runtime", "uic", "uiform.d");
+    auto checkD = buildPath(here, "uicheck.d");
+    Target[] ts;
+    foreach (dc; DCS) {
+        auto uidumpO = buildPath(ex.bdir, "uidump-" ~ dc ~ ".o");   // absolute -> reggae keeps it here
+        auto uidumpT = Target(uidumpO,
+            "clang++ " ~ cf ~ " -c " ~ buildPath(here, "qtd_uidump.cpp") ~ " -o $out", []);
+        auto lib = qtdBindLib(ex, dc);
+        auto bin = Target("uicheck-" ~ dc ~ "-bin",
+            dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ uidumpO ~ " -I" ~ ex.genDir
+            ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
+            ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
+            [Target(checkD), uidumpT, lib, ex.shims]);
+        ts ~= Target.phony("uicheck-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+    }
+    return ts;
 }
 
 // The holder unit test compiles the fixed runtime (holder.d + qtd_holder.cpp) with a
