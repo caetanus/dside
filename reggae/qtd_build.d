@@ -77,7 +77,10 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // collides between Qt5 and Qt6, which share a basename).
     auto bdir = buildPath(root, ".build", baseName(dirName(genDir)) ~ "-" ~ baseName(genDir));
     auto cflags = pkgCflags(mods);
-    auto cxx = cflags ~ " -std=c++17 -fPIC -O2";
+    // -ffunction-sections/-fdata-sections put each shim (and each of the ~1500 exception
+    // guards) in its own linker section, so the final link's --gc-sections drops the ones an
+    // app doesn't call. Without this, libshims.a is one .o -> pulling any shim pulls ALL.
+    auto cxx = cflags ~ " -std=c++17 -fPIC -O2 -ffunction-sections -fdata-sections";
     auto priv = mocPrivateFlags(cflags).join(" ");
 
     // gend fully owns genDir: wipe it first so stale files from an earlier layout can't
@@ -134,8 +137,11 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
     auto lib = qtdBindLib(b, dc);
     auto libPath = buildPath(b.bdir, "libbinding_" ~ dc ~ ".a");
     auto shimsPath = buildPath(b.bdir, "libshims.a");
+    // --gc-sections drops every unreferenced function/section (unused guards + unused binding
+    // code -> the à-la-carte binary). --as-needed drops DT_NEEDED for a Qt .so the app never
+    // touches (a QtCore-only program stops requiring Widgets/Gui just by being linked here).
     auto link = dc ~ " -of=$out " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
-        ~ " -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
+        ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
         ~ " -L--end-group " ~ pkgLibs(b.mods);
     return Target(binName, link, [Target(appMain), lib, b.shims]);
 }
