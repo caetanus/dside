@@ -127,11 +127,14 @@ Target qtdBindLib(QtdBinding b, string dc) {
 
 // Link an app: <dc> app.d -I<genDir> --start-group libbinding libshims --end-group <libs>.
 // The archives go in a group so cross-references between binding and shims resolve.
-Target qtdApp(string binName, string appMain, QtdBinding b, string dc) {
+// `extra` is appended to the compile line (additional source modules / flags, e.g. a
+// CTFE helper module + its `-I` and a `-J=` string-import path). Use `-J=path` (not
+// `-J path`): dmd requires the `=` form, ldc2 accepts it too.
+Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string extra = "") {
     auto lib = qtdBindLib(b, dc);
     auto libPath = buildPath(b.bdir, "libbinding_" ~ dc ~ ".a");
     auto shimsPath = buildPath(b.bdir, "libshims.a");
-    auto link = dc ~ " -of=$out " ~ appMain ~ " -I" ~ b.genDir
+    auto link = dc ~ " -of=$out " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
         ~ " -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
         ~ " -L--end-group " ~ pkgLibs(b.mods);
     return Target(binName, link, [Target(appMain), lib, b.shims]);
@@ -139,8 +142,8 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc) {
 
 // A test target: build the app, then run it headless. Building the phony runs the test.
 // `$in` is the app binary's real path (wherever reggae placed the dependency's output).
-Target qtdTest(string name, string appMain, QtdBinding b, string dc) {
-    auto app = qtdApp(name ~ "-bin", appMain, b, dc);
+Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "") {
+    auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra);
     return Target.phony(name, "QT_QPA_PLATFORM=offscreen $in", [app]);
 }
 
