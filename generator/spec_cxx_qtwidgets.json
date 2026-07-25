@@ -1,0 +1,11 @@
+{
+  "qt_version": "6.11",
+  "pkg_config": "Qt6Widgets",
+  "out_dir": "../generated/qt-6.11/cxx-qtwidgets",
+  "d_package": "qt.widgets",
+  "abi": "cxx",
+  "discover_module": "QtWidgets",
+  "subclass": [
+    "QWidget"
+  ]
+}

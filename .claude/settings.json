@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk grep *)",
+      "Bash(pkg-config *)",
+      "mcp__ai-memory__memory_read_page",
+      "mcp__ai-memory__memory_recent"
+    ]
+  }
+}

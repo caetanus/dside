@@ -1,0 +1,18 @@
+{
+  "qt_version": "6.11",
+  "pkg_config": "Qt6Qml Qt6Gui Qt6Core",
+  "out_dir": "../generated/qt-6.11/qtqml",
+  "d_package": "qt.qml",
+  "classes": [
+    {
+      "name": "QGuiApplication",
+      "include": "QGuiApplication",
+      "methods": ["exec"]
+    },
+    {
+      "name": "QQmlApplicationEngine",
+      "include": "QQmlApplicationEngine",
+      "methods": ["load", "rootObjects", "dynamicPropertyNames"]
+    }
+  ]
+}

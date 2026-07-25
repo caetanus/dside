@@ -1,0 +1,2368 @@
+// emit_cxx.d — the extern(C++) emitter. Output is 100% D: a class declaration
+// mangles straight to the Qt symbols, so there is NO C shim and NO wrapper body
+// to compile. Binding a class you never import costs nothing (à la carte).
+//
+// Only two things still need C++, both out of band: template instantiation
+// (QList<T> — a tiny precompiled runtime) and inline-method recovery (skipped
+// here; value-type fields are exposed directly instead).
+module emit_cxx;
+
+import clang_c, gen;
+import std.stdio, std.string, std.array, std.algorithm, std.conv, std.format;
+
+// Enums referenced in signatures this run — emitted as their own modules at the
+// end. D enums are ABI-identical to C++ (value AND, with extern(C++,ns), mangling).
+__gshared CXCursor[string] ENUMS;    // unqualified enum name -> decl cursor
+
+// QList<T>/QVector<T> instantiations seen this run -> a per-T D struct that reads
+// the layout {d, T* ptr, size}, converts each element, and releases the array by
+// hand (refcount deref + deallocate; plus per-element release for QString/QByteArray).
+struct QListElem {
+    string layoutTy;   // element type in the D array (QString/QByteArray/class-ref/prim)
+    string idiomTy;    // idiomatic element (string / class / prim)
+    long   elemSize;   // sizeof(element) for deallocate
+    string fromRaw;    // ptr[i] -> idiom ({} = the element)
+    bool   release;    // element owns refcounted data (QString/QByteArray)
+    string imp;        // module to import for the element type
+    bool   isVector;   // Qt5: this came from QVector/QStack (QArrayData layout, NOT QListData)
+}
+__gshared QListElem[string] QLISTS;    // tid -> element info
+__gshared bool QT5;    // Qt5 target: QVector<T> has a distinct layout from QList<T>
+// Wrapper lifetime mode: object types become GC wrappers extending holder.QtdObject
+// (hold a nullable _cpp, delegate to C++ via pragma(mangle) with explicit self, are
+// pinned when parented, invalidated on destroyed()). Off = the legacy extern(C++)
+// class-ref-is-the-pointer form. Gated so both coexist during the rollout.
+__gshared bool WRAPPER;
+
+bool qlistElem(CXType elem, ref QListElem o) {
+    auto ck = clang_getCanonicalType(elem);
+    auto c = canon(elem);
+    if (auto p = c in PRIM) { o = QListElem(*p, *p, clang_Type_getSizeOf(ck), "%s", false, ""); return true; }
+    if (ck.kind == CXType_Pointer && isRecord(clang_getPointeeType(ck))) {
+        auto pt = clang_getPointeeType(ck);
+        auto n = lastNs(canon(pt));
+        // WRAPPER: an object-pointer element is a wrapper — the slot holds a raw void*, the
+        // idiom layer wraps each (n.wrap(...)). Value-record pointers keep the struct ref.
+        if (WRAPPER && !isValueRecord(pt)) {
+            WRAPREFS[n] = true;
+            o = QListElem("void*", n, 8, n ~ ".wrap(cast(void*) %s)", false, n); return true;
+        }
+        o = QListElem(n, n, 8, "%s", false, n); return true;      // element is a class ref
+    }
+    if (c == "QString")    { o = QListElem("QString", "string", 24, "%s.toString()", true, "QString"); return true; }
+    if (c == "QByteArray") { o = QListElem("QByteArray", "string", 24, "%s.toString()", true, "QByteArray"); return true; }
+    return false;
+}
+// Returns the tid (registering the QList) or "" if the container/element is unsupported.
+string tryQList(CXType t) {
+    auto ck = clang_getCanonicalType(t);
+    if (clang_Type_getNumTemplateArguments(ck) != 1) return "";
+    auto dn = clang_getCursorSpelling(clang_getTypeDeclaration(ck)).str;
+    // Qt6: QVector==QList; QStack/QQueue derive with no extra members -> identical layout.
+    // Qt5: QVector/QStack use QArrayData (contiguous, {d} single ptr), QList/QQueue use
+    // QListData (array of void* slots) — DIFFERENT layouts, so they need distinct modules.
+    if (dn != "QList" && dn != "QVector" && dn != "QStack" && dn != "QQueue") return "";
+    QListElem e;
+    if (!qlistElem(clang_Type_getTemplateArgumentAsType(ck, 0), e)) return "";
+    bool vec = QT5 && (dn == "QVector" || dn == "QStack");
+    e.isVector = vec;
+    auto tid = e.layoutTy.toLower.replace("*", "p").replace(" ", "_");  // unique per element type
+    if (vec) tid ~= "_qv";   // distinct module from QList<same T> (different layout)
+    QLISTS[tid] = e;
+    return tid;
+}
+
+// Raw QList-returning decl + an idiomatic method returning `elem[]`. [] if a
+// param doesn't map. Registers the qlist_<tid> module import.
+string[] emitQListReturn(CXCursor c, string mn, string qtid, string kw, string cst,
+                         ref bool[string] impSet, string dpkg) {
+    auto e = QLISTS[qtid];
+    if (e.imp.length) impSet[e.imp] = true;
+    impSet["qlist_" ~ qtid] = true;             // import dpkg.qlist_<tid>
+    string[] rps, declps, callargs;
+    auto na = clang_Cursor_getNumArguments(c);
+    foreach (i; 0 .. na) {
+        auto a = clang_Cursor_getArgument(c, i);
+        string pimp, pd;
+        try pd = mapCxxType(clang_getCursorType(a), pimp); catch (Unmappable) return [];
+        if (pimp.length) impSet[pimp] = true;
+        auto pw = WRAPPER ? wrapperTypeOf(clang_getCursorType(a)) : "";
+        rps ~= format("%s a%d", pd, i);
+        declps ~= format("%s a%d", pw.length ? "void*" : pd, i);
+        callargs ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
+    }
+    auto mg = clang_Cursor_getMangling(c).str;
+    auto rawName = "__" ~ dname(mn) ~ "_ql";
+    auto fromRaw = e.fromRaw.replace("%s", "_l.at(_i)");   // Qt5/Qt6-agnostic access
+    if (WRAPPER) {
+        // raw: module-level free function taking void* self; idiom: a wrapper method.
+        auto declSelf = kw.canFind("static") ? "" : (declps.length ? "void* self, " : "void* self");
+        auto self = kw.canFind("static") ? "" : (callargs.length ? "this.ptr(), " : "this.ptr()");
+        auto raw = format("private pragma(mangle, \"%s\") extern(C++) QList_%s %s(%s%s);",
+            mg, qtid, rawName, declSelf, declps.join(", "));
+        auto idiom = format("    %s%s[] %s(%s) {\n"
+            ~ "        auto _l = %s(%s%s);\n        %s[] _r; _r.length = cast(size_t) _l.length;\n"
+            ~ "        foreach (_i; 0 .. _l.length) _r[_i] = %s;\n        return _r;\n    }",
+            kw, e.idiomTy, dname(mn), rps.join(", "), rawName, self, callargs.join(", "),
+            e.idiomTy, fromRaw);
+        return [raw, idiom];
+    }
+    auto raw = format("    pragma(mangle, \"%s\") %sQList_%s %s(%s)%s;",
+        mg, kw, qtid, rawName, rps.join(", "), cst);
+    auto idiom = format("    extern (D) %s%s[] %s(%s)%s {\n"
+        ~ "        auto _l = %s(%s);\n        %s[] _r; _r.length = cast(size_t) _l.length;\n"
+        ~ "        foreach (_i; 0 .. _l.length) _r[_i] = %s;\n        return _r;\n    }",
+        kw, e.idiomTy, dname(mn), rps.join(", "), cst, rawName, callargs.join(", "), e.idiomTy, fromRaw);
+    return [raw, idiom];
+}
+
+// The per-T QList struct module: layout + hand-rolled release. Exposto por uma
+// interface agnóstica (`length`/`at(i)`) pra o método idiomático não depender do
+// layout físico, que difere entre Qt5 e Qt6.
+string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bool qt5 = false) {
+    auto elemImp = e.imp.length ? format("import %s.%s;\n", dpkg, modBase(e.imp)) : "";
+    if (qt5 && e.isVector) {
+        // Qt5 QVector<T>/QStack<T> = { QArrayData* d } (8 bytes). QArrayData: int ref@0,
+        // int size@4, uint alloc@8, qptrdiff offset@16; data is CONTIGUOUS at (char*)d +
+        // offset. Verified empirically (offset=24 for QVector<double>). Free: per-element
+        // release + QArrayData::deallocate (Qt5 mangle uses size_t = `mm`). size@4.
+        auto al = e.elemSize >= 8 ? 8 : e.elemSize;   // natural alignment for our elem types
+        auto rel = e.release
+            ? format("            foreach (i; 0 .. _n) ptr[i].__release();\n")
+            : "";
+        return manifest ~ format("\nmodule %s.qlist_%s;\n%simport core.atomic : atomicOp;\n\n"
+            ~ "struct QList_%s {\n    void* d;    // QArrayData* (ref@0, size@4, offset@16), data at d+offset\n"
+            ~ "    @disable this(this);\n"
+            ~ "    private int _size() const { return *cast(const(int)*)(cast(const(char)*) d + 4); }\n"
+            ~ "    private %s* _ptr() const { return cast(%s*)(cast(char*) d + *cast(const(long)*)(cast(const(char)*) d + 16)); }\n"
+            ~ "    @property long length() const { return d is null ? 0 : _size(); }\n"
+            ~ "    %s at(size_t i) { return _ptr()[i]; }\n"
+            ~ "    ~this() {\n        if (d is null) return;\n        auto _r = cast(shared(int)*) d;\n"
+            ~ "        if (*cast(int*) d < 0) { d = null; return; }   // static shared_null: plain read (atomicLoad seq would fault on .rodata)\n"
+            ~ "        if (atomicOp!\"-=\"(*_r, 1) == 0) {\n"
+            ~ "            auto _n = _size(); auto ptr = _ptr();\n%s"
+            ~ "            __qad_dealloc_qt5(d, %d, %d);\n        }\n        d = null;\n    }\n}\n"
+            ~ "private pragma(mangle, \"_ZN10QArrayData10deallocateEPS_mm\") extern (C++) void __qad_dealloc_qt5(void*, size_t, size_t);\n",
+            dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, e.layoutTy, rel, e.elemSize, al);
+    }
+    if (qt5) {
+        // Qt5 QList<T> = { QListData::Data* d } (8 bytes). Data: ref@0, alloc@4,
+        // begin@8, end@12, void* array[]@16. Elementos <= sizeof(void*) e movable/
+        // prim (todos os que suportamos) ficam INLINE no slot. Free: release por
+        // elemento (QString/QByteArray) + QListData::dispose (símbolo exportado que
+        // roda ::free no bloco). size = end - begin.
+        auto rel = e.release
+            ? "            foreach (_i; _b .. _e) (cast(" ~ e.layoutTy ~ "*) &_a[_i]).__release();\n"
+            : "";
+        return manifest ~ format("\nmodule %s.qlist_%s;\n%simport core.atomic : atomicOp;\n\n"
+            ~ "struct QList_%s {\n    void* d;    // QListData::Data* (ref@0, begin@8, end@12, array@16)\n"
+            ~ "    @disable this(this);\n"
+            ~ "    private int _begin() const { return *cast(const(int)*)(cast(const(char)*) d + 8); }\n"
+            ~ "    private int _end()   const { return *cast(const(int)*)(cast(const(char)*) d + 12); }\n"
+            ~ "    private void** _arr() const { return cast(void**)(cast(char*) d + 16); }\n"
+            ~ "    @property long length() const { return d is null ? 0 : _end() - _begin(); }\n"
+            ~ "    %s at(size_t i) { return *cast(%s*) &_arr()[_begin() + i]; }   // inline no slot\n"
+            ~ "    ~this() {\n        if (d is null) return;\n        auto _r = cast(shared(int)*) d;\n"
+            ~ "        if (*cast(int*) d < 0) { d = null; return; }   // sentinela estático: leitura simples (shared_null é .rodata; atomicLoad seq falharia)\n"
+            ~ "        if (atomicOp!\"-=\"(*_r, 1) == 0) {\n"
+            ~ "            auto _b = _begin(); auto _e = _end(); auto _a = _arr();\n%s"
+            ~ "            __qld_dispose(d);\n        }\n        d = null;\n    }\n}\n"
+            ~ "private pragma(mangle, \"_ZN9QListData7disposeEPNS_4DataE\") extern (C++) void __qld_dispose(void*);\n",
+            dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, rel);
+    }
+    // Qt6 QList<T> = QArrayDataPointer { void* d; T* ptr; long size } — elementos
+    // contíguos em ptr; release por elemento + QArrayData::deallocate.
+    auto rel = e.release
+        ? format("            foreach (i; 0 .. size) ptr[i].__release();\n")
+        : "";
+    return manifest ~ format("\nmodule %s.qlist_%s;\n%simport core.atomic : atomicOp;\n\n"
+        ~ "struct QList_%s {\n    void* d;\n    %s* ptr;\n    long size;\n    @disable this(this);\n"
+        ~ "    @property long length() const { return size; }\n"
+        ~ "    %s at(size_t i) { return ptr[i]; }\n"
+        ~ "    ~this() {\n        if (d is null) return;\n        auto r = cast(shared(int)*) d;\n"
+        ~ "        if (*cast(int*) d < 0) return;\n        if (atomicOp!\"-=\"(*r, 1) == 0) {\n%s"
+        ~ "            __qad_deallocate(d, %d, 8);\n        }\n    }\n}\n"
+        ~ "private pragma(mangle, \"_ZN10QArrayData10deallocateEPS_xx\") extern (C++) void __qad_deallocate(void*, long, long);\n",
+        dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, rel, e.elemSize);
+}
+// Base classes referenced by generated classes: these MUST be generated in full
+// (vtable + exact size), never opaque-stubbed, or inheritance/construction breaks.
+__gshared CXCursor[string] PENDING_BASES;   // base name -> its definition cursor
+
+// Signals seen this run -> a per-signal functor-connect shim in qtsignals.cpp
+// (public-API QObject::connect to a lambda that calls a D delegate). The signal's
+// arguments are marshaled to the delegate: prim/enum/class-ptr by value, a
+// const-value& as a pointer.
+struct Signal {
+    string dClass, cppClass, name;
+    string lambdaParams;   // C++ lambda params, e.g. "bool a0, int a1"
+    string passArgs;       // args the lambda forwards to the C callback: ", a0, a1"
+    string cbCppParams;    // C callback param types (after void*): "bool, int"
+    string cbDParams;      // D delegate/callback param types (delegate-facing): "bool, QWidget"
+    string cbRawParams;    // D trampoline INCOMING types (C ABI): objects are void* here
+    string trampArgs;      // args the D trampoline forwards to the delegate ("QWidget.wrap(a0)" in wrapper mode)
+    string[] imports;
+}
+__gshared Signal[] SIGNALS;
+
+// Classify one signal argument for C++->D marshaling; false if unsupported.
+bool signalArg(CXType at, int i, ref Signal s) {
+    auto ak = clang_getCanonicalType(at);
+    auto cpp = clang_getTypeSpelling(at).str;
+    if (canon(at).canFind("<") || canon(at).canFind("std::")) return false;
+    if (ak.kind == CXType_LValueReference && !isRecord(clang_getPointeeType(ak))) return false;
+    string lp, pass, cbc, cbd, tramp, cbRaw;
+    tramp = "a%d".format(i);
+    if (auto p = canon(at) in PRIM) {
+        lp = "%s a%d".format(cpp, i); pass = "a%d".format(i); cbc = cpp; cbd = *p;
+    } else if (ak.kind == CXType_Enum) {
+        // qualified name (the lambda lives outside the class); static_cast handles
+        // scoped enums (enum class doesn't implicitly convert to int).
+        string ip; auto ed = mapCxxType(at, ip); if (ip.length) s.imports ~= ip;
+        lp = "%s a%d".format(canon(at), i); pass = "static_cast<int>(a%d)".format(i);
+        cbc = "int"; cbd = ed;
+    } else if (ak.kind == CXType_Pointer && isRecord(clang_getPointeeType(ak))) {
+        auto dn = clang_getPointeeType(ak).canon.lastNs; s.imports ~= dn;
+        lp = "%s a%d".format(cpp, i); pass = "a%d".format(i);   // cpp spelling keeps ptr/qualification
+        cbc = cpp; cbd = dn;
+        // WRAPPER: the delegate gets a wrapper (cbd), but the C ABI delivers a raw pointer
+        // (void*) -> the tramp wraps it. (An object arg is polymorphic; value records fall
+        // through to the const& branch below and stay as-is.)
+        if (WRAPPER && !isValueRecord(clang_getPointeeType(ak))) {
+            cbRaw = "void*"; tramp = format("%s.wrap(a%d)", dn, i);
+        }
+    } else if (ak.kind == CXType_LValueReference && isValueRecord(clang_getPointeeType(ak))
+               && clang_getTypeSpelling(at).str.canFind("const")) {
+        auto dn = clang_getPointeeType(ak).canon.lastNs; s.imports ~= dn;
+        lp = "%s a%d".format(cpp, i); pass = "&a%d".format(i);  // keep the const& (canon strips it)
+        cbc = "const " ~ dn ~ "*"; cbd = "const(" ~ dn ~ ")*";
+    } else return false;
+    s.lambdaParams = s.lambdaParams.length ? s.lambdaParams ~ ", " ~ lp : lp;
+    s.passArgs ~= ", " ~ pass;
+    s.cbCppParams = s.cbCppParams.length ? s.cbCppParams ~ ", " ~ cbc : cbc;
+    s.cbDParams = s.cbDParams.length ? s.cbDParams ~ ", " ~ cbd : cbd;
+    if (!cbRaw.length) cbRaw = cbd;   // non-object args: raw type == delegate type
+    s.cbRawParams = s.cbRawParams.length ? s.cbRawParams ~ ", " ~ cbRaw : cbRaw;
+    s.trampArgs = s.trampArgs.length ? s.trampArgs ~ ", " ~ tramp : tramp;
+    return true;
+}
+
+// Secondary bases of multiply-inherited classes. D single-inherits (the primary
+// base), so each secondary base is reached through a static_cast shim that applies
+// the correct pointer offset (qtmi.cpp) — exposed as an as<Base>() method.
+struct MICast { string dClass, cppClass, sbDClass, sbCppClass; }
+__gshared MICast[] MICASTS;
+
+// Classes the user wants to SUBCLASS from D (spec "subclass" list). Each gets a
+// C++ trampoline (qtvirt) whose virtuals forward to D callbacks — so a C++
+// framework calling a virtual dispatches into the D override.
+__gshared bool[string] SUBCLASS;
+struct TrampVirt {
+    string name, cppRet, cbCppRet, cbDRet, overrideParams, passArgs, origArgs, cbCppParams, cbDParams;
+    string[] imports;
+    bool isPure, isConst, retVoid, retEnum;
+}
+struct Trampoline { string dClass, cppClass; TrampVirt[] virts; }
+__gshared Trampoline[] TRAMPS;
+
+// Value types that are NOT trivially copyable (hold a std::string/CoW/etc. by value):
+// a bitwise copy breaks (SSO self-pointer, CoW refcount). We emit an out-of-line C++
+// shim (qtdctor) with the real copy-ctor + dtor, and the D struct gets a copy
+// constructor + ~this() that call it. Each entry: (dName, cppName).
+struct CtorCopy { string dName, cppName; }
+__gshared CtorCopy[] CTORCOPY;
+
+// Value/object types whose (only) ctor is inline/`= default` -> no linkable symbol ->
+// no _new -> not constructible from pure extern(C++) (Reference: `Reference(int=-1)`
+// inline; Overload: `= default` ctor). We emit an out-of-line C++ shim that instantiates
+// the ctor (placement-new), giving a symbol. Only for ABI-simple params (scalars /
+// pointers): by-value/ref params would need marshaling and stay a gap for now.
+struct CtorShim { string dName, cppName, shimFn; string[] cppParams, argNames; }
+__gshared CtorShim[] CTORSHIM;
+
+// Inline methods on OBJECT (polymorphic) types have no linkable symbol, and their body
+// can't be translated in D (the class is opaque — no named fields). So each inline
+// getter/setter gets an out-of-line C++ trampoline that calls `self->method(args)`,
+// compiled against the headers. Restricted to ABI-simple return+params (scalars/
+// pointers/void) — the getter/setter shape. Each entry emits one qtd_m_<Class>_<i>.
+struct MethodShim { string shimFn, cppName, cppRet, method; string[] cppParams, argNames; bool isStatic, isConst; }
+__gshared MethodShim[] METHODSHIM;
+
+// All overridable virtuals of a class (own + inherited, most-derived kept, deduped
+// by name+param types) — the vtable a D subclass can override.
+void collectVirtuals(CXCursor cls, ref CXCursor[] result, ref bool[string] seen) {
+    foreach (c; children(cls))
+        if (c.kind == CXCursor_CXXMethod && clang_CXXMethod_isVirtual(c)) {
+            auto key = clang_getCursorSpelling(c).str ~ "(" ~ clang_getTypeSpelling(clang_getCursorType(c)).str ~ ")";
+            if (key !in seen) { seen[key] = true; result ~= c; }
+        }
+    foreach (b; baseDecls(cls)) {
+        auto bd = clang_getCursorDefinition(b);
+        if (bd.kind == CXCursor_ClassDecl || bd.kind == CXCursor_StructDecl)
+            collectVirtuals(bd, result, seen);
+    }
+}
+
+// Build a TrampVirt for a virtual whose signature the trampoline supports (prim /
+// class-ptr / const-ref-to-value args; void / prim / class-ptr return). Returns
+// false to skip virtuals with types we can't marshal yet (value return, etc.).
+bool trampVirt(CXCursor m, string cppClass, out TrampVirt tv) {
+    auto rt = clang_getCursorResultType(m);
+    auto rc = canon(rt);
+    if (rc.canFind("<") || rc.canFind("std::")) return false;   // template/std return
+    tv.retVoid = rc == "void";
+    auto rck = clang_getCanonicalType(rt);
+    // return: void / primitive / enum / class-pointer
+    tv.cppRet = clang_getTypeSpelling(rt).str;
+    if (tv.retVoid) { tv.cbDRet = "void"; tv.cbCppRet = "void"; }
+    else if (auto p = rc in PRIM) { tv.cbDRet = *p; tv.cbCppRet = tv.cppRet; }
+    else if (rck.kind == CXType_Enum) {   // ABI = int; marshal as int (C++ side), enum (D side)
+        string ip; tv.cbDRet = mapCxxType(rt, ip); if (ip.length) tv.imports ~= ip;
+        tv.cbCppRet = "int"; tv.retEnum = true;
+    } else if (rck.kind == CXType_Pointer && isRecord(clang_getPointeeType(rck))) {
+        tv.cbDRet = lastNs(canon(clang_getPointeeType(rck))); tv.imports ~= tv.cbDRet;
+        tv.cbCppRet = tv.cppRet;
+    } else return false;
+    string[] op, pass, cbc, cbd, orig;
+    auto na = clang_Cursor_getNumArguments(m);
+    foreach (i; 0 .. na) {
+        auto a = clang_Cursor_getArgument(m, i);
+        auto at = clang_getCursorType(a);
+        auto ak = clang_getCanonicalType(at);
+        auto cpp = clang_getTypeSpelling(at).str;
+        if (canon(at).canFind("<") || canon(at).canFind("std::")) return false;   // template/std arg
+        // reference to a non-record (int&, etc.) is an out-param we can't marshal yet
+        if (ak.kind == CXType_LValueReference && !isRecord(clang_getPointeeType(ak))) return false;
+        op ~= format("%s a%d", cpp, i);
+        orig ~= format("a%d", i);
+        if (auto p = canon(at) in PRIM) {                        // primitive
+            pass ~= format("a%d", i); cbc ~= cpp; cbd ~= *p;
+        } else if (ak.kind == CXType_Enum) {                     // enum by value (ABI = int)
+            string ip; auto ed = mapCxxType(at, ip);
+            pass ~= format("a%d", i); cbc ~= "int"; cbd ~= ed; if (ip.length) tv.imports ~= ip;
+        } else if (ak.kind == CXType_Pointer && isRecord(clang_getPointeeType(ak))) {  // class pointer
+            auto dn = lastNs(canon(clang_getPointeeType(ak)));
+            pass ~= format("a%d", i); cbc ~= cpp; cbd ~= dn; tv.imports ~= dn;
+        } else if (ak.kind == CXType_LValueReference && isRecord(clang_getPointeeType(ak))
+                   && isValueRecord(clang_getPointeeType(ak))
+                   && clang_getTypeSpelling(at).str.canFind("const")) {                 // const value&
+            auto pt = clang_getPointeeType(ak);
+            auto dn = lastNs(canon(pt));
+            pass ~= format("&a%d", i);
+            cbc ~= "const " ~ lastNs(canon(pt)) ~ "*";
+            cbd ~= "const(" ~ dn ~ ")*"; tv.imports ~= dn;
+        } else return false;   // unsupported arg type
+    }
+    tv.name = clang_getCursorSpelling(m).str;
+    tv.overrideParams = op.join(", ");
+    tv.passArgs = pass.length ? ", " ~ pass.join(", ") : "";
+    tv.origArgs = orig.join(", ");
+    tv.cbCppParams = cbc.join(", ");
+    tv.cbDParams = cbd.join(", ");
+    tv.isPure = clang_CXXMethod_isPureVirtual(m) != 0;
+    tv.isConst = clang_CXXMethod_isConst(m) != 0;
+    return true;
+}
+
+// The as<Base>() method: upcast this to a secondary base via the offset shim.
+string miCastMethod(string dClass, string sbDClass) {
+    if (WRAPPER)   // secondary-base subobject pointer -> wrap it (a distinct holder key)
+        return format("    final %s as%s() { return %s.wrap(qtd_upcast_%s_%s(this.ptr())); }",
+            sbDClass, sbDClass, sbDClass, dClass, sbDClass);
+    return format("    final %s as%s() { return cast(%s) qtd_upcast_%s_%s(cast(void*) this); }",
+        sbDClass, sbDClass, sbDClass, dClass, sbDClass);
+}
+
+// The D `connect<Signal>(void delegate())` method emitted on the owning class.
+// Boxes the delegate, roots it, calls the extern(C) shim, returns a handle.
+string signalConnectMethod(Signal s) {
+    auto cap = s.name.length ? (cast(char)(s.name[0] & ~0x20) ~ s.name[1 .. $]) : s.name;
+    // delegate to the per-signal qtsignals runtime helper (keeps GC/box out of here).
+    return format(
+        "    extern(D) final QtdConnection connect%s(void delegate(%s) dg) {\n"
+        ~ "        return __conn_%s_%s(%s, dg);\n    }",
+        cap, s.cbDParams, s.dClass, s.name, WRAPPER ? "this.ptr()" : "cast(void*) this");
+}
+
+// Is this record a class nested inside another class (QJsonObject::iterator)?
+// Those aren't emitted as top-level modules, so referencing methods are skipped.
+bool nestedInClass(CXType t) {
+    auto d = clang_getTypeDeclaration(clang_getCanonicalType(t));
+    auto p = clang_getCursorSemanticParent(d);
+    return p.kind == CXCursor_ClassDecl || p.kind == CXCursor_StructDecl;
+}
+
+// Map a C++ type to the D type that mangles identically under extern(C++).
+// `imp` gets the unqualified module name when a class type is referenced.
+// Throws Unmappable for what this first pass doesn't handle yet (refs, enums,
+// records-by-value, QString, containers) so the method is simply skipped.
+string mapCxxType(CXType t, ref string imp) {
+    imp = "";
+    auto ck = clang_getCanonicalType(t);
+    auto c = canon(t);
+    if (c == "void") return "void";
+    if (isPrivate(c)) throw new Unmappable("private " ~ c);
+    // QFlags<Enum> is an int-sized struct; map to int (pragma(mangle) fixes the symbol).
+    if (clang_getCursorSpelling(clang_getTypeDeclaration(ck)).str == "QFlags") return "int";
+    if (c.canFind("<") || c.canFind("std::")) throw new Unmappable("template/std: " ~ c);
+    // Function pointer param (e.g. `void (*)(void*)`) -> `void*`. D can't spell an
+    // inline `extern(C) ret function(args)` param type, and the C++ ptr is ABI-a-pointer
+    // anyway (pragma(mangle) fixes the symbol), so a `void*` un-drops the method and is
+    // callable with `cast(void*) &fn`. (Type-safe fn-ptr params are a rare Qt case.)
+    if (ck.kind == CXType_Pointer
+        && clang_getCanonicalType(clang_getPointeeType(ck)).kind == CXType_FunctionProto)
+        return "void*";
+    // lambda closures / anonymous types spell with '(' — never a valid D type or module
+    // name (would even break the output filename).
+    if (c.canFind("(")) throw new Unmappable("anon/lambda: " ~ c);
+    if (auto p = c in PRIM) return *p;
+    if (ck.kind == CXType_Enum) {                 // ABI-identical D enum
+        auto decl = clang_getTypeDeclaration(ck);
+        auto en = lastNs(c);
+        auto parent = clang_getCursorSemanticParent(decl);
+        // Nested in a class -> emit inside that class (mangling substitution needs
+        // the same enclosing scope, e.g. QThread::setPriority(QThread::Priority)).
+        if (parent.kind == CXCursor_ClassDecl || parent.kind == CXCursor_StructDecl) {
+            auto pn = clang_getCursorSpelling(parent).str;
+            imp = pn; return pn ~ "." ~ en;
+        }
+        ENUMS[en] = decl; imp = en; return en;    // namespace/global -> own module
+    }
+    if (ck.kind == CXType_Pointer) {
+        auto pt = clang_getPointeeType(ck);
+        auto pc = canon(pt);
+        if (pc == "char")
+            return clang_getTypeSpelling(pt).str.canFind("const") ? "const(char)*" : "char*";
+        if (pc == "void") return "void*";
+        if (auto p = pc in PRIM) return *p ~ "*";
+        if (isRecord(pt)) {
+            if (nestedInClass(pt)) throw new Unmappable("nested record: " ~ pc);
+            auto n = lastNs(pc); imp = n;
+            // A polymorphic class maps to a D `extern(C++) class` (already a reference/
+            // pointer), so X* -> X. A value type maps to a D struct, so X* -> X* (a real
+            // pointer to the struct) — else a returned/passed pointer is read by value.
+            return isValueRecord(pt) ? n ~ "*" : n;
+        }
+    }
+    // const T& / T& to a value-type record -> ref (const) Struct (mangles RK.../R...)
+    if (ck.kind == CXType_LValueReference) {
+        auto pt = clang_getPointeeType(ck);
+        auto pc = canon(pt);
+        auto konst = clang_getTypeSpelling(ck).str.canFind("const");
+        // parenthesize the const so a return-position `ref const(X) f() const` isn't
+        // read as declaring the function const twice (bare leading const binds to the fn).
+        if (auto p = pc in PRIM) return konst ? "ref const(" ~ *p ~ ")" : "ref " ~ *p;
+        if (isRecord(pt) && isValueRecord(pt)) {
+            if (nestedInClass(pt)) throw new Unmappable("nested record: " ~ pc);
+            auto n = lastNs(pc); imp = n;
+            return konst ? "ref const(" ~ n ~ ")" : "ref " ~ n;
+        }
+        throw new Unmappable("ref to " ~ clang_getTypeSpelling(pt).str);
+    }
+    // value-type record BY VALUE (QPoint/QSize/QRect) -> the extern(C++) struct
+    if (ck.kind == CXType_Record) {
+        if (!isValueRecord(t)) throw new Unmappable("object-type by value: " ~ c);
+        if (nestedInClass(t)) throw new Unmappable("nested record: " ~ c);
+        auto n = lastNs(c); imp = n; return n;
+    }
+    throw new Unmappable("cxx type " ~ clang_getTypeSpelling(t).str);
+}
+
+// In WRAPPER mode: the wrapper class name iff `t` is a pointer to an OBJECT-type
+// (polymorphic) record — i.e. what mapCxxType maps to a bare class name `N` (see the
+// `isValueRecord(pt) ? n~"*" : n` at the pointer branch). Such a param/return crosses
+// the boundary as a wrapper on the D side but a raw C++ pointer on the C++ side, so it
+// must be unwrapped (param) / wrapped (return). Empty for anything else.
+__gshared bool[string] WRAPREFS;   // object types referenced as wrappers -> wrapper stubs
+string wrapperTypeOf(CXType t) {
+    auto ck = clang_getCanonicalType(t);
+    if (ck.kind != CXType_Pointer) return "";
+    auto pt = clang_getPointeeType(ck);
+    if (!isRecord(pt) || nestedInClass(pt) || isValueRecord(pt)) return "";
+    auto n = lastNs(canon(pt));
+    WRAPREFS[n] = true;
+    return n;
+}
+
+// A record that is passed/returned by value: not QObject-derived and not
+// polymorphic (those aren't copyable / have a vtable).
+bool isValueRecord(CXType t) {
+    auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(t)));
+    if (decl.kind != CXCursor_ClassDecl && decl.kind != CXCursor_StructDecl) return false;
+    if (isQObject(decl)) return false;
+    foreach (m; children(decl))
+        if ((m.kind == CXCursor_CXXMethod || m.kind == CXCursor_Destructor) && clang_CXXMethod_isVirtual(m))
+            return false;
+    return true;
+}
+
+// Não-trivialmente-copiável: cópia bit-a-bit é ERRADA (SSO self-pointer de
+// std::string, refcount de CoW, recursos possuídos). Preciso — NÃO uso isPOD
+// puro porque um value type com ctor de usuário mas membros escalares (Point:
+// double x,y; copy/dtor `= default`) é não-POD e MESMO ASSIM trivialmente copiável;
+// marcá-lo mudaria a ABI de retorno-por-valor e quebraria. Critério: (a) copy-ctor
+// ou dtor providos-pelo-usuário (não `= default`, não `= delete`) — CoW à la QPen; ou
+// (b) um campo record embutido POR VALOR que seja ele mesmo não-trivial — std::string.
+// Surgical trigger: a value type that embeds a STANDARD-LIBRARY type by value
+// (std::string, std::vector, std::list, ...). Those need a REAL deep copy — bitwise
+// breaks (std::string SSO self-pointer; std::vector owning pointer). This is the only
+// trigger: Qt CoW types hold a d POINTER (QFooPrivate*), not a std:: by value, so they
+// do NOT fire and stay as before (no regression across the 150+ Qt classes). It also
+// avoids Qt's non-copyable internals (QBasicAtomicInt/QArrayData/etc.).
+bool nonTriviallyCopyable(CXType t) {
+    if (clang_isPODType(t) != 0) return false;   // POD -> bitwise copy is safe
+    auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(t)));
+    if (decl.kind != CXCursor_ClassDecl && decl.kind != CXCursor_StructDecl) return false;
+    foreach (c; children(decl))
+        if (c.kind == CXCursor_FieldDecl) {
+            auto ft = clang_getCanonicalType(clang_getCursorType(c));
+            while (ft.kind == CXType_ConstantArray) ft = clang_getArrayElementType(ft);
+            if (ft.kind == CXType_Record
+                && clang_getTypeSpelling(ft).str.startsWith("std::"))
+                return true;   // std:: member by value -> needs a deep copy
+        }
+    return false;
+}
+
+// A D type with a trivial ABI for an extern(C) shim: scalar or pointer (incl. const(char)*).
+// (by-value/ref would need marshaling — out of scope for a ctor shim.)
+bool simpleAbiType(string pd) {
+    static immutable scalars = ["bool", "byte", "ubyte", "short", "ushort", "int", "uint",
+        "long", "ulong", "float", "double", "real", "char", "wchar", "dchar", "size_t"];
+    return pd.endsWith("*") || scalars.canFind(pd);
+}
+
+// A nested type declared protected/private is unnameable/inaccessible from an
+// out-of-line shim compiled at namespace scope -> never emit a shim referencing it.
+// Namespace-scope types have access spec 0 (invalid) and are fine.
+bool nestedInaccessible(CXCursor decl) {
+    auto acc = clang_getCXXAccessSpecifier(decl);
+    return acc == 2 || acc == 3;   // 2=protected, 3=private
+}
+
+// A `= delete`d copy ctor (DISABLE_COPY) or an inaccessible type: skip deep-copy.
+bool copyDeleted(CXCursor decl) {
+    if (nestedInaccessible(decl)) return true;
+    foreach (c; children(decl))
+        if (c.kind == CXCursor_Constructor && clang_CXXConstructor_isCopyConstructor(c)
+            && clang_CXXMethod_isDeleted(c))
+            return true;   // DISABLE_COPY
+    return false;
+}
+
+// Is a method inline (has an inline definition -> no out-of-line symbol to link)?
+// Catches both `int f(){...}` in-class AND out-of-class `inline int C::f(){...}`.
+// Inline (no linkable symbol) — check the in-class declaration AND its definition:
+// Qt often declares a method in-class and defines it `inline` later in the same
+// header (QToolBox::addItem, QVector2D::length), which the declaration cursor alone
+// doesn't reveal. An out-of-line (.cpp) definition isn't in the TU -> stays false.
+bool isInline(CXCursor m) {
+    if (clang_Cursor_isFunctionInlined(m) != 0) return true;
+    return clang_Cursor_isFunctionInlined(clang_getCursorDefinition(m)) != 0;
+}
+
+// A Qt signal? Detected by the AnnotateAttr("qt_signal") the parse flags inject
+// (Q_SIGNALS -> public __attribute__((annotate("qt_signal")))). Signals ARE moc-
+// generated (they have a linkable symbol) but you connect to them, not call them.
+bool isSignal(CXCursor m) {
+    foreach (ch; children(m))
+        if (ch.kind == CXCursor_AnnotateAttr && clang_getCursorSpelling(ch).str == "qt_signal")
+            return true;
+    return false;
+}
+
+// Real argument count, excluding Qt6's trailing QPrivateSignal marker (moc adds it
+// to every signal to block direct emission; it's not a real parameter).
+int realArgCount(CXCursor c) {
+    int n = 0;
+    auto na = clang_Cursor_getNumArguments(c);
+    foreach (i; 0 .. na)
+        if (!canon(clang_getCursorType(clang_Cursor_getArgument(c, i))).canFind("QPrivateSignal")) n++;
+    return n;
+}
+
+// ---- Demand-driven container shims -------------------------------------------
+// Any container×element combo seen in a signature registers itself here; the
+// runtime (qtcontainers.cpp/.d) is generated for exactly those combos at the end
+// of the run — the whole Qt container lib is covered without a hardcoded list.
+// Container KINDS: seq (QList/QVector/QStack/QQueue), set (QSet), assoc
+// (QHash/QMap/QMultiHash/QMultiMap). ELEMENTS: basic types marshal natively
+// (string<->QString, ubyte[]<->QByteArray, prim<->prim); anything else is skipped
+// (opaque-element containers are a later TODO).
+enum CKind { seq, set, assoc }
+struct CElem {
+    string cxx;    // C++ element type for the typedef: QString / QByteArray / int / double ...
+    string dtype;  // D idiomatic element type: string / ubyte[] / int / double ...
+    string kind;   // marshaling strategy: "str" | "bytes" | "prim"
+}
+struct Combo {
+    CKind  kind;
+    string ctmpl;    // container template name: QList / QStack / QSet / QHash / QMultiMap ...
+    string cxxType;  // full C++ type: QHash<QString,QString>
+    string id;       // unique symbol id: qhash_str_str / qlist_int / qset_str ...
+    string idiomD;   // D container type: string[string] / int[] / string[] ...
+    CElem  key;      // assoc only
+    CElem  val;      // element (seq/set) or value (assoc)
+}
+__gshared Combo[string] COMBOS;   // id -> combo (populated during emission)
+
+// Resolve one template argument to a marshalable element, or false (unsupported).
+bool comboElem(CXType t, out CElem e) {
+    auto c = canon(t);
+    if (c == "QString")    { e = CElem("QString", "string", "str");       return true; }
+    if (c == "QByteArray") { e = CElem("QByteArray", "ubyte[]", "bytes"); return true; }
+    if (c == "void") return false;
+    if (auto p = c in PRIM) { e = CElem(c, *p, "prim"); return true; }
+    return false;
+}
+string elemSlug(CElem e) { return e.kind == "str" ? "str" : e.kind == "bytes" ? "bytes" : e.dtype; }
+
+// Register the container combo behind `t` (resolved canonically). Returns its id,
+// or "" if it isn't a supported container / an element isn't marshalable.
+string registerCombo(CXType t) {
+    auto ck = clang_getCanonicalType(t);
+    auto dn = clang_getCursorSpelling(clang_getTypeDeclaration(ck)).str;   // QVector canonicalizes to QList
+    CKind kind;
+    if (dn == "QList" || dn == "QVector" || dn == "QStack" || dn == "QQueue") kind = CKind.seq;
+    else if (dn == "QSet") kind = CKind.set;
+    else if (dn == "QHash" || dn == "QMultiHash" || dn == "QMap" || dn == "QMultiMap") kind = CKind.assoc;
+    else return "";
+    auto nargs = clang_Type_getNumTemplateArguments(ck);
+    Combo cb; cb.kind = kind; cb.ctmpl = dn;
+    if (kind == CKind.assoc) {
+        if (nargs < 2) return "";
+        if (!comboElem(clang_Type_getTemplateArgumentAsType(ck, 0), cb.key)) return "";
+        if (!comboElem(clang_Type_getTemplateArgumentAsType(ck, 1), cb.val)) return "";
+        cb.id      = dn.toLower ~ "_" ~ elemSlug(cb.key) ~ "_" ~ elemSlug(cb.val);
+        cb.cxxType = format("%s<%s,%s>", dn, cb.key.cxx, cb.val.cxx);
+        cb.idiomD  = format("%s[%s]", cb.val.dtype, keyDType(cb.key));
+    } else {
+        if (nargs < 1) return "";
+        if (!comboElem(clang_Type_getTemplateArgumentAsType(ck, 0), cb.val)) return "";
+        cb.id      = dn.toLower ~ "_" ~ elemSlug(cb.val);
+        cb.cxxType = format("%s<%s>", dn, cb.val.cxx);
+        cb.idiomD  = cb.val.dtype ~ "[]";
+    }
+    COMBOS[cb.id] = cb;
+    return cb.id;
+}
+
+// Param is a supported container? -> helper = combo id, idiom = D container type.
+// Raw param becomes void* (the container ptr, built by the runtime from native data).
+bool containerParam(CXType t, out string helper, out string idiom) {
+    auto ck = clang_getCanonicalType(t);
+    auto pt = ck.kind == CXType_LValueReference ? clang_getPointeeType(ck) : ck;
+    auto id = registerCombo(pt);
+    if (!id.length) return false;
+    helper = id; idiom = COMBOS[id].idiomD; return true;
+}
+
+// Return is a set/assoc container handled by a sret+iterate shim? (seq returns are
+// handled pure-D via tryQList; only set/assoc need the by-value+destruct shim.)
+bool containerReturn(CXType t, out string helper, out string idiom, out string retStruct) {
+    auto ck = clang_getCanonicalType(t);
+    auto dn = clang_getCursorSpelling(clang_getTypeDeclaration(ck)).str;
+    if (dn != "QSet" && dn != "QHash" && dn != "QMultiHash" && dn != "QMap" && dn != "QMultiMap") return false;
+    auto id = registerCombo(ck);
+    if (!id.length) return false;
+    helper = id; idiom = COMBOS[id].idiomD; retStruct = "Ret_" ~ id; return true;
+}
+
+// PySide-style `string` overload for a method with `const QString&` params
+// (`w.setText("hi")`): converts each to a scoped QString and calls the raw. ""
+// if the method has no such param. `pds` are the raw D param types in order.
+// Como strOverload, mas gera um CONSTRUTOR de struct `this(string...)` que delega
+// ao ctor cru — pro value type ser construído idiomaticamente: X("foo") em vez de
+// X_new("foo"). (só QString/QByteArray/QAnyStringView; container ctor é raro.)
+string ctorStrOv(string[] pds, ref bool[string] seen) {
+    if (!pds.any!(p => p == "ref const(QString)" || p == "ref const(QByteArray)"
+        || p == "QAnyStringView")) return "";
+    string[] op, pre, ca;
+    foreach (i, pd; pds) {
+        if (pd == "ref const(QString)") {
+            op ~= format("string a%d", i); pre ~= format("        auto _q%d = qstr(a%d);", i, i); ca ~= format("_q%d", i);
+        } else if (pd == "ref const(QByteArray)") {
+            op ~= format("string a%d", i); pre ~= format("        auto _q%d = qba(a%d);", i, i); ca ~= format("_q%d", i);
+        } else if (pd == "QAnyStringView") {
+            op ~= format("string a%d", i); pre ~= format("        auto _q%d = QAnyStringView(a%d);", i, i); ca ~= format("_q%d", i);
+        } else { op ~= format("%s a%d", pd, i); ca ~= format("a%d", i); }
+    }
+    auto key = "this|" ~ op.map!(o => o[0 .. o.lastIndexOf(' ')]).join(",");
+    if (key in seen) return "";
+    seen[key] = true;
+    return format("    extern(D) this(%s) {\n%s\n        this(%s);\n    }", op.join(", "), pre.join("\n"), ca.join(", "));
+}
+
+string strOverload(string mn, string retD, string kw, string cst, string[] pds, ref bool[string] seen) {
+    if (!pds.any!(p => p == "ref const(QString)" || p == "ref const(QByteArray)"
+        || p == "QAnyStringView" || p.startsWith("C:"))) return "";
+    string[] op, pre, ca;
+    foreach (i, pd; pds) {
+        if (pd == "ref const(QString)") {
+            op  ~= format("string a%d", i);
+            pre ~= format("        auto _q%d = qstr(a%d);", i, i);
+            ca  ~= format("_q%d", i);
+        } else if (pd == "ref const(QByteArray)") {
+            op  ~= format("string a%d", i);
+            pre ~= format("        auto _q%d = qba(a%d);", i, i);
+            ca  ~= format("_q%d", i);
+        } else if (pd == "QAnyStringView") {
+            op  ~= format("string a%d", i);
+            pre ~= format("        auto _q%d = QAnyStringView(a%d);", i, i);
+            ca  ~= format("_q%d", i);
+        } else if (pd.startsWith("C:")) {       // container param: build via runtime helper
+            auto pp = pd[2 .. $].split(":");    // [helper, idiom]
+            op  ~= format("%s a%d", pp[1], i);
+            pre ~= format("        auto _q%d = %s_from(a%d); scope(exit) %s_del(_q%d);", i, pp[0], i, pp[0], i);
+            ca  ~= format("_q%d", i);
+        } else { op ~= format("%s a%d", pd, i); ca ~= format("a%d", i); }
+    }
+    // dedup: an overload on both `const QString&` AND `const QByteArray&` (same other
+    // params) would yield two identical `(..., string)` overloads — keep the first.
+    auto key = dname(mn) ~ "|" ~ op.map!(o => o[0 .. o.lastIndexOf(' ')]).join(",") ~ "|" ~ cst;
+    if (key in seen) return "";
+    seen[key] = true;
+    auto ret = retD == "void" ? "" : "return ";
+    return format("    extern(D) %s%s %s(%s)%s {\n%s\n        %s%s(%s);\n    }",
+        kw, retD, dname(mn), op.join(", "), cst, pre.join("\n"), ret, dname(mn), ca.join(", "));
+}
+
+// The D primitive a field really is, unwrapping single-member wrapper structs
+// (Qt6 stores QSize/QPoint members as QtPrivate::QCheckedInt<int> — layout = int).
+string underlyingPrim(CXType t, int depth = 0) {
+    if (auto p = canon(t) in PRIM) return *p;
+    if (depth > 3) return null;
+    auto ck = clang_getCanonicalType(t);
+    // wrapper templated on its value type: Qt6 QCheckedInt<int, ...> -> int (the
+    // first template arg is the stored value). SÓ se for layout-compatível (mesmo
+    // sizeof) — senão std::basic_string<char> viraria `char` (é templado em char,
+    // mas tem 32 bytes: ponteiro+size+cap). Aí o struct ficaria com tamanho errado.
+    if (clang_Type_getNumTemplateArguments(ck) >= 1) {
+        auto ta = clang_Type_getTemplateArgumentAsType(ck, 0);
+        if (clang_Type_getSizeOf(ck) == clang_Type_getSizeOf(ta))
+            if (auto r = underlyingPrim(ta, depth + 1)) return r;
+    }
+    // single-field wrapper struct
+    auto d = clang_getCursorDefinition(clang_getTypeDeclaration(ck));
+    if (d.kind == CXCursor_ClassDecl || d.kind == CXCursor_StructDecl) {
+        CXType[] fs;
+        foreach (ch; children(d))
+            if (ch.kind == CXCursor_FieldDecl) fs ~= clang_getCursorType(ch);
+        if (fs.length == 1) return underlyingPrim(fs[0], depth + 1);
+    }
+    return null;
+}
+
+// Source text of an inline method's body ({...}), read straight from the header.
+// The translator is deliberately crude (C++ and D share expression syntax); the
+// per-module compile check is the safety net.
+private string[string] _fileCache;
+string bodyText(CXCursor m) {
+    import std.file : readText;
+    auto d = clang_getCursorDefinition(m);        // in-class decl -> its inline definition
+    auto ext = clang_getCursorExtent(d);
+    CXFile f; uint l, c, so, eo;
+    clang_getFileLocation(clang_getRangeStart(ext), &f, &l, &c, &so);
+    clang_getFileLocation(clang_getRangeEnd(ext), &f, &l, &c, &eo);
+    auto path = f ? clang_getFileName(f).str : "";
+    if (!path.length) return "";
+    if (path !in _fileCache) { try { _fileCache[path] = readText(path); } catch (Exception) { _fileCache[path] = ""; } }
+    auto src = _fileCache[path];
+    if (eo > src.length || so >= eo) return "";
+    auto slice = src[so .. eo];
+    auto b = slice.indexOf('{');
+    return b < 0 ? "" : slice[b .. $].idup;   // "{ ... }"
+}
+
+// Does a plain struct with these fields + inline methods compile standalone?
+// (No imports/Qt — the translator only needs to be self-consistent.)
+bool compileOk(string name, string[] fields, string[] methods) {
+    import std.file : write, remove, tempDir; import std.process : execute; import std.path : buildPath;
+    auto code = format("struct %s {\n%s\n%s\n}\n", name, fields.join("\n"), methods.join("\n"));
+    auto tmp = buildPath(tempDir, "qtd_vfy_" ~ name ~ ".d");
+    write(tmp, code);
+    scope (exit) remove(tmp);
+    return execute(["dmd", "-o-", tmp]).status == 0;   // dmd: só type-check, startup rápido (vs ldc2/LLVM)
+}
+
+// Keep only the translated inlines that actually compile. Fast path: try them all
+// at once; if that fails, fall back to per-method so one bad translation doesn't
+// sink the good ones. This is the safety net that lets the translator stay crude.
+string[] keepInlines(string name, string[] fields, string[] inlines) {
+    if (!inlines.length || compileOk(name, fields, inlines)) return inlines;
+    string[] kept;
+    foreach (m; inlines) if (compileOk(name, fields, [m])) kept ~= m;
+    return kept;
+}
+
+// Verificação de inlines: compilar um dmd por classe (keepInlines) era o gargalo
+// (~200+ spawns => ~50s). Agora é híbrido, em duas fases:
+//  1) libdparse IN-PROCESS (sem spawn): parseia cada inline; os que não parseiam
+//     (vazamento de C++: `::`, `template<>`, casts C++...) são a maioria e caem
+//     aqui de graça. µs por inline.
+//  2) 1 único `dmd -o-` nos SOBREVIVENTES: pega os erros SEMÂNTICOS (tipo, símbolo)
+//     que o parser não vê. Como a fase 1 já tirou os erros de sintaxe, o dmd não
+//     entra em recuperação/cascata, então 1 passada com atribuição por (arquivo,
+//     linha) basta — cada struct é um arquivo bN.d próprio.
+struct InlineJob { string name; string[] fields; string[] inlines; }
+__gshared InlineJob[] INLINE_JOBS;
+
+// Parse-check in-process via libdparse (só sintaxe). true = parseia limpo.
+private bool inlineParses(string inline) {
+    import dparse.lexer : getTokensForParser, LexerConfig, StringCache;
+    import dparse.parser : parseModule, MessageDelegate;
+    import dparse.rollback_allocator : RollbackAllocator;
+    auto code = "struct S {\n" ~ inline ~ "\n}\n";
+    LexerConfig cfg;
+    auto cache = new StringCache(StringCache.defaultBucketCount);
+    auto toks = getTokensForParser(cast(ubyte[]) code, cfg, cache);
+    RollbackAllocator rba;
+    uint errs;
+    MessageDelegate noop = (string fn, size_t l, size_t c, string m, bool e){};   // silencia mensagens
+    parseModule(toks, "c.d", &rba, noop, &errs);
+    return errs == 0;
+}
+
+void verifyInlinesBatched(string outDir, string dpkg) {
+    import std.file : readText, write, mkdirRecurse, rmdirRecurse, exists, tempDir;
+    import std.process : execute, thisProcessID; import std.path : buildPath, dirSeparator;
+    import std.array : replace; import std.regex : matchAll, regex;
+    import std.conv : to;
+    if (!INLINE_JOBS.length) return;
+
+    // FASE 1 — libdparse: mantém só os inlines que parseiam (in-process, sem spawn).
+    string[][] cur; cur.length = INLINE_JOBS.length;
+    bool[size_t] touched;
+    foreach (ji, j; INLINE_JOBS)
+        foreach (m; j.inlines) { if (inlineParses(m)) cur[ji] ~= m; else touched[ji] = true; }
+
+    // FASE 2 — dmd nos sobreviventes: remove erros SEMÂNTICOS. Itera porque remover
+    // um método pode quebrar outro que o chamava (cascata semântica: `last` chama
+    // `verify`; se `verify` cai, `last` vira "undefined verify"). A fase 1 já tirou
+    // os erros de sintaxe, então converge em 1-2 passadas.
+    // Unique per PROCESS: reggae runs several gend processes in parallel, so a shared
+    // temp dir would race (one process's rmdirRecurse deletes another's b*.d).
+    auto dir = buildPath(tempDir, "qtd_vfy_" ~ thisProcessID.to!string);
+    if (dir.exists) rmdirRecurse(dir);
+    mkdirRecurse(dir); scope (exit) rmdirRecurse(dir);
+    foreach (_iter; 0 .. 32) {
+        int[2][][] ranges; ranges.length = INLINE_JOBS.length;
+        string[] files;
+        foreach (ji, j; INLINE_JOBS) {
+            if (!cur[ji].length) continue;
+            string content = format("struct %s {\n", j.name);
+            int line = 2;
+            foreach (f; j.fields) { content ~= f ~ "\n"; line += cast(int) f.count('\n') + 1; }
+            int[2][] rr;
+            foreach (m; cur[ji]) { auto s = line; content ~= m ~ "\n"; line += cast(int) m.count('\n') + 1; rr ~= [s, line - 1]; }
+            content ~= "}\n";
+            ranges[ji] = rr;
+            auto f = buildPath(dir, format("b%d.d", ji));
+            write(f, content); files ~= f;
+        }
+        if (!files.length) break;
+        auto r = execute(["dmd", "-o-", "-verrors=0"] ~ files);
+        if (r.status == 0) break;                        // tudo compila -> pronto
+        bool[size_t][size_t] drop;
+        foreach (mt; r.output.matchAll(regex(`b(\d+)\.d\((\d+)`))) {
+            auto ji = mt[1].to!size_t, ln = mt[2].to!int;
+            if (ji >= INLINE_JOBS.length) continue;
+            foreach (i, rg; ranges[ji]) if (ln >= rg[0] && ln <= rg[1]) { drop[ji][i] = true; break; }
+        }
+        if (!drop.length) break;
+        foreach (ji, ds; drop) {
+            string[] keep;
+            foreach (i, m; cur[ji]) if (i !in ds) keep ~= m;
+            cur[ji] = keep; touched[ji] = true;
+        }
+    }
+
+    // re-escreve só os módulos que perderam inlines (remove os dropados do arquivo).
+    foreach (ji; touched.byKey) {
+        auto j = INLINE_JOBS[ji];
+        bool[string] kept; foreach (m; cur[ji]) kept[m] = true;
+        auto path = buildPath(outDir, dpkg.replace(".", dirSeparator), modBase(j.name) ~ ".d");
+        auto content = readText(path);
+        foreach (m; j.inlines) if (m !in kept) content = content.replace(m, "");
+        write(path, content);
+    }
+}
+
+// Names of methods declared in any (transitive) base — a derived override would
+// clash with the inherited `final` declaration in D, so we skip it (the base one
+// is inherited and callable).
+void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] seen) {
+    foreach (b0; baseDecls(node)) {
+        auto b = clang_getCursorDefinition(b0);   // base decl -> its definition (has children)
+        auto k = clang_getCursorUSR(b).str;
+        if (k.length) { if (k in seen) continue; seen[k] = true; }
+        foreach (c; children(b))
+            if (c.kind == CXCursor_CXXMethod && isPublic(c))
+                names[clang_getCursorSpelling(c).str] = true;
+        baseMethodNames(b, names, seen);
+    }
+}
+
+// The namespace clause for extern(C++, ...) from a qualified C++ name, or "".
+string nsClause(string cppName) {
+    auto i = cppName.lastIndexOf("::");
+    if (i < 0) return "";
+    auto ns = cppName[0 .. i];                       // e.g. "Qt3DCore" or "A::B"
+    return `, ` ~ ns.split("::").map!(p => `"` ~ p ~ `"`).join(", ");
+}
+
+// Emit the full .d unit for one class. Returns the D source (no .cpp/.h at all).
+// `imports` collects sibling module names this unit references.
+// A type has a vtable iff it (or any transitive base) declares a virtual method.
+// A base alone does NOT imply polymorphism — QMutex : QBasicMutex is a pure value
+// hierarchy. Getting this right decides struct (value) vs class (reference) emission.
+bool hasVirtualMethods(CXCursor decl) {
+    foreach (c; children(decl))
+        if ((c.kind == CXCursor_CXXMethod || c.kind == CXCursor_Destructor)
+            && clang_CXXMethod_isVirtual(c)) return true;
+    foreach (b; baseDecls(decl)) {
+        auto bd = clang_getCursorDefinition(b);
+        if ((bd.kind == CXCursor_ClassDecl || bd.kind == CXCursor_StructDecl)
+            && hasVirtualMethods(bd)) return true;
+    }
+    return false;
+}
+
+// Value-type inheritance: D structs can't inherit, so a non-polymorphic derived
+// struct inlines its base(s)' fields first (C++ single-inheritance layout order),
+// then its own — preserving sizeof and field offsets. Names are de-duplicated.
+void collectValueFields(CXCursor decl, ref string[] fields, ref bool[string] seen) {
+    foreach (b; baseDecls(decl)) {
+        auto bd = clang_getCursorDefinition(b);
+        if (bd.kind == CXCursor_ClassDecl || bd.kind == CXCursor_StructDecl)
+            collectValueFields(bd, fields, seen);
+    }
+    foreach (c; children(decl))
+        if (c.kind == CXCursor_FieldDecl) {
+            auto fn0 = dname(clang_getCursorSpelling(c).str);
+            auto fn = fn0; int k = 1;
+            while (fn in seen) fn = format("%s_%d", fn0, ++k);
+            seen[fn] = true;
+            auto ft = clang_getCursorType(c);
+            auto fsz = clang_Type_getSizeOf(ft);
+            // constant array field (float v[2]) -> the D fixed array, so inline methods
+            // reading v[i] see the real element type, not a reinterpreted byte.
+            auto fca = clang_getCanonicalType(ft);
+            if (fca.kind == CXType_ConstantArray) {
+                auto el = underlyingPrim(clang_getArrayElementType(fca));
+                if (el !is null && el != "void") {
+                    fields ~= format("    %s[%d] %s;", el, clang_getArraySize(fca), fn);
+                    continue;
+                }
+            }
+            auto p = underlyingPrim(ft);
+            if (p !is null && p != "void" && fsz > 0) fields ~= format("    %s %s;", p, fn);
+            else if (fsz > 0) fields ~= format("    ubyte[%d] %s;", fsz, fn);
+            else fields ~= format("    void* %s;", fn);   // incomplete/opaque -> pointer-width
+        }
+}
+
+// The operand's value type: strip a leading `ref const(X)` / `ref X` down to X so
+// a D operator overload can take it by value (and pass it as an lvalue to the raw).
+string paramValueType(string pd) {
+    if (pd.startsWith("ref const(") && pd.endsWith(")")) return pd["ref const(".length .. $ - 1];
+    if (pd.startsWith("ref ")) return pd["ref ".length .. $];
+    return pd;
+}
+
+// Map a C++ operator method to a D operator overload that calls the hidden raw
+// method `rawName`. Returns "" for operators D can't express this way.
+string operatorWrapper(string cxxOp, int nargs, string retD, string rawName, string pv, string cst) {
+    auto sym = cxxOp["operator".length .. $];
+    enum string[] bin = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"];
+    if (nargs == 1 && bin.canFind(sym))
+        return format("    %s opBinary(string op)(%s rhs)%s if (op == \"%s\") { return %s(rhs); }",
+            retD, pv, cst, sym, rawName);
+    if (nargs == 1 && sym == "==")
+        return format("    bool opEquals(%s rhs)%s { return %s(rhs); }", pv, cst, rawName);
+    if (nargs == 0 && (sym == "-" || sym == "+" || sym == "~"))
+        return format("    %s opUnary(string op)()%s if (op == \"%s\") { return %s(); }", retD, cst, sym, rawName);
+    return "";   // comparison (< > need opCmp/int), []/(), assignment, etc. — not yet
+}
+
+string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
+                   string manifest, out string[] imports) {
+    // template classes (QMetaTypeId<T>, ...) can't be bound and their qualified name
+    // carries '<' that would break the extern(C++, ns) clause — skip (becomes a stub).
+    if (cppName.canFind("<")) throw new Unmappable("template class: " ~ cppName);
+    // a class in an anonymous namespace has internal linkage (no cross-TU symbol)
+    // and its ns clause would carry "(anonymous namespace)" — unbindable, skip.
+    if (cppName.canFind("(anonymous")) throw new Unmappable("anonymous-namespace class: " ~ cppName);
+    bool[string] impSet;
+    bool[string] seenStrOv;   // dedup string-convert overloads (QString&/QByteArray& collide)
+    auto sz = clang_Type_getSizeOf(clang_getCursorType(cur));   // bytes, C++ layout
+
+    // primary base (single-inheritance chain modelled directly; secondary bases
+    // would get a pure-D offset accessor — not in this first pass)
+    string baseName, baseClause;
+    long baseSz = 0;
+    auto bases = baseDecls(cur);
+    // vtable iff a virtual exists anywhere in the hierarchy — a base alone doesn't
+    // imply one (QMutex : QBasicMutex is a pure value hierarchy).
+    bool hasVirtual = hasVirtualMethods(cur);
+    bool valueType = !hasVirtual;         // no vtable -> a by-value struct
+    // Inherit in D ONLY from a polymorphic base (real vtable/class). A non-polymorphic
+    // base of a polymorphic class (QTextStream : QIODeviceBase — a pure enum-holder
+    // mixin) is dropped: it has no vtable, so this class is the vtable root, and its
+    // bytes are absorbed by the size-padding below (ABI size stays correct).
+    string[] miMethods;   // as<Base>() upcasts for secondary bases (MI)
+    if (bases.length && !valueType) {
+        auto b = bases[0];
+        auto bdef = clang_getCursorDefinition(b);
+        bool basePoly = (bdef.kind == CXCursor_ClassDecl || bdef.kind == CXCursor_StructDecl)
+            && hasVirtualMethods(bdef);
+        if (basePoly) {
+            baseName = clang_getCursorSpelling(b).str;
+            baseClause = " : " ~ baseName;
+            baseSz = clang_Type_getSizeOf(clang_getCursorType(b));
+            impSet[baseName] = true;
+            PENDING_BASES[baseName] = bdef;   // must be generated in full
+        }
+        // Secondary bases: D can't multi-inherit, so reach each polymorphic secondary
+        // base via a static_cast offset shim (qtmi) exposed as as<Base>().
+        foreach (b2; bases[1 .. $]) {
+            auto b2def = clang_getCursorDefinition(b2);
+            if ((b2def.kind != CXCursor_ClassDecl && b2def.kind != CXCursor_StructDecl)
+                || !hasVirtualMethods(b2def)) continue;   // only polymorphic secondary bases
+            auto sbName = clang_getCursorSpelling(b2).str;
+            auto sbCpp = clang_getTypeSpelling(clang_getCursorType(b2)).str;
+            if (sbCpp.canFind("<")) continue;             // template base -> skip
+            impSet[sbName] = true;
+            PENDING_BASES[sbName] = b2def;
+            impSet["qtmi"] = true;
+            MICASTS ~= MICast(name, cppName, sbName, sbCpp);
+            miMethods ~= miCastMethod(name, sbName);
+        }
+    }
+    bool[string] baseM, seenB;
+    baseMethodNames(cur, baseM, seenB);   // skip overrides of inherited methods
+
+    // Subclass trampoline (spec "subclass"): collect the overridable virtuals whose
+    // signatures we can marshal, and register a Trampoline emitted into qtvirt.
+    if (!valueType && (name in SUBCLASS)) {
+        CXCursor[] vs; bool[string] vseen;
+        collectVirtuals(cur, vs, vseen);
+        TrampVirt[] tvs;
+        bool buildable = true;
+        foreach (v; vs) {
+            auto vn = clang_getCursorSpelling(v).str;
+            // moc internals must NOT be overridden; operators aren't methods here.
+            if (vn.startsWith("operator") || vn == "metaObject" || vn.startsWith("qt_")) continue;
+            TrampVirt tv; bool mapped;
+            try mapped = trampVirt(v, cppName, tv); catch (Unmappable) mapped = false;
+            if (mapped) tvs ~= tv;
+            else if (clang_CXXMethod_isPureVirtual(v) != 0) {
+                // an un-overridable pure virtual leaves the trampoline abstract
+                // (uninstantiable) — skip the whole class rather than emit broken C++.
+                stderr.writefln("subclass %s skipped: pure virtual %s(...) has an unmarshalable signature", name, vn);
+                buildable = false; break;
+            }
+        }
+        if (buildable && tvs.length) TRAMPS ~= Trampoline(name, cppName, tvs);
+    }
+
+    // ---- value type: ONE extern(C++) struct. Fields exposed (unwrapped); out-of-
+    // line methods are decls that link to Qt; INLINE methods are re-implemented in
+    // D by translating their body text (crude — the compile check keeps the ones
+    // that work). Construct via D field literal `QRect(x1, y1, x2, y2)`. ----------
+    if (valueType) {
+        string[] fields, rawDecls, inlineDefs;
+        bool[string] seenF;
+        int opIdx;
+        collectValueFields(cur, fields, seenF);   // base fields flattened in first (layout order)
+        foreach (c; children(cur)) {
+            if (!isPublic(c) || c.kind != CXCursor_CXXMethod) continue;
+            auto mn = clang_getCursorSpelling(c).str;
+            if (mn in baseM) continue;
+            bool isOp = mn.startsWith("operator");
+            if (isOp && isInline(c)) continue;   // inline operator -> no symbol (TODO: translate)
+            try {
+                string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
+                if (imp.length) impSet[imp] = true;
+                auto na = clang_Cursor_getNumArguments(c);
+                auto cst = clang_CXXMethod_isConst(c) ? " const" : "";
+                auto kw = clang_CXXMethod_isStatic(c) ? "static " : "";
+                if (isInline(c)) {
+                    auto b = bodyText(c);
+                    if (!b.length) continue;
+                    string[] ps;
+                    foreach (i; 0 .. na) {
+                        auto a = clang_Cursor_getArgument(c, i);
+                        string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                        if (pimp.length) impSet[pimp] = true;
+                        auto pn = clang_getCursorSpelling(a).str; if (!pn.length) pn = format("a%d", i);
+                        ps ~= format("%s %s", pd, dname(pn));   // real names -> body refers to them
+                    }
+                    inlineDefs ~= format("    %s%s %s(%s)%s %s", kw, retD, dname(mn), ps.join(", "), cst, b);
+                } else {
+                    string[] ps, pds;
+                    foreach (i; 0 .. na) {
+                        auto a = clang_Cursor_getArgument(c, i);
+                        string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                        if (pimp.length) impSet[pimp] = true;
+                        ps ~= format("%s a%d", pd, i);
+                        pds ~= pd;
+                    }
+                    auto mg = clang_Cursor_getMangling(c).str;
+                    if (isOp) {   // operator -> hidden raw + a D operator overload
+                        auto pv = na == 1 ? paramValueType(pds[0]) : "";
+                        auto rawNm = format("__op%d", opIdx);
+                        auto opw = operatorWrapper(mn, cast(int) na, retD, rawNm, pv, cst);
+                        if (!opw.length) continue;   // operator D can't express -> skip
+                        rawDecls ~= format("    private pragma(mangle, \"%s\") %s%s %s(%s)%s;",
+                            mg, kw, retD, rawNm, ps.join(", "), cst);
+                        rawDecls ~= opw;
+                        opIdx++;
+                        continue;
+                    }
+                    rawDecls ~= format("    pragma(mangle, \"%s\") %s%s %s(%s)%s;",
+                        mg, kw, retD, dname(mn), ps.join(", "), cst);
+                    auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
+                    if (ov.length) rawDecls ~= ov;
+                }
+            } catch (Unmappable) { /* unmapped type -> skip method */ }
+        }
+        // Verificação de inlines adiada p/ um lote único no fim (verifyInlinesBatched)
+        // — compilar um ldc2 por classe aqui era o gargalo da geração.
+        if (inlineDefs.length) INLINE_JOBS ~= InlineJob(name, fields.dup, inlineDefs.dup);
+        // Value-type ctor factories: a value type with a non-trivial (out-of-line)
+        // ctor (QFont/QPen/QIcon...) can't be built by a field literal. Emit a
+        // `<Name>_new(...)` that constructs in place via the mangled ctor.
+        string[] ctorFactories;     // free-functions <Name>_new (compat + no-arg)
+        string[] ctorMethods;       // construtores this(args) DENTRO do struct (idiomático)
+        bool[string] seenCtorSig;   // dedup: distintos ctors C++ podem colapsar na
+        int vci;                    // mesma assinatura D (ex.: QPaintDevice* vs const*)
+        // Um struct D com QUALQUER construtor perde o struct-literal posicional. Se os
+        // inlines do próprio value type o constroem por literal (ex. QTime(msecs) seta
+        // o campo), NÃO emitimos this() — manteria o literal quebrado. Aí fica só _new.
+        bool selfLiteral = inlineDefs.any!(d => d.canFind(name ~ "("));
+        foreach (c; children(cur)) {
+            if (!isPublic(c) || c.kind != CXCursor_Constructor) continue;
+            if (clang_CXXConstructor_isCopyConstructor(c) || clang_CXXConstructor_isMoveConstructor(c)) continue;
+            if (clang_CXXMethod_isDeleted(c)) continue;   // `= delete` ctor -> not constructible
+            // Inline/`= default` ctor -> no symbol. Instead of skipping, emit an out-of-line
+            // C++ shim (gap 1) — but only if the params are ABI-simple (scalars/pointers).
+            bool viaShim = isInline(c);
+            try {
+                string[] rps, fps, pds, ca, cppPs;
+                bool allDeflt = true;   // all params defaulted? -> don't emit this() (would be struct this())
+                bool allSimple = true;
+                auto na = clang_Cursor_getNumArguments(c);
+                foreach (i; 0 .. na) {
+                    auto a = clang_Cursor_getArgument(c, i);
+                    string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                    if (pimp.length) impSet[pimp] = true;
+                    if (!simpleAbiType(pd)) allSimple = false;
+                    // canonical spelling -> nested param types come out fully qualified
+                    auto _cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
+                    if (_cpps.canFind("(*")) allSimple = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
+                    cppPs ~= format("%s a%d", _cpps, i);
+                    rps ~= format("%s a%d", pd, i);
+                    string deflt;
+                    if (hasDefault(a)) {
+                        deflt = paramDefault(a, pd);
+                        if (!deflt.length && !pd.startsWith("ref ")) deflt = format(" = %s.init", pd);
+                    } else allDeflt = false;
+                    fps ~= format("%s a%d%s", pd, i, deflt);
+                    pds ~= pd; ca ~= format("a%d", i);
+                }
+                if (viaShim && (!allSimple || nestedInaccessible(cur))) continue;   // still a gap
+                auto sigKey = pds.join(",");   // same D signature -> redefinition; keep only the 1st
+                if (sigKey in seenCtorSig) continue;
+                seenCtorSig[sigKey] = true;
+                auto rawNm = format("__ctor_%s_%d", name, vci);
+                if (viaShim) {
+                    auto shimFn = format("qtd_new_%s_%d", name, vci);
+                    CTORSHIM ~= CtorShim(name, cppName, shimFn, cppPs, ca);
+                    ctorFactories ~= format("extern(C) private void %s(%s* self%s);",
+                        shimFn, name, rps.length ? ", " ~ rps.join(", ") : "");
+                    rawNm = shimFn;
+                } else {
+                auto mg = clang_Cursor_getMangling(c).str;
+                ctorFactories ~= format("private pragma(mangle, \"%s\") extern(C++) void %s(%s* self%s);",
+                    mg, rawNm, name, rps.length ? ", " ~ rps.join(", ") : "");
+                }
+                ctorFactories ~= format("%s %s_new(%s) {\n    %s r = void;\n    %s(&r%s);\n    return r;\n}",
+                    name, name, fps.join(", "), name, rawNm, ca.length ? ", " ~ ca.join(", ") : "");
+                auto ov = strOverload(name ~ "_new", name, "", "", pds, seenStrOv);
+                if (ov.length) ctorFactories ~= ov[4 .. $];   // drop the method indent for module scope
+                // Idiomatic this(args) ctor INSIDE the struct: X("foo") instead of
+                // X_new("foo"). Parameterized only (D forbids this() with no args).
+                if (na > 0 && !allDeflt && !selfLiteral) {   // !allDeflt: all-default this() is illegal for a struct
+                    // extern(D): otherwise an extern(C++) struct's ctor auto-mangles to
+                    // the C++ ctor symbol and collides with the raw __ctor (same mangle).
+                    ctorMethods ~= format("    extern(D) this(%s) { %s(&this%s); }",
+                        fps.join(", "), rawNm, ca.length ? ", " ~ ca.join(", ") : "");
+                    auto ovc = ctorStrOv(pds, seenStrOv);
+                    if (ovc.length) ctorMethods ~= ovc;
+                }
+                vci++;
+            } catch (Unmappable) {}
+        }
+        // Deep copy: a non-POD value type (std::string/CoW/... by value) can't be
+        // copied bitwise — the SSO self-pointer / the CoW refcount break. We emit a
+        // copy constructor + ~this() that call the out-of-line C++ shim (qtdctor),
+        // which runs the REAL C++ copy-ctor/dtor. Skip if the copy is deleted
+        // (DISABLE_COPY): the current bitwise behavior stays.
+        bool needsDeepCopy = nonTriviallyCopyable(clang_getCursorType(cur)) && !copyDeleted(cur);
+        if (needsDeepCopy) {
+            CTORCOPY ~= CtorCopy(name, cppName);
+            // extern(C) decls at MODULE scope (on a static member extern(C) doesn't take
+            // C linkage — the name comes out D-mangled); copy-ctor/~this() in the struct.
+            ctorFactories ~= format(
+                "extern(C) private void qtd_cctor_%s(void*, const(void)*);\n"
+                ~ "extern(C) private void qtd_dtor_%s(void*);", name, name);
+            inlineDefs ~= format(
+                "    extern(D) this(ref const(%s) rhs) { qtd_cctor_%s(cast(void*)&this, cast(const(void)*)&rhs); }\n"
+                ~ "    extern(D) ~this() { qtd_dtor_%s(cast(void*)&this); }",
+                name, name, name);
+        }
+        impSet.remove(name);
+        imports = impSet.byKey.array.sort.array;
+        auto impLines = imports.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+        auto bodyV = (nestedEnumLines(cur) ~ fields ~ rawDecls ~ inlineDefs ~ ctorMethods).join("\n");
+        return format("%s\nmodule %s.%s;\n%s\n\nextern (C++%s) struct %s {\n%s\n}\n%s\n",
+            manifest, dpkg, modBase(name), impLines, nsClause(cppName), name, bodyV,
+            ctorFactories.join("\n"));
+    }
+
+    // ---- WRAPPER mode: a GC wrapper class extending holder.QtdObject that holds a
+    // nullable _cpp and delegates to C++ via module-level pragma(mangle) decls taking an
+    // explicit `void* self`. Object params are unwrapped (a.ptr()), object returns wrapped
+    // (T.wrap(r)). Signals/containers/MI/trampolines are added in later steps (skipped here).
+    if (WRAPPER) {
+        auto wbase = baseName.length ? baseName : "QtdObject";
+        string[] wm;      // wrapper class methods
+        string[] wd;      // module-scope decls (pragma(mangle) members, enum size, ctor factories)
+        bool[string] seenW, seenSigW;
+        int[string] sigNameCountW, allNameCountW;
+        foreach (c; children(cur))
+            if (c.kind == CXCursor_CXXMethod) {
+                auto nm = clang_getCursorSpelling(c).str;
+                allNameCountW[nm]++;
+                if (isSignal(c)) sigNameCountW[nm]++;
+            }
+        int wi;
+        // one method: build the module-level self-taking decl + the delegating wrapper method
+        void emitWrapMethod(CXCursor c) {
+            auto mn = clang_getCursorSpelling(c).str;
+            // qt_* are MOC/Q_GADGET internals (qt_metacast, qt_metacall,
+            // qt_check_for_QGADGET_macro) — never user-callable, and some reference
+            // symbols Qt doesn't export (ldc dead-strips them; dmd whole-program breaks).
+            if (mn.startsWith("operator") || mn.startsWith("qt_") || mn in baseM) return;
+            // Qt signal -> a connect<Signal>(delegate) method (object args wrapped by the tramp).
+            if (isSignal(c)) {
+                if (sigNameCountW.get(mn, 0) == 1 && allNameCountW.get(mn, 0) == 1 && mn !in seenSigW) {
+                    Signal s; s.dClass = name; s.cppClass = cppName; s.name = mn;
+                    bool ok = true;
+                    auto nas = clang_Cursor_getNumArguments(c);
+                    foreach (i; 0 .. nas) {
+                        auto at = clang_getCursorType(clang_Cursor_getArgument(c, i));
+                        if (canon(at).canFind("QPrivateSignal")) continue;
+                        try { if (!signalArg(at, cast(int) i, s)) { ok = false; break; } }
+                        catch (Unmappable) { ok = false; break; }
+                    }
+                    if (ok) {
+                        seenSigW[mn] = true; SIGNALS ~= s; impSet["qtsignals"] = true;
+                        foreach (im; s.imports) impSet[im] = true;
+                        wm ~= signalConnectMethod(s);
+                    }
+                }
+                return;
+            }
+            if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; return; }
+            bool inl = isInline(c);   // no symbol -> a qtd_m_ C++ trampoline shim (self->method)
+            auto rrt = clang_getCursorResultType(c);
+            string _a, _b, _cc;
+            if (containerReturn(rrt, _a, _b, _cc)) return;   // QHash/QMap: later step
+            auto qtidR = inl ? "" : tryQList(rrt);   // QList<T> return -> T[]; inline QList has no symbol -> skip
+            if (qtidR.length) {
+                auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
+                auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
+                auto pr = emitQListReturn(c, mn, qtidR, kw2, cst2, impSet, dpkg);
+                if (pr.length) { wd ~= pr[0]; wm ~= pr[1]; }   // raw -> module scope, idiom -> class
+                return;
+            }
+            try {
+                bool isStat = clang_CXXMethod_isStatic(c) != 0;
+                string imp; auto retD = mapCxxType(rrt, imp); if (imp.length) impSet[imp] = true;
+                auto retW = wrapperTypeOf(rrt);
+                string[] wps, declps, callargs, wrapArgs, cppPs, anames;
+                auto na = clang_Cursor_getNumArguments(c);
+                foreach (i; 0 .. na) {
+                    auto a = clang_Cursor_getArgument(c, i);
+                    string helper, idiom;
+                    if (containerParam(clang_getCursorType(a), helper, idiom)) return;   // later step
+                    string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                    if (pimp.length) impSet[pimp] = true;
+                    auto pw = wrapperTypeOf(clang_getCursorType(a));
+                    auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
+                    if (inl && cpps.canFind("(*")) return;   // fn-ptr param can't be a shim decl
+                    wps ~= format("%s a%d", pd, i);
+                    declps ~= format("%s a%d", pw.length ? "void*" : pd, i);
+                    cppPs ~= format("%s a%d", cpps, i);
+                    anames ~= format("a%d", i);
+                    callargs ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
+                    if (pw.length) wrapArgs ~= format("a%d", i);
+                }
+                if (inl && nestedInaccessible(cur)) return;
+                auto key = dname(mn) ~ "|" ~ wps.join(",") ~ "|" ~ (isStat ? "s" : "");
+                if (key in seenW) return;
+                seenW[key] = true;
+                bool isConst0 = clang_CXXMethod_isConst(c) != 0;
+                auto declRet = retW.length ? "void*" : retD;
+                auto callFn = format(inl ? "qtd_m_%s_%d" : "__%s_%d", name, wi);
+                auto declSelf = isStat ? "" : (declps.length ? "void* self, " : "void* self");
+                if (inl) {
+                    auto cppRet = retW.length ? clang_getTypeSpelling(clang_getCanonicalType(rrt)).str
+                        : retD == "void" ? "void" : clang_getTypeSpelling(clang_getCanonicalType(rrt)).str;
+                    METHODSHIM ~= MethodShim(callFn, cppName, cppRet, mn, cppPs, anames, isStat, isConst0);
+                    wd ~= format("extern(C) private %s %s(%s%s);", declRet, callFn, declSelf, declps.join(", "));
+                } else
+                    wd ~= format("private pragma(mangle, \"%s\") extern(C++) %s %s(%s%s);",
+                        clang_Cursor_getMangling(c).str, declRet, callFn, declSelf, declps.join(", "));
+                auto self = isStat ? "" : (callargs.length ? "this.ptr(), " : "this.ptr()");
+                auto callE = format("%s(%s%s)", callFn, self, callargs.join(", "));
+                auto kw = isStat ? "static " : "final ";
+                // A non-const method may re-parent `this` or an object arg (setParent, a layout
+                // add/remove, ...). Re-check their pins after the call: gained a parent -> pin,
+                // lost it -> unpin (so an unparented, unheld child becomes GC-collectable).
+                bool isConst = clang_CXXMethod_isConst(c) != 0;
+                string[] reck;
+                if (!isConst) {
+                    if (!isStat) reck ~= "holder.reparented(this);";
+                    foreach (wa; wrapArgs) reck ~= format("holder.reparented(%s);", wa);
+                }
+                string body_;
+                // ref returns are accessors that don't reparent -> keep the one-liner (a
+                // local + `return _r` would escape a reference to the local anyway).
+                if (reck.length && !retD.startsWith("ref ")) {   // multi-statement: call, re-check, return
+                    auto pre = retD == "void" ? format("%s;", callE) : format("auto _r = %s;", callE);
+                    auto ret = retD == "void" ? "" : (retW.length ? format(" return %s.wrap(_r);", retW) : " return _r;");
+                    body_ = pre ~ " " ~ reck.join(" ") ~ ret;
+                } else {
+                    body_ = retD == "void" ? format("%s;", callE)
+                        : retW.length ? format("return %s.wrap(%s);", retW, callE) : format("return %s;", callE);
+                }
+                wm ~= format("    %s%s %s(%s) { %s }", kw, retD, dname(mn), wps.join(", "), body_);
+                wi++;
+            } catch (Unmappable) {}
+        }
+        // one constructor: a _new factory that heap-allocates, runs the C++ ctor, and wraps.
+        int wci; bool[string] seenCW;
+        bool abstractW = clang_CXXRecord_isAbstract(cur) != 0;
+        void emitWrapCtor(CXCursor c) {
+            if (clang_CXXMethod_isDeleted(c)) return;
+            bool viaShim = isInline(c);
+            try {
+                string[] dparams, declps, callargs, cppPs, anames; bool allSimple = true;
+                auto na = clang_Cursor_getNumArguments(c);
+                foreach (i; 0 .. na) {
+                    auto a = clang_Cursor_getArgument(c, i);
+                    string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                    if (pimp.length) impSet[pimp] = true;
+                    auto pw = wrapperTypeOf(clang_getCursorType(a));
+                    if (!simpleAbiType(pd) && pw.length == 0) allSimple = false;
+                    auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
+                    if (cpps.canFind("(*")) allSimple = false;
+                    cppPs ~= format("%s a%d", cpps, i);
+                    anames ~= format("a%d", i);
+                    declps ~= format("%s a%d", pw.length ? "void*" : pd, i);
+                    string deflt = pw.length ? " = null" : (hasDefault(a) && !pd.startsWith("ref ") ? paramDefault(a, pd) : "");
+                    if (!deflt.length && !pd.startsWith("ref ") && hasDefault(a)) deflt = format(" = %s.init", pd);
+                    dparams ~= format("%s a%d%s", pd, i, deflt);
+                    callargs ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
+                }
+                if (viaShim && (!allSimple || nestedInaccessible(cur))) return;
+                auto sk = declps.map!(p => p.split(" ")[0]).join(",");
+                if (sk in seenCW) return; seenCW[sk] = true;
+                string ctorFn;
+                if (viaShim) {
+                    ctorFn = format("qtd_new_%s_%d", name, wci);
+                    CTORSHIM ~= CtorShim(name, cppName, ctorFn, cppPs, anames);
+                    wd ~= format("extern(C) private void %s(void* self%s);", ctorFn,
+                        declps.length ? ", " ~ declps.join(", ") : "");
+                } else {
+                    ctorFn = format("__ctor_%s_%d", name, wci);
+                    wd ~= format("private pragma(mangle, \"%s\") extern(C++) void %s(void* self%s);",
+                        clang_Cursor_getMangling(c).str, ctorFn, declps.length ? ", " ~ declps.join(", ") : "");
+                }
+                wd ~= format("%s %s_new(%s) {\n    auto __r = __cpp_new(__%s_size);\n    %s(__r%s);\n    return %s.wrap(__r);\n}",
+                    name, name, dparams.join(", "), name, ctorFn,
+                    callargs.length ? ", " ~ callargs.join(", ") : "", name);
+                wci++;
+            } catch (Unmappable) {}
+        }
+        foreach (c; children(cur))
+            if (isPublic(c) && c.kind == CXCursor_CXXMethod) emitWrapMethod(c);
+        if (!abstractW) foreach (c; children(cur))
+            if (isPublic(c) && c.kind == CXCursor_Constructor
+                && !clang_CXXConstructor_isCopyConstructor(c) && !clang_CXXConstructor_isMoveConstructor(c))
+                emitWrapCtor(c);
+        impSet.remove(name);
+        imports = impSet.byKey.array.sort.array;
+        auto impLines = "import holder;\nimport cxxrt;\n"
+            ~ imports.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+        // isQObject is constant per wrapper hierarchy -> set at the base-less root; derived
+        // just super(c). Non-QObjects (no destroyed()/parent()) are dispose-only in the holder.
+        // isQObject walks BASES for QObject, so QObject itself reports false — include it.
+        auto ctorSuper = baseName.length ? "super(c)"
+            : format("super(c, %s)", (isQObject(cur) || name == "QObject") ? "true" : "false");
+        auto ctorBody = format("    this(void* c) @nogc nothrow { %s; }\n"
+            ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(p)); }",
+            ctorSuper, name, name, name);
+        auto body_ = ([ctorBody] ~ nestedEnumLines(cur) ~ wm ~ miMethods).join("\n");
+        return format("%s\nmodule %s.%s;\n%s\n\nenum __%s_size = %d;\nclass %s : %s {\n%s\n}\n\n%s\n",
+            manifest, dpkg, modBase(name), impLines, name, clang_Type_getSizeOf(clang_getCursorType(cur)),
+            name, wbase, body_, wd.join("\n"));
+    }
+
+    string[] methodLines;
+    string[] shimDecls;     // module-scope extern(C) decls for inline-method trampolines
+    bool[string] seenMethodShimSig;   // dedupe inline overloads that collapse to one D sig
+    bool[string] seenSig;   // dedupe overloaded signals (one connect<Sig> per name)
+    int[string] sigNameCount, allNameCount;
+    foreach (c; children(cur))
+        if (c.kind == CXCursor_CXXMethod) {
+            auto nm = clang_getCursorSpelling(c).str;
+            allNameCount[nm]++;                          // &Class::nm é ambíguo se nm colide
+            if (isSignal(c)) sigNameCount[nm]++;         // com QUALQUER outro método (ex.: QProcess::error)
+        }
+    CXCursor[] ctors;
+    foreach (c; children(cur)) {
+        if (!isPublic(c)) continue;
+        if (c.kind == CXCursor_Constructor) {
+            if (clang_CXXConstructor_isCopyConstructor(c) || clang_CXXConstructor_isMoveConstructor(c))
+                continue;
+            ctors ~= c;
+            continue;
+        }
+        if (c.kind != CXCursor_CXXMethod) continue;
+        auto mn = clang_getCursorSpelling(c).str;
+        if (mn.startsWith("operator")) continue;
+        // Qt signal -> a connect<Signal>(delegate) method (via a gen-phase functor
+        // shim), NOT a callable binding. Non-overloaded; args marshaled to the delegate.
+        if (isSignal(c)) {
+            if (sigNameCount.get(mn, 0) == 1 && allNameCount.get(mn, 0) == 1 && mn !in seenSig) {
+                Signal s; s.dClass = name; s.cppClass = cppName; s.name = mn;
+                bool ok = true;
+                auto na = clang_Cursor_getNumArguments(c);
+                foreach (i; 0 .. na) {
+                    auto at = clang_getCursorType(clang_Cursor_getArgument(c, i));
+                    if (canon(at).canFind("QPrivateSignal")) continue;   // Qt's marker arg
+                    try { if (!signalArg(at, cast(int) i, s)) { ok = false; break; } }
+                    catch (Unmappable) { ok = false; break; }
+                }
+                if (ok) {
+                    seenSig[mn] = true;
+                    SIGNALS ~= s;
+                    impSet["qtsignals"] = true;
+                    foreach (im; s.imports) impSet[im] = true;
+                    methodLines ~= signalConnectMethod(s);
+                }
+            }
+            continue;                                 // never emit a signal as a plain method
+        }
+        if (mn in baseM) continue;                    // inherited override -> use the base decl
+        if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; continue; }
+        // Inline method -> no symbol; can't translate the body (opaque class). Emit an
+        // out-of-line C++ trampoline that calls self->method(args), if ret+params are
+        // ABI-simple (getter/setter shape). Otherwise skip (still a gap).
+        if (isInline(c)) {
+            try {
+                string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
+                bool simpleRet = retD == "void" || simpleAbiType(retD);
+                bool isStat = clang_CXXMethod_isStatic(c) != 0;
+                string[] rps, ca, cppPs; bool allSimple = true;
+                auto na = clang_Cursor_getNumArguments(c);
+                foreach (i; 0 .. na) {
+                    auto a = clang_Cursor_getArgument(c, i);
+                    string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                    if (pimp.length) impSet[pimp] = true;
+                    if (!simpleAbiType(pd)) allSimple = false;
+                    auto _cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
+                    if (_cpps.canFind("(*")) allSimple = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
+                    cppPs ~= format("%s a%d", _cpps, i);
+                    rps ~= format("%s a%d", pd, i);
+                    ca ~= format("a%d", i);
+                }
+                if (!simpleRet || !allSimple || nestedInaccessible(cur)) continue;
+                // dedupe overloads that collapse to one D signature (e.g. setTextAlignment(int)
+                // and setTextAlignment(Qt::Alignment) both map to (int)); keep the first.
+                auto msKey = dname(mn) ~ "|" ~ rps.join(",") ~ "|" ~ (isStat ? "s" : "");
+                if (msKey in seenMethodShimSig) continue;
+                seenMethodShimSig[msKey] = true;
+                if (imp.length) impSet[imp] = true;
+                auto shimFn = format("qtd_m_%s_%d", name, methodLines.length);
+                auto cppRet = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
+                bool isCst = clang_CXXMethod_isConst(c) != 0;
+                METHODSHIM ~= MethodShim(shimFn, cppName, cppRet, mn, cppPs, ca, isStat, isCst);
+                auto kw = isStat ? "static " : "final ";
+                auto cst = isCst ? " const" : "";
+                auto selfDecl = isStat ? "" : "void* self";
+                auto declPs = (selfDecl.length && rps.length) ? selfDecl ~ ", " ~ rps.join(", ")
+                            : selfDecl ~ rps.join(", ");
+                // extern(C) decl at MODULE scope (a static member wouldn't get C linkage)
+                shimDecls ~= format("extern(C) private %s %s(%s);", retD, shimFn, declPs);
+                auto callArgs = isStat ? ca.join(", ")
+                    : (ca.length ? "cast(void*) this, " ~ ca.join(", ") : "cast(void*) this");
+                auto ret = retD == "void" ? "" : "return ";
+                methodLines ~= format("    %s%s %s(%s)%s { %s%s(%s); }",
+                    kw, retD, dname(mn), rps.join(", "), cst, ret, shimFn, callArgs);
+            } catch (Unmappable) {}
+            continue;
+        }
+        try {
+            string ch, cid, crs;   // QHash<K,V> return -> V[K] via sret + iterate shim
+            if (containerReturn(clang_getCursorResultType(c), ch, cid, crs)) {
+                impSet["qtcontainers"] = true;
+                auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
+                auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
+                string[] rps, cargs; bool okc = true;
+                auto nap = clang_Cursor_getNumArguments(c);
+                foreach (i; 0 .. nap) {
+                    auto a = clang_Cursor_getArgument(c, i);
+                    string pimp, pd;
+                    try pd = mapCxxType(clang_getCursorType(a), pimp); catch (Unmappable) { okc = false; break; }
+                    if (pimp.length) impSet[pimp] = true;
+                    rps ~= format("%s a%d", pd, i); cargs ~= format("a%d", i);
+                }
+                if (okc) {
+                    auto mgc = clang_Cursor_getMangling(c).str;
+                    auto rawN = "__" ~ dname(mn) ~ "_qc";
+                    methodLines ~= format("    private pragma(mangle, \"%s\") %s%s %s(%s)%s;",
+                        mgc, kw2, crs, rawN, rps.join(", "), cst2);
+                    methodLines ~= format("    extern (D) %s%s %s(%s)%s {\n        auto _r = %s(%s);\n        return %s_to(cast(void*) &_r);\n    }",
+                        kw2, cid, dname(mn), rps.join(", "), cst2, rawN, cargs.join(", "), ch);
+                }
+                continue;
+            }
+            auto qtid = tryQList(clang_getCursorResultType(c));   // QList<T> return -> T[]
+            if (qtid.length) {
+                auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
+                auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
+                auto pr = emitQListReturn(c, mn, qtid, kw2, cst2, impSet, dpkg);
+                if (pr.length) { methodLines ~= pr[0]; methodLines ~= pr[1]; }
+                continue;
+            }
+            string imp;
+            auto retD = mapCxxType(clang_getCursorResultType(c), imp);
+            if (imp.length) impSet[imp] = true;
+            string[] ps, pds;
+            auto na = clang_Cursor_getNumArguments(c);
+            foreach (i; 0 .. na) {
+                auto a = clang_Cursor_getArgument(c, i);
+                string helper, idiom;
+                if (containerParam(clang_getCursorType(a), helper, idiom)) {
+                    impSet["qtcontainers"] = true;      // raw takes the container ptr as void*
+                    ps ~= format("void* a%d", i);
+                    pds ~= "C:" ~ helper ~ ":" ~ idiom;
+                } else {
+                    string pimp;
+                    auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                    if (pimp.length) impSet[pimp] = true;
+                    ps ~= format("%s a%d", pd, i);
+                    pds ~= pd;
+                }
+            }
+            auto kw = clang_CXXMethod_isStatic(c) ? "static " : "final ";
+            auto cst = clang_CXXMethod_isConst(c) ? " const" : "";
+            // pragma(mangle) with clang's exact symbol -> identical on ldc & dmd
+            // (D's own extern(C++) mangling diverges on Itanium substitutions).
+            auto mg = clang_Cursor_getMangling(c).str;
+            methodLines ~= format("    pragma(mangle, \"%s\") %s%s %s(%s)%s;",
+                mg, kw, retD, dname(mn), ps.join(", "), cst);
+            auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
+            if (ov.length) methodLines ~= ov;
+        } catch (Unmappable) { /* skip method with an unmapped type */ }
+    }
+
+    // constructors -> C++-heap construction helpers (operator new + real ctor
+    // via its exact mangled symbol). D `new` would GC-allocate, which crashes
+    // when Qt deletes the object; C++-heap keeps the allocators matched.
+    // Value-type ctors are inline (no symbol) — construct via D struct literal
+    // `QSize(w, h)` instead. Only polymorphic classes get C++-heap ctor helpers.
+    string[] ctorHelpers;
+    int ci;
+    // Abstract classes (an unoverridden pure virtual) can't be instantiated — their
+    // complete-object ctor (C1) isn't even emitted by C++ — so skip the _new factory.
+    bool abstractCls = clang_CXXRecord_isAbstract(cur) != 0;
+    bool[string] seenCtorSig;   // dedup: ctors C++ distintos que colapsam na mesma assinatura D
+    if (!valueType && !abstractCls) foreach (c; ctors) {
+        if (clang_CXXMethod_isDeleted(c)) continue;   // `= delete` ctor -> not constructible
+        // Inline/`= default` ctor -> no symbol. The out-of-line shim (gap 1) does a
+        // placement-new into the heap buffer; only for ABI-simple params.
+        bool viaShim = isInline(c);
+        try {
+            string[] sig, callArgs, dparams, pdtypes, cppPs;
+            bool allSimple = true;
+            auto na = clang_Cursor_getNumArguments(c);
+            foreach (i; 0 .. na) {
+                auto a = clang_Cursor_getArgument(c, i);
+                string pimp;
+                auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                if (pimp.length) impSet[pimp] = true;
+                if (!simpleAbiType(pd)) allSimple = false;
+                auto _cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
+                if (_cpps.canFind("(*")) allSimple = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
+                cppPs ~= format("%s a%d", _cpps, i);
+                pdtypes ~= pd;
+                sig ~= format("%s a%d", pd, i);
+                // Carry C++ defaults so ordering stays legal (D: once a param is
+                // defaulted, all trailing ones must be too). Parent-type pointers
+                // default to null as before; other defaulted params evaluate their
+                // real C++ default, with a `.init` fallback to preserve ordering.
+                string deflt;
+                if (pd == baseName || pd.endsWith(name)) deflt = " = null";
+                else if (hasDefault(a)) {
+                    deflt = paramDefault(a, pd);
+                    if (!deflt.length && !pd.startsWith("ref ")) deflt = format(" = %s.init", pd);
+                }
+                dparams ~= format("%s a%d%s", pd, i, deflt);
+                callArgs ~= format("a%d", i);
+            }
+            if (viaShim && (!allSimple || nestedInaccessible(cur))) continue;   // still a gap
+            auto sigKey = pdtypes.join(",");   // mesma assinatura D -> redefinição; fica só a 1ª
+            if (sigKey in seenCtorSig) continue;
+            seenCtorSig[sigKey] = true;
+            auto ctorFn = format("__ctor_%s_%d", name, ci);
+            auto selfTy = valueType ? name ~ "*" : name;   // struct ctor's `this` is a pointer
+            auto callTail = callArgs.length ? ", " ~ callArgs.join(", ") : "";
+            if (viaShim) {
+                ctorFn = format("qtd_new_%s_%d", name, ci);
+                CTORSHIM ~= CtorShim(name, cppName, ctorFn, cppPs, callArgs);
+                ctorHelpers ~= format("extern(C) private void %s(%s self%s);",
+                    ctorFn, selfTy, sig.length ? ", " ~ sig.join(", ") : "");
+            } else {
+                auto mangled = clang_Cursor_getMangling(c).str;
+                ctorHelpers ~= format(`private pragma(mangle, "%s") extern(C++) void %s(%s self%s);`,
+                    mangled, ctorFn, selfTy, sig.length ? ", " ~ sig.join(", ") : "");
+            }
+            ctorHelpers ~= format("%s %s_new(%s) {", name, name, dparams.join(", "));
+            if (valueType) {                                // by-value on the stack
+                ctorHelpers ~= format("    %s self = void;", name);
+                ctorHelpers ~= format("    %s(&self%s);", ctorFn, callTail);
+            } else {                                        // C++ heap (Qt owns/deletes)
+                ctorHelpers ~= format("    auto self = cast(%s) __cpp_new(__traits(classInstanceSize, %s));", name, name);
+                ctorHelpers ~= format("    %s(self%s);", ctorFn, callTail);
+            }
+            ctorHelpers ~= "    return self;";
+            ctorHelpers ~= "}";
+            ci++;
+        } catch (Unmappable) { /* skip ctor with an unmapped param */ }
+    }
+
+    string[] body_;
+    if (valueType) {
+        // Expose the real data members (from libclang): value-type accessors are
+        // almost all inline (unlinkable), so direct field access is how you read
+        // them. Layout matches C++, so `s.wd` reads the right bytes.
+        foreach (c; children(cur))
+            if (c.kind == CXCursor_FieldDecl) {
+                auto fn = clang_getCursorSpelling(c).str;
+                auto ft = clang_getCursorType(c);
+                if (auto p = underlyingPrim(ft)) body_ ~= format("    %s %s;", p, dname(fn));
+                else body_ ~= format("    ubyte[%d] %s;", clang_Type_getSizeOf(ft), dname(fn));
+            }
+    } else {
+        // polymorphic: opaque padding so operator-new allocates the exact C++ size
+        long pad = sz - (baseName.length ? baseSz : 8);   // 8 = the vptr on the root
+        if (pad > 0) body_ ~= format("    ubyte[%d] __pad;", pad);
+        // root gets its vptr via a declared dtor. EXTERN(D) + corpo vazio: (a) só-
+        // declaração `~this();` referencia o dtor C++ externo, nem sempre exportado
+        // (QAbstractUndoItem inline no Qt5 -> undefined); (b) `~this(){}` extern(C++)
+        // DEFINE o símbolo do dtor C++ e colide com uma lib estática que também o
+        // define (libsample.a). extern(D) mangla em D: não referencia nem define o
+        // símbolo C++. Objetos polimórficos são donos do C++ (nunca destruídos por D).
+        if (!baseName.length) body_ ~= "    extern(D) ~this() {}";
+
+    }
+    body_ = nestedEnumLines(cur) ~ body_ ~ methodLines ~ miMethods;   // + secondary-base upcasts
+
+    auto kind = hasVirtual ? "class" : "struct";
+    impSet.remove(name);
+    imports = impSet.byKey.array.sort.array;   // proper class names
+    auto impLines = imports.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+
+    return format("%s\nmodule %s.%s;\nimport cxxrt;\n%s\n\nextern (C++%s) %s %s%s {\n%s\n}\n\n%s\n%s\n",
+        manifest, dpkg, modBase(name), impLines, nsClause(cppName), kind, name, baseClause,
+        body_.join("\n"), ctorHelpers.join("\n"), shimDecls.join("\n"));
+}
+
+// Enums nested in a class -> emitted inside its D declaration (so the mangling
+// substitution matches, e.g. QThread::Priority). Returns indented `enum` lines.
+string[] nestedEnumLines(CXCursor cur) {
+    string[] L;
+    foreach (c; children(cur))
+        if (c.kind == CXCursor_EnumDecl && isPublic(c)) {
+            auto en = clang_getCursorSpelling(c).str;
+            // anonymous enum: empty spelling, or libclang's synthetic "(unnamed enum at ...)".
+            bool anon = !en.length || en.canFind('(');
+            auto ut = canon(clang_getEnumDeclIntegerType(c));
+            auto dut = ut in PRIM ? PRIM[ut] : "int";
+            string[] ms;
+            foreach (ch; children(c))
+                if (ch.kind == CXCursor_EnumConstantDecl)
+                    ms ~= format("        %s = cast(%s) %d,", dname(clang_getCursorSpelling(ch).str), dut,
+                        clang_getEnumConstantDeclValue(ch));
+            if (!ms.length) continue;
+            // anonymous -> nameless D enum (`enum : uint {..}`), exposing the constants.
+            L ~= format("    enum %s: %s {\n%s\n    }", anon ? "" : en ~ " ", dut, ms.join("\n"));
+        }
+    return L;
+}
+
+// Emit one enum module: extern(C++, <scope>) enum Name : underlying { members }.
+// The scope (class or namespace) makes the param mangle N<scope><name>E — matching
+// C++ — while the enum is still plain D. `scope` covers Qt::X and QThread::Priority.
+// Namespace/global free functions -> one `<dpkg>.functions` module of extern(C++)
+// free-function declarations (pragma(mangle) with the exact symbol, which already
+// encodes the namespace). Inline/template functions and unmapped signatures are
+// skipped. Overloads with the same D signature are de-duplicated.
+string emitFunctionsModule(CXCursor[] fns, string dpkg, string manifest, out string[] imports) {
+    bool[string] impSet, seenSig;
+    string[] lines;
+    foreach (c; fns) {
+        if (isInline(c)) continue;   // inline free function -> no linkable symbol
+        auto mn = clang_getCursorSpelling(c).str;
+        try {
+            string imp;
+            auto retD = mapCxxType(clang_getCursorResultType(c), imp);
+            if (imp.length) impSet[imp] = true;
+            string[] ps, pds;
+            auto na = clang_Cursor_getNumArguments(c);
+            foreach (i; 0 .. na) {
+                auto a = clang_Cursor_getArgument(c, i);
+                string pimp;
+                auto pd = mapCxxType(clang_getCursorType(a), pimp);
+                if (pimp.length) impSet[pimp] = true;
+                ps ~= format("%s a%d", pd, i);
+                pds ~= pd;
+            }
+            auto sig = dname(mn) ~ "(" ~ pds.join(",") ~ ")";
+            if (sig in seenSig) continue;
+            seenSig[sig] = true;
+            auto mg = clang_Cursor_getMangling(c).str;
+            lines ~= format("pragma(mangle, \"%s\") %s %s(%s);", mg, retD, dname(mn), ps.join(", "));
+        } catch (Unmappable) { /* skip unmapped free function */ }
+    }
+    imports = impSet.byKey.array.sort.array;
+    auto impLines = imports.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+    return format("%s\nmodule %s.functions;\n%s\n\n%s\n", manifest, dpkg, impLines, lines.join("\n"));
+}
+
+string emitEnumModule(CXCursor decl, string dpkg, string manifest) {
+    auto qn = canon(clang_getCursorType(decl));         // "Qt::AlignmentFlag" / "Priority"
+    auto n = lastNs(qn);
+    auto i = qn.lastIndexOf("::");
+    auto sc = i >= 0 ? qn[0 .. i] : "";
+    auto nsc = sc.length ? ", " ~ sc.split("::").map!(p => `"` ~ p ~ `"`).join(", ") : "";
+    auto ut = canon(clang_getEnumDeclIntegerType(decl));
+    auto dut = ut in PRIM ? PRIM[ut] : "int";
+    string[] members;
+    foreach (ch; children(decl))
+        if (ch.kind == CXCursor_EnumConstantDecl)
+            members ~= format("    %s = cast(%s) %d,", dname(clang_getCursorSpelling(ch).str), dut,
+                clang_getEnumConstantDeclValue(ch));
+    // Qt's empty strong-typedef enums (enum class QCborTag : quint64 {}) have no
+    // members; a D enum needs >=1, so emit an ABI-identical alias to the underlying.
+    if (!members.length)
+        return format("%s\nmodule %s.%s;\nalias %s = %s;\n", manifest, dpkg, modBase(n), n, dut);
+    return format("%s\nmodule %s.%s;\nextern (C++%s) enum %s : %s {\n%s\n}\n",
+        manifest, dpkg, modBase(n), nsc, n, dut, members.join("\n"));
+}
+
+// The "smart" QString: a Qt value type wired for D <-> Qt string interop, pure D.
+// Construct from a D string (QString(const QChar*,len), out-of-line); read via the
+// UTF-16 layout; and — since QString's dtor is inline (no symbol) — release its
+// refcounted data by hand (atomic deref + the exported QArrayData::deallocate).
+// Non-copyable so it can only move / pass by ref (no double free).
+string qstringRuntime(string manifest, string dpkg, bool qt5 = false) {
+    // Qt5: QString é { QStringData* d } (ponteiro único); os dados ficam em
+    // (char*)d + d->offset, com ref(int)@0, size(int)@4, offset(qptrdiff)@16.
+    // Qt6: QArrayDataPointer { void* d; wchar* ptr; long size }. Ctor QString(
+    // const QChar*, int/qsizetype) e deallocate diferem no mangling (i/x, mm/xx).
+    if (qt5) return manifest ~ "\nmodule " ~ dpkg ~ ".qstring;\n" ~ q{
+import std.utf : toUTF16;
+import std.conv : to;
+import core.atomic : atomicOp;
+
+extern (C++) struct QString {
+    void* d;          // QStringData* (QArrayData: ref@0, size@4, offset@16)
+    extern (D) this(string s) {                            // QString("foo")
+        auto w = s.toUTF16;
+        __qstr_ctor(&this, w.ptr, cast(int) w.length);
+    }
+    this(this) {                                           // copy = share + refcount++ (Qt CoW)
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+    }
+    extern (D) void __release() {
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d < 0) { d = null; return; }   // persistent/shared null (.rodata): leitura simples
+        if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 2, 8);
+        d = null;
+    }
+    ~this() { __release(); }
+    extern (D) string toString() const {                   // qs.to!string uses this
+        if (d is null) return "";
+        auto size = *cast(const(int)*)(cast(const(char)*) d + 4);
+        if (size == 0) return "";
+        auto off  = *cast(const(long)*)(cast(const(char)*) d + 16);
+        auto p    = cast(const(wchar)*)(cast(const(char)*) d + off);
+        return (cast(const(wchar)[]) p[0 .. size]).to!string;
+    }
+}
+private pragma(mangle, "_ZN7QStringC1EPK5QChari")
+    extern (C++) void __qstr_ctor(QString* self, const(wchar)* d, int n);
+private pragma(mangle, "_ZN10QArrayData10deallocateEPS_mm")
+    extern (C++) void __qad_deallocate(void* d, size_t objSize, size_t alignment);
+
+/// D string -> QString temporary (released when it leaves scope).
+QString qstr(string s) {
+    auto w = s.toUTF16;
+    QString r = void;
+    __qstr_ctor(&r, w.ptr, cast(int) w.length);
+    return r;
+}
+};
+    return manifest ~ "\nmodule " ~ dpkg ~ ".qstring;\n" ~ q{
+import std.utf : toUTF16;
+import std.conv : to;
+import core.atomic : atomicOp;
+
+extern (C++) struct QString {
+    void* d;          // QArrayData* (ref count at offset 0)
+    wchar* ptr;       // UTF-16 data
+    long size;
+    extern (D) this(string s) {                            // QString("foo")
+        auto w = s.toUTF16;
+        __qstr_ctor(&this, w.ptr, cast(long) w.length);
+    }
+    this(this) {                                           // copy = share + refcount++ (Qt CoW)
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+    }
+    extern (D) void __release() {
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d < 0) { d = null; return; }   // persistent/shared null (.rodata): leitura simples
+        if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 2, 8);
+        d = null;
+    }
+    ~this() { __release(); }
+    extern (D) string toString() const {                   // qs.to!string uses this
+        if (ptr is null || size == 0) return "";
+        return (cast(const(wchar)[]) ptr[0 .. size]).to!string;
+    }
+}
+private pragma(mangle, "_ZN7QStringC1EPK5QCharx")
+    extern (C++) void __qstr_ctor(QString* self, const(wchar)* d, long n);
+private pragma(mangle, "_ZN10QArrayData10deallocateEPS_xx")
+    extern (C++) void __qad_deallocate(void* d, long objSize, long alignment);
+
+/// D string -> QString temporary (released when it leaves scope).
+QString qstr(string s) {
+    auto w = s.toUTF16;
+    QString r = void;
+    __qstr_ctor(&r, w.ptr, cast(long) w.length);
+    return r;
+}
+};
+}
+
+// Smart QByteArray: same recipe as QString but UTF-8 (element size 1). Construct
+// from a D string via QByteArray(const char*,len); read the bytes directly;
+// release the refcounted data by hand (dtor is inline).
+string qbytearrayRuntime(string manifest, string dpkg, bool qt5 = false) {
+    // Qt5: QByteArray é { Data* d } (ponteiro único); bytes em (char*)d + d->offset,
+    // size(int)@4. Qt6: { d, ptr, size }. Ctor/deallocate diferem no mangling.
+    if (qt5) return manifest ~ "\nmodule " ~ dpkg ~ ".qbytearray;\n" ~ q{
+import core.atomic : atomicOp;
+
+extern (C++) struct QByteArray {
+    void* d;          // Data* (QArrayData: ref@0, size@4, offset@16)
+    extern (D) this(string s)  { __qba_ctor(&this, s.ptr, cast(int) s.length); }        // QByteArray("foo")
+    extern (D) this(ubyte[] b) { __qba_ctor(&this, cast(const(char)*) b.ptr, cast(int) b.length); }  // raw bytes
+    this(this) {                                                    // copy = share + refcount++
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+    }
+    private const(char)* __data() const { return cast(const(char)*) d + *cast(const(long)*)(cast(const(char)*) d + 16); }
+    private int __size() const { return d is null ? 0 : *cast(const(int)*)(cast(const(char)*) d + 4); }
+    extern (D) ubyte[] toBytes() const { auto n = __size(); return n == 0 ? null : (cast(ubyte*) __data())[0 .. n].dup; }
+    extern (D) void __release() {
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d < 0) { d = null; return; }   // sentinela estático (.rodata): leitura simples
+        if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 1, 8);   // char: objSize=1
+        d = null;
+    }
+    ~this() { __release(); }
+    extern (D) string toString() const { auto n = __size(); return n == 0 ? "" : __data()[0 .. n].idup; }
+}
+private pragma(mangle, "_ZN10QByteArrayC1EPKci")
+    extern (C++) void __qba_ctor(QByteArray* self, const(char)* d, int n);
+private pragma(mangle, "_ZN10QArrayData10deallocateEPS_mm")
+    extern (C++) void __qad_deallocate(void* d, size_t objSize, size_t alignment);
+
+/// D string -> QByteArray temporary (released when it leaves scope).
+QByteArray qba(string s) {
+    QByteArray r = void;
+    __qba_ctor(&r, s.ptr, cast(int) s.length);
+    return r;
+}
+};
+    return manifest ~ "\nmodule " ~ dpkg ~ ".qbytearray;\n" ~ q{
+import core.atomic : atomicOp;
+
+extern (C++) struct QByteArray {
+    void* d;          // QArrayData* (ref count at offset 0)
+    char* ptr;
+    long size;
+    extern (D) this(string s)  { __qba_ctor(&this, s.ptr, cast(long) s.length); }        // QByteArray("foo")
+    extern (D) this(ubyte[] b) { __qba_ctor(&this, cast(const(char)*) b.ptr, cast(long) b.length); }  // raw bytes
+    this(this) {                                                    // copy = share + refcount++
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+    }
+    extern (D) ubyte[] toBytes() const { return (ptr is null || size == 0) ? null : (cast(ubyte*) ptr)[0 .. size].dup; }
+    extern (D) void __release() {
+        if (d is null) return;
+        auto refp = cast(shared(int)*) d;
+        if (*cast(int*) d < 0) { d = null; return; }   // sentinela estático (.rodata): leitura simples
+        if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 1, 8);   // char: objSize=1
+        d = null;
+    }
+    ~this() { __release(); }
+    extern (D) string toString() const { return (ptr is null || size == 0) ? "" : ptr[0 .. size].idup; }
+}
+private pragma(mangle, "_ZN10QByteArrayC1EPKcx")
+    extern (C++) void __qba_ctor(QByteArray* self, const(char)* d, long n);
+private pragma(mangle, "_ZN10QArrayData10deallocateEPS_xx")
+    extern (C++) void __qad_deallocate(void* d, long objSize, long alignment);
+
+/// D string -> QByteArray temporary (released when it leaves scope).
+QByteArray qba(string s) {
+    QByteArray r = void;
+    __qba_ctor(&r, s.ptr, cast(long) s.length);
+    return r;
+}
+};
+}
+
+// QAnyStringView: a non-owning view {const void* data; size_t size}. Qt6 string
+// setters take it by value. UTF-8 tag is 0b00, so a D string maps straight to
+// {ptr, length} — no bit twiddling, no lifetime (the view borrows the D string).
+string qanystringviewRuntime(string manifest, string dpkg) {
+    return manifest ~ "\nmodule " ~ dpkg ~ ".qanystringview;\n" ~ q{
+extern (C++) struct QAnyStringView {
+    const(void)* m_data;
+    size_t m_size;
+    extern (D) this(string s) { m_data = s.ptr; m_size = s.length; }   // UTF-8, tag 0
+}
+};
+}
+
+// ---- Per-combo marshaling fragments ------------------------------------------
+// C++ side: insert-param list / element-build expr / callback-param list / raw
+// extraction from an accessor. `p` disambiguates key ("k") vs value ("v") vs the
+// lone element (""). `acc` is the C++ element accessor ((*i), i.key(), i.value()).
+private string cInsParams(CElem e, string p) {
+    return e.kind == "prim" ? format("%s %sv", e.cxx, p) : format("const char* %sd, long %sn", p, p);
+}
+private string cInsBuild(CElem e, string p) {
+    if (e.kind == "str")   return format("QString::fromUtf8(%sd,%sn)", p, p);
+    if (e.kind == "bytes") return format("QByteArray(%sd,%sn)", p, p);
+    return format("%sv", p);
+}
+private string cCbParams(CElem e, string p) {
+    return e.kind == "prim" ? format("%s %sv", e.cxx, p) : format("const void* %sd, long %sn", p, p);
+}
+private string cCbExtract(CElem e, string acc) {
+    if (e.kind == "str")   return format("%s.utf16(), %s.size()", acc, acc);
+    if (e.kind == "bytes") return format("%s.constData(), %s.size()", acc, acc);
+    return acc;
+}
+// D side: extern(C) insert / callback param decls, native->raw insert args,
+// raw->native reconstruction.
+private string dInsParams(CElem e, string p) {
+    return e.kind == "prim" ? format("%s %sv", e.dtype, p) : format("const(char)* %sd, long %sn", p, p);
+}
+private string dCbParams(CElem e, string p) {
+    return e.kind == "prim" ? format("%s %sv", e.dtype, p) : format("const(void)* %sd, long %sn", p, p);
+}
+private string dToArgs(CElem e, string x) {
+    if (e.kind == "str")   return format("%s.ptr, cast(long) %s.length", x, x);
+    if (e.kind == "bytes") return format("cast(const(char)*) %s.ptr, cast(long) %s.length", x, x);
+    return x;
+}
+private string dFrom(CElem e, string p) {
+    if (e.kind == "str")   return format("__u16(%sd, %sn)", p, p);
+    if (e.kind == "bytes") return format("__bytes(%sd, %sn)", p, p);
+    return format("%sv", p);
+}
+// AA KEY position: a D associative-array key must be immutable/value. `string` is
+// already immutable(char)[]; `ubyte[]` (mutable) isn't a valid key, so a QByteArray
+// key uses immutable(ubyte)[] (and .idup on reconstruction).
+private string keyDType(CElem e) { return e.kind == "bytes" ? "immutable(ubyte)[]" : e.dtype; }
+private string keyFrom(CElem e, string p) {
+    return e.kind == "bytes" ? format("__bytes(%sd, %sn).idup", p, p) : dFrom(e, p);
+}
+
+// The C++ shim for one combo (new / add|insert / iterate / delete / destruct).
+private string comboCpp(Combo c) {
+    auto T = "T_" ~ c.id;
+    string s = format("typedef %s %s;\n", c.cxxType, T);
+    s ~= format("void* __%s_new() { return new %s(); }\n", c.id, T);
+    if (c.kind == CKind.assoc) {
+        s ~= format("void __%s_insert(void* h, %s, %s) { static_cast<%s*>(h)->insert(%s, %s); }\n",
+            c.id, cInsParams(c.key, "k"), cInsParams(c.val, "v"), T, cInsBuild(c.key, "k"), cInsBuild(c.val, "v"));
+        s ~= format("void __%s_iterate(void* h, void(*cb)(%s, %s, void*), void* ctx) { %s* p=static_cast<%s*>(h); for(auto i=p->constBegin();i!=p->constEnd();++i) cb(%s, %s, ctx); }\n",
+            c.id, cCbParams(c.key, "k"), cCbParams(c.val, "v"), T, T, cCbExtract(c.key, "i.key()"), cCbExtract(c.val, "i.value()"));
+    } else {
+        auto add = c.kind == CKind.set ? "insert" : "append";
+        s ~= format("void __%s_add(void* h, %s) { static_cast<%s*>(h)->%s(%s); }\n",
+            c.id, cInsParams(c.val, ""), T, add, cInsBuild(c.val, ""));
+        s ~= format("void __%s_iterate(void* h, void(*cb)(%s, void*), void* ctx) { %s* p=static_cast<%s*>(h); for(auto i=p->constBegin();i!=p->constEnd();++i) cb(%s, ctx); }\n",
+            c.id, cCbParams(c.val, ""), T, T, cCbExtract(c.val, "(*i)"));
+    }
+    s ~= format("void __%s_delete(void* h) { delete static_cast<%s*>(h); }\n", c.id, T);
+    s ~= format("void __%s_destruct(void* h) { static_cast<%s*>(h)->~%s(); }\n", c.id, T, T);   // by-value (sret) returns
+    return s;
+}
+
+// Signal/slot bridge — a gen-phase functor-connect shim per parameterless signal
+// (public API: QObject::connect(sender, static_cast<PMF>(&Class::sig), context,
+// lambda). The lambda calls a D callback; the connection is owned by the sender
+// (auto-dropped when it dies). `includeLine` is the #include for the class headers.
+string signalsCpp(string manifest, string includeLine) {
+    if (!SIGNALS.length) return manifest ~ "\n";
+    string body;
+    foreach (s; SIGNALS) {
+        // The functor captures a move-only DHolder; when the connection dies (sender
+        // destroyed OR disconnect), the lambda — and DHolder — are destroyed, and
+        // ~DHolder calls back into D to unroot the delegate box. So the box lifetime
+        // follows the Qt connection/sender: auto-freed, no manual disconnect needed.
+        // The lambda receives the signal args and forwards them to the D callback.
+        auto cbType = s.cbCppParams.length ? "void(*cb)(void*, " ~ s.cbCppParams ~ ")" : "void(*cb)(void*)";
+        body ~= format(
+            "void* qtd_conn_%s_%s(void* s, %s, void(*rel)(void*), void* ctx) {\n"
+            ~ "    auto* o = static_cast<%s*>(s);\n"
+            ~ "    return new QMetaObject::Connection(QObject::connect(o, &%s::%s, o,\n"
+            ~ "        [cb, ctx, h = DHolder(rel, ctx)](%s) { cb(ctx%s); }));\n}\n",
+            s.dClass, s.name, cbType, s.cppClass, s.cppClass, s.name, s.lambdaParams, s.passArgs);
+    }
+    return manifest ~ "\n#include <QObject>\n" ~ includeLine
+        ~ "// Owns a D delegate box; ~DHolder releases it (called when the Qt connection\n"
+        ~ "// is destroyed). Move-only so the release happens exactly once.\n"
+        ~ "namespace { struct DHolder {\n"
+        ~ "    void(*rel)(void*); void* box;\n"
+        ~ "    DHolder(void(*r)(void*), void* b) : rel(r), box(b) {}\n"
+        ~ "    DHolder(DHolder&& o) noexcept : rel(o.rel), box(o.box) { o.rel = nullptr; }\n"
+        ~ "    DHolder(const DHolder&) = delete;\n"
+        ~ "    ~DHolder() { if (rel) rel(box); }\n"
+        ~ "}; }\n"
+        ~ "extern \"C\" {\n" ~ body
+        ~ "void qtd_disconnect(void* c) { auto* p = static_cast<QMetaObject::Connection*>(c);\n"
+        ~ "    QObject::disconnect(*p); delete p; }\n}\n";
+}
+
+// D side: the connection handle + delegate box + trampoline + per-signal extern(C)
+// decls. connect<Sig> methods (emitted on each class) call these.
+string signalsD(string manifest, string dpkg) {
+    auto head = manifest ~ "\nmodule " ~ dpkg ~ ".qtsignals;\n";
+    if (!SIGNALS.length) return head;
+    // per-signal: a typed delegate box, an extern(C) trampoline that unpacks the
+    // callback args into the delegate, the shim decl, and a connect helper.
+    bool[string] impSet;
+    string perSig;
+    foreach (s; SIGNALS) {
+        foreach (im; s.imports) impSet[im] = true;
+        auto dgT = format("void delegate(%s)", s.cbDParams);
+        auto cbPs = s.cbRawParams.length ? "void*, " ~ s.cbRawParams : "void*";   // C ABI (objects = void*)
+        auto trampPs = s.cbDParams.length ? "void* ctx, " ~ signalTrampParams(s) : "void* ctx";
+        perSig ~= format("private struct DgBox_%s_%s { %s dg; }\n", s.dClass, s.name, dgT);
+        perSig ~= format("private extern (C) void __tramp_%s_%s(%s) nothrow "
+            ~ "{ try { (cast(DgBox_%s_%s*) ctx).dg(%s); } catch (Exception) {} }\n",
+            s.dClass, s.name, trampPs, s.dClass, s.name, s.trampArgs);
+        perSig ~= format("alias Cb_%s_%s = extern (C) void function(%s) nothrow;\n", s.dClass, s.name, cbPs);
+        perSig ~= format("private extern (C) void* qtd_conn_%s_%s(void*, Cb_%s_%s, void function(void*) nothrow, void*) nothrow;\n",
+            s.dClass, s.name, s.dClass, s.name);
+        perSig ~= format("QtdConnection __conn_%s_%s(void* sender, %s dg) {\n"
+            ~ "    auto b = new DgBox_%s_%s(dg); GC.addRoot(cast(void*) b);\n"
+            ~ "    return QtdConnection(qtd_conn_%s_%s(sender, &__tramp_%s_%s, &__qtd_release, cast(void*) b));\n}\n",
+            s.dClass, s.name, dgT, s.dClass, s.name, s.dClass, s.name, s.dClass, s.name);
+    }
+    auto impLines = impSet.byKey.array.sort.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+    return head
+        ~ "import core.memory : GC;\n" ~ impLines ~ "\n"
+        ~ "// C++ DHolder dtor calls this when the connection dies -> unroot the box.\n"
+        ~ "private extern (C) void __qtd_release(void* box) nothrow { GC.removeRoot(box); }\n"
+        ~ "// A live signal->delegate connection. Optional disconnect(); otherwise it and\n"
+        ~ "// the delegate box are freed when the sender QObject dies.\n"
+        ~ "struct QtdConnection {\n    void* _c;\n"
+        ~ "    void disconnect() { if (_c !is null) { qtd_disconnect(_c); _c = null; } }\n}\n"
+        ~ "private extern (C) void qtd_disconnect(void*) nothrow;\n"
+        ~ perSig;
+}
+
+// D trampoline param list for a signal's callback args, named a0.. (parallel to
+// cbDParams which is just the types).
+string signalTrampParams(Signal s) {
+    if (!s.cbRawParams.length) return "";   // C-ABI types (objects are void* here)
+    string[] ps; int i;
+    foreach (t; s.cbRawParams.split(", ")) { ps ~= format("%s a%d", t, i); i++; }
+    return ps.join(", ");
+}
+
+// Multiple-inheritance upcast shims: one static_cast per (class, secondary base),
+// applying the correct pointer offset. Same gen-phase-C++ rule as containers/signals.
+string miCpp(string manifest, string includeLine) {
+    if (!MICASTS.length) return manifest ~ "\n";
+    string body;
+    foreach (m; MICASTS)
+        body ~= format("void* qtd_upcast_%s_%s(void* p) { return static_cast<%s*>(static_cast<%s*>(p)); }\n",
+            m.dClass, m.sbDClass, m.sbCppClass, m.cppClass);
+    return manifest ~ "\n" ~ includeLine ~ "extern \"C\" {\n" ~ body ~ "}\n";
+}
+string miD(string manifest, string dpkg) {
+    auto head = manifest ~ "\nmodule " ~ dpkg ~ ".qtmi;\n";
+    if (!MICASTS.length) return head;
+    string decls;
+    foreach (m; MICASTS)
+        decls ~= format("    void* qtd_upcast_%s_%s(void*);\n", m.dClass, m.sbDClass);
+    return head ~ "extern (C) nothrow {\n" ~ decls ~ "}\n";
+}
+
+// Out-of-line copy-ctor + dtor for non-trivially-copyable value types. Compiled against
+// the real headers: an implicit/inline copy-ctor (e.g. Str with std::string) is
+// instantiated here and gets a symbol. std::destroy_at calls the right dtor without
+// having to write the unqualified name. The D decls live at module scope (extern(C)).
+string ctorCpp(string manifest, string includeLine) {
+    if (!CTORCOPY.length && !CTORSHIM.length && !METHODSHIM.length) return manifest ~ "\n";
+    // Templated helpers with if constexpr: if a type (surprisingly) isn't copyable/
+    // destructible, they degrade to a no-op instead of breaking the whole lib's compile
+    // (one bad class must not take down the other 150).
+    // templates OUTSIDE extern "C" (templates require C++ linkage)
+    string tmpl =
+        "template<class T> static inline void qtd_cc(void* d, const void* s) {\n"
+        ~ "    if constexpr (std::is_copy_constructible_v<T>) ::new(d) T(*static_cast<const T*>(s)); }\n"
+        ~ "template<class T> static inline void qtd_dt(void* p) {\n"
+        ~ "    if constexpr (std::is_destructible_v<T>) std::destroy_at(static_cast<T*>(p)); }\n"
+        ~ "template<class T, class...A> static inline void qtd_mk(void* self, A...a) {\n"
+        ~ "    if constexpr (std::is_constructible_v<T, A...>) ::new(self) T(a...); }\n";
+    string body;
+    foreach (c; CTORCOPY)
+        body ~= format(
+            "void qtd_cctor_%s(void* d, const void* s) { qtd_cc<%s>(d, s); }\n"
+            ~ "void qtd_dtor_%s(void* p) { qtd_dt<%s>(p); }\n",
+            c.dName, c.cppName, c.dName, c.cppName);
+    // Gap 1: out-of-line shim for an inline/`= default` ctor — placement-new gives the
+    // symbol. Routed through qtd_mk so a rare non-constructible type no-ops instead of
+    // breaking the whole lib's compile (see qtd_mk above).
+    foreach (c; CTORSHIM)
+        body ~= format("void %s(void* self%s) { qtd_mk<%s>(self%s); }\n",
+            c.shimFn, c.cppParams.length ? ", " ~ c.cppParams.join(", ") : "",
+            c.cppName, c.argNames.length ? ", " ~ c.argNames.join(", ") : "");
+    // Inline methods on object types: out-of-line trampoline calling self->method(args).
+    foreach (m; METHODSHIM) {
+        auto ret = m.cppRet == "void" ? "" : "return ";
+        // const self for const methods -> overload resolution can't pick a non-const
+        // (possibly private) same-name overload (e.g. Overload2::doNothingInPublic).
+        auto selfCast = m.isConst ? format("static_cast<const %s*>(self)", m.cppName)
+                                  : format("static_cast<%s*>(self)", m.cppName);
+        auto call = m.isStatic
+            ? format("%s::%s(%s)", m.cppName, m.method, m.argNames.join(", "))
+            : format("%s->%s(%s)", selfCast, m.method, m.argNames.join(", "));
+        auto ps = m.isStatic ? m.cppParams.join(", ")
+            : (m.cppParams.length ? "void* self, " ~ m.cppParams.join(", ") : "void* self");
+        body ~= format("%s %s(%s) { %s%s; }\n", m.cppRet, m.shimFn, ps, ret, call);
+    }
+    return manifest ~ "\n#include <new>\n#include <memory>\n#include <type_traits>\n" ~ includeLine
+        ~ tmpl ~ "extern \"C\" {\n" ~ body ~ "}\n";
+}
+
+// Subclass trampolines: a C++ class per subclassed type whose virtuals forward to
+// D callbacks. C++ frameworks calling the virtual dispatch into the D override
+// (pure virtuals require the callback; non-pure fall back to the base impl).
+string virtCpp(string manifest, string includeLine) {
+    if (!TRAMPS.length) return manifest ~ "\n";
+    string body;
+    foreach (t; TRAMPS) {
+        // C++ function-pointer field/param declarator for virtual #i.
+        string cbDecl(TrampVirt v, string nm) {
+            auto ps = v.cbCppParams.length ? "void*, " ~ v.cbCppParams : "void*";
+            return format("%s(*%s)(%s)", v.cbCppRet, nm, ps);   // enum returns marshal as int
+        }
+        string fields, ctorPs, ctorInit, methods, subPs, subAs;
+        foreach (i, v; t.virts) {
+            fields  ~= format("    %s;\n", cbDecl(v, format("cb_%d", i)));
+            ctorPs  ~= format(", %s", cbDecl(v, format("c%d", i)));
+            ctorInit ~= format(", cb_%d(c%d)", i, i);
+            subPs   ~= format(", %s", cbDecl(v, format("c%d", i)));
+            subAs   ~= format(", c%d", i);
+            auto cst = v.isConst ? " const" : "";
+            auto ccast = v.retEnum ? format("(%s)", v.cppRet) : "";   // int -> enum on return
+            auto call = format("%scb_%d(d%s)", ccast, i, v.passArgs);
+            string fwd;
+            if (v.retVoid)
+                fwd = v.isPure ? format("%s;", call)
+                    : format("if (cb_%d) %s; else %s::%s(%s);", i, call, t.cppClass, v.name, v.origArgs);
+            else
+                fwd = v.isPure ? format("return %s;", call)
+                    : format("return cb_%d ? %s : %s::%s(%s);", i, call, t.cppClass, v.name, v.origArgs);
+            methods ~= format("    %s %s(%s)%s override { %s }\n",
+                v.cppRet, v.name, v.overrideParams, cst, fwd);
+        }
+        // moc anexável: o trampolim delega metaObject/qt_metacall aos helpers
+        // genéricos (qtdmoc.cpp) — assim uma subclasse D pode ser @QObject (ter
+        // sinais/slots/props próprios) ALÉM de sobrescrever virtuais. Se nada for
+        // anexado (qtd_moc_meta==null), cai no comportamento da base.
+        auto moc = format(
+            "    const QMetaObject* metaObject() const override {\n"
+            ~ "        auto m = qtd_moc_meta((void*)this); return m ? static_cast<const QMetaObject*>(m) : %s::metaObject(); }\n"
+            ~ "    void* qt_metacast(const char* n) override { return %s::qt_metacast(n); }\n"
+            ~ "    int qt_metacall(QMetaObject::Call c, int id, void** a) override {\n"
+            ~ "        id = %s::qt_metacall(c, id, a); if (id < 0) return id;\n"
+            ~ "        return qtd_moc_metacall((void*)this, (int)c, id, a); }\n",
+            t.cppClass, t.cppClass, t.cppClass);
+        body ~= format("struct Qtd_%s : %s {\n    void* d;\n%s%s"
+            ~ "    Qtd_%s(void* dobj%s): d(dobj)%s {}\n%s};\n"
+            ~ "extern \"C\" void* qtd_sub_%s(void* dobj%s) { return new Qtd_%s(dobj%s); }\n"
+            // liga um meta-objeto runtime ao trampolim já criado (Base::staticMetaObject como super).
+            ~ "extern \"C\" void qtd_sub_%s_attach(void* self, const char* cn,\n"
+            ~ "    const char** sigs, int nsig, const char** slotSigs, int nslot,\n"
+            ~ "    const char** propN, const char** propT, const int* propNotify, int nprop,\n"
+            ~ "    void* dobj, QtdSlotCb slotcb, QtdPropCb propcb) {\n"
+            ~ "    qtd_moc_attach(self, cn, &%s::staticMetaObject, sigs, nsig, slotSigs, nslot,\n"
+            ~ "        propN, propT, propNotify, nprop, dobj, slotcb, propcb); }\n",
+            t.dClass, t.cppClass, fields, moc, t.dClass, ctorPs, ctorInit, methods,
+            t.dClass, subPs, t.dClass, subAs, t.dClass, t.cppClass);
+    }
+    // declara os helpers genéricos do moc (em qtdmoc.cpp / lib qtmoc) usados acima.
+    auto mocDecl =
+        "extern \"C\" {\n"
+        ~ "typedef void (*QtdSlotCb)(void*, int, void**);\n"
+        ~ "typedef void (*QtdPropCb)(void*, int, int, void**);\n"
+        ~ "const void* qtd_moc_meta(void*);\n"
+        ~ "int qtd_moc_metacall(void*, int, int, void**);\n"
+        ~ "void qtd_moc_attach(void*, const char*, const void*, const char**, int, const char**, int,\n"
+        ~ "    const char**, const char**, const int*, int, void*, QtdSlotCb, QtdPropCb);\n}\n";
+    // força um paintEvent síncrono num QWidget (render headless / teste): grab()
+    // renderiza (repaint()/processEvents() sem-arg são inline, sem símbolo).
+    auto forcePaint = "#include <QWidget>\n#include <QPixmap>\nextern \"C\" void qtd_force_paint(void* w) {\n"
+        ~ "    auto* wd = static_cast<QWidget*>(w); wd->resize(20, 20); wd->grab(); }\n";
+    return manifest ~ "\n" ~ includeLine ~ mocDecl ~ "namespace {\n" ~ body ~ "}\n" ~ forcePaint;
+}
+
+// D side: per-subclass factory taking the override callbacks and returning the
+// class (a live C++ object whose vtable calls back into D). Callback types are
+// named aliases (an inline `extern(C) T function(..)` param confuses the parser).
+string virtD(string manifest, string dpkg) {
+    auto head = manifest ~ "\nmodule " ~ dpkg ~ ".qtvirt;\n";
+    if (!TRAMPS.length) return head;
+    bool[string] impSet;
+    string aliases, decls, facts;
+    foreach (t; TRAMPS) {
+        impSet[t.dClass] = true;
+        string[] declPs, factPs, factAs;
+        foreach (i, v; t.virts) {
+            auto al = format("Cb_%s_%d", t.dClass, i);
+            auto ps = v.cbDParams.length ? "void*, " ~ v.cbDParams : "void*";
+            aliases ~= format("alias %s = extern (C) %s function(%s) nothrow;\n", al, v.cbDRet, ps);
+            declPs ~= al;
+            factPs ~= format("%s cb%d", al, i);
+            factAs ~= format("cb%d", i);
+            foreach (im; v.imports) impSet[im] = true;   // class / enum / value modules referenced
+        }
+        decls ~= format("    void* qtd_sub_%s(void*, %s);\n", t.dClass, declPs.join(", "));
+        // decl do attach (liga o meta-objeto runtime ao trampolim) + nomes dos
+        // virtuais em ordem (índice = posição do cb), pro mixin mapear override->cb.
+        decls ~= format("    void qtd_sub_%s_attach(void*, const(char)*, const(char)**, int, const(char)**, int,"
+            ~ " const(char)**, const(char)**, const(int)*, int, void*, __QtdSlotCb, __QtdPropCb);\n", t.dClass);
+        facts ~= format("%s %s_subclass(void* ctx, %s) {\n    return cast(%s) qtd_sub_%s(ctx, %s);\n}\n",
+            t.dClass, t.dClass, factPs.join(", "), t.dClass, t.dClass, factAs.join(", "));
+        facts ~= format("enum string[] __%s_vnames = [%s];\n",
+            t.dClass, t.virts.map!(v => '"' ~ v.name ~ '"').join(", "));
+    }
+    auto cbAliases = "alias __QtdSlotCb = extern (C) void function(void*, int, void**) nothrow;\n"
+        ~ "alias __QtdPropCb = extern (C) void function(void*, int, int, void**) nothrow;\n";
+    auto impLines = impSet.byKey.array.sort.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+    return head ~ impLines ~ "\n" ~ cbAliases ~ aliases ~ "extern (C) nothrow {\n" ~ decls ~ "}\n" ~ facts;
+}
+
+// Container interop — the ONE bit of generated C++, compiled at the generation
+// phase into qtcontainers.o. Demand-driven: exactly the combos seen this run.
+// Thin per-container shims: D feeds native data (from) / Qt hands raw basic data
+// back to a D callback (iterate/to). Both directions, no QVariant.
+string containersCpp(string manifest) {
+    if (!COMBOS.length) return manifest ~ "\n";
+    string body;
+    foreach (id; COMBOS.keys.sort) body ~= comboCpp(COMBOS[id]);
+    return manifest ~ "\n"
+        ~ "#include <QString>\n#include <QByteArray>\n#include <QList>\n#include <QStack>\n"
+        ~ "#include <QQueue>\n#include <QSet>\n#include <QHash>\n#include <QMap>\n"
+        ~ "extern \"C\" {\n" ~ body ~ "}\n";
+}
+
+// The D side of the container runtime: per-combo callback alias + extern(C) decls +
+// by-value return struct (sret; dtor releases via destruct shim) + native<->Qt helpers.
+string containersD(string manifest, string dpkg) {
+    auto head = manifest ~ "\nmodule " ~ dpkg ~ ".qtcontainers;\n";
+    if (!COMBOS.length) return head;
+    string aliases, decls, rets, helpers;
+    foreach (id; COMBOS.keys.sort) {
+        auto c = COMBOS[id];
+        if (c.kind == CKind.assoc) {
+            aliases ~= format("alias Emit_%s = extern (C) void function(%s, %s, void*) nothrow;\n",
+                c.id, dCbParams(c.key, "k"), dCbParams(c.val, "v"));
+            decls ~= format("    void* __%s_new(); void __%s_insert(void*, %s, %s); void __%s_iterate(void*, Emit_%s, void*); void __%s_delete(void*); void __%s_destruct(void*);\n",
+                c.id, c.id, dInsParams(c.key, "k"), dInsParams(c.val, "v"), c.id, c.id, c.id, c.id);
+            helpers ~= format("void* %s_from(%s aa) { auto h = __%s_new(); foreach (k, v; aa) __%s_insert(h, %s, %s); return h; }\n",
+                c.id, c.idiomD, c.id, c.id, dToArgs(c.key, "k"), dToArgs(c.val, "v"));
+            helpers ~= format("private extern (C) void __%s_cb(%s, %s, void* ctx) nothrow { try { (*cast(%s*) ctx)[%s] = %s; } catch (Exception) {} }\n",
+                c.id, dCbParams(c.key, "k"), dCbParams(c.val, "v"), c.idiomD, keyFrom(c.key, "k"), dFrom(c.val, "v"));
+        } else {
+            aliases ~= format("alias Emit_%s = extern (C) void function(%s, void*) nothrow;\n", c.id, dCbParams(c.val, ""));
+            decls ~= format("    void* __%s_new(); void __%s_add(void*, %s); void __%s_iterate(void*, Emit_%s, void*); void __%s_delete(void*); void __%s_destruct(void*);\n",
+                c.id, c.id, dInsParams(c.val, ""), c.id, c.id, c.id, c.id);
+            helpers ~= format("void* %s_from(%s a) { auto h = __%s_new(); foreach (x; a) __%s_add(h, %s); return h; }\n",
+                c.id, c.idiomD, c.id, c.id, dToArgs(c.val, "x"));
+            helpers ~= format("private extern (C) void __%s_cb(%s, void* ctx) nothrow { try { (*cast(%s*) ctx) ~= %s; } catch (Exception) {} }\n",
+                c.id, dCbParams(c.val, ""), c.idiomD, dFrom(c.val, ""));
+        }
+        // by-value (sret) return struct; QHash/QSet/QMap dtors are inline so release
+        // is hand-rolled via the destruct shim.
+        rets ~= format("extern (C++) struct Ret_%s { void* d; ~this() { __%s_destruct(&this); } }\n", c.id, c.id);
+        helpers ~= format("%s %s_to(void* h) { %s r; __%s_iterate(h, &__%s_cb, &r); return r; }\n",
+            c.idiomD, c.id, c.idiomD, c.id, c.id);
+        helpers ~= format("void %s_del(void* h) { __%s_delete(h); }\n", c.id, c.id);
+    }
+    return head
+        ~ "import std.conv : to;\n"
+        ~ `private string __u16(const(void)* p, long n) { return n <= 0 ? "" : (cast(const(wchar)[]) (cast(const(wchar)*) p)[0 .. n]).to!string; }` ~ "\n"
+        ~ "private ubyte[] __bytes(const(void)* p, long n) { return n <= 0 ? null : (cast(const(ubyte)*) p)[0 .. cast(size_t) n].dup; }\n"
+        ~ aliases
+        ~ "extern (C) nothrow {\n" ~ decls ~ "}\n"
+        ~ rets
+        ~ helpers;
+}
+
+// The one shared runtime module: C++ operator new / delete by their real
+// libstdc++ symbols, so construction/destruction match Qt's allocator. No C++.
+string cxxRuntime(string manifest) {
+    return manifest ~ "\nmodule cxxrt;\n"
+        ~ `pragma(mangle, "_Znwm") extern(C++) void* __cpp_new(size_t);` ~ "\n"
+        ~ `pragma(mangle, "_ZdlPv") extern(C++) void __cpp_delete(void*);` ~ "\n";
+}

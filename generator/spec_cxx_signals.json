@@ -1,0 +1,9 @@
+{
+  "qt_version": "6.11", "pkg_config": "Qt6Core",
+  "out_dir": "../generated/qt-6.11/cxx-signals", "d_package": "qt.core", "abi": "cxx",
+  "classes": [
+    { "name": "QObject", "include": "QObject" },
+    { "name": "QTimer",  "include": "QTimer" },
+    { "name": "QCoreApplication", "include": "QCoreApplication" }
+  ]
+}

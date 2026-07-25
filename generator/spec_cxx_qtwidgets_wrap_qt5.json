@@ -1,0 +1,6 @@
+{
+  "qt_version": "5.15", "pkg_config": "Qt5Widgets", "qt_marker": "/qt/",
+  "out_dir": "../generated/qt-5.15/cxx-qtwidgets-wrap", "d_package": "qt.widgets", "abi": "cxx",
+  "wrapper": true, "discover_module": "QtWidgets",
+  "subclass": ["QWidget"]
+}

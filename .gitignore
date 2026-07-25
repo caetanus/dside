@@ -1,0 +1,30 @@
+# --- build artifacts ---
+*.o
+*.a
+*.so
+*.lib
+*.dylib
+*.obj
+
+# --- python (legacy generator) ---
+__pycache__/
+*.pyc
+
+# --- dub build cache (keep dub.json / dub.selections.json) ---
+.dub/
+
+# --- reggae build cache + outputs (regenerable from reggaefile.d) ---
+.reggae-build/
+.reggae/
+.build/
+/build
+/bin/
+
+# --- generated bindings: produced on demand by `gend` / reggae, never committed ---
+generated/
+
+# --- compiled binaries (regenerable) ---
+/generator-d/gend
+/bootstrap/hello
+compile_commands.json
+/dub.selections.json

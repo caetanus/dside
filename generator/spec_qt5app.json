@@ -1,0 +1,24 @@
+{
+  "qt_version": "5.15",
+  "pkg_config": "Qt5Widgets",
+  "out_dir": "../generated/qt-5.15/qtwidgets-app",
+  "d_package": "qt5w",
+  "classes": [
+    { "name": "QApplication", "include": "QApplication", "methods": ["exec"] },
+    { "name": "QMainWindow", "include": "QMainWindow",
+      "methods": ["setCentralWidget", "setWindowTitle", "resize", "show", "setStyleSheet"] },
+    { "name": "QWidget", "include": "QWidget", "methods": ["setStyleSheet", "show", "resize"] },
+    { "name": "QVBoxLayout", "include": "QVBoxLayout",
+      "methods": ["addWidget", "addLayout", "setSpacing", "setContentsMargins"] },
+    { "name": "QHBoxLayout", "include": "QHBoxLayout", "methods": ["addWidget", "setSpacing"] },
+    { "name": "QLabel", "include": "QLabel", "methods": ["setText", "setStyleSheet"] },
+    { "name": "QFrame", "include": "QFrame", "methods": ["setStyleSheet"] },
+    { "name": "QPushButton", "include": "QPushButton",
+      "methods": ["setText", "setStyleSheet", "setFixedHeight"] },
+    { "name": "QProgressBar", "include": "QProgressBar",
+      "methods": ["setValue", "setRange", "setStyleSheet", "setTextVisible"] },
+    { "name": "QListWidget", "include": "QListWidget", "methods": ["addItem", "setStyleSheet"] },
+    { "name": "QLineEdit", "include": "QLineEdit",
+      "methods": ["setText", "setPlaceholderText", "setStyleSheet"] }
+  ]
+}

@@ -1,0 +1,229 @@
+// qtd_build.d — shared reggae helpers for building qt-dlang-gen bindings and apps.
+//
+// The generator (`gend`) is a pure code generator: it emits a nested-layout binding
+// (`<genDir>/qt/<pkg>/*.d` matching each `module` name, plus top-level cxxrt/holder/
+// qtmoc and the C++ shim `.cpp`). reggae owns the whole build graph:
+//
+//   gen (run gend)  ->  shims.a (clang++ every .cpp)      \
+//                    ->  binding_<dc>.a (compile every .d   >-- link app
+//                        per-module, archive)              /
+//
+// The archive is the key: the linker pulls only the members an app references, so the
+// per-app import-closure BFS the old shell scripts did is gone (proven: dmd linking a
+// full webengine binding directly fails on an unreferenced inline symbol; the same
+// objects in an archive link clean). D is compiled with ldc2 AND dmd (parity).
+module qtd_build;
+
+import reggae;
+import std.json, std.file, std.path, std.process, std.string, std.array, std.algorithm;
+
+// --- pkg-config ---------------------------------------------------------------
+
+string pkgCflags(string[] mods) {
+    return execute(["pkg-config", "--cflags"] ~ mods).output.strip;
+}
+
+// Linker flags for the D compiler: each `-lFoo`/`-L/path` token wrapped as `-L<tok>`
+// (ldc2/dmd forward `-L…` to the C linker), plus libstdc++ for the C++ runtime.
+string pkgLibs(string[] mods) {
+    auto toks = execute(["pkg-config", "--libs"] ~ mods).output.strip.split ~ "-lstdc++";
+    return toks.map!(t => "-L" ~ t).join(" ");
+}
+
+// QMetaObjectBuilder lives in Qt's PRIVATE API: from the pkg-config `-I…/QtCore`, find
+// the sibling `-I…/QtCore/<full.patch.version>[/QtCore]` that has QtCore/private. Ported
+// verbatim from the old generator (emit.d) — qtdmoc.cpp needs these to compile.
+string[] mocPrivateFlags(string cflags) {
+    foreach (f; cflags.split)
+        if (f.startsWith("-I") && f.endsWith("/QtCore") && exists(f[2 .. $]))
+            foreach (de; dirEntries(f[2 .. $], SpanMode.shallow))
+                if (de.isDir && exists(buildPath(de.name, "QtCore", "private")))
+                    return ["-I" ~ de.name, "-I" ~ buildPath(de.name, "QtCore")];
+    return [];
+}
+
+// --- the binding graph --------------------------------------------------------
+
+struct QtdBinding {
+    Target gen;       // runs gend -> a stamp (the whole genDir is regenerated clean)
+    Target shims;     // libshims.a (all .cpp, C++)
+    string root;
+    string genDir;    // pure generated sources (owned by gend, wiped on each regen)
+    string bdir;      // reggae build artifacts (objects, archives) — kept out of genDir
+    string[] mods;    // pkg-config modules (Qt6Widgets, …)
+}
+
+private string gendPath(string root) { return buildPath(root, "generator-d", "gend"); }
+
+// reggae's binary backend can schedule a shared diamond node (many apps -> one binding's
+// gen/shims/lib) more than once concurrently. Two overlapping `rm -rf … && rebuild` on
+// the same output then truncate each other's files. Wrap such a command so it is (a)
+// serialized by an flock on `lock`, and (b) a no-op when `output` is already newer than
+// every `newerThan` input. Single quotes in `cmd` are escaped for the `sh -c '…'` wrapper.
+string guarded(string lock, string cmd, string output, string[] newerThan) {
+    auto test = newerThan.map!(d => "[ " ~ output ~ " -nt " ~ d ~ " ]").join(" && ");
+    auto inner = (test.length ? "if " ~ test ~ "; then exit 0; fi; " : "") ~ cmd;
+    auto esc = inner.replace("'", `'\''`);
+    return "mkdir -p " ~ dirName(lock) ~ " && flock " ~ lock ~ " sh -c '" ~ esc ~ "'";
+}
+
+// Build the `gen` + `shims` targets for a spec. `root` is the repo root; `spec` is the
+// spec basename under generator/. `mods` are the pkg-config modules the binding needs.
+QtdBinding qtdBinding(string root, string spec, string[] mods) {
+    auto specPath = buildPath(root, "generator", spec);
+    auto j = parseJSON(readText(specPath));
+    auto genDir = buildNormalizedPath(dirName(specPath), j["out_dir"].str);
+    // Unique per binding: the qt-x.y dir + the binding name (cxx-qtwidgets-wrap alone
+    // collides between Qt5 and Qt6, which share a basename).
+    auto bdir = buildPath(root, ".build", baseName(dirName(genDir)) ~ "-" ~ baseName(genDir));
+    auto cflags = pkgCflags(mods);
+    auto cxx = cflags ~ " -std=c++17 -fPIC -O2";
+    auto priv = mocPrivateFlags(cflags).join(" ");
+
+    // gend fully owns genDir: wipe it first so stale files from an earlier layout can't
+    // linger (a flat qfoo.d beside the nested qt/pkg/qfoo.d would clash on the module).
+    // The stamp lives in bdir, not genDir, so wiping genDir doesn't delete it.
+    auto stamp = buildPath(bdir, "gen.stamp");
+    auto gend = gendPath(root);
+    auto genCmd = "rm -rf " ~ genDir ~ " && " ~ gend ~ " " ~ specPath ~ " >/dev/null && touch " ~ stamp;
+    auto gen = Target(stamp,
+        guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, gend]),
+        [Target(specPath), Target(gend)]);
+
+    // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
+    // headers. Shims are C++ -> identical for ldc2/dmd, so this target is shared.
+    auto shimsLib = buildPath(bdir, "libshims.a");
+    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && for c in " ~ genDir ~ "/*.cpp; do "
+        ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc ]; then EX="` ~ priv ~ `"; else EX=; fi; `
+        ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
+        ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
+    auto shims = Target(shimsLib,
+        guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]),
+        [gen]);
+
+    return QtdBinding(gen, shims, root, genDir, bdir, mods);
+}
+
+// Per-compiler binding archive: compile every generated .d module to its own object
+// (ldc2 needs -oq for fully-qualified object names; dmd names by module), archive them.
+private __gshared Target[string] _libCache;
+Target qtdBindLib(QtdBinding b, string dc) {
+    auto key = b.bdir ~ "|" ~ dc;
+    if (auto t = key in _libCache) return *t;
+    auto oq = dc == "ldc2" ? "-oq " : "";
+    auto od = b.bdir ~ "/od_" ~ dc;
+    auto lib = buildPath(b.bdir, "libbinding_" ~ dc ~ ".a");
+    auto stamp = buildPath(b.bdir, "gen.stamp");
+    // NB: double-quoted "*.d" (the command is embedded in sh -c '…' by guarded()).
+    auto cmd = "rm -rf " ~ od ~ " && mkdir -p " ~ od ~ " && cd " ~ b.genDir ~ " && "
+        ~ dc ~ ` -c ` ~ oq ~ "-od=" ~ od ~ ` -I. $(find . -name "*.d") && `
+        ~ "ar rcs " ~ lib ~ " " ~ od ~ "/*.o";
+    auto t = Target(lib,
+        guarded(b.bdir ~ "/bind_" ~ dc ~ ".lock", cmd, lib, [stamp]),
+        [b.gen]);
+    _libCache[key] = t;
+    return t;
+}
+
+// Link an app: <dc> app.d -I<genDir> --start-group libbinding libshims --end-group <libs>.
+// The archives go in a group so cross-references between binding and shims resolve.
+Target qtdApp(string binName, string appMain, QtdBinding b, string dc) {
+    auto lib = qtdBindLib(b, dc);
+    auto libPath = buildPath(b.bdir, "libbinding_" ~ dc ~ ".a");
+    auto shimsPath = buildPath(b.bdir, "libshims.a");
+    auto link = dc ~ " -of=$out " ~ appMain ~ " -I" ~ b.genDir
+        ~ " -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
+        ~ " -L--end-group " ~ pkgLibs(b.mods);
+    return Target(binName, link, [Target(appMain), lib, b.shims]);
+}
+
+// A test target: build the app, then run it headless. Building the phony runs the test.
+// `$in` is the app binary's real path (wherever reggae placed the dependency's output).
+Target qtdTest(string name, string appMain, QtdBinding b, string dc) {
+    auto app = qtdApp(name ~ "-bin", appMain, b, dc);
+    return Target.phony(name, "QT_QPA_PLATFORM=offscreen $in", [app]);
+}
+
+// The shiboken libsample corner-case harness, ported to reggae. Needs a pyside-setup clone
+// for the sample C++ library. Builds libsample.a, generates the "sample" cxx binding, and
+// links+runs every cases/*.d + cornercases.d on ldc2 AND dmd. Returns [] if the clone is
+// absent. Like the Qt bindings it links the whole binding archive (no closure BFS): the
+// linker pulls only what each case references. The all-headers umbrella is written here at
+// configure time (cleaner than the old shell sed pipeline).
+Target[] libsampleTargets(string root, string pyside) {
+    import std.file : mkdirRecurse;
+    auto LS = buildPath(pyside, "sources", "shiboken6", "tests", "libsample");
+    auto MIN = buildPath(pyside, "sources", "shiboken6", "tests", "libminimal");
+    if (!exists(LS)) return [];
+    auto here = buildPath(root, "tests", "libsample");
+    auto bdir = buildPath(root, ".build", "libsample");
+    auto build = buildPath(bdir, "src");    // libsample sources + libsample.a
+    auto gen = buildPath(bdir, "gen");       // generated "sample" binding
+    auto specPath = buildPath(bdir, "spec.json");
+    mkdirRecurse(bdir);
+
+    // all-headers umbrella (libsamplemacros first, then every sample header).
+    auto hdrs = dirEntries(LS, "*.h", SpanMode.shallow).map!(e => baseName(e.name))
+        .filter!(h => h != "libminimalmacros.h" && h != "libsamplemacros.h").array;
+    hdrs.sort();
+    std.file.write(buildPath(bdir, "sample_all.h"),
+        `#include "libsamplemacros.h"` ~ "\n" ~ hdrs.map!(h => `#include "` ~ h ~ `"`).join("\n") ~ "\n");
+    // discovery-mode spec (paths known at configure time).
+    std.file.write(specPath,
+        `{ "qt_version": "0", "pkg_config": "Qt6Core", "out_dir": "` ~ gen ~ `",`
+        ~ ` "d_package": "sample", "abi": "cxx", "source_filter": "` ~ build ~ `",`
+        ~ ` "include_paths": ["` ~ build ~ `"], "headers": ["` ~ buildPath(build, "sample_all.h") ~ `"] }`);
+
+    auto cflags = pkgCflags(["Qt6Core"]);
+    auto cxx = cflags ~ " -std=c++17 -fPIC -O2";
+    auto priv = mocPrivateFlags(cflags).join(" ");
+    auto gend = gendPath(root);
+
+    // 1) libsample.a from the external sources (+ the umbrella copied in for gend).
+    auto lsa = buildPath(build, "libsample.a");
+    auto lsaCmd = "rm -rf " ~ build ~ " && mkdir -p " ~ build ~ " && cp " ~ LS ~ "/*.h " ~ LS ~ "/*.cpp "
+        ~ MIN ~ "/libminimalmacros.h " ~ buildPath(bdir, "sample_all.h") ~ " " ~ build ~ "/ && cd " ~ build
+        ~ " && sed -i 's#../libminimal/libminimalmacros.h#libminimalmacros.h#' libsamplemacros.h"
+        ~ ` && for c in *.cpp; do [ "$c" = main.cpp ] || clang++ -std=c++17 -fPIC -DLIBSAMPLE_BUILD -I. -c "$c" -o "${c%.cpp}.o" 2>/dev/null; done`
+        ~ " && ar rcs libsample.a *.o";
+    // freshness vs the umbrella (written at configure time): without it a second concurrent
+    // scheduling would `rm -rf build` mid-link (empty newerThan == never skip).
+    auto sampleLib = Target(lsa, guarded(bdir ~ "/lsa.lock", lsaCmd, lsa, [buildPath(bdir, "sample_all.h")]), []);
+
+    // 2) generate the "sample" binding.
+    auto stamp = buildPath(bdir, "gen.stamp");
+    auto genCmd = "rm -rf " ~ gen ~ " && " ~ gend ~ " " ~ specPath ~ " >/dev/null 2>&1 && touch " ~ stamp;
+    auto genT = Target(stamp, guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, gend]), [sampleLib, Target(gend)]);
+
+    // 3) shims (.cpp) -> libshims.a.
+    auto shimsLib = buildPath(bdir, "libshims.a");
+    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && for c in " ~ gen ~ "/*.cpp; do "
+        ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc ]; then EX="` ~ priv ~ `"; else EX=; fi; `
+        ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
+        ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
+    auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);
+
+    Target[] outs;
+    foreach (dc; ["ldc2", "dmd"]) {
+        auto oq = dc == "ldc2" ? "-oq " : "";
+        auto od = bdir ~ "/od_" ~ dc;
+        auto lib = buildPath(bdir, "libbinding_" ~ dc ~ ".a");
+        auto libCmd = "rm -rf " ~ od ~ " && mkdir -p " ~ od ~ " && cd " ~ gen ~ " && "
+            ~ dc ~ " -c " ~ oq ~ "-od=" ~ od ~ ` -I. $(find . -name "*.d") && `
+            ~ "ar rcs " ~ lib ~ " " ~ od ~ "/*.o";
+        auto libT = Target(lib, guarded(bdir ~ "/bind_" ~ dc ~ ".lock", libCmd, lib, [stamp]), [genT]);
+        // libsample.a + the shim archives have mutual refs -> a static --start/--end-group.
+        auto grp = "-L--start-group -L=" ~ lib ~ " -L=" ~ shimsLib ~ " -L=" ~ lsa
+            ~ " -L--end-group -L-lstdc++";
+        auto cases = dirEntries(buildPath(here, "cases"), "*.d", SpanMode.shallow).map!(e => e.name).array
+            ~ buildPath(here, "cornercases.d");
+        cases.sort();
+        foreach (c; cases) {
+            auto n = "sample_" ~ baseName(c).stripExtension ~ "-" ~ dc;
+            auto app = Target(n ~ "-bin", dc ~ " -of=$out " ~ c ~ " -I" ~ gen ~ " " ~ grp,
+                [Target(c), libT, shimsT, sampleLib]);
+            outs ~= Target.phony(n, "QT_QPA_PLATFORM=offscreen $in", [app]);
+        }
+    }
+    return outs;
+}

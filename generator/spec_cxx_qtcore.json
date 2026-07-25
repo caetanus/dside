@@ -1,0 +1,8 @@
+{
+  "qt_version": "6.11",
+  "pkg_config": "Qt6Core",
+  "out_dir": "../generated/qt-6.11/cxx-qtcore",
+  "d_package": "qt.core",
+  "abi": "cxx",
+  "discover_module": "QtCore"
+}

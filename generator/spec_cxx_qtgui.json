@@ -1,0 +1,8 @@
+{
+  "qt_version": "6.11",
+  "pkg_config": "Qt6Gui",
+  "out_dir": "../generated/qt-6.11/cxx-qtgui",
+  "d_package": "qt.gui",
+  "abi": "cxx",
+  "discover_module": "QtGui"
+}

@@ -1,0 +1,12 @@
+{
+  "qt_version": "5.15",
+  "pkg_config": "Qt5Widgets",
+  "out_dir": "../generated/qt-5.15/cxx-qtwidgets",
+  "d_package": "qt.widgets",
+  "abi": "cxx",
+  "discover_module": "QtWidgets",
+  "qt_marker": "/qt/",
+  "subclass": [
+    "QWidget"
+  ]
+}

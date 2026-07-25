@@ -1,0 +1,7 @@
+{
+  "qt_version": "5.15", "pkg_config": "Qt5Core",
+  "out_dir": "../generated/qt-5.15/cxx-ctr", "d_package": "qt.core", "abi": "cxx",
+  "source_filter": "test_containers.h",
+  "headers": ["test_containers.h"],
+  "classes": [ { "name": "QCtrTest", "include": "test_containers.h" } ]
+}

@@ -1,0 +1,7 @@
+{
+  "qt_version": "6.11", "pkg_config": "Qt6Core",
+  "out_dir": "../generated/qt-6.11/cxx-ctr", "d_package": "qt.core", "abi": "cxx",
+  "source_filter": "test_containers.h",
+  "headers": ["test_containers.h"],
+  "classes": [ { "name": "QCtrTest", "include": "test_containers.h" } ]
+}
