@@ -385,11 +385,61 @@ string signalConnectMethod(Signal s) {
 }
 
 // Is this record a class nested inside another class (QJsonObject::iterator)?
-// Those aren't emitted as top-level modules, so referencing methods are skipped.
 bool nestedInClass(CXType t) {
     auto d = clang_getTypeDeclaration(clang_getCanonicalType(t));
     auto p = clang_getCursorSemanticParent(d);
     return p.kind == CXCursor_ClassDecl || p.kind == CXCursor_StructDecl;
+}
+
+// Nested value classes referenced by a bound signature -> emitted on demand as their own
+// module (QMetaObject::Connection -> qt.<pkg>.qmetaobject_connection). Demand-driven like
+// PENDING_BASES. Only VALUE records (non-polymorphic) that are publicly accessible qualify.
+__gshared CXCursor[string] PENDING_NESTED;   // D name -> nested-class definition cursor
+
+// Outer::Inner -> "Outer_Inner" (namespaces dropped): a unique, collision-safe D name that,
+// unlike lastNs, keeps QJsonObject::iterator and QJsonArray::iterator distinct.
+string nestedDName(string qn) {
+    auto parts = qn.split("::");
+    if (parts.length < 2) return qn;
+    return parts[$ - 2] ~ "_" ~ parts[$ - 1];
+}
+
+// Register a nested VALUE class for on-demand emission; returns its D name. Throws (so the
+// referencing method is skipped as before) if it isn't a publicly-accessible value record.
+string registerNested(CXType t) {
+    if (!isValueRecord(t)) throw new Unmappable("nested object-type record");
+    auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(t)));
+    if (decl.kind != CXCursor_ClassDecl && decl.kind != CXCursor_StructDecl)
+        throw new Unmappable("nested non-record");
+    if (clang_getCXXAccessSpecifier(decl) > CX_CXXPublic)   // protected/private in the outer class
+        throw new Unmappable("non-public nested record");
+    auto nn = nestedDName(canon(t));
+    PENDING_NESTED[nn] = decl;
+    return nn;
+}
+
+// Minimal emission for a nested value class: an ABI-faithful opaque handle — a size/align
+// blob + (if the C++ type is non-trivially copyable) a copy-ctor/~this that run the REAL
+// C++ copy/dtor via the qtdctor shims. No methods (no cascade). Enough for by-value
+// return/param (QMetaObject::Connection from QObject::connect): correct size + sret ABI.
+string emitNestedValue(CXCursor cur, string name, string cppName, string dpkg, string manifest) {
+    auto ct = clang_getCursorType(cur);
+    auto sz = clang_Type_getSizeOf(ct), al = clang_Type_getAlignOf(ct);
+    if (sz <= 0) sz = 1;
+    string bodyN = format("    align(%d) ubyte[%d] __data;", al > 0 ? al : 1, sz);
+    string factories;
+    if (nonTriviallyCopyable(ct) && !copyDeleted(cur)) {
+        CTORCOPY ~= CtorCopy(name, cppName);
+        factories = format("extern(C) private void qtd_cctor_%s(void*, const(void)*) nothrow;\n"
+            ~ "extern(C) private void qtd_dtor_%s(void*) nothrow;", name, name);
+        bodyN ~= format(
+            "\n    extern(D) this(ref const(%s) rhs) nothrow { qtd_cctor_%s(cast(void*)&this, cast(const(void)*)&rhs); }"
+            ~ "\n    extern(D) ~this() nothrow { qtd_dtor_%s(cast(void*)&this); }", name, name, name);
+    }
+    // No ns clause: we never rely on this struct's own D mangling (its symbols go through
+    // the qtdctor shims, which use the real C++ name cppName) — extern(C++) alone is enough.
+    return format("%s\nmodule %s.%s;\n\nextern (C++) struct %s {\n%s\n}\n%s\n",
+        manifest, dpkg, modBase(name), name, bodyN, factories);
 }
 
 // Map a C++ type to the D type that mangles identically under extern(C++).
@@ -436,7 +486,7 @@ string mapCxxType(CXType t, ref string imp) {
         if (pc == "void") return "void*";
         if (auto p = pc in PRIM) return *p ~ "*";
         if (isRecord(pt)) {
-            if (nestedInClass(pt)) throw new Unmappable("nested record: " ~ pc);
+            if (nestedInClass(pt)) { auto nn = registerNested(pt); imp = nn; return nn ~ "*"; }
             auto n = lastNs(pc); imp = n;
             // A polymorphic class maps to a D `extern(C++) class` (already a reference/
             // pointer), so X* -> X. A value type maps to a D struct, so X* -> X* (a real
@@ -453,8 +503,7 @@ string mapCxxType(CXType t, ref string imp) {
         // read as declaring the function const twice (bare leading const binds to the fn).
         if (auto p = pc in PRIM) return konst ? "ref const(" ~ *p ~ ")" : "ref " ~ *p;
         if (isRecord(pt) && isValueRecord(pt)) {
-            if (nestedInClass(pt)) throw new Unmappable("nested record: " ~ pc);
-            auto n = lastNs(pc); imp = n;
+            auto n = nestedInClass(pt) ? registerNested(pt) : lastNs(pc); imp = n;
             return konst ? "ref const(" ~ n ~ ")" : "ref " ~ n;
         }
         throw new Unmappable("ref to " ~ clang_getTypeSpelling(pt).str);
@@ -462,8 +511,7 @@ string mapCxxType(CXType t, ref string imp) {
     // value-type record BY VALUE (QPoint/QSize/QRect) -> the extern(C++) struct
     if (ck.kind == CXType_Record) {
         if (!isValueRecord(t)) throw new Unmappable("object-type by value: " ~ c);
-        if (nestedInClass(t)) throw new Unmappable("nested record: " ~ c);
-        auto n = lastNs(c); imp = n; return n;
+        auto n = nestedInClass(t) ? registerNested(t) : lastNs(c); imp = n; return n;
     }
     throw new Unmappable("cxx type " ~ clang_getTypeSpelling(t).str);
 }

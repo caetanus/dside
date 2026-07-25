@@ -406,6 +406,25 @@ void main(string[] args) {
             }
         }
     }
+    // Nested value classes referenced by a bound signature (QMetaObject::Connection from
+    // QObject::connect) -> emitted on demand as their own module (a size/ABI-faithful handle).
+    if (cxxAbi) while (true) {
+        string[] todo;
+        foreach (nn, _; PENDING_NESTED) if (nn !in cxxGen) todo ~= nn;
+        if (!todo.length) break;
+        foreach (nn; todo) {
+            auto ncur = PENDING_NESTED[nn];
+            auto ncpp = clang_getTypeSpelling(clang_getCursorType(ncur)).str;
+            try {
+                auto d = emitNestedValue(ncur, nn, ncpp, dpkg, manifest);
+                std.file.write(buildPath(dsub, modBase(nn) ~ ".d"), d);
+                cxxGen[nn] = true;
+            } catch (Exception e) {
+                stderr.writefln("[%s nested] skipped: %s", nn, e.msg);
+                cxxGen[nn] = true;
+            }
+        }
+    }
     if (cxxAbi) {
         // Verifica os inlines traduzidos de TODAS as classes num único ldc2 (em vez
         // de um por classe — era o gargalo da geração); conserta só os que falham.
