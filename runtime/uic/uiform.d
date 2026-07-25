@@ -71,7 +71,7 @@ private Node parseElem(string s, ref size_t i) {
             char q = s[i]; i++;                        // opening quote
             size_t vs = i;
             while (i < s.length && s[i] != q) i++;
-            n.attrs ~= Attr(an, s[vs .. i]);
+            n.attrs ~= Attr(an, decodeEntities(s[vs .. i]));
             i++;                                       // closing quote
         }
     }
@@ -79,7 +79,7 @@ private Node parseElem(string s, ref size_t i) {
         size_t ts = i;
         while (i < s.length && s[i] != '<') i++;
         auto tt = strip(s[ts .. i]);
-        if (tt.length) n.text ~= tt;
+        if (tt.length) n.text ~= decodeEntities(tt);
         if (i >= s.length) break;
         if (i + 1 < s.length && s[i + 1] == '/') {    // '</tag>' close
             i += 2;
@@ -142,6 +142,53 @@ private string[] splitOn(string s, string sep) {
     return r;
 }
 
+private string encodeUtf8(uint cp) {
+    string r;
+    if (cp < 0x80) r ~= cast(char) cp;
+    else if (cp < 0x800) { r ~= cast(char)(0xC0 | (cp >> 6)); r ~= cast(char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) {
+        r ~= cast(char)(0xE0 | (cp >> 12));
+        r ~= cast(char)(0x80 | ((cp >> 6) & 0x3F));
+        r ~= cast(char)(0x80 | (cp & 0x3F));
+    } else {
+        r ~= cast(char)(0xF0 | (cp >> 18));
+        r ~= cast(char)(0x80 | ((cp >> 12) & 0x3F));
+        r ~= cast(char)(0x80 | ((cp >> 6) & 0x3F));
+        r ~= cast(char)(0x80 | (cp & 0x3F));
+    }
+    return r;
+}
+
+// Decode XML entities (&lt; &gt; &amp; &quot; &apos; and numeric &#N;/&#xN;) — QUiLoader's
+// real XML parser does this, so `&amp;File` -> `&File`, `&lt;b&gt;` -> `<b>`, etc.
+private string decodeEntities(string s) {
+    string r;
+    for (size_t i = 0; i < s.length;) {
+        if (s[i] != '&') { r ~= s[i]; i++; continue; }
+        size_t j = i + 1;
+        while (j < s.length && s[j] != ';' && j - i < 12) j++;
+        if (j >= s.length || s[j] != ';') { r ~= '&'; i++; continue; }
+        string ent = s[i + 1 .. j];
+        if (ent == "lt") r ~= '<';
+        else if (ent == "gt") r ~= '>';
+        else if (ent == "amp") r ~= '&';
+        else if (ent == "quot") r ~= '"';
+        else if (ent == "apos") r ~= '\'';
+        else if (ent.length > 1 && ent[0] == '#') {
+            uint cp = 0;
+            bool hex = ent.length > 2 && (ent[1] == 'x' || ent[1] == 'X');
+            foreach (c; ent[(hex ? 2 : 1) .. $]) {
+                if (c >= '0' && c <= '9') cp = cp * (hex ? 16 : 10) + (c - '0');
+                else if (hex && c >= 'a' && c <= 'f') cp = cp * 16 + (c - 'a' + 10);
+                else if (hex && c >= 'A' && c <= 'F') cp = cp * 16 + (c - 'A' + 10);
+            }
+            r ~= encodeUtf8(cp);
+        } else { r ~= s[i .. j + 1]; }   // unknown entity -> keep literal
+        i = j + 1;
+    }
+    return r;
+}
+
 private string esc(string s) {                          // for a D "…" literal
     string r;
     foreach (c; s) {
@@ -183,11 +230,19 @@ private bool isTr(string name) {
     return false;
 }
 
-// `Qt::AlignmentFlag::AlignCenter` -> `AlignmentFlag.AlignCenter`, importing the enum module.
+// FQN enum -> D. A Qt-namespace enum (`Qt::AlignmentFlag::AlignCenter`) is its own
+// top-level module -> `AlignmentFlag.AlignCenter` (import alignmentflag). A class-nested
+// enum (`QAbstractItemView::SelectionBehavior::SelectRows`) lives in the class module ->
+// `QAbstractItemView.SelectionBehavior.SelectRows` (import qabstractitemview).
 private string enumRef(ref Gen g, string fqn) {
     auto parts = splitOn(fqn, "::");
     if (parts.length < 2) return fqn;
     string e = parts[$ - 2], v = parts[$ - 1];
+    if (parts.length >= 3 && parts[$ - 3] != "Qt") {   // Container::Enum::Value
+        string cont = parts[$ - 3];
+        need(g, cont);
+        return cont ~ "." ~ e ~ "." ~ v;
+    }
     need(g, e);
     return e ~ "." ~ v;
 }

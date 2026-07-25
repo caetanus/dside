@@ -31,13 +31,37 @@ static std::string textOf(QObject *o) {
     return std::string();
 }
 
+// Render-affecting, .ui-settable properties (NOT geometry/size — those are layout-managed
+// and 0 before show). A widget only carries the ones its class declares; defaults are the
+// same in both trees so they never cause a false mismatch — only a prop one side sets and
+// the other skips shows up. Sorted for a canonical line.
+static std::string propsOf(QObject *o) {
+    static const char *keys[] = {
+        "alignment", "wordWrap", "enabled", "checkable", "checked", "readOnly", "flat",
+        "orientation", "echoMode", "frameShape", "frameShadow", "lineWidth", "maximum",
+        "minimum", "singleStep", "pageStep", "value", "decimals", "currentIndex", "maxLength",
+        "placeholderText", "autoDefault", "default", "spacing", "margin", "toolTip",
+        "shortcut", "sizePolicy", "iconSize", "movable", "floatable", "scaledContents",
+    };
+    std::vector<std::string> kv;
+    for (const char *k : keys) {
+        QVariant v = o->property(k);
+        if (v.isValid()) kv.push_back(std::string(k) + "=" + u8(v.toString()));
+    }
+    std::sort(kv.begin(), kv.end());
+    std::string out;
+    for (auto &s : kv) { out += ";"; out += s; }
+    return out;
+}
+
 static void walk(QObject *o, std::vector<std::string> &lines) {
     QString name = o->objectName();
     // keep only user-named objects; skip Qt's internal helpers (qt_*), unnamed layouts, etc.
     if (!name.isEmpty() && !name.startsWith("qt_")) {
         QObject *p = o->parent();
         std::string parent = p ? u8(p->objectName()) : std::string();
-        lines.push_back(parent + "/" + o->metaObject()->className() + "/" + u8(name) + "/" + textOf(o));
+        lines.push_back(parent + "/" + o->metaObject()->className() + "/" + u8(name)
+                        + "/" + textOf(o) + propsOf(o));
     }
     const QObjectList &kids = o->children();
     for (QObject *k : kids) walk(k, lines);
