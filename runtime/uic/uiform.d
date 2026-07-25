@@ -116,38 +116,178 @@ Node parseUi(string s) {
     return Node.init;
 }
 
+// ---------- small CTFE string helpers ----------
+
+private string cap(string s) {
+    if (!s.length) return s;
+    char c = s[0];
+    if (c >= 'a' && c <= 'z') c = cast(char)(c - 32);
+    return c ~ s[1 .. $];
+}
+
+private string low(string s) {                          // ASCII toLower (matches modBase)
+    string r;
+    foreach (c; s) r ~= (c >= 'A' && c <= 'Z') ? cast(char)(c + 32) : c;
+    return r;
+}
+
+private string[] splitOn(string s, string sep) {
+    string[] r;
+    size_t start = 0;
+    for (size_t i = 0; i + sep.length <= s.length; ) {
+        if (s[i .. i + sep.length] == sep) { r ~= s[start .. i]; i += sep.length; start = i; }
+        else i++;
+    }
+    r ~= s[start .. $];
+    return r;
+}
+
+private string esc(string s) {                          // for a D "…" literal
+    string r;
+    foreach (c; s) {
+        if (c == '\\' || c == '"') r ~= '\\';
+        if (c == '\n') { r ~= "\\n"; continue; }
+        r ~= c;
+    }
+    return r;
+}
+
 // ---------- code generation ----------
 
-// Emit a container widget's <layout> + its item widgets; `parentVar` is the container's
-// D variable. Nested containers recurse. Appends field decls and setupUi body.
-private void genContainer(Node widget, string parentVar, ref string fields, ref string code) {
-    auto lay = widget.child("layout");
-    if (!lay.ok) return;
-    string layCls = lay.attr("class");                 // QVBoxLayout / QHBoxLayout
-    string layName = lay.attr("name");
-    code ~= "        auto " ~ layName ~ " = " ~ layCls ~ "_new(" ~ parentVar ~ ");\n";
-    foreach (item; lay.childrenOf("item")) {
-        auto w = item.child("widget");
-        if (!w.ok) continue;
-        string wc = w.attr("class");                   // QPushButton / QLabel / …
-        string wn = w.attr("name");
-        fields ~= "    " ~ wc ~ " " ~ wn ~ ";\n";
-        code ~= "        " ~ wn ~ " = " ~ wc ~ "_new(" ~ parentVar ~ ");\n";
-        foreach (p; w.childrenOf("property"))
-            if (p.attr("name") == "text")
-                code ~= "        " ~ wn ~ ".setText(\"" ~ p.child("string").text ~ "\");\n";
-        code ~= "        " ~ layName ~ ".addWidget(" ~ wn ~ ");\n";
-        genContainer(w, wn, fields, code);             // nested layout inside this widget
+// Threaded accumulators for one form.
+private struct Gen {
+    string imports;     // deduped `import qt.widgets.<mod>;`
+    string seen;        // "|qpushbutton|qlabel|" — dedup key for imports
+    string fields;      // struct fields
+    string setup;       // setupUi body
+    string trans;       // retranslateUi body
+}
+
+// Every generated type lives in the widgets package; ensure its module is imported.
+private void need(ref Gen g, string typeName) {
+    if (!typeName.length) return;
+    string key = "|" ~ low(typeName) ~ "|";
+    foreach (i; 0 .. g.seen.length)
+        if (i + key.length <= g.seen.length && g.seen[i .. i + key.length] == key) return;
+    g.seen ~= key;
+    g.imports ~= "import qt.widgets." ~ low(typeName) ~ ";\n";
+}
+
+// Translatable properties go to retranslateUi (plain literals for now; tr() is a later pass).
+private bool isTr(string name) {
+    foreach (t; ["text", "title", "windowTitle", "toolTip", "statusTip", "whatsThis",
+                 "shortcut", "placeholderText"])
+        if (name == t) return true;
+    return false;
+}
+
+// `Qt::AlignmentFlag::AlignCenter` -> `AlignmentFlag.AlignCenter`, importing the enum module.
+private string enumRef(ref Gen g, string fqn) {
+    auto parts = splitOn(fqn, "::");
+    if (parts.length < 2) return fqn;
+    string e = parts[$ - 2], v = parts[$ - 1];
+    need(g, e);
+    return e ~ "." ~ v;
+}
+
+// A property value element -> a D expression (or "" if unsupported). May add imports.
+private string value(ref Gen g, Node v) {
+    switch (v.tag) {
+        case "number", "double", "float", "longlong", "uInt": return v.text;
+        case "bool": return v.text;                     // "true"/"false"
+        case "string": return "\"" ~ esc(v.text) ~ "\"";
+        case "enum": return enumRef(g, v.text);
+        case "set":                                     // flags OR-ed
+            string r;
+            foreach (i, f; splitOn(v.text, "|")) r ~= (i ? " | " : "") ~ enumRef(g, f);
+            return r;
+        case "rect":
+            need(g, "QRect");
+            return "QRect(" ~ v.child("x").text ~ ", " ~ v.child("y").text ~ ", "
+                ~ v.child("width").text ~ ", " ~ v.child("height").text ~ ")";
+        case "size":
+            need(g, "QSize");
+            return "QSize(" ~ v.child("width").text ~ ", " ~ v.child("height").text ~ ")";
+        default: return "";
     }
 }
 
-// Turn `.ui` XML into the source of `struct Ui_<name>` (fields + setupUi). CTFE-evaluable.
+// First child ELEMENT of a node (skips text).
+private Node firstElem(Node n) { return n.kids.length ? n.kids[0] : Node.init; }
+
+private void genProps(ref Gen g, Node w, string var, bool isRoot) {
+    foreach (p; w.childrenOf("property")) {
+        string name = p.attr("name");
+        Node v = firstElem(p);
+        if (name == "geometry" && v.tag == "rect") {    // root -> resize; child -> setGeometry
+            if (isRoot)
+                g.setup ~= "        " ~ var ~ ".resize(" ~ v.child("width").text
+                    ~ ", " ~ v.child("height").text ~ ");\n";
+            else {
+                need(g, "QRect");
+                g.setup ~= "        " ~ var ~ ".setGeometry(" ~ value(g, v) ~ ");\n";
+            }
+            continue;
+        }
+        if (v.tag == "string" && isTr(name)) {
+            g.trans ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(\"" ~ esc(v.text) ~ "\");\n";
+            continue;
+        }
+        string val = value(g, v);
+        if (val.length)
+            g.setup ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(" ~ val ~ ");\n";
+    }
+}
+
+// A box <layout> and its item widgets. `parentVar` is the container's D variable.
+private void genBoxLayout(ref Gen g, Node lay, string parentVar) {
+    string cls = lay.attr("class");
+    string name = lay.attr("name");
+    if (!name.length) name = parentVar ~ "Layout";
+    need(g, cls);
+    g.fields ~= "    " ~ cls ~ " " ~ name ~ ";\n";
+    g.setup ~= "        " ~ name ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
+    foreach (item; lay.childrenOf("item")) {
+        auto w = item.child("widget");
+        if (!w.ok) continue;                            // spacers / nested layouts: Phase B
+        string wn = genWidget(g, w, parentVar, false);
+        g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ");\n";
+    }
+}
+
+// Emit a widget: field + construction (unless root) + properties + its layout. Returns the
+// widget's D variable name ("root" for the root).
+private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
+    string var;
+    if (isRoot) {
+        var = "root";
+    } else {
+        string cls = w.attr("class");
+        var = w.attr("name");
+        need(g, cls);
+        g.fields ~= "    " ~ cls ~ " " ~ var ~ ";\n";
+        g.setup ~= "        " ~ var ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
+        g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ var ~ "\");\n";
+    }
+    genProps(g, w, var, isRoot);
+    auto lay = w.child("layout");
+    if (lay.ok) genBoxLayout(g, lay, var);
+    return var;
+}
+
+// Turn `.ui` XML into the source of `struct Ui_<name>` (fields + setupUi + retranslateUi),
+// preceded by the imports it needs. CTFE-evaluable; use as mixin(uiForm(import("x.ui"))).
 string uiForm(string xml) {
-    auto root = parseUi(xml).child("widget");          // the root <widget>
-    string cls = root.attr("class");                   // e.g. QWidget
-    string name = root.attr("name");                   // e.g. LoginForm
-    string fields, code;
-    genContainer(root, "root", fields, code);
-    return "struct Ui_" ~ name ~ " {\n" ~ fields
-        ~ "    void setupUi(" ~ cls ~ " root) {\n" ~ code ~ "    }\n}\n";
+    auto root = parseUi(xml).child("widget");
+    string rootCls = root.attr("class");
+    string className = root.attr("name");
+    Gen g;
+    need(g, rootCls);
+    g.setup ~= "        root.setObjectName(\"" ~ className ~ "\");\n";
+    genWidget(g, root, "", true);
+    return g.imports
+        ~ "struct Ui_" ~ className ~ " {\n" ~ g.fields
+        ~ "    void setupUi(" ~ rootCls ~ " root) {\n" ~ g.setup
+        ~ "        retranslateUi(root);\n    }\n"
+        ~ "    void retranslateUi(" ~ rootCls ~ " root) {\n" ~ g.trans ~ "    }\n}\n";
 }
