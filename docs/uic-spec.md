@@ -110,11 +110,14 @@ struct Ui_<class> {
       split; objectName/resize/connectSlotsByName skeleton; box-layout parenting. Covers
       simple dialogs + most forms. (`dialog.ui`, `device.ui`.)
 - [x] **B — layouts.** QGridLayout (row/col/span) + QFormLayout (Label/FieldRole) + nested
-      layouts (addLayout) done; verified on the real `dialog.ui` (grid). Needed a generator
-      fix first: derived overloads sharing an inherited name (QGridLayout::addWidget(w,r,c,…))
-      were being dropped. Still TODO in B: contentsMargins/spacing, spacers.
-- [ ] **C — item widgets.** combo/list items, tab/stacked pages, groupbox. (`camera.ui`,
-      `documentviewer`.)
+      layouts (addLayout) + contentsMargins/spacing done; verified on the real `dialog.ui`
+      (grid). Needed a generator fix first: derived overloads sharing an inherited name
+      (QGridLayout::addWidget(w,r,c,…)) were being dropped. **Spacers blocked** on a binding
+      gap: `QSpacerItem`'s ctor is inline (no symbol) so `QSpacerItem_new` isn't emitted.
+- [~] **C — item widgets.** tab pages (addTab + setTabText), stacked/splitter pages
+      (addWidget), groupbox (title via generic setter) DONE + verified (`tabs.ui`). **Combo/
+      list items blocked** on a binding gap: `QComboBox::addItem(const QString&, const
+      QVariant& = {})` isn't emitted (QVariant-default overload dropped).
 - [ ] **D — mainwindow chrome.** actions, menus, toolbars, statusbar. (`documentviewer`.)
 - [ ] **E — advanced.** connections, button groups, tab order, sizePolicy/font/iconset/
       palette, custom widgets, resources/`.qrc`, connectSlotsByName via moc.

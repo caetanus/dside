@@ -215,6 +215,20 @@ private string value(ref Gen g, Node v) {
 // First child ELEMENT of a node (skips text).
 private Node firstElem(Node n) { return n.kids.length ? n.kids[0] : Node.init; }
 
+private string itos(size_t n) {
+    if (n == 0) return "0";
+    string r;
+    while (n) { r = cast(char)('0' + (n % 10)) ~ r; n /= 10; }
+    return r;
+}
+
+// A page's tab title from <attribute name="title"><string>…</string></attribute>.
+private string tabTitle(Node page) {
+    foreach (a; page.childrenOf("attribute"))
+        if (a.attr("name") == "title") return firstElem(a).text;
+    return "";
+}
+
 private void genProps(ref Gen g, Node w, string var, bool isRoot) {
     foreach (p; w.childrenOf("property")) {
         string name = p.attr("name");
@@ -252,6 +266,19 @@ private string genLayout(ref Gen g, Node lay, string parentVar) {
     need(g, cls);
     g.fields ~= "    " ~ cls ~ " " ~ name ~ ";\n";
     g.setup ~= "        " ~ name ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
+    // spacing + the four *Margin props collapse to setContentsMargins(l, t, r, b).
+    string ml = "0", mt = "0", mr = "0", mb = "0";
+    bool anyMargin;
+    foreach (p; lay.childrenOf("property")) {
+        string pn = p.attr("name"), pv = firstElem(p).text;
+        if (pn == "spacing") g.setup ~= "        " ~ name ~ ".setSpacing(" ~ pv ~ ");\n";
+        else if (pn == "leftMargin") { ml = pv; anyMargin = true; }
+        else if (pn == "topMargin") { mt = pv; anyMargin = true; }
+        else if (pn == "rightMargin") { mr = pv; anyMargin = true; }
+        else if (pn == "bottomMargin") { mb = pv; anyMargin = true; }
+    }
+    if (anyMargin)
+        g.setup ~= "        " ~ name ~ ".setContentsMargins(" ~ ml ~ ", " ~ mt ~ ", " ~ mr ~ ", " ~ mb ~ ");\n";
     foreach (item; lay.childrenOf("item")) {
         string row = item.attr("row").length ? item.attr("row") : "0";
         string col = item.attr("column").length ? item.attr("column") : "0";
@@ -298,6 +325,22 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
     genProps(g, w, var, isRoot);
     auto lay = w.child("layout");
     if (lay.ok) genLayout(g, lay, var);
+    // Container widgets whose children are direct <widget> pages (not layout items):
+    // QTabWidget (addTab + tab title in retranslateUi), QStackedWidget/QSplitter (addWidget).
+    string wcls = w.attr("class");
+    if (wcls == "QTabWidget" || wcls == "QStackedWidget" || wcls == "QSplitter") {
+        size_t idx = 0;
+        foreach (page; w.childrenOf("widget")) {
+            string pn = genWidget(g, page, var, false);
+            if (wcls == "QTabWidget") {
+                g.setup ~= "        " ~ var ~ ".addTab(" ~ pn ~ ", \"\");\n";
+                g.trans ~= "        " ~ var ~ ".setTabText(" ~ itos(idx) ~ ", \""
+                    ~ esc(tabTitle(page)) ~ "\");\n";
+            } else
+                g.setup ~= "        " ~ var ~ ".addWidget(" ~ pn ~ ");\n";
+            idx++;
+        }
+    }
     return var;
 }
 

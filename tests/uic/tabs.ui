@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>TabForm</class>
+ <widget class="QWidget" name="TabForm">
+  <layout class="QVBoxLayout" name="outer">
+   <property name="leftMargin"><number>4</number></property>
+   <property name="topMargin"><number>4</number></property>
+   <property name="rightMargin"><number>4</number></property>
+   <property name="bottomMargin"><number>4</number></property>
+   <property name="spacing"><number>6</number></property>
+   <item>
+    <widget class="QTabWidget" name="tabs">
+     <widget class="QWidget" name="pageGeneral">
+      <attribute name="title"><string>General</string></attribute>
+      <layout class="QVBoxLayout" name="genLay">
+       <item><widget class="QLabel" name="genLabel"><property name="text"><string>General settings</string></property></widget></item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="pageAdvanced">
+      <attribute name="title"><string>Advanced</string></attribute>
+      <layout class="QVBoxLayout" name="advLay">
+       <item><widget class="QLabel" name="advLabel"><property name="text"><string>Advanced settings</string></property></widget></item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>
