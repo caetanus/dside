@@ -1,0 +1,33 @@
+<ui version="4.0">
+ <class>ConnForm</class>
+ <widget class="QWidget" name="ConnForm">
+  <property name="windowTitle">
+   <string>Connect</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QCheckBox" name="src">
+     <property name="text">
+      <string>src</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="dst">
+     <property name="text">
+      <string>dst</string>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>src</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>dst</receiver>
+   <slot>setChecked(bool)</slot>
+  </connection>
+ </connections>
+</ui>

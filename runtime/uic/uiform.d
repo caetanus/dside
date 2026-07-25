@@ -699,6 +699,38 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
     return var;
 }
 
+// Is `name` one of the widgets/objects we generated a field for? Field lines are
+// "    <Type> <name>;\n", so the anchored " <name>;\n" uniquely identifies one.
+private bool hasField(ref Gen g, string name) {
+    string needle = " " ~ name ~ ";\n";
+    if (needle.length > g.fields.length) return false;
+    foreach (i; 0 .. g.fields.length - needle.length + 1)
+        if (g.fields[i .. i + needle.length] == needle) return true;
+    return false;
+}
+
+// <connections>: each <connection> wires sender.signal -> receiver.slot through the string-
+// based QObject.connect (the meta-object resolves the signatures + arg dropping at runtime).
+// Sender/receiver are .ui object names: the root's <class> maps to `root`, others to their
+// generated field; an unknown name (custom/promoted widget not in our tree) is skipped.
+// Qt's SIGNAL()/SLOT() macros prepend "2"/"1" to the signature string — we do the same.
+private void genConnections(ref Gen g, Node conns, string rootName) {
+    if (!conns.ok) return;
+    foreach (c; conns.childrenOf("connection")) {
+        string sender = c.child("sender").text, signal = c.child("signal").text;
+        string receiver = c.child("receiver").text, slot = c.child("slot").text;
+        if (!sender.length || !signal.length || !receiver.length || !slot.length) continue;
+        string sv = sender == rootName ? "root" : sender;
+        string rv = receiver == rootName ? "root" : receiver;
+        if (sv != "root" && !hasField(g, sender)) continue;     // sender not in our tree
+        if (rv != "root" && !hasField(g, receiver)) continue;   // receiver not in our tree
+        need(g, "QObject");
+        need(g, "ConnectionType");
+        g.setup ~= "        QObject.connect(" ~ sv ~ ", \"2" ~ signal ~ "\", "
+            ~ rv ~ ", \"1" ~ slot ~ "\", ConnectionType.AutoConnection);\n";
+    }
+}
+
 // Turn `.ui` XML into the source of `struct Ui_<name>` (fields + setupUi + retranslateUi),
 // preceded by the imports it needs. CTFE-evaluable; use as mixin(uiForm(import("x.ui"))).
 string uiForm(string xml) {
@@ -713,6 +745,11 @@ string uiForm(string xml) {
     emitGroups(g);            // QButtonGroups exist before the buttons add to them
     genWidget(g, root, "", true);
     genTabOrder(g, parseUi(xml).child("tabstops"));
+    genConnections(g, parseUi(xml).child("connections"), className);
+    // connectSlotsByName wires the host's on_<object>_<signal>() slots (QUiLoader always
+    // calls it); a no-op unless `root` is a moc'd QObject that declares such slots.
+    need(g, "QMetaObject");
+    g.setup ~= "        QMetaObject.connectSlotsByName(root);\n";
     return g.imports
         ~ "struct Ui_" ~ className ~ " {\n" ~ g.fields
         ~ "    void setupUi(" ~ rootCls ~ " root) {\n" ~ g.setup

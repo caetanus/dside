@@ -2,6 +2,7 @@
 // setupUi) must serialize identically to the tree QUiLoader.load() builds (Qt's own uic).
 // The dump + the oracle load live in qtd_uidump.cpp; we just diff the two strings.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widgets.qmainwindow;
+import qt.widgets.qcheckbox;
 import cxxrt, uiform, qrc, std.stdio, std.string;
 
 pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
@@ -20,6 +21,7 @@ mixin(uiForm(import("icon.ui")));      // Ui_IconForm
 mixin(uiForm(import("font.ui")));      // Ui_FontForm
 mixin(uiForm(import("sizepolicy.ui")));  // Ui_SizePolForm
 mixin(uiForm(import("palette.ui")));   // Ui_PaletteForm
+mixin(uiForm(import("connect.ui")));   // Ui_ConnForm
 mixin(uiForm(import("bookwindow.ui")));  // Ui_BookWindow
 
 __gshared int fails;
@@ -54,7 +56,19 @@ void main() {
     check!Ui_FontForm("tests/uic/font.ui", QWidget_new());
     check!Ui_SizePolForm("tests/uic/sizepolicy.ui", QWidget_new());
     check!Ui_PaletteForm("tests/uic/palette.ui", QWidget_new());
+    check!Ui_ConnForm("tests/uic/connect.ui", QWidget_new());
     check!Ui_BookWindow("tests/uic/bookwindow.ui", QMainWindow_new());
+
+    // Behavioral: the <connection> must actually fire (string-based QObject.connect ->
+    // QMetaObject_Connection return; the meta-object forwards toggled(bool)->setChecked(bool)).
+    {
+        Ui_ConnForm ui;
+        ui.setupUi(QWidget_new());
+        ui.src.setChecked(true);
+        if (ui.dst.isChecked())
+            writeln("  CONNECT   connect.ui: src.toggled(bool) -> dst.setChecked(bool) fired");
+        else { writeln("  CONNFAIL  connect.ui: connection did not fire"); fails++; }
+    }
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }
     writeln("uicheck OK: our uic == QUiLoader for every .ui");
