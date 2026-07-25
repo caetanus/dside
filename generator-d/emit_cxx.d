@@ -2106,6 +2106,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
 
     }
     body_ = nestedEnumLines(cur) ~ body_ ~ methodLines ~ miMethods;   // + secondary-base upcasts
+    shimDecls ~= nestedEnumAliases(cur, name);   // Class_Value aliases for the 2-part .ui form
 
     auto kind = hasVirtual ? "class" : "struct";
     impSet.remove(name);
@@ -2138,6 +2139,29 @@ string[] nestedEnumLines(CXCursor cur) {
             L ~= format("    enum %s: %s {\n%s\n    }", anon ? "" : en ~ " ", dut, ms.join("\n"));
         }
     return L;
+}
+
+// MODULE-SCOPE, class-prefixed aliases for a class's nested enum values, so the OLD 2-part
+// `.ui` form `QLineEdit::Password` / `QDialogButtonBox::Ok` resolves (the uic emits
+// `QLineEdit_Password`). Module scope + the `Class_` prefix means: unique across classes, and
+// NOT inherited — so unlike a class-member alias it can't shadow a type in a derived class
+// (QEvent::Type::InputMethodQuery once shadowed the InputMethodQuery type in QInputMethodQueryEvent).
+string[] nestedEnumAliases(CXCursor cur, string name) {
+    string[] al; bool[string] seen;
+    foreach (c; children(cur))
+        if (c.kind == CXCursor_EnumDecl && isPublic(c)) {
+            auto en = clang_getCursorSpelling(c).str;
+            bool anon = !en.length || en.canFind('(');   // anon values are bare members: Class.Value
+            foreach (ch; children(c))
+                if (ch.kind == CXCursor_EnumConstantDecl) {
+                    auto vn = dname(clang_getCursorSpelling(ch).str);
+                    if (vn in seen) continue;
+                    seen[vn] = true;
+                    al ~= anon ? format("alias %s_%s = %s.%s;", name, vn, name, vn)
+                               : format("alias %s_%s = %s.%s.%s;", name, vn, name, en, vn);
+                }
+        }
+    return al;
 }
 
 // Emit one enum module: extern(C++, <scope>) enum Name : underlying { members }.

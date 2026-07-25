@@ -240,16 +240,16 @@ private string enumRef(ref Gen g, string fqn) {
     auto parts = splitOn(fqn, "::");
     if (parts.length < 2) return fqn;
     string e = parts[$ - 2], v = parts[$ - 1];
-    if (parts.length == 2 && e == "Qt") {   // old 2-part `Qt::Horizontal` (dominant in real
-        need(g, "qt");                      // .ui) -> the bare-name alias from the `qt` aggregator
-        return v;
+    if (parts.length == 2) {                // old 2-part form (dominant in real .ui)
+        if (e == "Qt") { need(g, "qt"); return v; }   // Qt::Horizontal -> `qt` aggregator alias
+        need(g, e); return e ~ "_" ~ v;     // QLineEdit::Password -> the Class_Value module alias
     }
-    if (parts.length >= 3 && parts[$ - 3] != "Qt") {   // Container::Enum::Value
+    if (parts[$ - 3] != "Qt") {   // Container::Enum::Value
         string cont = parts[$ - 3];
         need(g, cont);
         return cont ~ "." ~ e ~ "." ~ v;
     }
-    need(g, e);
+    need(g, e);   // Qt::Enum::Value (3-part) -> Enum.Value
     return e ~ "." ~ v;
 }
 
