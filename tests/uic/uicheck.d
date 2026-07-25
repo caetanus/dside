@@ -2,7 +2,7 @@
 // setupUi) must serialize identically to the tree QUiLoader.load() builds (Qt's own uic).
 // The dump + the oracle load live in qtd_uidump.cpp; we just diff the two strings.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widgets.qmainwindow;
-import qt.widgets.qcheckbox;
+import qt.widgets.qcheckbox, qt.widgets.qcborarray, qt.widgets.qcborvalue;
 import cxxrt, uiform, qrc, std.stdio, std.string;
 
 pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
@@ -68,6 +68,20 @@ void main() {
         if (ui.dst.isChecked())
             writeln("  CONNECT   connect.ui: src.toggled(bool) -> dst.setChecked(bool) fired");
         else { writeln("  CONNFAIL  connect.ui: connection did not fire"); fails++; }
+    }
+
+    // Iterator -> D range: a C++ forward iterator (begin()/end()) is exposed as a D range,
+    // so `foreach (v; arr[])` iterates natively (front yields the value_type QCborValue).
+    {
+        auto arr = QCborArray_new();
+        auto a = QCborValue(10L); arr.append(a);
+        auto b = QCborValue(20L); arr.append(b);
+        auto c = QCborValue(30L); arr.append(c);
+        long sum = 0; int n = 0;
+        foreach (v; arr[]) { sum += v.toInteger(0); n++; }
+        if (n == 3 && sum == 60)
+            writeln("  RANGE     QCborArray: foreach (v; arr[]) -> ", n, " items, sum ", sum);
+        else { writeln("  RANGEFAIL QCborArray iteration: n=", n, " sum=", sum); fails++; }
     }
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }

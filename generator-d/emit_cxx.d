@@ -442,6 +442,79 @@ string emitNestedValue(CXCursor cur, string name, string cppName, string dpkg, s
         manifest, dpkg, modBase(name), name, bodyN, factories);
 }
 
+// A C++ forward iterator -> a D range. Emitted C++ ops over the iterator's bytes.
+struct IterOp { string iName, iCpp, eCpp; }
+__gshared IterOp[string] ITEROPS;   // iterator D name -> deref/incr/ne shim spec (emit once)
+
+// If T has begin()/end() returning the same iterator record I (with operator* / prefix
+// operator++ / operator!=), synthesize a D range so `foreach (x; t[])` works — the whole
+// point of emitting the nested iterator type. `front` yields I's `value_type` (a proxy deref
+// like QCborValueRef converts to it at the C++ boundary). Returns [rangeStruct, accessor,
+// moduleDecls] (accessor goes INSIDE T; the other two at module scope) or [] if T has no
+// iterable begin/end. impSet gains the element + iterator modules.
+string[] rangeFor(CXCursor t, string tName, ref bool[string] impSet) {
+    CXCursor beginM, endM; bool haveB, haveE;
+    foreach (c; children(t)) {
+        if (c.kind != CXCursor_CXXMethod || !isPublic(c)) continue;
+        if (clang_Cursor_getNumArguments(c) != 0 || clang_CXXMethod_isConst(c)) continue;
+        auto nm = clang_getCursorSpelling(c).str;
+        if (nm == "begin") { beginM = c; haveB = true; }
+        else if (nm == "end") { endM = c; haveE = true; }
+    }
+    if (!haveB || !haveE) return [];
+    auto itT = clang_getCursorResultType(beginM);
+    if (!isRecord(itT) || canon(clang_getCursorResultType(endM)) != canon(itT)) return [];
+    auto itDecl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(itT)));
+    if (itDecl.kind != CXCursor_ClassDecl && itDecl.kind != CXCursor_StructDecl) return [];
+    string iimp, iD;
+    try iD = mapCxxType(itT, iimp); catch (Unmappable) return [];   // must be a type WE emit
+    if (!iimp.length) return [];
+    // Essential forward-iterator members: operator* (deref) + prefix operator++. Comparison
+    // is NOT required as a member — Qt6 iterators get != from the comparison-helper templates
+    // (qcompare_impl.h), and the `*a != *b` in the emitted C++ shim resolves through it.
+    bool hasDeref, hasIncr; CXType derefT;
+    foreach (c; children(itDecl)) {
+        if (c.kind != CXCursor_CXXMethod || !isPublic(c)) continue;
+        auto op = clang_getCursorSpelling(c).str;
+        auto na = clang_Cursor_getNumArguments(c);
+        if (op == "operator*" && na == 0) { hasDeref = true; derefT = clang_getCursorResultType(c); }
+        else if (op == "operator++" && na == 0) hasIncr = true;   // prefix ++it
+    }
+    if (!hasDeref || !hasIncr) return [];
+    // element type = the iterator's `value_type` typedef (clean value; the proxy deref
+    // converts to it in C++) if it maps, else operator*'s own return type.
+    CXType elemT = derefT; bool haveVT;
+    foreach (c; children(itDecl))
+        if ((c.kind == CXCursor_TypedefDecl || c.kind == CXCursor_TypeAliasDecl)
+                && clang_getCursorSpelling(c).str == "value_type") {
+            elemT = clang_getTypedefDeclUnderlyingType(c); haveVT = true; break;
+        }
+    string eimp, eD;
+    try eD = mapCxxType(elemT, eimp);
+    catch (Unmappable) {
+        if (!haveVT) return [];
+        try { eD = mapCxxType(derefT, eimp); elemT = derefT; } catch (Unmappable) return [];
+    }
+    if (eimp.length) impSet[eimp] = true;
+    impSet[iimp] = true;
+    if (iD !in ITEROPS) ITEROPS[iD] = IterOp(iD, canon(itT), canon(elemT));
+    auto decls = format(
+        "extern(C) private %s qtd_ideref_%s(void*);\n"
+        ~ "extern(C) private void qtd_iincr_%s(void*);\n"
+        ~ "extern(C) private bool qtd_ine_%s(void*, void*);", eD, iD, iD, iD);
+    auto rangeStruct = format(
+        "struct %s_Range {\n"
+        ~ "    private %s _cur, _end;\n"
+        ~ "    this(%s b, %s e) { _cur = b; _end = e; }\n"
+        ~ "    @property bool empty() { return !qtd_ine_%s(cast(void*)&_cur, cast(void*)&_end); }\n"
+        ~ "    @property %s front() { return qtd_ideref_%s(cast(void*)&_cur); }\n"
+        ~ "    void popFront() { qtd_iincr_%s(cast(void*)&_cur); }\n"
+        ~ "}", tName, iD, iD, iD, iD, eD, iD, iD);
+    auto accessor = format(
+        "    extern(D) %s_Range opSlice() { return %s_Range(begin(), end()); }", tName, tName);
+    return [rangeStruct, accessor, decls];
+}
+
 // Map a C++ type to the D type that mangles identically under extern(C++).
 // `imp` gets the unqualified module name when a class type is referenced.
 // Throws Unmappable for what this first pass doesn't handle yet (refs, enums,
@@ -1383,6 +1456,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 ~ "    extern(D) ~this() nothrow { qtd_dtor_%s(cast(void*)&this); }",
                 name, name, name);
         }
+        auto rng = rangeFor(cur, name, impSet);   // begin()/end() -> a D range (foreach x; t[])
+        if (rng.length) { inlineDefs ~= rng[1]; ctorFactories ~= rng[2] ~ "\n" ~ rng[0]; }
         impSet.remove(name);
         imports = impSet.byKey.array.sort.array;
         auto impLines = imports.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
@@ -2373,6 +2448,15 @@ string ctorCpp(string manifest, string includeLine) {
         auto ps = m.isStatic ? m.cppParams.join(", ")
             : (m.cppParams.length ? "void* self, " ~ m.cppParams.join(", ") : "void* self");
         body ~= format("%s %s(%s) { %s%s; }\n", m.cppRet, m.shimFn, ps, ret, call);
+    }
+    // Iterator range ops: deref (** = the proxy, converts to value_type), prefix ++, and !=.
+    foreach (op; ITEROPS) {
+        body ~= format("%s qtd_ideref_%s(void* self) { return **static_cast<%s*>(self); }\n",
+            op.eCpp, op.iName, op.iCpp);
+        body ~= format("void qtd_iincr_%s(void* self) { ++*static_cast<%s*>(self); }\n",
+            op.iName, op.iCpp);
+        body ~= format("bool qtd_ine_%s(void* a, void* b) { return *static_cast<%s*>(a) != *static_cast<%s*>(b); }\n",
+            op.iName, op.iCpp, op.iCpp);
     }
     return manifest ~ "\n#include <new>\n#include <memory>\n#include <type_traits>\n" ~ includeLine
         ~ tmpl ~ "extern \"C\" {\n" ~ body ~ "}\n";

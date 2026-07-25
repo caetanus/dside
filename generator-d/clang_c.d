@@ -25,7 +25,9 @@ enum : int {
     CXCursor_StructDecl = 2, CXCursor_ClassDecl = 4, CXCursor_EnumDecl = 5,
     CXCursor_FieldDecl = 6, CXCursor_EnumConstantDecl = 7,
     CXCursor_FunctionDecl = 8, CXCursor_ParmDecl = 10,
+    CXCursor_TypedefDecl = 20,
     CXCursor_CXXMethod = 21, CXCursor_Namespace = 22, CXCursor_Constructor = 24,
+    CXCursor_TypeAliasDecl = 43,   // `using value_type = T;`
     CXCursor_Destructor = 25, CXCursor_CXXBaseSpecifier = 44,
     // expression kinds start at 100 (used to detect default-arg values)
     CXCursor_FirstExpr = 100,
@@ -55,6 +57,7 @@ CXType   clang_getCursorType(CXCursor);
 CXType   clang_getCursorResultType(CXCursor);
 CXString clang_getTypeSpelling(CXType);
 CXType   clang_getCanonicalType(CXType);
+CXType   clang_getTypedefDeclUnderlyingType(CXCursor);   // the T of `typedef T value_type;`
 CXType   clang_getPointeeType(CXType);
 CXCursor clang_getTypeDeclaration(CXType);
 CXCursor clang_getCursorDefinition(CXCursor);
