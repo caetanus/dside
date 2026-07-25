@@ -50,7 +50,8 @@ Build reggaeBuild() {
     // --- CTFE uic: .ui -> typed Ui struct (mixin), built against the widgets binding ---
     auto uicExtra = buildPath(root, "runtime", "uic", "uiform.d")
         ~ " -I" ~ buildPath(root, "runtime", "uic") ~ " -J=" ~ buildPath(root, "tests", "uic");
-    foreach (app; ["uic_test.d", "dialog_test.d", "tabs_test.d", "mainwin_test.d"])   // box, grid, tabs, mainwindow
+    // box form, real corpus grid dialog, tabs, synthetic mainwindow chrome, real corpus mainwindow
+    foreach (app; ["uic_test.d", "dialog_test.d", "tabs_test.d", "mainwin_test.d", "hello_test.d"])
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension.replace("_test", "") ~ "-" ~ dc,
                 t("uic", app), ex, dc, uicExtra);
