@@ -22,7 +22,7 @@
   <widget class="QToolBar" name="toolbar">
    <addaction name="actionOpen"/>
   </widget>
-  <action name="actionOpen"><property name="text"><string>Open</string></property></action>
+  <action name="actionOpen"><property name="text"><string>Open</string></property><property name="shortcut"><string>Ctrl+O</string></property></action>
   <action name="actionQuit"><property name="text"><string>Quit</string></property></action>
  </widget>
 </ui>

@@ -289,8 +289,14 @@ private string tabTitle(Node page) {
 private void genProps(ref Gen g, Node w, string var, bool isRoot) {
     foreach (p; w.childrenOf("property")) {
         string name = p.attr("name");
-        if (name == "shortcut") continue;   // QKeySequence value-type: Phase E
         Node v = firstElem(p);
+        if (name == "shortcut" && v.tag == "string") {   // <string>Ctrl+O</string> -> QKeySequence
+            need(g, "QKeySequence");
+            need(g, "QString");
+            g.setup ~= "        { auto _s = qstr(\"" ~ esc(v.text) ~ "\"); auto _ks = QKeySequence_new(_s); "
+                ~ var ~ ".setShortcut(_ks); }\n";
+            continue;
+        }
         if (name == "geometry" && v.tag == "rect") {    // root -> resize; child -> setGeometry
             if (isRoot)
                 g.setup ~= "        " ~ var ~ ".resize(" ~ v.child("width").text
