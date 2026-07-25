@@ -822,7 +822,15 @@ string[] keepInlines(string name, string[] fields, string[] inlines) {
 //     que o parser não vê. Como a fase 1 já tirou os erros de sintaxe, o dmd não
 //     entra em recuperação/cascata, então 1 passada com atribuição por (arquivo,
 //     linha) basta — cada struct é um arquivo bN.d próprio.
-struct InlineJob { string name; string[] fields; string[] inlines; }
+struct InlineJob {
+    string name; string[] fields; string[] inlines;
+    // Parallel to `inlines` (index-aligned): a trampoline fallback for each inline method.
+    // If verifyInlinesBatched DROPS inlines[i] (its D-body references a private member),
+    // and forwarders[i] is non-empty, the method is recovered as a qtd_m_ C++ trampoline:
+    // the dropped body is replaced by forwarders[i], decls[i] is appended at module scope,
+    // and shims[i] is registered in METHODSHIM (ctorCpp emits its C++). Empty = drop as before.
+    string[] forwarders; string[] decls; MethodShim[] shims;
+}
 __gshared InlineJob[] INLINE_JOBS;
 
 // Parse-check in-process via libdparse (só sintaxe). true = parseia limpo.
@@ -895,13 +903,26 @@ void verifyInlinesBatched(string outDir, string dpkg) {
         }
     }
 
-    // re-escreve só os módulos que perderam inlines (remove os dropados do arquivo).
+    // re-escreve só os módulos que perderam inlines. Um inline dropado cujo D-body referencia
+    // membros privados (ex. QSizePolicy::bits.horStretch) NÃO é perdido: vira um trampolim
+    // qtd_m_ C++ (forwarder no struct + decl a nível de módulo + MethodShim -> ctorCpp emite o C++).
     foreach (ji; touched.byKey) {
         auto j = INLINE_JOBS[ji];
         bool[string] kept; foreach (m; cur[ji]) kept[m] = true;
         auto path = buildPath(outDir, dpkg.replace(".", dirSeparator), modBase(j.name) ~ ".d");
         auto content = readText(path);
-        foreach (m; j.inlines) if (m !in kept) content = content.replace(m, "");
+        string extraDecls;
+        foreach (i, m; j.inlines) {
+            if (m in kept) continue;                       // survived as a D body -> keep it
+            if (i < j.forwarders.length && j.forwarders[i].length) {
+                content = content.replace(m, j.forwarders[i]);   // body -> trampoline forwarder
+                extraDecls ~= j.decls[i] ~ "\n";
+                METHODSHIM ~= j.shims[i];                   // register the C++ shim (ctorCpp emits it)
+            } else {
+                content = content.replace(m, "");          // no fallback -> drop as before
+            }
+        }
+        if (extraDecls.length) content ~= "\n" ~ extraDecls;
         write(path, content);
     }
 }
@@ -1106,6 +1127,11 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     // that work). Construct via D field literal `QRect(x1, y1, x2, y2)`. ----------
     if (valueType) {
         string[] fields, rawDecls, inlineDefs;
+        // Trampoline fallbacks, index-aligned with inlineDefs (see InlineJob): filled for
+        // every mappable inline method so verifyInlinesBatched can recover a dropped one.
+        string[] inFwd, inDecl; MethodShim[] inShim;
+        int vmi;   // qtd_m_<name>_<vmi> shim index for value-type inline trampolines
+        bool[string] seenInlineFb;   // dedup fallback D signatures (collapsed inline overloads)
         bool[string] seenF;
         int opIdx;
         collectValueFields(cur, fields, seenF);   // base fields flattened in first (layout order)
@@ -1124,15 +1150,54 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 if (isInline(c)) {
                     auto b = bodyText(c);
                     if (!b.length) continue;
-                    string[] ps;
+                    // A function-LOCAL return type (e.g. QChar::fromUcs4's local `struct R`)
+                    // can't be named in a shim decl; its bogus D body was always dropped by
+                    // verify anyway -> skip the whole method (no D body, no trampoline).
+                    {
+                        auto rp = clang_getCursorSemanticParent(
+                            clang_getTypeDeclaration(clang_getCanonicalType(clang_getCursorResultType(c))));
+                        if (rp.kind == CXCursor_FunctionDecl || rp.kind == CXCursor_CXXMethod) continue;
+                    }
+                    string[] ps, fps, cppPs, anames;   // ps: D-body params (real names); fps: forwarder params (a0..)
+                    bool fbOk = !isOp && !retD.startsWith("ref ");   // ref returns: keep D-body-only (no trampoline)
                     foreach (i; 0 .. na) {
                         auto a = clang_Cursor_getArgument(c, i);
                         string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
                         if (pimp.length) impSet[pimp] = true;
                         auto pn = clang_getCursorSpelling(a).str; if (!pn.length) pn = format("a%d", i);
                         ps ~= format("%s %s", pd, dname(pn));   // real names -> body refers to them
+                        auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
+                        if (cpps.canFind("(*")) fbOk = false;   // fn-ptr param: shim C++ decl needs the name in-parens
+                        cppPs ~= format("%s a%d", cpps, i);
+                        fps ~= format("%s a%d", pd, i);
+                        anames ~= format("a%d", i);
                     }
                     inlineDefs ~= format("    %s%s %s(%s)%s %s", kw, retD, dname(mn), ps.join(", "), cst, b);
+                    // Precompute the trampoline fallback (activated only if this body is dropped).
+                    // Skip if the D name collides with a field (e.g. QArrayData: field `ref_` +
+                    // method `ref()`), or if a prior inline collapsed to the same D signature.
+                    auto fbSig = format("%s|%s|%s%s", dname(mn), fps.join(","),
+                        clang_CXXMethod_isStatic(c) ? "s" : "", cst);
+                    if (dname(mn) in seenF || fbSig in seenInlineFb) fbOk = false;
+                    if (fbOk) {
+                        seenInlineFb[fbSig] = true;
+                        bool isStat = clang_CXXMethod_isStatic(c) != 0;
+                        bool isCst0 = clang_CXXMethod_isConst(c) != 0;
+                        auto shimFn = format("qtd_m_%s_%d", name, vmi++);
+                        auto cppRet = retD == "void" ? "void"
+                            : clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
+                        auto self = isStat ? "" : "cast(void*)&this";
+                        auto callList = self ~ ((self.length && anames.length) ? ", " : "") ~ anames.join(", ");
+                        auto ret = retD == "void" ? "" : "return ";
+                        inFwd ~= format("    %s%s %s(%s)%s { %s%s(%s); }",
+                            kw, retD, dname(mn), fps.join(", "), cst, ret, shimFn, callList);
+                        auto declSelf = isStat ? "" : (fps.length ? "void* self, " : "void* self");
+                        inDecl ~= format("extern(C) private %s %s(%s%s);",
+                            retD, shimFn, declSelf, fps.join(", "));
+                        inShim ~= MethodShim(shimFn, cppName, cppRet, mn, cppPs, anames, isStat, isCst0);
+                    } else {
+                        inFwd ~= ""; inDecl ~= ""; inShim ~= MethodShim.init;
+                    }
                 } else {
                     string[] ps, pds;
                     foreach (i; 0 .. na) {
@@ -1163,7 +1228,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         }
         // Verificação de inlines adiada p/ um lote único no fim (verifyInlinesBatched)
         // — compilar um ldc2 por classe aqui era o gargalo da geração.
-        if (inlineDefs.length) INLINE_JOBS ~= InlineJob(name, fields.dup, inlineDefs.dup);
+        if (inlineDefs.length)
+            INLINE_JOBS ~= InlineJob(name, fields.dup, inlineDefs.dup, inFwd.dup, inDecl.dup, inShim.dup);
         // Value-type ctor factories: a value type with a non-trivial (out-of-line)
         // ctor (QFont/QPen/QIcon...) can't be built by a field literal. Emit a
         // `<Name>_new(...)` that constructs in place via the mangled ctor.
