@@ -210,6 +210,8 @@ private struct Gen {
     string trans;       // retranslateUi body
     string menuNames;   // "|menuFile|menuHelp|" — so an <addaction> tells a submenu from an action
     string[] groupList; // unique <attribute name="buttonGroup"> names -> one QButtonGroup each
+    string[2][] buddyList;   // (label, targetName): <property name="buddy"><cstring>…; set at
+                             // the END of setupUi, once every widget the buddy names exists
 }
 
 // Every generated type lives in the widgets package; ensure its module is imported.
@@ -290,6 +292,10 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
     foreach (p; w.childrenOf("property")) {
         string name = p.attr("name");
         Node v = firstElem(p);
+        if (name == "buddy" && v.tag == "cstring") {   // <cstring>lineEdit</cstring> -> setBuddy
+            g.buddyList ~= [var, v.text];              // deferred: the target may not exist yet
+            continue;
+        }
         if (name == "shortcut" && v.tag == "string") {   // <string>Ctrl+O</string> -> QKeySequence
             need(g, "QKeySequence");
             need(g, "QString");
@@ -744,6 +750,11 @@ string uiForm(string xml) {
     g.setup ~= "        root.setObjectName(\"" ~ className ~ "\");\n";
     emitGroups(g);            // QButtonGroups exist before the buttons add to them
     genWidget(g, root, "", true);
+    // Buddies, now that every widget exists: <label>.setBuddy(<target>). Skip a target that
+    // isn't one of our fields (a custom/promoted widget).
+    foreach (b; g.buddyList)
+        if (hasField(g, b[1]))
+            g.setup ~= "        " ~ b[0] ~ ".setBuddy(" ~ b[1] ~ ");\n";
     genTabOrder(g, parseUi(xml).child("tabstops"));
     genConnections(g, parseUi(xml).child("connections"), className);
     // connectSlotsByName wires the host's on_<object>_<signal>() slots (QUiLoader always

@@ -1,0 +1,38 @@
+<ui version="4.0">
+ <class>BuddyForm</class>
+ <widget class="QWidget" name="BuddyForm">
+  <property name="windowTitle">
+   <string>Buddy</string>
+  </property>
+  <layout class="QFormLayout" name="formLayout">
+   <item row="0" column="0">
+    <widget class="QLabel" name="nameLabel">
+     <property name="text">
+      <string>&amp;Name:</string>
+     </property>
+     <property name="buddy">
+      <cstring>nameEdit</cstring>
+     </property>
+    </widget>
+   </item>
+   <item row="0" column="1">
+    <widget class="QLineEdit" name="nameEdit"/>
+   </item>
+   <item row="1" column="0">
+    <widget class="QLabel" name="ageLabel">
+     <property name="text">
+      <string>&amp;Age:</string>
+     </property>
+     <property name="buddy">
+      <cstring>ageSpin</cstring>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="1">
+    <widget class="QSpinBox" name="ageSpin"/>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

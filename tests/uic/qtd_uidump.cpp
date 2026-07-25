@@ -18,6 +18,7 @@
 #include <QSizePolicy>
 #include <QPalette>
 #include <QColor>
+#include <QLabel>
 #include <QFile>
 #include <QUiLoader>
 #include <QList>
@@ -94,6 +95,10 @@ static std::string propsOf(QObject *o) {
             kv.push_back("sp.vs=" + std::to_string(sp.verticalStretch()));
         }
     }
+    // QLabel::buddy is a QWidget* (property toString is empty) -> dump the buddy's objectName.
+    if (auto lbl = qobject_cast<QLabel *>(o))
+        if (QWidget *bud = lbl->buddy())
+            kv.push_back("buddy=" + u8(bud->objectName()));
     // QPalette: dump ONLY the (group, role) brushes explicitly set (isBrushSet) with their
     // ARGB — both trees start from the same default palette, so the set-brush set is exactly
     // what each side applied. A role our uic misses (or over-sets) shows up as a diff.
