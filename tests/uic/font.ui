@@ -1,0 +1,39 @@
+<ui version="4.0">
+ <class>FontForm</class>
+ <widget class="QWidget" name="FontForm">
+  <property name="windowTitle">
+   <string>Font</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="boldLabel">
+     <property name="font">
+      <font>
+       <pointsize>14</pointsize>
+       <bold>true</bold>
+      </font>
+     </property>
+     <property name="text">
+      <string>Bold 14</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="italicLabel">
+     <property name="font">
+      <font>
+       <family>Courier</family>
+       <italic>true</italic>
+       <underline>true</underline>
+      </font>
+     </property>
+     <property name="text">
+      <string>Italic underline Courier</string>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

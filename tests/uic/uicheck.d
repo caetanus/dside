@@ -17,6 +17,8 @@ mixin(uiForm(import("egroup.ui")));    // Ui_ShapeForm
 mixin(uiForm(import("spacer.ui")));    // Ui_SpacerForm
 mixin(qrcRegister(import("icons.qrc")));  // register :/ui/* so both trees resolve icons
 mixin(uiForm(import("icon.ui")));      // Ui_IconForm
+mixin(uiForm(import("font.ui")));      // Ui_FontForm
+mixin(uiForm(import("sizepolicy.ui")));  // Ui_SizePolForm
 mixin(uiForm(import("bookwindow.ui")));  // Ui_BookWindow
 
 __gshared int fails;
@@ -48,6 +50,8 @@ void main() {
     check!Ui_ShapeForm("tests/uic/egroup.ui", QWidget_new());
     check!Ui_SpacerForm("tests/uic/spacer.ui", QWidget_new());
     check!Ui_IconForm("tests/uic/icon.ui", QWidget_new());
+    check!Ui_FontForm("tests/uic/font.ui", QWidget_new());
+    check!Ui_SizePolForm("tests/uic/sizepolicy.ui", QWidget_new());
     check!Ui_BookWindow("tests/uic/bookwindow.ui", QMainWindow_new());
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }

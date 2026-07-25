@@ -14,6 +14,8 @@
 #include <QString>
 #include <QVariant>
 #include <QIcon>
+#include <QFont>
+#include <QSizePolicy>
 #include <QFile>
 #include <QUiLoader>
 #include <QList>
@@ -54,6 +56,31 @@ static std::string propsOf(QObject *o) {
         QVariant v = o->property(ik);
         if (v.isValid() && v.canConvert<QIcon>())
             kv.push_back(std::string(ik) + "Null=" + (v.value<QIcon>().isNull() ? "1" : "0"));
+    }
+    // QFont has no toString -> dump render-affecting sub-fields (catches the font gap).
+    // Defaults match on both trees; only a font one side sets shows up.
+    {
+        QVariant v = o->property("font");
+        if (v.isValid() && v.canConvert<QFont>()) {
+            QFont f = v.value<QFont>();
+            kv.push_back("font.family=" + u8(f.family()));
+            kv.push_back("font.pointSize=" + std::to_string(f.pointSize()));
+            kv.push_back("font.weight=" + std::to_string(int(f.weight())));
+            kv.push_back(std::string("font.italic=") + (f.italic() ? "1" : "0"));
+            kv.push_back(std::string("font.underline=") + (f.underline() ? "1" : "0"));
+            kv.push_back(std::string("font.strikeOut=") + (f.strikeOut() ? "1" : "0"));
+        }
+    }
+    // QSizePolicy has no toString -> dump policies + stretches (catches the sizePolicy gap).
+    {
+        QVariant v = o->property("sizePolicy");
+        if (v.isValid() && v.canConvert<QSizePolicy>()) {
+            QSizePolicy sp = v.value<QSizePolicy>();
+            kv.push_back("sp.h=" + std::to_string(int(sp.horizontalPolicy())));
+            kv.push_back("sp.v=" + std::to_string(int(sp.verticalPolicy())));
+            kv.push_back("sp.hs=" + std::to_string(sp.horizontalStretch()));
+            kv.push_back("sp.vs=" + std::to_string(sp.verticalStretch()));
+        }
     }
     std::sort(kv.begin(), kv.end());
     std::string out;

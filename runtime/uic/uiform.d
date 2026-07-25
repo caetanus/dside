@@ -326,6 +326,16 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
             }
             continue;
         }
+        if (v.tag == "font") {   // <font><family/><pointsize/><bold/><italic/>…</font>
+            g.setup ~= genFont(g, v, var);
+            continue;
+        }
+        if (v.tag == "sizepolicy") {   // <sizepolicy hsizetype=… vsizetype=…><horstretch/>…
+            string sp = genSizePolicy(g, v, var);
+            if (sp.length) { g.setup ~= sp; continue; }
+            // stretch != 0 not yet expressible (QSizePolicy stretch setters unbound) -> skip
+            continue;
+        }
         if (v.tag == "string" && isTr(name)) {
             g.trans ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(\"" ~ esc(v.text) ~ "\");\n";
             continue;
@@ -334,6 +344,56 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
         if (val.length)
             g.setup ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(" ~ val ~ ");\n";
     }
+}
+
+// A <font> property -> a local QFont carrying the given sub-fields, then set<Font>(f).
+// Absent sub-fields keep QFont defaults (matches QUiLoader, which sets only present ones).
+// setBold/setItalic are inline (unbound) -> use setWeight/setStyle equivalents. <weight> in
+// the old 0-99 scale is ambiguous across Qt versions -> skipped (bold covers the common case).
+private string genFont(ref Gen g, Node f, string var) {
+    need(g, "QFont");
+    string body;
+    foreach (fc; f.kids) {
+        switch (fc.tag) {
+            case "family":     body ~= " _f.setFamily(\"" ~ esc(fc.text) ~ "\");"; break;   // string overload
+            case "pointsize":  body ~= " _f.setPointSize(" ~ fc.text ~ ");"; break;
+            case "pointsizef": body ~= " _f.setPointSizeF(" ~ fc.text ~ ");"; break;
+            case "bold":       body ~= " _f.setWeight(QFont.Weight."
+                ~ (fc.text == "true" ? "Bold" : "Normal") ~ ");"; break;
+            case "italic":     body ~= " _f.setStyle(QFont.Style."
+                ~ (fc.text == "true" ? "StyleItalic" : "StyleNormal") ~ ");"; break;
+            case "underline":  body ~= " _f.setUnderline(" ~ fc.text ~ ");"; break;
+            case "strikeout":  body ~= " _f.setStrikeOut(" ~ fc.text ~ ");"; break;
+            default: break;    // weight (ambiguous scale) / kerning / stylestrategy -> not yet
+        }
+    }
+    return "        { auto _f = QFont_new();" ~ body ~ " " ~ var ~ ".setFont(_f); }\n";
+}
+
+// A <sizepolicy> property. Common case (stretch 0) -> setSizePolicy(hPolicy, vPolicy), the
+// QWidget convenience overload. Returns "" when a non-zero stretch is present (that needs the
+// QSizePolicy stretch setters, which are inline value-type methods still unbound).
+private string genSizePolicy(ref Gen g, Node sp, string var) {
+    need(g, "QSizePolicy");
+    string hp = sp.attr("hsizetype"), vp = sp.attr("vsizetype");   // modern attribute form
+    string hs = "0", vs = "0";
+    foreach (c; sp.kids) switch (c.tag) {   // old element form + stretches
+        case "hsizetype": hp = c.text; break;
+        case "vsizetype": vp = c.text; break;
+        case "horstretch": hs = c.text; break;
+        case "verstretch": vs = c.text; break;
+        default: break;
+    }
+    if (!hp.length || !vp.length || isDigits(hp) || isDigits(vp)) return "";
+    if (hs != "0" || vs != "0") return "";
+    return "        " ~ var ~ ".setSizePolicy(QSizePolicy.Policy." ~ hp
+        ~ ", QSizePolicy.Policy." ~ vp ~ ");\n";
+}
+
+private bool isDigits(string s) {
+    if (!s.length) return false;
+    foreach (c; s) if (c < '0' || c > '9') return false;
+    return true;
 }
 
 // A <spacer> -> QSpacerItem(w, h, hPolicy, vPolicy). Orientation picks which axis expands
