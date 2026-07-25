@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ShapeForm</class>
+ <widget class="QWidget" name="ShapeForm">
+  <layout class="QVBoxLayout" name="lay">
+   <item><widget class="QRadioButton" name="lineRadio"><property name="text"><string>Line</string></property><property name="checked"><bool>true</bool></property><attribute name="buttonGroup"><string>shapeGroup</string></attribute></widget></item>
+   <item><widget class="QRadioButton" name="circleRadio"><property name="text"><string>Circle</string></property><attribute name="buttonGroup"><string>shapeGroup</string></attribute></widget></item>
+   <item><widget class="QLineEdit" name="nameEdit"/></item>
+  </layout>
+ </widget>
+ <tabstops>
+  <tabstop>lineRadio</tabstop>
+  <tabstop>circleRadio</tabstop>
+  <tabstop>nameEdit</tabstop>
+ </tabstops>
+</ui>

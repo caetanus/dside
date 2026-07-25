@@ -162,6 +162,7 @@ private struct Gen {
     string setup;       // setupUi body
     string trans;       // retranslateUi body
     string menuNames;   // "|menuFile|menuHelp|" — so an <addaction> tells a submenu from an action
+    string[] groupList; // unique <attribute name="buttonGroup"> names -> one QButtonGroup each
 }
 
 // Every generated type lives in the widgets package; ensure its module is imported.
@@ -324,6 +325,42 @@ private bool isMenu(ref Gen g, string name) {
     return false;
 }
 
+// A widget's <attribute name="buttonGroup"><string>g</string></attribute>, or "".
+private string buttonGroupOf(Node w) {
+    foreach (a; w.childrenOf("attribute"))
+        if (a.attr("name") == "buttonGroup") return firstElem(a).text;
+    return "";
+}
+
+private void collectGroups(Node n, ref Gen g) {
+    string bg = buttonGroupOf(n);
+    if (bg.length) {
+        bool has = false;
+        foreach (x; g.groupList) if (x == bg) { has = true; break; }
+        if (!has) g.groupList ~= bg;
+    }
+    foreach (k; n.kids) collectGroups(k, g);
+}
+
+// One QButtonGroup per group name, parented to root (created before the buttons add to it).
+private void emitGroups(ref Gen g) {
+    if (g.groupList.length) need(g, "QButtonGroup");
+    foreach (grp; g.groupList) {
+        g.fields ~= "    QButtonGroup " ~ grp ~ ";\n";
+        g.setup ~= "        " ~ grp ~ " = QButtonGroup_new(root);\n";
+        g.setup ~= "        " ~ grp ~ ".setObjectName(\"" ~ grp ~ "\");\n";
+    }
+}
+
+// <tabstops><tabstop>a</tabstop><tabstop>b</tabstop>…</tabstops> -> setTabOrder(a,b), (b,c)…
+private void genTabOrder(ref Gen g, Node tabstops) {
+    auto ts = tabstops.childrenOf("tabstop");
+    if (ts.length < 2) return;
+    need(g, "QWidget");
+    for (size_t i = 1; i < ts.length; i++)
+        g.setup ~= "        QWidget.setTabOrder(" ~ ts[i - 1].text ~ ", " ~ ts[i].text ~ ");\n";
+}
+
 // <addaction name="X"/> -> target.addAction(X) / addAction(X.menuAction()) for a submenu /
 // addSeparator() for the "separator" sentinel.
 private void genAddActions(ref Gen g, Node node, string target) {
@@ -369,6 +406,10 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ var ~ "\");\n";
     }
     genProps(g, w, var, isRoot);
+    if (!isRoot) {
+        string bg = buttonGroupOf(w);   // radio/checkbox membership -> QButtonGroup.addButton
+        if (bg.length) g.setup ~= "        " ~ bg ~ ".addButton(" ~ var ~ ", -1);\n";
+    }
     string wcls0 = w.attr("class");
     // QMainWindow: its direct children are chrome (central widget, menubar, toolbars,
     // statusbar), not layout items; <action>s are top-level and referenced by <addaction>.
@@ -422,10 +463,13 @@ string uiForm(string xml) {
     string rootCls = root.attr("class");
     string className = root.attr("name");
     Gen g;
-    collectMenus(root, g);   // so <addaction> can distinguish submenus from actions
+    collectMenus(root, g);    // so <addaction> can distinguish submenus from actions
+    collectGroups(root, g);   // unique buttonGroup names
     need(g, rootCls);
     g.setup ~= "        root.setObjectName(\"" ~ className ~ "\");\n";
+    emitGroups(g);            // QButtonGroups exist before the buttons add to them
     genWidget(g, root, "", true);
+    genTabOrder(g, parseUi(xml).child("tabstops"));
     return g.imports
         ~ "struct Ui_" ~ className ~ " {\n" ~ g.fields
         ~ "    void setupUi(" ~ rootCls ~ " root) {\n" ~ g.setup

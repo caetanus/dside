@@ -123,8 +123,11 @@ struct Ui_<class> {
       separators + `menuAction()`), QToolBar (addToolBar(area) + actions), QStatusBar
       (setStatusBar); top-level `<action>`s -> QAction. Verified on `mainwin.ui` (ldc2+dmd).
       (Action shortcuts skipped for now: QKeySequence value-type, Phase E.)
-- [ ] **E — advanced.** connections, button groups, tab order, sizePolicy/font/iconset/
-      palette, custom widgets, resources/`.qrc`, connectSlotsByName via moc.
+- [~] **E — advanced.** button groups (QButtonGroup.addButton) + tab order
+      (QWidget.setTabOrder) DONE + verified (`egroup.ui`, ldc2+dmd). Remaining/deferred:
+      **connections** need the per-signal delegate signature from the binding (not the .ui)
+      — like the binding gaps; **connectSlotsByName** needs moc; sizePolicy/font/iconset/
+      palette + `.qrc`/custom widgets need value-types (the binding gaps).
 
 ## Binding gaps this surfaces (fill as tiers need them)
 

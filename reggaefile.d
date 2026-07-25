@@ -51,7 +51,8 @@ Build reggaeBuild() {
     auto uicExtra = buildPath(root, "runtime", "uic", "uiform.d")
         ~ " -I" ~ buildPath(root, "runtime", "uic") ~ " -J=" ~ buildPath(root, "tests", "uic");
     // box form, real corpus grid dialog, tabs, synthetic mainwindow chrome, real corpus mainwindow
-    foreach (app; ["uic_test.d", "dialog_test.d", "tabs_test.d", "mainwin_test.d", "hello_test.d"])
+    foreach (app; ["uic_test.d", "dialog_test.d", "tabs_test.d", "mainwin_test.d",
+                   "hello_test.d", "egroup_test.d"])
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension.replace("_test", "") ~ "-" ~ dc,
                 t("uic", app), ex, dc, uicExtra);
