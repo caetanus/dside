@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>IconForm</class>
+ <widget class="QWidget" name="IconForm">
+  <layout class="QVBoxLayout" name="lay">
+   <item>
+    <widget class="QPushButton" name="iconBtn">
+     <property name="text"><string>Connect</string></property>
+     <property name="icon"><iconset resource="icons.qrc"><normaloff>:/ui/logo.png</normaloff>:/ui/logo.png</iconset></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>

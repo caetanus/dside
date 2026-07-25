@@ -48,11 +48,13 @@ Build reggaeBuild() {
             all ~= qtdTest(baseName(app).stripExtension ~ "-" ~ dc, app, ex, dc);
 
     // --- CTFE uic: .ui -> typed Ui struct (mixin), built against the widgets binding ---
-    auto uicExtra = buildPath(root, "runtime", "uic", "uiform.d")
-        ~ " -I" ~ buildPath(root, "runtime", "uic") ~ " -J=" ~ buildPath(root, "tests", "uic");
+    auto uicExtra = buildPath(root, "runtime", "uic", "uiform.d") ~ " "
+        ~ buildPath(root, "runtime", "qrc", "qrc.d")   // icon_test registers a CTFE .qrc
+        ~ " -I" ~ buildPath(root, "runtime", "uic") ~ " -I" ~ buildPath(root, "runtime", "qrc")
+        ~ " -J=" ~ buildPath(root, "tests", "uic");
     // box form, real corpus grid dialog, tabs, synthetic mainwindow chrome, real corpus mainwindow
-    foreach (app; ["uic_test.d", "dialog_test.d", "tabs_test.d", "mainwin_test.d",
-                   "hello_test.d", "egroup_test.d", "combo_test.d", "spacer_test.d"])
+    foreach (app; ["uic_test.d", "dialog_test.d", "tabs_test.d", "mainwin_test.d", "hello_test.d",
+                   "egroup_test.d", "combo_test.d", "spacer_test.d", "icon_test.d"])
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension.replace("_test", "") ~ "-" ~ dc,
                 t("uic", app), ex, dc, uicExtra);
@@ -87,6 +89,7 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
     auto cf = pkgCflags(["Qt6UiTools", "Qt6Widgets"]) ~ " -std=c++17 -fPIC -O2";
     auto libs = pkgLibs(["Qt6UiTools", "Qt6Widgets"]);
     auto uiformD = buildPath(root, "runtime", "uic", "uiform.d");
+    auto qrcD = buildPath(root, "runtime", "qrc", "qrc.d");   // for the icon form's :/ resources
     auto checkD = buildPath(here, "uicheck.d");
     Target[] ts;
     foreach (dc; DCS) {
@@ -95,7 +98,8 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
             "clang++ " ~ cf ~ " -c " ~ buildPath(here, "qtd_uidump.cpp") ~ " -o $out", []);
         auto lib = qtdBindLib(ex, dc);
         auto bin = Target("uicheck-" ~ dc ~ "-bin",
-            dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ uidumpO ~ " -I" ~ ex.genDir
+            dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
+            ~ " -I" ~ ex.genDir ~ " -I" ~ buildPath(root, "runtime", "qrc")
             ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]);

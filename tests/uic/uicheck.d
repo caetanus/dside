@@ -2,7 +2,7 @@
 // setupUi) must serialize identically to the tree QUiLoader.load() builds (Qt's own uic).
 // The dump + the oracle load live in qtd_uidump.cpp; we just diff the two strings.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widgets.qmainwindow;
-import cxxrt, uiform, std.stdio, std.string;
+import cxxrt, uiform, qrc, std.stdio, std.string;
 
 pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 extern (C) const(char)* qtd_ui_dump(void*);
@@ -15,6 +15,8 @@ mixin(uiForm(import("mainwin.ui")));   // Ui_MainWindow
 mixin(uiForm(import("tabs.ui")));      // Ui_TabForm
 mixin(uiForm(import("egroup.ui")));    // Ui_ShapeForm
 mixin(uiForm(import("spacer.ui")));    // Ui_SpacerForm
+mixin(qrcRegister(import("icons.qrc")));  // register :/ui/* so both trees resolve icons
+mixin(uiForm(import("icon.ui")));      // Ui_IconForm
 mixin(uiForm(import("bookwindow.ui")));  // Ui_BookWindow
 
 __gshared int fails;
@@ -45,6 +47,7 @@ void main() {
     check!Ui_TabForm("tests/uic/tabs.ui", QWidget_new());
     check!Ui_ShapeForm("tests/uic/egroup.ui", QWidget_new());
     check!Ui_SpacerForm("tests/uic/spacer.ui", QWidget_new());
+    check!Ui_IconForm("tests/uic/icon.ui", QWidget_new());
     check!Ui_BookWindow("tests/uic/bookwindow.ui", QMainWindow_new());
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }

@@ -13,6 +13,7 @@
 #include <QMetaObject>
 #include <QString>
 #include <QVariant>
+#include <QIcon>
 #include <QFile>
 #include <QUiLoader>
 #include <QList>
@@ -47,6 +48,12 @@ static std::string propsOf(QObject *o) {
     for (const char *k : keys) {
         QVariant v = o->property(k);
         if (v.isValid()) kv.push_back(std::string(k) + "=" + u8(v.toString()));
+    }
+    // QIcon has no toString -> compare whether it is set (catches the icon gap).
+    for (const char *ik : {"icon", "windowIcon"}) {
+        QVariant v = o->property(ik);
+        if (v.isValid() && v.canConvert<QIcon>())
+            kv.push_back(std::string(ik) + "Null=" + (v.value<QIcon>().isNull() ? "1" : "0"));
     }
     std::sort(kv.begin(), kv.end());
     std::string out;

@@ -301,6 +301,25 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
             }
             continue;
         }
+        if (v.tag == "iconset") {   // <iconset theme=…/> or resource (<normaloff>:/…</normaloff>)
+            need(g, "QIcon");
+            string ex;
+            if (v.attr("theme").length) {
+                string th = v.attr("theme");
+                if (th.length > 2 && splitOn(th, "::").length >= 2)
+                    ex = "QIcon.fromTheme(QIcon.ThemeIcon." ~ splitOn(th, "::")[$ - 1] ~ ")";
+                else
+                    ex = "QIcon.fromTheme(qstr(\"" ~ esc(th) ~ "\"))";
+            } else {
+                auto no = v.child("normaloff");
+                if (no.ok && no.text.length) ex = "QIcon_new(\"" ~ esc(no.text) ~ "\")";
+            }
+            if (ex.length) {
+                need(g, "QString");
+                g.setup ~= "        { auto _ic = " ~ ex ~ "; " ~ var ~ ".set" ~ cap(name) ~ "(_ic); }\n";
+            }
+            continue;
+        }
         if (v.tag == "string" && isTr(name)) {
             g.trans ~= "        " ~ var ~ ".set" ~ cap(name) ~ "(\"" ~ esc(v.text) ~ "\");\n";
             continue;
