@@ -1,0 +1,71 @@
+# CI (critics r6 #5). Until now "the matrix" was one dev machine, not a repo-enforced policy.
+# This runs the generate -> build -> test matrix on Linux across dmd AND ldc2, with distro Qt5
+# AND Qt6, and makes the governance gates (manifest gates, expected-fails consumer) MANDATORY.
+#
+# HONEST CAVEAT: this workflow has NOT yet been validated on a real GitHub runner. Ubuntu's
+# distro Qt6 (24.04 ships ~6.4) is a different MINOR than the dev box's 6.11 — and the QML
+# private-API surfaces (QQmlPrivate::RegisterType, QtQmlCompiler) are exactly the versioned risk
+# tracked in tests/expected-fails.json. First green may need Qt-minor adjustments; that is the
+# point of having CI. Treat this as the CI scaffold, not a proven-green pipeline.
+name: CI
+on:
+  push:
+    branches: [main, codegen-tools]
+  pull_request:
+
+jobs:
+  matrix:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt5 + Qt6 (dev + tools + private headers) and clang/libclang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qtbase5-dev qtbase5-private-dev qtdeclarative5-dev qtdeclarative5-private-dev \
+            qttools5-dev qttools5-dev-tools \
+            qt6-base-dev qt6-base-private-dev qt6-declarative-dev qt6-declarative-private-dev \
+            qt6-declarative-dev-tools qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools \
+            libqt6qmlcompiler6-dev \
+            clang libclang-dev llvm-dev pkg-config ninja-build
+
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-latest
+      - name: Also install ldc2
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+
+      - name: Build the generator (gend)
+        run: cd generator-d && dub build
+
+      - name: Generate the reggae build binary
+        run: dub run reggae -- -b binary . --reggaefile-import-path "$PWD/reggae"
+
+      - name: Build + run the full matrix (headless)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ./build
+
+      - name: Governance gates (MANDATORY)
+        run: |
+          ./build manifest-gate-qtwidgets
+          ./build manifest-gate-qml
+          ./build expected-fails-check
+          ./build lupdate-check
+
+      - name: Structured test report
+        if: always()
+        run: bash tools/test-report.sh > report.tsv || true
+
+      - name: Upload report + coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-and-coverage
+          path: |
+            report.tsv
+            generated/**/coverage.txt
+            generated/**/coverage-manifest.tsv
