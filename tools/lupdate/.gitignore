@@ -1,0 +1,5 @@
+.dub/
+lupdate-d
+lupdate-test-application
+*.o
+*.a

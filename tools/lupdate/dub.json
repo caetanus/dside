@@ -1,0 +1,8 @@
+{
+  "name": "lupdate",
+  "description": "D-aware lupdate: extract tr()/translate() strings via dparse -> .ts",
+  "targetType": "executable",
+  "targetName": "lupdate-d",
+  "sourceFiles": ["lupdate.d"],
+  "dependencies": { "libdparse": "0.25.1" }
+}
