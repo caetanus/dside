@@ -775,6 +775,16 @@ bool copyDeleted(CXCursor decl) {
     return false;
 }
 
+// A move-only value type (deleted copy ctor) passed BY VALUE. A method-shim forwards its
+// by-value params as lvalues (`self->m(a0)`), which COPIES them — impossible for a move-only
+// type. Such methods can't go through the shim; they use the direct-symbol path instead (a
+// pragma(mangle) decl has no body, so the ABI handles the move). Pointers/refs never copy.
+bool moveOnlyByValue(CXType t) {
+    auto ct = clang_getCanonicalType(t);
+    if (ct.kind != CXType_Record) return false;   // by-value record only (not ptr/ref)
+    return copyDeleted(clang_getCursorDefinition(clang_getTypeDeclaration(ct)));
+}
+
 // Is a method inline (has an inline definition -> no out-of-line symbol to link)?
 // Catches both `int f(){...}` in-class AND out-of-class `inline int C::f(){...}`.
 // Inline (no linkable symbol) — check the in-class declaration AND its definition:
@@ -1831,7 +1841,16 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             bool handled = false;   // emitted, or deliberately skipped -> `continue` (don't fall through)
             try {
                 string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
-                bool simpleRet = retD == "void" || simpleAbiType(retD);
+                // A VALUE-record return (QSize/QRect/…) is fine: the C++ shim returns it by value
+                // (sret) and the extern(C) D decl matches that ABI — exactly what the guard path
+                // already does, so we just gain virtual dispatch. The only returns the shim can't
+                // take are the ones with SPECIALISED guard-path emission (container -> V[K],
+                // QList -> T[]) or an unspellable shim return type (fn-ptr); those fall through.
+                string _ch, _cid, _crs;
+                auto _cppRetCanon = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
+                bool simpleRet = !_cppRetCanon.canFind("(*")
+                    && !containerReturn(clang_getCursorResultType(c), _ch, _cid, _crs)
+                    && tryQList(clang_getCursorResultType(c)).length == 0;
                 bool isStat = clang_CXXMethod_isStatic(c) != 0;
                 string[] rps, ca, cppPs; bool okParams = true;
                 auto na = clang_Cursor_getNumArguments(c);
@@ -1841,6 +1860,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (pimp.length) impSet[pimp] = true;
                     auto _cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
                     if (_cpps.canFind("(*")) okParams = false;   // fn-ptr param: shim C++ decl needs the name inside the parens
+                    if (moveOnlyByValue(clang_getCursorType(a))) okParams = false;   // shim would copy it
                     cppPs ~= format("%s a%d", _cpps, i);
                     rps ~= format("%s a%d", pd, i);
                     ca ~= format("a%d", i);
@@ -1937,6 +1957,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     pds ~= pd;
                     auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
                     if (cpps.canFind("(*")) guardable = false;   // fn-ptr param: can't reinterpret cleanly
+                    if (moveOnlyByValue(clang_getCursorType(a))) guardable = false;   // guard would copy it
                     cppTypes ~= cpps;
                 }
             }
