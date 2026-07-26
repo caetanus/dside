@@ -370,13 +370,20 @@ private extern (C) void __qmlDestroy(void* self, void* dobj) nothrow {
     _reg.remove(dobj);   // solta o T do registro -> o GC pode recolhê-lo
 }
 
-/// Registra o tipo `T` (@QObject D) como elemento QML instanciável. Chame antes de
-/// carregar o .qml (ex.: `qmlRegisterType!Backend("App", 1, 0, "Backend");`).
+private __gshared bool[string] _qmlRegistered;   // "T|uri|name|maj.min" -> already registered
+
+/// Registra o tipo `T` (@QObject D) como elemento QML instanciável. Chame antes de carregar o
+/// .qml. Contrato de erro (critics r7 #2): **THROWS** se o registro falhar no backend (pool Qt5
+/// esgotado ou `qmlregister` recusado) — a falha C++ NÃO vira sucesso silencioso. Registrar o
+/// MESMO (T, uri, nome, versão) de novo é idempotente (não consome outro slot do pool Qt5).
 void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
     static assert(hasUDA!(T, QObject),
         "qtmoc: " ~ T.stringof ~ " precisa da UDA @QObject");
     static assert(__traits(compiles, new T()),
         "qtmoc: " ~ T.stringof ~ " precisa de construtor sem argumentos (o QML instancia sem args)");
+    import std.conv : to;
+    auto regKey = T.stringof ~ "|" ~ uri ~ "|" ~ qmlName ~ "|" ~ vmaj.to!string ~ "." ~ vmin.to!string;
+    if (regKey in _qmlRegistered) return;   // idempotent: don't re-register / re-consume a pool slot
     enum sigs = signalSigs!T;
     enum slts = slotSigs!T;
     enum pnames = propMembers!T;
@@ -398,6 +405,9 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
         sigp.ptr, cast(int) sigs.length, sltp.ptr, cast(int) slts.length,
         pnp.ptr, ptp.ptr, pnt.ptr, cast(int) pnames.length,
         &__qmlMake, &__qmlDestroy, &__mocGlobalDispatch, &__mocGlobalProp);
+    if (key is null)   // backend refused (Qt5 pool exhausted / qmlregister failed) -> OBSERVABLE
+        throw new Exception("qmlRegisterType failed for " ~ T.stringof ~ " as " ~ uri ~ "/" ~ qmlName
+            ~ " " ~ regKey ~ " (backend returned null; see stderr)");
     // factory por-T: o engine chama isto (via __qmlMake) por instância criada no QML.
     _qmlFactories[key] = (void* qobj) nothrow {
         try {
@@ -406,6 +416,7 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
             return cast(void*) o;
         } catch (Exception e) { qtdOnCallbackError(e); return null; }
     };
+    _qmlRegistered[regKey] = true;
 }
 
 // ---- .qmltypes emission (type description for tooling) ----------------------

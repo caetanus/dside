@@ -91,7 +91,10 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
     key += '\x1'; key += (super ? super->className() : "");
     for (int i = 0; i < nsig; ++i)  { key += '\x2'; key += sigs[i]; }
     for (int i = 0; i < nslot; ++i) { key += '\x3'; key += slotSigs[i]; }
-    for (int i = 0; i < nprop; ++i) { key += '\x4'; key += propNames[i]; key += ':'; key += propTypes[i]; }
+    for (int i = 0; i < nprop; ++i) {   // name:type@notify — NOTIFY participates too (critics r7 #3)
+        key += '\x4'; key += propNames[i]; key += ':'; key += propTypes[i];
+        key += '@'; key += std::to_string(propNotify[i]);
+    }
     auto it = g_moCache.find(key);
     if (it != g_moCache.end()) return it->second;
     QMetaObjectBuilder b;
@@ -354,8 +357,12 @@ void* qtd_qml_register_type(
     rt.revision = 0;
 #endif
     int tid = QQmlPrivate::qmlregister(QQmlPrivate::TypeRegistration, &rt);
-    if (tid < 0) {   // the registration itself failed -> don't pretend it worked
+    if (tid < 0) {   // the registration itself failed -> clean up, roll back, don't pretend it worked
         fprintf(stderr, "qtd: qmlRegisterType failed for '%s' (qmlregister returned %d)\n", qmlName, tid);
+#if QT_VERSION < 0x060000
+        if (g_qt5Count > 0 && g_qt5Types[g_qt5Count - 1] == t) g_qt5Types[--g_qt5Count] = nullptr;  // roll back the pool slot
+#endif
+        delete t;
         return nullptr;
     }
     return t;

@@ -84,11 +84,13 @@ Build reggaeBuild() {
     // both — the runtime features (setContextProperty, qmlRegisterType, moc lifetime, tr) are the
     // parity surface. Qt-version seams (e.g. QQmlPrivate::RegisterType layout) live in qtdmoc.cpp
     // behind a single QT_VERSION branch, so a future Qt7 is a small localized delta, not a rewrite.
+    auto homoExtra = qmlExtra ~ " " ~ t("qml", "homonym_a.d") ~ " " ~ t("qml", "homonym_b.d");
     void qmlSuite(QtdBinding b, string tag) {
         foreach (dc; DCS) {
             all ~= qtdTest("qml" ~ tag ~ "-" ~ dc, t("qml", "backend_test.d"), b, dc, qmlExtra);   // setContextProperty
             all ~= qtdTest("qmlreg" ~ tag ~ "-" ~ dc, t("qml", "register_test.d"), b, dc, qmlExtra); // qmlRegisterType
             all ~= qtdTest("qmltwo" ~ tag ~ "-" ~ dc, t("qml", "register_two_test.d"), b, dc, qmlExtra); // 2 distinct types
+            all ~= qtdTest("homonym" ~ tag ~ "-" ~ dc, t("qml", "homonym_test.d"), b, dc, homoExtra); // 2 same-named types
             all ~= qtdTest("moclife" ~ tag ~ "-" ~ dc, t("qml", "moclife_test.d"), b, dc);           // side-table cleanup
         }
         all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
