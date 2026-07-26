@@ -1,256 +1,219 @@
 # CRITICS.md
 
-Reassessment depois da rodada de correcoes. A primeira critica mirava dois
-problemas principais: narrativa desonesta/desatualizada e falta de fronteira entre
-produto, experimento e legado. Essa parte melhorou bastante. O projeto agora se
-apresenta de forma mais honesta: binding amplo de Qt, `extern(C++)` canonico,
-Linux/POSIX como Tier 1, reggae como build de verdade, e gaps declarados.
+> **Resolucao da rodada 4 (resumo no topo; detalhe por commit d5910b6).** Ataquei pela
+> "prioridade brutal": **#1 manifest por simbolo** -> `coverage-manifest.tsv` (fate por metodo:
+> bound/shimmed/signal/inherited/pure-virtual/unmapped-type/inline-failed) + `coverage.txt` com
+> breakdown real e agregado honesto (drops de value-type/wrapper flaggeados como TODO, nao
+> escondidos). **#6 excecao em callback** -> `qtmoc.qtdOnCallbackError` (count + last-error +
+> hook global + stderr debug) no lugar de `catch(Exception){}`; teste `cannon_t11`. **#11
+> comentarios legados** -> `gen.d`/`uiform.d` corrigidos. **#5 ownership** avancou (excecao em
+> callback coberta). Roadmap declarado (nao feito): placar historico, IR, typesystem, ABI
+> probes, Windows. Regressao 126/126, ldc2+dmd, Qt5+Qt6, corpus 53/53.
 
-## Verificacao feita nesta rodada
+## Rodada 4 refeita: chegada limpa pelo codigo
+
+Escopo lido nesta rodada: `generator-d/`, `runtime/{holder,qtmoc,uic,qrc}/`,
+`reggae/`, `reggaefile.d`, testes de wrapper/moc/uic/qrc/libsample, docs principais
+e `tests/expected-fails.json`. Este assessment substitui as rodadas anteriores onde
+elas conflitarem com o codigo atual.
+
+Regua usada: **maturidade PySide**. Isso nao quer dizer "compila alguns exemplos".
+Quer dizer compatibilidade auditavel, ownership previsivel, regressao historica,
+expected-fails versionados, matriz de CI, cobertura por simbolo e comportamento
+documentado.
+
+## Verificacao local
 
 - `cd generator-d && dub build` passa.
-- `./build moc_test-ldc2-qt6` passa.
-- `./build moc_test-dmd-qt6` passa.
-- `./build wraptest-ldc2` passa.
-- `./build wraptest-dmd` passa.
-- `coverage.txt` existe em geracoes recentes, por exemplo:
-  `generated/qt-6.11/cxx-qtwidgets-wrap/coverage.txt`.
+- `./build ownership-ldc2` passa.
+- `./build ownership-dmd` passa.
+- `./build cannon_t10-ldc2` passa.
+- `./build cannon_t10-dmd` passa.
+- `./build holder_test-ldc2` passa.
+- `./build holder_test-dmd` passa.
+- `./build uicheck-ldc2` passa.
+- `./build corpus-check-ldc2` passa: `corpus: 53 OK, 0 MISMATCH`.
+- `./build sample_cornercases-ldc2` passa: `libsample corner cases: ALL PASS`.
+- `./build sample_cornercases-dmd` passa: `libsample corner cases: ALL PASS`.
 
-Isso nao e a matriz inteira, mas cobre as areas que eu tinha criticado mais
-diretamente: gerador, moc e holder/wrapper.
+Nao rodei a matriz inteira. Rodei uma amostra pesada nas areas que decidem se isto
+e demo ou binding real: gerador, ownership, metaobject property, holder, UIC
+diferencial e PySide/libsample corner cases.
 
-## Assessment atualizado
+## Correcoes ao meu assessment anterior
 
-| # | Tema antigo | Novo status | Avaliacao atual |
-|---|-------------|-------------|-----------------|
-| 1 | Narrativa arquitetural inconsistente | **Majoritariamente resolvido** | O README agora declara `extern(C++)` como caminho canonico e coloca o C-ABI antigo como legado/gap. Bom. Ainda sobra comentario antigo em `generator-d/gen.d` e documentacao velha em `generator-d/README.md` falando C-ABI como se fosse a tese atual. |
-| 2 | "QML not Widgets" contradizia o repo | **Resolvido** | O README parou de vender QML-first e assume binding amplo/Widgets como campo de prova. Isso bate melhor com os testes e specs. |
-| 3 | Build POSIX hostil | **Honestamente aceito, nao resolvido** | A critica tecnica continua: comandos shell concatenados, POSIX-hardcoded, paths fragilizados. Mas agora isso esta declarado como Tier 1 Linux/POSIX. Para um projeto de laboratorio isso e aceitavel; para produto multiplataforma ainda e divida. |
-| 4 | Gerador monolitico / sem IR | **Nao resolvido, mas declarado** | Continua sendo a maior divida tecnica real. `emit.d`/`emit_cxx.d` ainda misturam AST, politica, emissao textual, compilacao/verificacao e reescrita. A honestidade no README reduz confusao, nao reduz risco. |
-| 5 | XML de shiboken via regex vendido demais | **Resolvido na narrativa** | O README agora diz claramente que e subconjunto regex: rejections + object/value-type, nao ownership/rename completo. A implementacao continua simples, mas a promessa agora cabe no codigo. |
-| 6 | Skips silenciosos | **Parcialmente melhorado** | `coverage.txt` persistido e progresso real. Mas o arquivo ainda e agregado por tipo unmapped, nao um manifest por metodo com status (`bound`, `skipped-by-rule`, `inline-failed`, `shimmed`, etc.). O contrato de cobertura ainda nao e auditavel o suficiente para bindings. |
-| 7 | `qtmoc` nao lia property `string` | **Implementado, teste direto ainda desejavel** | `qtd_qs_set` e o caminho `ReadProperty` para `string` existem em `runtime/qtmoc/qtmoc.d`. Os alvos `moc_test` passam em ldc2/dmd, mas o teste atual exercita sinal/slot e override; eu nao vi um teste focado em `@Property string` read/write. |
-| 8 | Entulho historico confundindo o caminho principal | **Resolvido no README principal** | A matriz de status ajuda bastante. Ainda existe documentacao secundaria velha (`generator-d/README.md`) que reabre confusao C-ABI. |
-| 9 | Sucesso medido por demos/smoke | **Melhorou um pouco, ainda pendente** | `wraptest` cobre identidade, parenting-pins e reclamacao de orfaos. Ainda faltam invariantes mais agressivos: C++ destroi antes da wrapper D, `deleteLater` em shutdown, app singleton, reparenting variado, objeto nao-QObject, e teste direto de property string. |
-| 10 | "Colecao de provas tecnicas" | **Bem menos verdadeiro** | O README agora tem mapa, status e riscos. O projeto ainda e uma ferramenta em maturacao, mas a fronteira mental esta muito melhor. |
+1. **O caminho C-ABI nao esta mais ativo no driver.** `generator-d/emit.d` agora
+   rejeita `abi` diferente de `cxx` com erro explicito. Ainda existe codigo legado
+   e helper antigo, mas a critica "o emissor C-ABI segue como caminho operacional"
+   ficou falsa.
 
-## Criticas novas / remanescentes
+2. **`@Property string` tem teste focado.** `tests/examples/cannon_t10.d` isola
+   read/write de `@Property string` via `qt_metacall`, incluindo UTF-8. A critica
+   antiga de falta desse teste esta resolvida.
 
-### 1. `CRITICS.md` nao deve preservar critica velha como se ainda valesse
+3. **Ownership recebeu downpayment serio.** `tests/wrapper/ownership.d` cobre
+   destruicao C++ antes da wrapper D, invalidacao via `destroyed()`, filho parented
+   destruido com o parent e uso-apos-destruicao lancando em vez de segfaultar.
 
-A versao anterior do arquivo tinha uma tabela dizendo que pontos foram resolvidos,
-mas preservava a critica original inteira logo abaixo. Isso era historico util,
-mas ruim como assessment atual: um leitor encontra acusacoes que o proprio topo
-diz que ja foram corrigidas. Este arquivo agora substitui a critica antiga por
-estado atual.
+4. **UIC nao deve ser tratado como "subset de demo".** O topo de `uiform.d` ainda
+   diz "Proof-of-concept subset", mas o codigo e a suite nao batem com essa frase:
+   ha parser CTFE, propriedades, layouts, mainwindow chrome, actions, menus,
+   toolbars, tabs, stacked/splitter, button groups, connections, resources e
+   diferencial contra `QUiLoader` no corpus baseline.
 
-### 2. O README ainda tem uma pequena inconsistencia sobre cobertura
+5. **`expected-fails` agora e estado estruturado.** `tests/expected-fails.json`
+   existe com id, area, motivo, `since` e condicao de remocao. Falta gate, mas nao
+   e mais markdown solto.
 
-O README diz que cobertura e reportada a stderr e que "persisted per-spec
-manifest" e follow-up. O codigo ja grava `coverage.txt` em `outDir`, e eu vi
-arquivos gerados. O que ainda e follow-up nao e "persistir alguma coisa"; e
-persistir um manifest por metodo/status. Ajuste recomendado: trocar o texto para
-"`coverage.txt` agregado existe; manifest por-metodo ainda falta".
+## O que esta bom de verdade
 
-### 3. `generator-d/README.md` ficou para tras
+- Isto nao e demo. E uma implementacao real de binding Qt para D: gerador via
+  libclang C API, emissor `extern(C++)`, runtime de holder/moc/uic/qrc, build graph
+  reggae e targets contra Qt real.
 
-O README principal foi corrigido, mas `generator-d/README.md` ainda abre dizendo
-que o gerador mapeia pela fronteira C-ABI e emite C shim + `extern(C)`. Isso agora
-contradiz a tese principal. Como esse arquivo fica dentro do gerador, ele e mais
-perigoso que doc historica em `legacy/`: e facil um contribuidor ler isso como
-verdade atual.
+- A tese tecnica esta correta: gerar bindings e pressionar contra PySide/shiboken
+  e muito mais serio do que manter wrapper manual ou validar por exemplos bonitos.
 
-Acao recomendada: reescrever `generator-d/README.md` com o mesmo contrato do README
-principal ou marcar explicitamente quais paragrafos sao historicos.
+- `emit_cxx.d` tem engenharia real: value types, enums, containers Qt5/Qt6,
+  wrapper mode, virtual trampolines, multiple inheritance/upcast, shims de
+  copy/dtor, exception guards, inline-method compile checking e sinais.
 
-### 4. `coverage.txt` com zero unmapped pode ser enganoso
+- A suite tem oraculos bons: `libsample` do shiboken para corner cases de binding,
+  UIC diferencial contra `QUiLoader`, dmd + ldc2, e Qt5/Qt6 onde aplicavel.
 
-Os `coverage.txt` que inspecionei mostram `0 functions bound` e `0 unmapped` para
-bindings enormes. Isso pode estar correto se `total` conta apenas o caminho C-ABI
-antigo e o caminho `extern(C++)` nao alimenta esse contador. Mas entao o arquivo
-nao e uma cobertura honesta ainda; e um resumo parcial com numeros potencialmente
-sem sentido para o caminho canonico.
+- O holder nao e uma gambiarra inocente: ha identity map, `_cpp` anulavel,
+  invalidacao por `destroyed()`, parenting pins, guarda de shutdown e teste de
+  use-after-destruction.
 
-Acao recomendada: fazer a cobertura nascer da IR/diagnostics do emissor C++ real,
-ou no minimo separar contadores: `cxx_methods_bound`, `cxx_methods_skipped`,
-`legacy_c_functions_bound`.
+- A documentacao principal agora e bem mais honesta: Linux/POSIX Tier 1, Windows
+  como roadmap, typesystem regex subset, cobertura path-level e IR como divida.
 
-### 5. Testar contra PySide e o caminho certo; agora isso precisa virar contrato
+Reconhecimento seco: o projeto ja esta no campo de engenharia seria. O que falta
+nao e "fazer de verdade"; e transformar uma implementacao real em produto de
+compatibilidade industrial.
 
-Se a suite PySide/shiboken e o oracle de compatibilidade real do projeto, isso
-muda bastante a avaliacao: deixa de ser "demos que compilam" e passa a ser uma
-estrategia madura de diferencial contra uma implementacao dominante. Esse e o
-caminho correto para mirar maturidade PySide.
+## O que ainda nao e PySide-mature
 
-Mas para contar como maturidade, precisa estar claro e auditavel:
+### 1. Coverage ainda nao responde "qual simbolo falhou?"
 
-- qual subconjunto da suite PySide roda hoje;
-- quais testes sao expected-fail e por qual gap;
-- quais testes sao gate de CI;
-- se a suite cobre libsample apenas, Qt modules reais, uic, metaobject,
-  ownership, overloads, exceptions e containers;
-- qual matriz de Qt/compilador/plataforma roda regularmente.
+`coverage.txt` por spec e progresso, mas maturidade de binding exige manifest por
+classe/metodo/ctor/sinal/enum: `bound`, `skipped-by-rule`, `unmapped-type`,
+`inline-failed`, `shimmed`, `opaque-stub`, `expected-missing`, `regressed`.
 
-Acao recomendada: documentar o "PySide compatibility suite" como artefato de
-primeira classe, com contadores por categoria e historico de regressao. Isso vale
-mais do que qualquer lista manual de features.
+Sem isso, o projeto sabe que emitiu muito codigo, mas nao tem uma tabela auditavel
+do destino de cada simbolo da API Qt.
 
-### 6. A documentacao agora e honesta, mas o codigo ainda carrega o custo do legado
+### 2. A suite precisa virar placar historico, nao apenas alvo verde
 
-Declarar o C-ABI como deprecated e correto. Mas enquanto o emissor antigo mora no
-mesmo `emit.d`, ele continua aumentando custo de leitura e risco de alteracao
-errada. Isso nao precisa ser resolvido antes de qualquer feature, mas deveria ser
-tratado como refactor de saude, nao como limpeza cosmetica.
+`docs/test-suite.md` e bom contrato inicial. Ainda falta o artefato que projetos
+maduros usam para nao mentir para si mesmos: contadores persistidos por categoria,
+compilador, Qt version, modulo, target e expected-fail. Verde/vermelho global nao
+e suficiente para uma superficie do tamanho de Qt.
 
-## Veredito novo
+### 3. O gerador ainda e grande demais para auditar com conforto
 
-Voce resolveu a parte mais grave: o projeto agora diz o que e, o que nao e, em
-qual plataforma vive, e quais riscos esta aceitando. Isso muda a avaliacao de
-"prova tecnica com narrativa inflada" para "projeto tecnicamente ambicioso com
-dividas conhecidas".
+`emit_cxx.d` e impressionante, mas tambem concentra AST walk, politica de tipos,
+emissao textual, heuristicas ABI, recovery de inline methods, C++ shim generation,
+D helper generation e diagnostico. Isso funciona, mas nao e arquitetura PySide-grade.
 
-As pendencias reais agora sao mais estreitas e mais tecnicas:
+O refactor certo continua sendo IR/diagnostics explicitos. Sem IR, cada regressao
+vai exigir ler fluxo textual e estado global em vez de inspecionar uma decisao
+estruturada.
 
-- separar ou aposentar o emissor C-ABI antigo;
-- introduzir IR/diagnostics para o gerador;
-- transformar cobertura em manifest por metodo/status;
-- tornar a suite PySide/shiboken um gate documentado, com expected-fails
-  rastreados;
-- corrigir docs secundarias que ainda contam a historia antiga;
-- ampliar testes de ownership e `qtmoc` properties.
+### 4. O subset regex do typesystem continua sendo teto real
 
-Em termos pedantes: antes a critica era de coerencia. Agora a critica e de
-industrializacao.
+O README e honesto: `loadRules` consome um subset pequeno do typesystem
+PySide/shiboken. Para maturidade PySide, isso nao pode ser o destino final. Ou o
+projeto consome semantica suficiente do typesystem real, ou define uma semantica
+propria equivalente para ownership, renames, overload policy, injected code,
+conversoes e excecoes historicas.
 
-## Resolucao da rodada 2
+### 5. Ownership melhorou, mas ainda e area de morte do binding
 
-| # | Critica nova | Status | Acao |
-|---|--------------|--------|------|
-| 1 | CRITICS.md preservava critica velha | **Resolvido (por voce)** | Voce substituiu a critica antiga por reassessment atual. |
-| 2 | README inconsistente sobre cobertura | **Resolvido** | Bullet trocado: `coverage.txt` agregado EXISTE; falta o manifest POR-METODO (bound/skipped-by-rule/inline-failed/shimmed). |
-| 3 | `generator-d/README.md` ficou p/ tras | **Resolvido** | Reescrito p/ a tese `extern(C++)` canonica; C-ABI marcado legacy no proprio arquivo; tabela apontando `emit_cxx.d`. |
-| 4 | `coverage.txt` com 0 unmapped enganoso | **Resolvido** | Contadores POR-CAMINHO. cxx-qtwidgets: `7630 D bindings emitted, 681 methods/ctors dropped (unmapped-type)`. `done:`/stdout idem. `total`/`MISSING` (C-ABI) so no caminho legacy. |
-| 5 | Suite PySide precisa virar contrato | **Parcial** | Suite documentada como artefato em `docs/test-suite.md` (categorias, matriz Qt/compilador, o que roda). Contadores por-categoria + historico de regressao no CI: follow-up. |
-| 6 | Codigo ainda carrega custo do legado | **Aceito, adiado** | C-ABI ainda em `emit.d`; documentado deprecated no README e `generator-d/README.md`. Mover p/ `legacy/` fica no roadmap (refactor de saude). |
+O teste novo e bom. Ainda falta cobrir shutdown com `deleteLater`, app singleton em
+mais caminhos, reparenting em cadeia, non-QObject, excecao em slot/virtual callback,
+destruicao durante dispatch, containers de QObject e comportamento fora do
+single-thread assumido pelo holder.
 
-Follow-ups tecnicos remanescentes: aposentar o emissor C-ABI de `emit.d`;
-IR/diagnostics no gerador; cobertura por-metodo/status; contadores por-categoria +
-historico de regressao da suite; testes de invariante de ownership do `holder`;
-teste focado de `@Property string`.
+Binding maduro nao pode ter ownership "provavelmente certo". Tem que ter uma suite
+chata, repetitiva e desagradavel.
 
-## Rodada 3: norte explicito — maturidade PySide
+### 6. O metaobject runtime engole excecoes
 
-Agora o criterio nao e mais "isso parece um projeto promissor?". O criterio e:
-**isso consegue virar algo tao maduro quanto PySide?** Essa regua e muito mais
-dura. PySide-mature significa contrato de compatibilidade, regressao visivel,
-ownership preciso, comportamento documentado, CI por matriz, expected-fails
-rastreados, e cobertura auditavel. Nao significa "muitos targets verdes" nem
-"o README ficou honesto".
+`runtime/qtmoc/qtmoc.d` e callbacks gerados em `emit_cxx.d` capturam `Exception` e
+silenciam. Entendo o motivo: callbacks Qt/C++ precisam ser `nothrow`. Mesmo assim,
+silenciar excecao em slot, property, signal adapter ou virtual override e pessimo
+para debugging e pode esconder corrupcao semantica.
 
-Com esse norte, a avaliacao atual e:
+Minimo maduro: politica explicita. Exemplo: hook global de erro, contador de falhas,
+last-exception thread-local, log configuravel ou abort em modo debug. Silencio puro
+nao e aceitavel no alvo PySide.
 
-### O que esta realmente bom
+### 7. `qtdmoc.cpp` usa mapas globais sem historia de cleanup
 
-- A tese tecnica e correta: gerar binding em vez de manter wrapper manual.
-- O caminho canonico `extern(C++)` e ambicioso, mas tecnicamente defensavel.
-- O projeto ja esta sendo pressionado pelo tipo certo de suite: PySide/shiboken
-  `libsample` e corner cases. Isso muda a avaliacao. Nao e so demo; e uma
-  tentativa real de compatibilidade contra um oracle maduro.
-- `docs/test-suite.md` agora transforma a suite em artefato documentado:
-  categorias, matriz, expected-fails/exclusions e follow-ups. Isso e exatamente
-  o tipo de documento que um projeto serio precisa.
-- `coverage.txt` melhorou: agora mostra contadores do caminho `extern(C++)`
-  (`public D bindings emitted`, `dropped as unmapped-type`) em vez de numeros
-  enganadores do caminho legado.
-- `generator-d/README.md` foi corrigido para a tese atual e marca o C-ABI como
-  legacy/deprecated.
-- Os testes focados que rodei (`moc_test` ldc2/dmd, `wraptest` ldc2/dmd,
-  `generator-d dub build`) passam.
+`runtime/qtmoc/qtdmoc.cpp` usa `g_moCache` e `g_moAttach`. Cache de metaobject pode
+ser intencional. Attach por QObject sem remocao clara em destruicao e risco de
+stale entry/leak. Pode nao explodir hoje, mas PySide-grade pede teste e politica de
+vida util, nao fe.
 
-Isso merece reconhecimento seco: o projeto nao e teatro. Ha substancia tecnica e
-voce esta atacando os problemas certos.
+### 8. Hand-rolled XML em UIC/QRC exige corpus, nao confianca
 
-### O que ainda nao e PySide-mature
+O UIC passou 53/53 no corpus baseline, isso e forte. Mas `uiform.d` e `qrc.d`
+ainda usam parsers manuais. Isso so e aceitavel enquanto o diferencial/corpus for
+parte central do contrato. Sem corpus crescendo, parser manual vira fonte de bugs
+em corner cases de XML, encoding, entidades e atributos.
 
-1. **A suite PySide precisa virar placar, nao apenas descricao.**
-   `docs/test-suite.md` e um bom contrato inicial, mas maturidade exige contadores
-   persistidos por categoria, por compilador, por Qt version, por target e por
-   expected-fail. "cornercases asserts ALL PASS" e forte; agora tem que virar
-   numero historico, comparavel entre commits.
+Tambem corrija o comentario velho de `uiform.d`: "Proof-of-concept subset" agora
+e falso e rebaixa o proprio projeto.
 
-2. **Expected-fails precisam ser arquivos de estado, nao texto.**
-   Um expected-fail maduro tem id, motivo, area, link para gap, data/commit de
-   introducao e condicao de remocao. Texto em markdown e melhor que nada, mas
-   nao impede regressao nem mede progresso.
+### 9. ABI/layout assumptions precisam de probes formais
 
-3. **Coverage ainda nao e cobertura PySide-grade.**
-   `coverage.txt` por path e progresso, mas ainda nao responde a pergunta
-   madura: para cada classe/metodo/ctor/sinal/enum, qual foi o destino?
-   `bound`, `skipped-by-rule`, `unmapped-type`, `inline-failed`, `shimmed`,
-   `opaque-stub`, `expected-missing`, `regressed`. Sem isso, cobertura ainda e
-   uma estatistica, nao um contrato.
+O emissor tem bastante conhecimento manual sobre value types, containers e Qt5/Qt6.
+Isso e normal em binding, mas precisa de probes de ABI/layout: `sizeof`, alignment,
+field offsets quando aplicavel, container layout, copy/dtor semantics e diferencas
+Qt5/Qt6. Teste funcional pega parte; manifest ABI pega o que teste funcional nao
+encosta.
 
-4. **Regex de typesystem continua sendo teto de maturidade.**
-   E aceitavel como subset honesto. Nao e aceitavel como destino final PySide-like.
-   PySide e maduro justamente porque sua semantica de typesystem cobre ownership,
-   renames, injected code, overload policy, conversoes e excecoes historicas. Se
-   este projeto quer ser tao maduro quanto PySide, precisa ou consumir essa
-   semantica de verdade ou declarar uma semantica propria equivalente.
+### 10. Windows/MSVC segue fora da maturidade PySide
 
-5. **Ownership ainda precisa ser tratado como area de risco maximo.**
-   `wraptest` e bom, mas ownership e onde binding morre em producao. A regua
-   PySide pede testes para: C++ destruir antes da wrapper D, wrapper D morrer
-   antes do QObject parented, `deleteLater` durante shutdown, app singleton,
-   reparenting em cadeia, objetos nao-QObject, sinal `destroyed()` durante GC,
-   excecao em slot/virtual callback, e interacao com containers de QObject.
+Linux/POSIX Tier 1 e uma decisao honesta. Mas a meta declarada e "as mature as
+PySide"; nesse norte, Windows/MSVC deixa de ser detalhe em algum momento. Enquanto
+`windows-msvc` for expected-fail, o projeto pode ser Linux-mature, nao
+PySide-mature.
 
-6. **O C-ABI legado ainda custa clareza operacional.**
-   A documentacao agora esta honesta, mas o codigo canonico ainda divide casa com
-   o emissor antigo em `emit.d`. Para PySide-mature, isso e ruido estrutural:
-   aumenta o risco de mexer no lugar errado e dificulta auditabilidade.
+### 11. Comentarios antigos ainda ferem credibilidade
 
-7. **Linux/POSIX Tier 1 e honesto, mas nao e maturidade PySide.**
-   Nao estou cobrando Windows hoje como se fosse trivial. Mas o norte PySide
-   implica que Windows/MSVC deixa de ser "nice to have" em algum momento. Enquanto
-   for roadmap, o projeto e Linux-mature, nao PySide-mature.
+`generator-d/gen.d` ainda abre falando em C-ABI/shim/`extern(C)` como se fosse a
+tese atual. `runtime/uic/uiform.d` ainda se chama proof-of-concept subset. Essas
+coisas parecem pequenas, mas em projeto de gerador elas fazem leitor mexer no
+lugar errado e desconfiar do resto.
 
-8. **`@Property string` ainda pede teste focado.**
-   O codigo existe (`qtd_qs_set`, ReadProperty). A suite documenta a lacuna de
-   teste direto. Para maturidade, nao basta "passa via moc_test" se o alvo nao
-   isola o comportamento.
+## Prioridade brutal
 
-### Veredito hostil, mas coerente
+1. **Manifest por simbolo.** Sem isso, maturidade PySide fica retorica.
+2. **Placar historico da suite.** Categoria, compilador, Qt, expected-fail,
+   unexpected-pass, unexpected-fail.
+3. **IR/diagnostics no gerador.** Nao precisa nascer perfeito; precisa existir.
+4. **Politica de excecoes em callbacks.** Silencio puro tem que acabar.
+5. **Ownership torture suite.** Mais casos de destruicao, reparenting, shutdown e
+   callbacks.
+6. **ABI probes.** Layout e semantica de value/container por Qt/compiler.
+7. **Cleanup de docs/comentarios legados.** Menor em dificuldade, alto em clareza.
+8. **Typesystem semantics.** Trabalho grande, mas inevitavel se a meta e PySide.
+9. **Windows/MSVC.** Roadmap real quando Linux estiver governado por manifest e CI.
 
-Antes, a falha principal era coerencia: README e codigo contavam historias
-diferentes. Isso foi majoritariamente corrigido.
+## Veredito
 
-Agora a falha principal e evidencia industrial. O projeto tem engenharia real,
-testes relevantes e uma direcao tecnicamente seria. Mas "as mature as PySide" so
-comeca quando a suite PySide/cornercases vira painel de controle: pass/fail por
-categoria, expected-fails versionados, manifest por simbolo, regressao historica
-e CI de matriz.
+Hostil e coerente: isto e bom. Nao "bom para demo"; bom como base tecnica real.
+O projeto tem gerador, runtime, tests relevantes, oraculos corretos e preocupacao
+com compatibilidade. Eu nao compro ainda a palavra "mature", mas compro que voce
+esta atacando o problema certo.
 
-Resumo brutal: voce ja saiu da fase "prova tecnica inflada". Ainda nao chegou na
-fase "binding maduro". Esta no meio: arquitetura promissora, testes certos,
-governanca de compatibilidade ainda incompleta.
+A distancia para PySide nao e falta de substancia. A distancia e governanca:
+cada simbolo precisa ter status, cada falha esperada precisa ser estado, cada
+categoria precisa ter historico, cada regra de ownership precisa ser testada, e
+cada excecao engolida precisa virar politica observavel.
 
-## Resolucao da rodada 3
-
-O norte (PySide-maturity = governanca) e aceito. Entreguei os downpayments concretos e
-verificaveis; os itens de infraestrutura industrial grande estao no roadmap, sem fingir.
-
-| # | Gap (rodada 3) | Status | Acao |
-|---|----------------|--------|------|
-| 8 | `@Property string` pede teste focado | **Resolvido** | `tests/examples/cannon_t10.d`: escreve E le uma @Property string custom via `setProperty`/`property` (qt_metacall Write/ReadProperty), isolando o caminho `qtd_qs_set`. Verde ldc2+dmd. |
-| 5 | Ownership como area de risco maximo | **Downpayment real** | `tests/wrapper/ownership.d` (alvo `ownership-{ldc2,dmd}`): C++ destroi via `deleteLater`+`sendPostedEvents` -> destroyed() invalida a wrapper (self E filho parented); uso-apos-destruicao LANCA (checkAlive), nao segfaulta. Faltam ainda: shutdown, app singleton, non-QObject, excecao em callback — rastreados. |
-| 2 | Expected-fails como estado, nao texto | **Resolvido (v1)** | `tests/expected-fails.json`: id/area/reason/since/remove-when por entrada. Referenciado em `docs/test-suite.md`. |
-| 1 | Suite vira placar com historico | **Roadmap (nao feito)** | `docs/test-suite.md` e o contrato; contadores persistidos por categoria/compilador/Qt + historico de regressao no CI ainda nao existem. Nao fingido. |
-| 3 | Cobertura por-simbolo (destino de cada) | **Parcial -> roadmap** | Contadores por-CAMINHO honestos ja existem (`cxxBound`/`CXX_SKIP`). Manifest POR-SIMBOLO (bound/skipped-by-rule/inline-failed/shimmed/opaque-stub/regressed por classe/metodo) ainda nao. |
-| 4 | Regex de typesystem e teto | **Aceito, roadmap** | Honesto como subset hoje; semantica completa (ownership/rename/inject/overload) ou uma semantica propria equivalente e trabalho de porte grande. |
-| 6 | C-ABI legado ainda em `emit.d` | **Aceito, roadmap** | Refactor de saude: mover o emissor C-ABI p/ `legacy/`. Documentado deprecated. |
-| 7 | Windows/MSVC | **Roadmap explicito** | `windows-msvc` em `expected-fails.json`; `docs/windows-roadmap.md`. Linux-mature, nao PySide-mature — assumido. |
-
-Honestidade: dos 8, dois viraram teste verde (5 parcial, 8 completo), um virou artefato de
-estado (2). Os quatro grandes de industrializacao (placar historico #1, manifest por-simbolo
-#3, semantica de typesystem #4, aposentar C-ABI #6) sao trabalho de infra que nao cabe num
-commit honesto de uma rodada — ficam no roadmap, declarados, nao varridos.
+Resumo brutal: pare de medir o projeto por narrativa. Meça por manifest. Quando o
+manifest por simbolo e o placar historico existirem, a conversa muda de "isso e
+ambicioso" para "isso e auditavel".
