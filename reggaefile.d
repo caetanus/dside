@@ -89,6 +89,10 @@ Build reggaeBuild() {
     all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes, validated by Qt's own reader
     all ~= qmlTrTargets(root, qml);   // runtime tr(): mixin Tr + lrelease .qm round-trip
 
+    // --- lupdate-d extraction, in the build of record: run the D-aware extractor on a fixture
+    //     and diff its .ts against the checked-in golden (module context + tr/UFCS/translate forms).
+    all ~= lupdateCheckTargets(root);
+
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);
 
@@ -150,6 +154,23 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
         ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
     }
     return ts;
+}
+
+// lupdate-d in the build of record: build the extractor (its own dub package), run it on
+// tests/lupdate/fixture.d, and diff the emitted .ts against the golden. Locks the extraction
+// contract — tr("x"), tr("x",disambig), "x".tr, "x".tr(disambig), translate("Ctx","x"), and the
+// MODULE-as-context rule that the runtime tr() mirrors. The runtime end of the loop (.ts -> .qm ->
+// tr()) is covered by the tr-* targets. Skipped if dub isn't available.
+Target[] lupdateCheckTargets(string root) {
+    if (execute(["which", "dub"]).status != 0) return [];
+    auto dir = buildPath(root, "tools", "lupdate");
+    auto bin = buildPath(dir, "lupdate-d");
+    auto fixt = buildPath(root, "tests", "lupdate", "fixture.d");
+    auto golden = buildPath(root, "tests", "lupdate", "fixture.golden.ts");
+    auto outTs = buildPath(root, ".build", "lupdate-fixture.ts");
+    auto cmd = "dub build --root=" ~ dir ~ " -q && " ~ bin ~ " " ~ fixt ~ " -ts " ~ outTs
+        ~ " >/dev/null && diff -u " ~ golden ~ " " ~ outTs ~ " && echo 'lupdate-check OK: fixture.d -> .ts matches golden'";
+    return [Target.phony("lupdate-check", "sh -c \"" ~ cmd ~ "\"", [])];
 }
 
 // Runtime tr(): a class with `mixin Tr` gets a Qt-style bare tr("…") (context = class name).
