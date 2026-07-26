@@ -2,7 +2,7 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="pt_BR">
 <context>
-    <name></name>
+    <name>tr_test</name>
     <message>
         <source>test: hello world</source>
         <translation>teste: oi mundo</translation>

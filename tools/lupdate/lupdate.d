@@ -37,23 +37,59 @@ string unquote(string s) {   // "Hello" / `raw` / q{...} -> the text (basic: str
     return s;
 }
 
+// The source string of a direct `"literal".tr` receiver (not a deep grab, so `f("x").tr`
+// doesn't misfire). null if the receiver isn't a plain string literal.
+string directLiteral(const UnaryExpression u) {
+    if (u !is null && u.primaryExpression !is null
+        && u.primaryExpression.primary.type == tok!"stringLiteral")
+        return unquote(u.primaryExpression.primary.text);
+    return null;
+}
+
 final class TrVisitor : ASTVisitor {
     Msg[] msgs;
-    string ctx = "";                      // enclosing class/struct -> context for bare tr()
+    string modCtx;               // module name -> context for tr()/.tr (matches runtime __MODULE__)
+    bool[size_t] seenTr;         // tr-token byte indices already emitted (avoid UFCS double count)
+    this(string fileBase) { modCtx = fileBase; }
     alias visit = ASTVisitor.visit;
-    override void visit(const ClassDeclaration d) { auto o = ctx; ctx = d.name.text.idup; super.visit(d); ctx = o; }
-    override void visit(const StructDeclaration d) { auto o = ctx; ctx = d.name.text.idup; super.visit(d); ctx = o; }
+
+    // `module a.b.c;` -> the dotted name, exactly what D's __MODULE__ yields at a call site.
+    override void visit(const ModuleDeclaration m) {
+        if (m.moduleName !is null)
+            modCtx = m.moduleName.identifiers.map!(t => t.text.idup).join(".");
+        super.visit(m);
+    }
+
+    // parenless UFCS: `"literal".tr` (incl. chains like `"literal".tr.writeln`).
+    override void visit(const UnaryExpression u) {
+        if (u.identifierOrTemplateInstance !is null
+            && u.identifierOrTemplateInstance.identifier.text == "tr"
+            && u.identifierOrTemplateInstance.identifier.index !in seenTr) {
+            auto s = directLiteral(u.unaryExpression);
+            if (s !is null) msgs ~= Msg(modCtx, s, "");
+        }
+        super.visit(u);
+    }
+
     override void visit(const FunctionCallExpression c) {
-        super.visit(c);   // recurse first (nested calls)
-        if (c.unaryExpression is null || c.arguments is null) return;
-        auto ig = new IdGrab; ig.visit(c.unaryExpression);
-        if (!ig.ids.length) return;
-        auto callee = ig.ids[$-1];
-        auto sg = new StrGrab; sg.visit(c.arguments);
-        if (callee == "tr" && sg.strs.length >= 1)
-            msgs ~= Msg(ctx, sg.strs[0], sg.strs.length >= 2 ? sg.strs[1] : "");
-        else if (callee == "translate" && sg.strs.length >= 2)
-            msgs ~= Msg(sg.strs[0], sg.strs[1], sg.strs.length >= 3 ? sg.strs[2] : "");
+        if (c.unaryExpression !is null) {
+            auto ig = new IdGrab; ig.visit(c.unaryExpression);
+            auto callee = ig.ids.length ? ig.ids[$-1] : "";
+            auto sg = new StrGrab; if (c.arguments !is null) sg.visit(c.arguments);
+            auto recv = directLiteral(c.unaryExpression.unaryExpression);   // UFCS `"lit".tr(...)`
+            if (callee == "tr") {
+                if (recv !is null) {   // "lit".tr("disambig") -> source in receiver, disambig in args
+                    msgs ~= Msg(modCtx, recv, sg.strs.length ? sg.strs[0] : "");
+                    if (c.unaryExpression.identifierOrTemplateInstance !is null)
+                        seenTr[c.unaryExpression.identifierOrTemplateInstance.identifier.index] = true;
+                } else if (sg.strs.length) {   // tr("src","disambig")
+                    msgs ~= Msg(modCtx, sg.strs[0], sg.strs.length >= 2 ? sg.strs[1] : "");
+                }
+            } else if (callee == "translate" && sg.strs.length >= 2) {
+                msgs ~= Msg(sg.strs[0], sg.strs[1], sg.strs.length >= 3 ? sg.strs[2] : "");
+            }
+        }
+        super.visit(c);   // recurse AFTER marking, so the callee's UnaryExpression sees the mark
     }
 }
 
@@ -63,7 +99,8 @@ Msg[] extractD(string src, string file) {
     auto toks = getTokensForParser(cast(ubyte[]) src.dup, cfg, &cache);
     RollbackAllocator ra;
     auto mod = parseModule(toks, file, &ra);
-    auto v = new TrVisitor; v.visit(mod);
+    auto v = new TrVisitor(file.baseName.stripExtension);   // __MODULE__ default = file base
+    v.visit(mod);
     return v.msgs;
 }
 
@@ -129,19 +166,28 @@ string tsDoc(Msg[] all) {
 string xesc(string s) { return s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"); }
 
 unittest {
-    // tr() takes the enclosing class as context; translate() takes an explicit context;
-    // the 2nd arg of tr() is a disambiguation comment.
+    // Context is the MODULE (matches the runtime tr()'s __MODULE__ default). translate() takes
+    // an explicit context. tr()'s disambiguation is the 2nd arg (tr()) or the arg of "x".tr(...).
     auto m = extractD(`
+        module myapp;
         class Backend {
             void f() {
-                auto a = tr("Hello");
-                auto b = tr("Bye", "farewell");
+                auto a = tr("Hello");                         // classic tr("x")
+                auto b = tr("Bye", "farewell");               // tr("x", disambig)
                 auto c = QCoreApplication.translate("Ctx", "Explicit");
-                obj.tr("Method call");
+                obj.tr("Method call");                        // obj.tr("x")
+                auto d = "ufcs".tr;                           // "x".tr (parenless UFCS)
+                auto e = "ufcs disambig".tr("plural");        // "x".tr(disambig)
+                "chained".tr.length;                          // "x".tr.<...>
             }
-        }`, "t.d");
-    assert(m.canFind!(x => x.context == "Backend" && x.source == "Hello"), "tr -> class context");
+        }`, "myapp.d");
+    assert(m.canFind!(x => x.context == "myapp" && x.source == "Hello"), "tr -> module context");
     assert(m.canFind!(x => x.source == "Bye" && x.comment == "farewell"), "tr disambiguation");
     assert(m.canFind!(x => x.context == "Ctx" && x.source == "Explicit"), "translate explicit ctx");
-    assert(m.canFind!(x => x.context == "Backend" && x.source == "Method call"), "obj.tr");
+    assert(m.canFind!(x => x.context == "myapp" && x.source == "Method call"), "obj.tr");
+    assert(m.canFind!(x => x.context == "myapp" && x.source == "ufcs"), "\"x\".tr (UFCS)");
+    assert(m.canFind!(x => x.source == "ufcs disambig" && x.comment == "plural"), "\"x\".tr(disambig)");
+    assert(m.canFind!(x => x.context == "myapp" && x.source == "chained"), "\"x\".tr.chain");
+    // no double-count of the UFCS-with-disambig form
+    assert(m.count!(x => x.source == "ufcs disambig") == 1, "UFCS disambig counted once");
 }

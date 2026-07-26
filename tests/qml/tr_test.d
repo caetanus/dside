@@ -2,6 +2,7 @@
 // translator and use a free UFCS tr(). Proves the runtime end of the loop
 // (lupdate-d -> .ts -> lrelease -> .qm -> tr()). Given a .qm path (argv[1], built by lrelease)
 // it checks the translation; otherwise the identity (untranslated -> source).
+module tr_test;   // free tr()'s context is __MODULE__ -> "tr_test", matching the .ts below
 import qtmoc : QTranslator, tr;
 import std.stdio, std.path : stripExtension;
 

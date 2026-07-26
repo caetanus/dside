@@ -75,14 +75,25 @@ string qsToD(void* qs) {
     return cast(string) buf[0 .. n];
 }
 
-// ---- tradução (tr / install) ------------------------------------------------
-/// `tr` LIVRE e UFCS — `"foo".tr`, `"foo".tr("Contexto")`. Traduz `source` via
-/// QCoreApplication.translate. Sem tradutor/`.qm` cobrindo a string, o Qt devolve `source`
-/// inalterada, então é sempre seguro. `disambig`/`n` (plural) opcionais.
-string tr(string source, string context = "", string disambig = null, int n = -1) {
+// ---- tradução (tr / translate / install) ------------------------------------
+private string trImpl(string context, string source, string disambig, int n) {
     auto qs = qtd_tr((context ~ "\0").ptr, (source ~ "\0").ptr,
                      disambig is null ? null : (disambig ~ "\0").ptr, n);
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
+
+/// `tr` LIVRE e UFCS — `"foo".tr`, `"foo".tr("disambiguation")`. O CONTEXTO é o NOME do módulo
+/// do chamador (via `__MODULE__`, que é resolvido no call site) — casando exatamente com o que o
+/// lupdate-d extrai, então a mesma `.qm` cobre extração e runtime. Sem tradutor/`.qm` cobrindo a
+/// string, o Qt devolve `source`, então é sempre seguro. Para contexto explícito use `translate`.
+string tr(string source, string disambiguation = null, int n = -1, string context = __MODULE__) {
+    return trImpl(context, source, disambiguation, n);
+}
+
+/// `translate` estilo Qt: contexto EXPLÍCITO. `translate("Contexto", "foo")` — igual ao que o
+/// lupdate-d reconhece como `[QCoreApplication.]translate("Ctx","src")`.
+string translate(string context, string source, string disambiguation = null, int n = -1) {
+    return trImpl(context, source, disambiguation, n);
 }
 
 /// Instala um tradutor SEM `_new`: `QTranslator.install("app_pt")`. O QTranslator (e um
