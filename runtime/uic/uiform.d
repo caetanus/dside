@@ -215,6 +215,7 @@ private struct Gen {
                              // the END of setupUi, once every widget the buddy names exists
     int nameCounter;         // synthesizes field names for unnamed elements (spacers, …)
     string context;          // the <class> name — translation context for QCoreApplication.translate
+    string[string] customBase;   // promoted/custom widget class -> its <extends> base (QUiLoader fallback)
 }
 
 // Every generated type lives in the widgets package; ensure its module is imported.
@@ -296,9 +297,11 @@ private string tabTitle(Node page) {
 }
 
 private void genProps(ref Gen g, Node w, string var, bool isRoot) {
+    bool isLine = w.attr("class") == "Line";   // Line's orientation -> frameShape (handled in genWidget)
     foreach (p; w.childrenOf("property")) {
         string name = p.attr("name");
         Node v = firstElem(p);
+        if (name == "orientation" && isLine) continue;   // consumed as frameShape, not setOrientation
         if (name == "buddy" && v.tag == "cstring") {   // <cstring>lineEdit</cstring> -> setBuddy
             g.buddyList ~= [var, v.text];              // deferred: the target may not exist yet
             continue;
@@ -600,7 +603,10 @@ private string genLayout(ref Gen g, Node lay, string parentVar) {
             if (grid)
                 g.setup ~= "        " ~ name ~ ".addLayout(" ~ sn ~ ", " ~ row ~ ", " ~ col
                     ~ ", " ~ rs ~ ", " ~ cs ~ ", 0);\n";
-            else if (!form)
+            else if (form)   // a nested layout in a QFormLayout row -> setLayout(row, role, layout)
+                g.setup ~= "        " ~ name ~ ".setLayout(" ~ row ~ ", QFormLayout.ItemRole."
+                    ~ (col == "0" ? "LabelRole" : "FieldRole") ~ ", " ~ sn ~ ");\n";
+            else
                 g.setup ~= "        " ~ name ~ ".addLayout(" ~ sn ~ ", 0);\n";
         }
     }
@@ -696,6 +702,12 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         var = "root";
     } else {
         string cls = w.attr("class");
+        if (auto b = cls in g.customBase) cls = *b;   // promoted/custom widget -> its <extends> base
+        // The .ui pseudo-widget "Line" is a QFrame with an H/VLine shape (QUiLoader's mapping):
+        // orientation Horizontal -> HLine, Vertical -> VLine, shadow Sunken. Its `orientation`
+        // property is consumed here (genProps skips it — a QFrame has no setOrientation).
+        bool isLine = cls == "Line";
+        if (isLine) cls = "QFrame";
         string objName = w.attr("name");   // the real objectName (may be empty or have spaces)
         bool named = objName.length > 0;
         // The D FIELD name must be a valid identifier; an unnamed or space-containing .ui name
@@ -707,6 +719,14 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         g.setup ~= "        " ~ var ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
         if (named)   // unnamed in the .ui -> QUiLoader leaves it nameless; don't setObjectName
             g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ esc(objName) ~ "\");\n";
+        if (isLine) {
+            string orient = "Horizontal";
+            foreach (p; w.childrenOf("property"))
+                if (p.attr("name") == "orientation") orient = splitOn(firstElem(p).text, "::")[$ - 1];
+            g.setup ~= "        " ~ var ~ ".setFrameShape(QFrame.Shape."
+                ~ (orient == "Vertical" ? "VLine" : "HLine") ~ ");\n";
+            g.setup ~= "        " ~ var ~ ".setFrameShadow(QFrame.Shadow.Sunken);\n";
+        }
     }
     genProps(g, w, var, isRoot);
     if (!isRoot) {
@@ -831,8 +851,24 @@ string uiForm(string xml) {
     string className = ui.child("class").text;
     if (!className.length) className = root.attr("name");
     string objName = root.attr("name");   // root's objectName (may be absent)
+    // A namespaced <class> (qdesigner_internal::GridPanel) can't be a D identifier — the struct
+    // takes the last component (Ui_GridPanel, matching Qt's uic); the FULL name stays the tr context.
+    string structName = className;
+    { auto parts = splitOn(structName, "::"); if (parts.length > 1) structName = parts[$ - 1]; }
     Gen g;
     g.context = className;    // translation context for QCoreApplication.translate (Qt's uic uses <class>)
+    // Promoted/custom widgets: map each <customwidget> class to its <extends> base, so a widget
+    // we can't bind (a user plugin class) falls back to its base — exactly what QUiLoader does
+    // without the plugin. Keeps the differential oracle valid instead of crashing on an import.
+    foreach (cw; ui.child("customwidgets").childrenOf("customwidget")) {
+        auto cn = cw.child("class").text, ext = cw.child("extends").text;
+        if (!ext.length) ext = "QWidget";   // QUiLoader defaults an un-extended promoted widget to QWidget
+        // Designer sometimes lists a STANDARD Qt widget in <customwidgets> just for a container
+        // hint (e.g. QDialogButtonBox). Those (Q + uppercase) are real classes — never remap them;
+        // only genuine user/promoted widgets (GammaView, qdesigner_internal::X, …) fall back.
+        bool isQtClass = cn.length >= 2 && cn[0] == 'Q' && cn[1] >= 'A' && cn[1] <= 'Z';
+        if (cn.length && !isQtClass) g.customBase[cn] = ext;
+    }
     collectMenus(root, g);    // so <addaction> can distinguish submenus from actions
     collectGroups(root, g);   // unique buttonGroup names
     need(g, rootCls);
@@ -852,7 +888,7 @@ string uiForm(string xml) {
     need(g, "QMetaObject");
     g.setup ~= "        QMetaObject.connectSlotsByName(root);\n";
     return "import cxxrt;\n" ~ g.imports    // make!QFont()/… value-type factories (plain import dedups)
-        ~ "struct Ui_" ~ className ~ " {\n" ~ g.fields
+        ~ "struct Ui_" ~ structName ~ " {\n" ~ g.fields
         ~ "    void setupUi(" ~ rootCls ~ " root) {\n" ~ g.setup
         ~ "        retranslateUi(root);\n    }\n"
         ~ "    void retranslateUi(" ~ rootCls ~ " root) {\n" ~ g.trans ~ "    }\n}\n";

@@ -55,6 +55,13 @@ mixin(uiForm(import("corpus/topicchooser.ui")));
 mixin(uiForm(import("corpus/translatedialog.ui")));
 mixin(uiForm(import("corpus/translationsettings.ui")));
 mixin(uiForm(import("corpus/trpreviewtool.ui")));
+mixin(uiForm(import("corpus/addlinkdialog.ui")));
+mixin(uiForm(import("corpus/filternamedialog.ui")));
+mixin(uiForm(import("corpus/bookmarkdialog.ui")));
+mixin(uiForm(import("corpus/gridpanel.ui")));
+mixin(uiForm(import("corpus/orderdialog.ui")));
+mixin(uiForm(import("corpus/validators.ui")));
+mixin(uiForm(import("corpus/newactiondialog.ui")));
 __gshared int fails, oks;
 // Differential check: the tree WE build must serialize identically to QUiLoader's. On a
 // mismatch, set DIFF=<path> to dump both serializations to /tmp for inspection.
@@ -119,6 +126,13 @@ void main(){ int argc=1; char*[2] argv=[cast(char*)"c".ptr,null]; auto app=cast(
   ck!Ui_TranslateDialog("tests/uic/corpus/translatedialog.ui", QDialog_new());
   ck!Ui_TranslationSettings("tests/uic/corpus/translationsettings.ui", QDialog_new());
   ck!Ui_TrPreviewToolClass("tests/uic/corpus/trpreviewtool.ui", QMainWindow_new());
+  ck!Ui_AddLinkDialog("tests/uic/corpus/addlinkdialog.ui", QDialog_new());
+  ck!Ui_FilterNameDialogClass("tests/uic/corpus/filternamedialog.ui", QDialog_new());
+  ck!Ui_BookmarkDialog("tests/uic/corpus/bookmarkdialog.ui", QDialog_new());
+  ck!Ui_GridPanel("tests/uic/corpus/gridpanel.ui", QWidget_new());
+  ck!Ui_OrderDialog("tests/uic/corpus/orderdialog.ui", QDialog_new());
+  ck!Ui_ValidatorsForm("tests/uic/corpus/validators.ui", QWidget_new());
+  ck!Ui_NewActionDialog("tests/uic/corpus/newactiondialog.ui", QDialog_new());
   writefln("corpus: %d OK, %d MISMATCH", oks, fails);
   if (fails) { writeln("corpus_check: FAIL"); assert(false); }
   writeln("corpus_check OK: our uic == QUiLoader for the whole baseline corpus"); }
