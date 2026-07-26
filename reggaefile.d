@@ -84,6 +84,7 @@ Build reggaeBuild() {
         // backend_test: D object via setContextProperty. register_test: D type via qmlRegisterType.
         all ~= qtdTest("qml-" ~ dc, t("qml", "backend_test.d"), qml, dc, qmlExtra);
         all ~= qtdTest("qmlreg-" ~ dc, t("qml", "register_test.d"), qml, dc, qmlExtra);
+        all ~= qtdTest("moclife-" ~ dc, t("qml", "moclife_test.d"), qml, dc);   // side-table cleanup
     }
     all ~= qmlAotTargets(root, qml);   // qmlcachegen: .qml -> linked bytecode (skipped if absent)
     all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes, validated by Qt's own reader

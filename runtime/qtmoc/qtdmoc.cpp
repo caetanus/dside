@@ -28,8 +28,12 @@ extern "C" {
 typedef void (*QtdSlotCb)(void* dobj, int slotIdx, void** args);
 // callback D de propriedade: (objeto D, índice-local, write?, slot do valor a[0])
 typedef void (*QtdPropCb)(void* dobj, int propIdx, int write, void** args);
+// callback D chamado na destruição de um objeto moc -> solta a entrada do registro D (_reg).
+typedef void (*QtdMocDestroyCb)(void* dobj);
 
 namespace {
+QtdMocDestroyCb g_mocDestroy = nullptr;   // set once by D (qtd_moc_set_destroy_cb) at module init
+static void qtd_moc_teardown(void* self, void* dobj);   // side-table cleanup (defined below)
 #ifdef QTD_HAVE_QML
 static void qtd_qml_on_destroy(void* self);   // QML-created instance teardown (defined below)
 #endif
@@ -44,8 +48,11 @@ struct QtdMocObject : QObject {
 #endif
     ~QtdMocObject() override {
 #ifdef QTD_HAVE_QML
-        if (qmlUserdata) qtd_qml_on_destroy(this);
+        if (qmlUserdata) { qtd_qml_on_destroy(this); return; }   // QML path cleans both side-tables
 #endif
+        // Non-QML (newQObject): drop both side-tables so a destroyed object doesn't leak an
+        // entry (nor let a reused pointer alias a stale one). g_mocDestroy clears the D _reg.
+        qtd_moc_teardown(this, dobj);
     }
     const QMetaObject* metaObject() const override { return mo; }
     void* qt_metacast(const char* n) override { return QObject::qt_metacast(n); }
@@ -99,6 +106,11 @@ struct MocInfo {
     int nsig, nslot, nprop;
 };
 std::unordered_map<void*, MocInfo> g_moAttach;   // chave = o QObject* (self do trampolim)
+// Drop both side-tables for a destroyed moc object (the D _reg via g_mocDestroy, g_moAttach here).
+static void qtd_moc_teardown(void* self, void* dobj) {
+    g_moAttach.erase(self);
+    if (g_mocDestroy && dobj) g_mocDestroy(dobj);
+}
 } // namespace
 
 // anexa um meta-objeto a `self` (o trampolim já construído). `super` = &Base::staticMetaObject.
@@ -138,6 +150,12 @@ void qtd_moc_activate2(void* self, int idx, void** a) {
     auto it = g_moAttach.find(self);
     if (it != g_moAttach.end()) QMetaObject::activate(static_cast<QObject*>(self), it->second.mo, idx, a);
 }
+
+// D registra aqui (uma vez, no init do módulo) o callback que limpa o registro D na destruição.
+void qtd_moc_set_destroy_cb(QtdMocDestroyCb cb) { g_mocDestroy = cb; }
+// diagnóstico/teste: entradas vivas no side-table; e deleta um QtdMocObject (seu dtor limpa tudo).
+size_t qtd_moc_attach_count() { return g_moAttach.size(); }
+void qtd_moc_delete(void* o) { delete static_cast<QtdMocObject*>(o); }
 
 // cria um QObject cujo meta-objeto tem os sinais/slots/propriedades dados.
 void* qtd_moc_new(const char* cn, const char** sigs, int nsig,

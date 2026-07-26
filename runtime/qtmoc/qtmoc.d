@@ -147,6 +147,18 @@ extern (C) void __mocGlobalDispatch(void* dobj, int idx, void** args) nothrow {
 extern (C) void __mocGlobalProp(void* dobj, int idx, int write, void** args) nothrow {
     if (auto p = dobj in _reg) p.prop(idx, write, args);
 }
+// Chamado pelo destrutor do QtdMocObject (C++) -> solta a entrada de `_reg`, fechando o
+// side-table quando o objeto morre (não só no caminho QML). Registrado uma vez no init.
+extern (C) void __mocGlobalDestroy(void* dobj) nothrow { _reg.remove(dobj); }
+private alias MocDestroyCb = extern (C) void function(void*) nothrow;
+extern (C) void qtd_moc_set_destroy_cb(MocDestroyCb) nothrow;
+shared static this() { qtd_moc_set_destroy_cb(&__mocGlobalDestroy); }
+
+// Vida útil do side-table (_reg + g_moAttach): um objeto criado por `newQObject!T` mantém sua
+// entrada de `_reg` enquanto o QtdMocObject C++ existir. Se ele for destruído (parented a um
+// QObject cujo pai morre, ou criado pelo engine QML), o destrutor limpa AMBOS os side-tables via
+// este callback. Um QtdMocObject sem pai NÃO é auto-deletado (vive até o fim do processo) — é o
+// tempo de vida esperado de um hub de sinais/slots top-level, igual a um QObject C++ sem pai.
 
 /// Ponteiro do QObject subjacente: um void* cru passa direto; um @QObject D é
 /// resolvido pelo registro (null se não registrado).
