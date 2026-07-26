@@ -12,11 +12,11 @@
 #include <string>
 #include <unordered_map>
 
-// QML type registration is compiled in ONLY when QtQml is on the include path (i.e. the
-// binding links Qt6Qml). Widgets/core bindings never see it, so qtdmoc.cpp stays free of
-// a Qt6Qml dependency there. qmlRegisterType!T (qtmoc.d) references qtd_qml_register_type;
-// that reference is dead-stripped unless an app actually calls it.
-#if __has_include(<QtQml/qqmlprivate.h>)
+// QML type registration is compiled in ONLY when reggae defines QTD_ENABLE_QML — i.e. the
+// binding's pkg-config modules include Qt6Qml. (An __has_include probe does NOT work: the base
+// `-I…/qt6` exposes QtQml headers to EVERY binding, so a widgets binding would wrongly pull in
+// QQmlPrivate::qmlregister and fail to link against Qt6Qml.) Widgets/core stay Qt6Qml-free.
+#ifdef QTD_ENABLE_QML
 #  define QTD_HAVE_QML 1
 #  include <QtQml/qqmlprivate.h>
 #  include <QtQml/qqmllist.h>

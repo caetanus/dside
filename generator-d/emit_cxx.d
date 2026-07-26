@@ -2612,7 +2612,7 @@ string signalsD(string manifest, string dpkg) {
         auto trampPs = s.cbDParams.length ? "void* ctx, " ~ signalTrampParams(s) : "void* ctx";
         perSig ~= format("private struct DgBox_%s_%s { %s dg; }\n", s.dClass, s.name, dgT);
         perSig ~= format("private extern (C) void __tramp_%s_%s(%s) nothrow "
-            ~ "{ try { (cast(DgBox_%s_%s*) ctx).dg(%s); } catch (Exception) {} }\n",
+            ~ "{ try { (cast(DgBox_%s_%s*) ctx).dg(%s); } catch (Exception e) { qtdOnCallbackError(e); } }\n",
             s.dClass, s.name, trampPs, s.dClass, s.name, s.trampArgs);
         perSig ~= format("alias Cb_%s_%s = extern (C) void function(%s) nothrow;\n", s.dClass, s.name, cbPs);
         perSig ~= format("private extern (C) void* qtd_conn_%s_%s(void*, Cb_%s_%s, void function(void*) nothrow, void*) nothrow;\n",
@@ -2624,7 +2624,7 @@ string signalsD(string manifest, string dpkg) {
     }
     auto impLines = impSet.byKey.array.sort.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
     return head
-        ~ "import core.memory : GC;\n" ~ impLines ~ "\n"
+        ~ "import core.memory : GC;\nimport qtmoc : qtdOnCallbackError;\n" ~ impLines ~ "\n"
         ~ "// C++ DHolder dtor calls this when the connection dies -> unroot the box.\n"
         ~ "private extern (C) void __qtd_release(void* box) nothrow { GC.removeRoot(box); }\n"
         ~ "// A live signal->delegate connection. Optional disconnect(); otherwise it and\n"
@@ -2891,7 +2891,7 @@ string containersD(string manifest, string dpkg) {
                 c.id, c.id, dInsParams(c.key, "k"), dInsParams(c.val, "v"), c.id, c.id, c.id, c.id);
             helpers ~= format("void* %s_from(%s aa) { auto h = __%s_new(); foreach (k, v; aa) __%s_insert(h, %s, %s); return h; }\n",
                 c.id, c.idiomD, c.id, c.id, dToArgs(c.key, "k"), dToArgs(c.val, "v"));
-            helpers ~= format("private extern (C) void __%s_cb(%s, %s, void* ctx) nothrow { try { (*cast(%s*) ctx)[%s] = %s; } catch (Exception) {} }\n",
+            helpers ~= format("private extern (C) void __%s_cb(%s, %s, void* ctx) nothrow { try { (*cast(%s*) ctx)[%s] = %s; } catch (Exception e) { qtdOnCallbackError(e); } }\n",
                 c.id, dCbParams(c.key, "k"), dCbParams(c.val, "v"), c.idiomD, keyFrom(c.key, "k"), dFrom(c.val, "v"));
         } else {
             aliases ~= format("alias Emit_%s = extern (C) void function(%s, void*) nothrow;\n", c.id, dCbParams(c.val, ""));
@@ -2899,7 +2899,7 @@ string containersD(string manifest, string dpkg) {
                 c.id, c.id, dInsParams(c.val, ""), c.id, c.id, c.id, c.id);
             helpers ~= format("void* %s_from(%s a) { auto h = __%s_new(); foreach (x; a) __%s_add(h, %s); return h; }\n",
                 c.id, c.idiomD, c.id, c.id, dToArgs(c.val, "x"));
-            helpers ~= format("private extern (C) void __%s_cb(%s, void* ctx) nothrow { try { (*cast(%s*) ctx) ~= %s; } catch (Exception) {} }\n",
+            helpers ~= format("private extern (C) void __%s_cb(%s, void* ctx) nothrow { try { (*cast(%s*) ctx) ~= %s; } catch (Exception e) { qtdOnCallbackError(e); } }\n",
                 c.id, dCbParams(c.val, ""), c.idiomD, dFrom(c.val, ""));
         }
         // by-value (sret) return struct; QHash/QSet/QMap dtors are inline so release
@@ -2910,7 +2910,7 @@ string containersD(string manifest, string dpkg) {
         helpers ~= format("void %s_del(void* h) { __%s_delete(h); }\n", c.id, c.id);
     }
     return head
-        ~ "import std.conv : to;\n"
+        ~ "import std.conv : to;\nimport qtmoc : qtdOnCallbackError;\n"
         ~ `private string __u16(const(void)* p, long n) { return n <= 0 ? "" : (cast(const(wchar)[]) (cast(const(wchar)*) p)[0 .. n]).to!string; }` ~ "\n"
         ~ "private ubyte[] __bytes(const(void)* p, long n) { return n <= 0 ? null : (cast(const(ubyte)*) p)[0 .. cast(size_t) n].dup; }\n"
         ~ aliases

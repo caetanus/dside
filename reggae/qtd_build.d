@@ -101,7 +101,10 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // guards) in its own linker section, so the final link's --gc-sections drops the ones an
     // app doesn't call. Without this, libshims.a is one .o -> pulling any shim pulls ALL.
     auto cxx = cflags ~ " -std=c++17 -fPIC -O2 -ffunction-sections -fdata-sections";
-    auto priv = mocPrivateFlags(cflags).join(" ");
+    // qtdmoc.cpp needs the Qt private headers; the QML registration block is compiled in only
+    // when this binding actually links Qt6Qml (else it would reference QQmlPrivate with no lib).
+    auto priv = mocPrivateFlags(cflags).join(" ")
+        ~ (mods.canFind("Qt6Qml") ? " -DQTD_ENABLE_QML" : "");
 
     // gend fully owns genDir: wipe it first so stale files from an earlier layout can't
     // linger (a flat qfoo.d beside the nested qt/pkg/qfoo.d would clash on the module).

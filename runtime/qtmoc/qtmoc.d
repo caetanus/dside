@@ -492,12 +492,15 @@ string __ovTramp(T, string vn, size_t idx)() {
     }
     auto nm = "__ov_" ~ T.stringof ~ "_" ~ itoa(cast(int) idx);
     auto call = "(cast(" ~ T.stringof ~ ") d)." ~ vn ~ "(" ~ as ~ ")";
+    // A D exception can't unwind across the C++ virtual-call frame -> route it through the
+    // callback error policy (counted/recorded/hooked), never silently swallowed.
     static if (is(R == void))
         return "extern(C) static void " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
-            ~ ") nothrow { try { " ~ call ~ "; } catch (Exception) {} }\n";
+            ~ ") nothrow { try { " ~ call ~ "; } catch (Exception e) { qtdOnCallbackError(e); } }\n";
     else
         return "extern(C) static " ~ R.stringof ~ " " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
-            ~ ") nothrow { try { return " ~ call ~ "; } catch (Exception) { return " ~ R.stringof ~ ".init; } }\n";
+            ~ ") nothrow { try { return " ~ call ~ "; } catch (Exception e) { qtdOnCallbackError(e); return "
+            ~ R.stringof ~ ".init; } }\n";
 }
 
 /// Mixin pra uma classe Qt subclassada em D que TAMBÉM é @QObject: sobrescreve
@@ -548,11 +551,13 @@ mixin template QtdWidget(Base) {
         auto __self = this;
         void delegate(int, void**) nothrow __disp = (int idx, void** a) nothrow {
             try { static foreach (i, m; slotMembers!_Self) if (idx == i) { callSlot!(_Self, m)(__self, a); return; } }
-            catch (Exception) {}
+            catch (Exception e) { qtdOnCallbackError(e); }
         };
         void delegate(int, int, void**) nothrow __prp = (int idx, int write, void** a) nothrow {
-            try { static foreach (i, m; propMembers!_Self) if (idx == i) { callProp!(_Self, m)(__self, _qobj, pnotif[i], write, a); return; } }
-            catch (Exception) {}
+            try {
+                static foreach (i, m; propMembers!_Self)
+                    if (idx == i) { callProp!(_Self, m)(__self, _qobj, pnotif[i], write, a); return; }
+            } catch (Exception e) { qtdOnCallbackError(e); }
         };
         _reg[cast(void*) this] = MocReg(_qobj, __disp, __prp);
     }
