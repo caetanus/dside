@@ -3,3 +3,4 @@ lupdate-d
 lupdate-test-application
 *.o
 *.a
+dub.selections.json
