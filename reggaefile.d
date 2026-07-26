@@ -113,12 +113,12 @@ Build reggaeBuild() {
     //     a real build target (so the inventory is enforcement, not just prose).
     {
         auto efD = buildPath(root, "tests", "expected_fails_check.d");
-        auto efBin = buildPath(root, ".build", "expected-fails-check-bin");
+        auto efBin = buildPath(root, ".build", "expected-fails-lint-bin");
         auto efJson = buildPath(root, "tests", "expected-fails.json");
         auto efList = buildPath(root, ".build", "build-list.txt");
         auto efb = Target(efBin, "dmd -of=$out " ~ efD, [Target(efD)]);
         // deps=[efb] -> $in is the checker; capture ./build --list, then validate against it.
-        all ~= Target.phony("expected-fails-check",
+        all ~= Target.phony("expected-fails-lint",
             "sh -c \"" ~ buildPath(root, "build") ~ " --list > " ~ efList ~ " 2>/dev/null; "
             ~ "$in " ~ efJson ~ " " ~ efList ~ "\"", [efb]);
     }

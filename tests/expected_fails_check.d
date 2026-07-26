@@ -1,49 +1,78 @@
-// expected_fails_check — the CONSUMER for tests/expected-fails.json (critics r6 #3). Until now the
-// file was an inventory nothing read; docs claimed it "blocks regression" — false. This validates:
-//   - schema: every entry has id / kind / area / reason / since / remove_when;
-//   - kind is one of the declared kinds;
-//   - `risk` entries carry `probe_targets`, and EVERY probe target NAMES A REAL build target
-//     (from `./build --list`) — so a probe can't rot into a dangling name.
-// Exits non-zero (and lists the violations) on any problem. Usage:
+// expected-fails LINTER (critics r7 #4/#5). This is a strict schema linter, NOT an expected-fail
+// RUNNER — it does not execute probes, evaluate remove_when, or detect unexpected pass/fail (that
+// is a tracked follow-up). What it DOES, fail-closed: the schema value, the kind enum, and the
+// field-by-kind rules are FIXED IN THIS PROGRAM (not taken from the document), IDs must be unique,
+// required fields must be non-empty strings, and every `risk` probe_target must name a real build
+// target from `./build --list`. A typo can't invent an accepted schema/kind.
 //   expected_fails_check <expected-fails.json> <build-list.txt>
 import std.stdio, std.json, std.file, std.string, std.algorithm, std.array, std.conv;
 
+immutable string SCHEMA = "qt-dlang-gen expected-fails v2";
+immutable string[] KINDS = ["permanent_exclusion", "known_gap", "risk"];
+immutable string[] REQUIRED = ["id", "kind", "area", "reason", "since", "remove_when"];
+
 void main(string[] args) {
-    auto j = parseJSON(readText(args[1]));
-    bool[string] targets;   // the real reggae targets, from `./build --list`
+    JSONValue j;
+    try j = parseJSON(readText(args[1]));
+    catch (Exception e) { stderr.writeln("expected-fails-lint FAIL: invalid JSON: ", e.msg); return exitFail(); }
+
+    bool[string] targets;
     foreach (line; readText(args[2]).splitLines) {
         auto s = line.strip;
         if (s.startsWith("- ")) targets[s[2 .. $]] = true;
     }
 
-    string[] kinds;
-    foreach (k; j["kinds"].array) kinds ~= k.str;
-    bool isKind(string k) { return kinds.canFind(k); }
-
     string[] errs;
+    void nonEmptyStr(JSONValue o, string f, string ctx) {
+        if (f !in o.object) { errs ~= ctx ~ ": missing `" ~ f ~ "`"; return; }
+        if (o[f].type != JSONType.string || o[f].str.length == 0)
+            errs ~= ctx ~ ": `" ~ f ~ "` must be a non-empty string";
+    }
+
+    // top-level: schema value + kinds array must MATCH the program's fixed values (not be trusted).
+    if ("schema" !in j.object || j["schema"].str != SCHEMA)
+        errs ~= "top-level `schema` must be exactly `" ~ SCHEMA ~ "`";
+    if ("kinds" !in j.object || j["kinds"].array.map!(k => k.str).array != KINDS)
+        errs ~= "top-level `kinds` must be exactly " ~ KINDS.to!string ~ " (the program is the authority)";
+    if ("entries" !in j.object || j["entries"].type != JSONType.array)
+        { errs ~= "missing `entries` array"; return report(errs); }
+
+    bool[string] seenId;
     int nRisk, nProbe;
     foreach (i, e; j["entries"].array) {
-        string id = ("id" in e.object) ? e["id"].str : "#" ~ i.to!string;
-        void need(string f) { if (f !in e.object) errs ~= id ~ ": missing required field `" ~ f ~ "`"; }
-        foreach (f; ["id", "kind", "area", "reason", "since", "remove_when"]) need(f);
-        if ("kind" in e.object && !isKind(e["kind"].str))
-            errs ~= id ~ ": unknown kind `" ~ e["kind"].str ~ "` (allowed: " ~ kinds.join(", ") ~ ")";
-        if ("kind" in e.object && e["kind"].str == "risk") {
-            nRisk++;
-            if ("probe_targets" !in e.object || e["probe_targets"].array.length == 0)
-                errs ~= id ~ ": kind=risk must list non-empty `probe_targets`";
-            else foreach (pt; e["probe_targets"].array) {
-                nProbe++;
-                if (pt.str !in targets)
-                    errs ~= id ~ ": probe_target `" ~ pt.str ~ "` is not a real build target (dangling)";
+        string id = ("id" in e.object && e["id"].type == JSONType.string) ? e["id"].str : "#" ~ i.to!string;
+        foreach (f; REQUIRED) nonEmptyStr(e, f, id);
+        if (id in seenId) errs ~= "duplicate id `" ~ id ~ "`";
+        seenId[id] = true;
+
+        if ("kind" in e.object && e["kind"].type == JSONType.string && e["kind"].str.length) {
+            auto k = e["kind"].str;
+            if (!KINDS.canFind(k))
+                errs ~= id ~ ": kind `" ~ k ~ "` is not one of " ~ KINDS.to!string;
+            else if (k == "risk") {
+                nRisk++;
+                if ("probe_targets" !in e.object || e["probe_targets"].type != JSONType.array
+                        || e["probe_targets"].array.length == 0)
+                    errs ~= id ~ ": kind=risk must list a non-empty `probe_targets` array";
+                else foreach (pt; e["probe_targets"].array) {
+                    nProbe++;
+                    if (pt.type != JSONType.string || pt.str !in targets)
+                        errs ~= id ~ ": probe_target `" ~ (pt.type == JSONType.string ? pt.str : "?")
+                            ~ "` is not a real build target (dangling)";
+                }
+            } else if ("probe_targets" in e.object) {   // field-by-kind: only risk carries probes
+                errs ~= id ~ ": kind=" ~ k ~ " must NOT carry `probe_targets`";
             }
         }
     }
-    if (errs.length) {
-        stderr.writeln("expected-fails-check FAIL:");
-        foreach (x; errs) stderr.writeln("  ", x);
-        import core.stdc.stdlib : exit; exit(1);
-    }
-    writefln("expected-fails-check OK: %d entries valid; %d risk entries, %d probe targets all exist",
+    if (errs.length) return report(errs);
+    writefln("expected-fails-lint OK: %d entries valid (strict); %d risk, %d probe targets exist",
         j["entries"].array.length, nRisk, nProbe);
 }
+
+void report(string[] errs) {
+    stderr.writeln("expected-fails-lint FAIL:");
+    foreach (x; errs) stderr.writeln("  ", x);
+    exitFail();
+}
+void exitFail() { import core.stdc.stdlib : exit; exit(1); }

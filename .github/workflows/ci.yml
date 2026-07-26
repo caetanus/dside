@@ -53,7 +53,7 @@ jobs:
         run: |
           ./build manifest-gate-qtwidgets
           ./build manifest-gate-qml
-          ./build expected-fails-check
+          ./build expected-fails-lint
           ./build lupdate-check
 
       - name: Structured test report
