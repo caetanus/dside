@@ -305,7 +305,7 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
         if (name == "shortcut" && v.tag == "string") {   // <string>Ctrl+O</string> -> QKeySequence
             need(g, "QKeySequence");
             need(g, "QString");
-            g.setup ~= "        { auto _s = qstr(\"" ~ esc(v.text) ~ "\"); auto _ks = QKeySequence_new(_s); "
+            g.setup ~= "        { auto _s = qstr(\"" ~ esc(v.text) ~ "\"); auto _ks = QKeySequence(_s); "
                 ~ var ~ ".setShortcut(_ks); }\n";
             continue;
         }
@@ -330,7 +330,7 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
                     ex = "QIcon.fromTheme(qstr(\"" ~ esc(th) ~ "\"))";
             } else {
                 auto no = v.child("normaloff");
-                if (no.ok && no.text.length) ex = "QIcon_new(\"" ~ esc(no.text) ~ "\")";
+                if (no.ok && no.text.length) ex = "QIcon(\"" ~ esc(no.text) ~ "\")";
             }
             if (ex.length) {
                 need(g, "QString");
@@ -404,10 +404,10 @@ private string genFont(ref Gen g, Node f, string var) {
             default: break;    // weight (ambiguous scale) / kerning / stylestrategy -> not yet
         }
     }
-    return "        { auto _f = QFont_new();" ~ body ~ " " ~ var ~ ".setFont(_f); }\n";
+    return "        { auto _f = make!QFont();" ~ body ~ " " ~ var ~ ".setFont(_f); }\n";
 }
 
-// A <sizepolicy> property -> QSizePolicy_new() + the (now-bound) inline setters for policies
+// A <sizepolicy> property -> make!QSizePolicy() + the (now-bound) inline setters for policies
 // and stretches, then setSizePolicy. Mirrors QUiLoader (which builds QSizePolicy(h,v), sets
 // the stretches, then setSizePolicy). Returns "" only if the policy names are missing/numeric.
 private string genSizePolicy(ref Gen g, Node sp, string var) {
@@ -427,7 +427,7 @@ private string genSizePolicy(ref Gen g, Node sp, string var) {
     string pol(string s) {
         return isDigits(s) ? "cast(QSizePolicy.Policy)(" ~ s ~ ")" : "QSizePolicy.Policy." ~ s;
     }
-    return "        { auto _sp = QSizePolicy_new();"
+    return "        { auto _sp = make!QSizePolicy();"
         ~ " _sp.setHorizontalPolicy(" ~ pol(hp) ~ ");"
         ~ " _sp.setVerticalPolicy(" ~ pol(vp) ~ ");"
         ~ " _sp.setHorizontalStretch(" ~ hs ~ "); _sp.setVerticalStretch(" ~ vs ~ ");"
@@ -473,7 +473,7 @@ private string roleEnum(string role) {
 }
 
 // A <palette> property. Each group (<active>/<inactive>/<disabled>) carries <colorrole>s; each
-// holds a <brush> with a <color>. We build QPalette_new() and setBrush(group, role, QBrush(color))
+// holds a <brush> with a <color>. We build make!QPalette() and setBrush(group, role, QBrush(color))
 // for every SolidPattern colorrole, then setPalette. Non-solid brushes (gradient/texture) are
 // rare and skipped (they'd need QGradient); the harness would flag any that a real form needs.
 private string genPalette(ref Gen g, Node pal, string var) {
@@ -494,13 +494,13 @@ private string genPalette(ref Gen g, Node pal, string var) {
             string a = col.attr("alpha").length ? col.attr("alpha") : "255";
             string r = col.child("red").text, gc = col.child("green").text, b = col.child("blue").text;
             if (!r.length || !gc.length || !b.length) continue;
-            body ~= "            { auto _c = QColor_new(" ~ r ~ ", " ~ gc ~ ", " ~ b ~ ", " ~ a
-                ~ "); auto _b = QBrush_new(_c); _p.setBrush(QPalette.ColorGroup." ~ cg
+            body ~= "            { auto _c = QColor(" ~ r ~ ", " ~ gc ~ ", " ~ b ~ ", " ~ a
+                ~ "); auto _b = QBrush(_c); _p.setBrush(QPalette.ColorGroup." ~ cg
                 ~ ", QPalette.ColorRole." ~ role ~ ", _b); }\n";
         }
     }
     if (!body.length) return "";
-    return "        { auto _p = QPalette_new();\n" ~ body ~ "            " ~ var ~ ".setPalette(_p); }\n";
+    return "        { auto _p = make!QPalette();\n" ~ body ~ "            " ~ var ~ ".setPalette(_p); }\n";
 }
 
 // A <spacer> -> QSpacerItem(w, h, hPolicy, vPolicy). Orientation picks which axis expands
@@ -749,7 +749,7 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
             string txt;
             foreach (p; it.childrenOf("property"))
                 if (p.attr("name") == "text") txt = firstElem(p).text;
-            g.setup ~= "        { auto _s = qstr(\"" ~ esc(txt) ~ "\"); auto _v = QVariant_new(); "
+            g.setup ~= "        { auto _s = qstr(\"" ~ esc(txt) ~ "\"); auto _v = make!QVariant(); "
                 ~ var ~ ".addItem(_s, _v); }\n";
         }
     }
@@ -850,7 +850,7 @@ string uiForm(string xml) {
     // calls it); a no-op unless `root` is a moc'd QObject that declares such slots.
     need(g, "QMetaObject");
     g.setup ~= "        QMetaObject.connectSlotsByName(root);\n";
-    return g.imports
+    return "import cxxrt;\n" ~ g.imports    // make!QFont()/… value-type factories (plain import dedups)
         ~ "struct Ui_" ~ className ~ " {\n" ~ g.fields
         ~ "    void setupUi(" ~ rootCls ~ " root) {\n" ~ g.setup
         ~ "        retranslateUi(root);\n    }\n"

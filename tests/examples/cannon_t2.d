@@ -14,7 +14,7 @@ void main() {
     auto quit = QPushButton_new(lbl, null);
     auto sz = QSize(75, 30);
     quit.resize(sz);
-    auto font = QFont_new("Times", 18, cast(int) QFont.Weight.Bold, false);   // value-type ctor + string overload
+    auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false);   // value-type ctor + string overload
     quit.setFont(font);
     quit.connectClicked((bool checked) { writeln("  clicked(", checked, ")"); QApplication.quit(); });
     quit.show();

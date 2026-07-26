@@ -14,7 +14,7 @@ void main() {
     auto widget = QWidget_new();
     auto lbl = qstr("Quit");
     auto quit = QPushButton_new(lbl, null);
-    auto font = QFont_new("Times", 18, cast(int) QFont.Weight.Bold, false); quit.setFont(font);
+    auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false); quit.setFont(font);
     auto lcd = QLCDNumber_new(2u, null);
     auto slider = QSlider_new(Orientation.Horizontal, null);
     slider.setRange(0, 99);

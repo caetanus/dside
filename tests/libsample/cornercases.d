@@ -1,3 +1,4 @@
+import cxxrt : make;
 // Corner-case regression tests for the extern(C++) generator, run against
 // shiboken's libsample (a C++ library purpose-built to stress bindings).
 // Driven by run.sh, which builds libsample.a, generates the D bindings, and
@@ -80,7 +81,7 @@ void main() {
 
     // --- value type with a std::string member (m_str = ubyte[32], não `char`!) --
     {
-        auto s = Str_new("hello\0".ptr);        // ctor const char*
+        auto s = make!Str("hello\0".ptr);        // ctor const char*
         assert(s.cstring().fromStringz == "hello", "Str.cstring() round-trip (m_str=ubyte[32])");
         assert(s.get_char(0) == 'h' && s.get_char(4) == 'o', "Str.get_char");
         auto c = Str('X');                       // ctor this(char)
@@ -105,11 +106,11 @@ void main() {
     // --- object identity + parent/child + Str-typed methods ---------------------
     {
         auto o = ObjectType_new();
-        auto rootn = Str_new("root\0".ptr);      // const& param exige lvalue (D não liga rvalue a ref)
+        auto rootn = make!Str("root\0".ptr);      // const& param exige lvalue (D não liga rvalue a ref)
         o.setObjectName(rootn);
         assert(o.objectName().cstring().fromStringz == "root", "objectName round-trip (Str)");
         auto ch = o.createChild(o);
-        auto kidn = Str_new("kid\0".ptr);
+        auto kidn = make!Str("kid\0".ptr);
         ch.setObjectName(kidn);
         auto found = o.findChild(kidn);
         assert(found !is null && found is ch, "findChild by name -> same wrapper (identity)");

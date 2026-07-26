@@ -1515,10 +1515,13 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 ctorFactories ~= format("private pragma(mangle, \"%s\") extern(C++) void %s(%s* self%s);",
                     mg, rawNm, name, rps.length ? ", " ~ rps.join(", ") : "");
                 }
-                ctorFactories ~= format("%s %s_new(%s) {\n    %s r = void;\n    %s(&r%s);\n    return r;\n}",
-                    name, name, fps.join(", "), name, rawNm, ca.length ? ", " ~ ca.join(", ") : "");
-                auto ov = strOverload(name ~ "_new", name, "", "", pds, seenStrOv);
-                if (ov.length) ctorFactories ~= ov[4 .. $];   // drop the method indent for module scope
+                // Factory reached via `make!T(args)` (cxxrt.make -> T.__make). JUSTIFIED only
+                // because a struct can't have a no-arg this() and a CoW type's `.init` is a null
+                // d-pointer; parameterized value types should prefer the plain `T(args)` ctor below.
+                ctorMethods ~= format("    static %s __make(%s) {\n        %s r = void;\n        %s(&r%s);\n        return r;\n    }",
+                    name, fps.join(", "), name, rawNm, ca.length ? ", " ~ ca.join(", ") : "");
+                auto ov = strOverload("__make", name, "static ", "", pds, seenStrOv);
+                if (ov.length) ctorMethods ~= ov;
                 // Idiomatic this(args) ctor INSIDE the struct: X("foo") instead of
                 // X_new("foo"). Parameterized only (D forbids this() with no args).
                 if (na > 0 && !allDeflt && !selfLiteral) {   // !allDeflt: all-default this() is illegal for a struct
@@ -2933,8 +2936,14 @@ string cxxRuntime(string manifest) {
         ~ "extern(C) void qtd_throw_d(const(char)* type, const(char)* msg) {\n"
         ~ "    throw new QtCppException(qtd_fromCStr(type), qtd_fromCStr(msg));\n"
         ~ "}\n";
+    // make!T(args): the JUSTIFIED value-type factory. D forbids a no-arg struct this(), and a
+    // CoW value type's `.init` leaves a null d-pointer — so a value type that can't be built by a
+    // struct ctor (no-arg / all-defaulted) exposes `static T __make(...)` running the real C++
+    // ctor. Parameterized value types should prefer plain `T(args)`; reach for make!T only when
+    // that can't apply. (Object types use `new T(args)`, never a factory.)
+    auto mk = "T make(T, A...)(auto ref A args) { return T.__make(args); }\n";
     return manifest ~ "\nmodule cxxrt;\n"
         ~ `pragma(mangle, "_Znwm") extern(C++) void* __cpp_new(size_t);` ~ "\n"
         ~ `pragma(mangle, "_ZdlPv") extern(C++) void __cpp_delete(void*);` ~ "\n"
-        ~ exc;
+        ~ mk ~ exc;
 }

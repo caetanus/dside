@@ -96,7 +96,7 @@ void main() {
     // Iterator -> D range: a C++ forward iterator (begin()/end()) is exposed as a D range,
     // so `foreach (v; arr[])` iterates natively (front yields the value_type QCborValue).
     {
-        auto arr = QCborArray_new();
+        auto arr = make!QCborArray();
         auto a = QCborValue(10L); arr.append(a);
         auto b = QCborValue(20L); arr.append(b);
         auto c = QCborValue(30L); arr.append(c);

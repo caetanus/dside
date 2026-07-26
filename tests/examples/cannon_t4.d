@@ -15,7 +15,7 @@ void main() {
     auto lbl = qstr("Quit");
     auto quit = QPushButton_new(lbl, widget);
     auto geo = QRect(62, 40, 62 + 75 - 1, 40 + 30 - 1); quit.setGeometry(geo);
-    auto font = QFont_new("Times", 18, cast(int) QFont.Weight.Bold, false); quit.setFont(font);
+    auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false); quit.setFont(font);
     quit.connectClicked((bool) { QApplication.quit(); });
     widget.show();
 

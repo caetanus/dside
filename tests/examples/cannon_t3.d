@@ -14,7 +14,7 @@ void main() {
 
     auto lbl = qstr("Quit");
     auto quit = QPushButton_new(lbl, window);          // child of window
-    auto font = QFont_new("Times", 18, cast(int) QFont.Weight.Bold, false);
+    auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false);
     quit.setFont(font);
     // setGeometry(x,y,w,h) is inline (builds a QRect); construct the QRect directly
     // (fields x1,y1,x2,y2) — QRect(10,40, w=180,h=40) => x2=10+180-1, y2=40+40-1.
