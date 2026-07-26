@@ -26,8 +26,10 @@ Build reggaeBuild() {
 
     // --- WRAPPER mode QtCore: identity + parenting-pins + orphan collection ---
     auto wrap = qtdBinding(root, "spec_cxx_wraptest.json", ["Qt6Core"]);
-    foreach (dc; DCS)
+    foreach (dc; DCS) {
         all ~= qtdTest("wraptest-" ~ dc, t("wrapper", "wraptest.d"), wrap, dc);
+        all ~= qtdTest("ownership-" ~ dc, t("wrapper", "ownership.d"), wrap, dc);   // destruction invariants
+    }
 
     // --- WRAPPER mode QtWidgets (Qt6 + Qt5): widget app + moc/trampoline ---
     void widgets(string spec, string[] mods, string tag) {

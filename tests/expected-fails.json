@@ -1,0 +1,36 @@
+{
+  "schema": "qt-dlang-gen expected-fails v1",
+  "note": "Structured state for known gaps/exclusions — not prose. Each entry has an id, area, reason, the commit/date it was introduced, and a removal condition so it blocks regression and measures progress instead of just describing. See docs/test-suite.md for the suite and CRITICS.md for the review these track.",
+  "entries": [
+    {
+      "id": "uic-private-widgets",
+      "area": "uic/corpus",
+      "reason": "QUiLoader-only private Qt widgets (QFileDialog internals, QtGradient editors, qprintpropertieswidget) are not public API, so the differential oracle can't hold them.",
+      "excludes": "a subset of tests/uic/corpus/*.ui from corpus-check",
+      "since": "branch codegen-tools",
+      "remove_when": "never (these are not public Qt API)"
+    },
+    {
+      "id": "virtual-container-return",
+      "area": "gen/virtual-dispatch",
+      "reason": "An overridden virtual that returns a container/QList still dispatches non-virtually — the C++ method shim can't sret those, so it falls back to the direct-symbol guard.",
+      "impact": "no known Qt override is affected",
+      "since": "commit 8c49a82",
+      "remove_when": "a container/QList-return-capable virtual shim lands"
+    },
+    {
+      "id": "moveonly-byvalue-params",
+      "area": "gen/params",
+      "reason": "A method with a move-only (deleted-copy) by-value param uses the direct pragma decl, or is dropped if inline — the shim/guard would copy the param.",
+      "since": "commit f0eef1a",
+      "remove_when": "the shim forwards value params by std::move"
+    },
+    {
+      "id": "windows-msvc",
+      "area": "platform",
+      "reason": "Linux/POSIX is Tier 1; Windows/MSVC-x64 is a documented roadmap (docs/windows-roadmap.md), not tested.",
+      "since": "always",
+      "remove_when": "the windows-roadmap tiers are implemented and green"
+    }
+  ]
+}

@@ -30,13 +30,11 @@ is a tracked follow-up (see below).
 
 ## Known expected-fails / exclusions (honest gaps)
 
-- **uic corpus:** private Qt widgets excluded from `corpus-check` (QFileDialog internals,
-  QtGradient editors, `qprintpropertieswidget`) — not public API. Documented in
-  `tests/uic/corpus_check.d`.
-- **Overridden virtuals with container/QList return** still dispatch non-virtually (the
-  shim can't sret those) — no known Qt override is affected, but it is a real gap.
-- **`@Property string` read/write** has the code path (`qtd_qs_set`) and passes via
-  `moc_test`, but lacks a *focused* string-property test.
+Tracked as **structured state** in `tests/expected-fails.json` (id / area / reason /
+since / remove-when), not prose — so they block regression and measure progress:
+`uic-private-widgets`, `virtual-container-return`, `moveonly-byvalue-params`,
+`windows-msvc`. `@Property string` read/write now has a focused test (`cannon_t10`);
+ownership destruction invariants have one too (`ownership`).
 
 ## Tracked follow-ups (to make this a real contract)
 
