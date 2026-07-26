@@ -6,8 +6,19 @@
 #include <QString>
 #include <QtCore/private/qmetaobjectbuilder_p.h>
 #include <cstring>
+#include <new>
 #include <string>
 #include <unordered_map>
+
+// QML type registration is compiled in ONLY when QtQml is on the include path (i.e. the
+// binding links Qt6Qml). Widgets/core bindings never see it, so qtdmoc.cpp stays free of
+// a Qt6Qml dependency there. qmlRegisterType!T (qtmoc.d) references qtd_qml_register_type;
+// that reference is dead-stripped unless an app actually calls it.
+#if __has_include(<QtQml/qqmlprivate.h>)
+#  define QTD_HAVE_QML 1
+#  include <QtQml/qqmlprivate.h>
+#  include <QtQml/qqmllist.h>
+#endif
 
 extern "C" {
 
@@ -17,13 +28,23 @@ typedef void (*QtdSlotCb)(void* dobj, int slotIdx, void** args);
 typedef void (*QtdPropCb)(void* dobj, int propIdx, int write, void** args);
 
 namespace {
+#ifdef QTD_HAVE_QML
+static void qtd_qml_on_destroy(void* self);   // QML-created instance teardown (defined below)
+#endif
 struct QtdMocObject : QObject {
     const QMetaObject* mo;
     void* dobj;
     QtdSlotCb slotcb;
     QtdPropCb propcb;
     int nsig, nslot, nprop;
-    ~QtdMocObject() override {}
+#ifdef QTD_HAVE_QML
+    void* qmlUserdata = nullptr;   // non-null iff QML created this instance (QtdQmlType*)
+#endif
+    ~QtdMocObject() override {
+#ifdef QTD_HAVE_QML
+        if (qmlUserdata) qtd_qml_on_destroy(this);
+#endif
+    }
     const QMetaObject* metaObject() const override { return mo; }
     void* qt_metacast(const char* n) override { return QObject::qt_metacast(n); }
     int qt_metacall(QMetaObject::Call c, int id, void** a) override {
@@ -168,5 +189,75 @@ void* qtd_connect_meta(void* s, const char* sig, void* r, const char* slot) {
     auto c = QObject::connect(so, so->metaObject()->method(si), ro, ro->metaObject()->method(ri));
     return new QMetaObject::Connection(std::move(c));
 }
+
+// ---- QML type registration (qmlRegisterType for D @QObject types) -------------
+// A D @QObject registered as a QML element instantiates the SAME C++ carrier
+// (QtdMocObject), differentiated by its runtime QMetaObject. When QML creates
+// `MyType {}`, QQmlPrivate calls qtd_qml_create with pre-allocated memory: we
+// placement-new a QtdMocObject, wire its dynamic meta-object, and call back into
+// D to create + bind the backing T instance (makeInstance). Verified viable by a
+// standalone probe (runtime QMetaObject + shared typeId works for N distinct types).
+#ifdef QTD_HAVE_QML
+namespace {
+struct QtdQmlType {
+    const QMetaObject* mo;
+    int nsig, nslot, nprop;
+    QtdSlotCb slotcb; QtdPropCb propcb;
+    void* (*makeInstance)(void*, void*);   // (self=QtdQmlType*, qobj) -> D backing object
+    void  (*destroyInstance)(void*, void*); // (self, dobj) -> unregister on the D side
+};
+// QQmlPrivate create hook: memory is QML-owned (objectSize bytes), udata is the QtdQmlType*.
+static void qtd_qml_create(void* mem, void* udata) {
+    auto* t = static_cast<QtdQmlType*>(udata);
+    auto* o = new (mem) QtdMocObject();
+    o->mo = t->mo; o->slotcb = t->slotcb; o->propcb = t->propcb;
+    o->nsig = t->nsig; o->nslot = t->nslot; o->nprop = t->nprop;
+    o->qmlUserdata = udata;
+    g_moAttach[o] = MocInfo{o->mo, nullptr, t->slotcb, t->propcb, t->nsig, t->nslot, t->nprop};
+    void* dobj = t->makeInstance(t, o);   // D: new T, bind signals to `o`, register dispatch
+    o->dobj = dobj;
+    g_moAttach[o].dobj = dobj;
+}
+// ~QtdMocObject for a QML-created instance: drop the side-tables (D side + g_moAttach).
+static void qtd_qml_on_destroy(void* self) {
+    auto* o = static_cast<QtdMocObject*>(self);
+    auto* t = static_cast<QtdQmlType*>(o->qmlUserdata);
+    g_moAttach.erase(self);
+    if (t && o->dobj && t->destroyInstance) t->destroyInstance(t, o->dobj);
+}
+} // namespace
+
+// Register a D @QObject type `cn` as the QML element `uri/qmlName vmaj.vmin`. Same
+// sig/slot/prop arrays as qtd_moc_new. Returns the QtdQmlType* (the D side keys its
+// per-type factory on it). All QString/QMetaType/QVariant handling stays in C++.
+void* qtd_qml_register_type(
+    const char* uri, int vmaj, int vmin, const char* qmlName,
+    const char* cn, const char** sigs, int nsig, const char** slotSigs, int nslot,
+    const char** propNames, const char** propTypes, const int* propNotify, int nprop,
+    void* (*makeInstance)(void*, void*), void (*destroyInstance)(void*, void*),
+    QtdSlotCb slotcb, QtdPropCb propcb) {
+    const QMetaObject* mo = buildMo(cn, &QObject::staticMetaObject,
+        sigs, nsig, slotSigs, nslot, propNames, propTypes, propNotify, nprop);
+    auto* t = new QtdQmlType{mo, nsig, nslot, nprop, slotcb, propcb, makeInstance, destroyInstance};
+    QQmlPrivate::RegisterType rt{};
+    rt.structVersion = int(QQmlPrivate::RegisterType::CurrentVersion);
+    rt.typeId = QMetaType::fromType<QtdMocObject*>();
+    rt.listId = QMetaType::fromType<QQmlListProperty<QtdMocObject>>();
+    rt.objectSize = int(sizeof(QtdMocObject));
+    rt.create = &qtd_qml_create;
+    rt.userdata = t;
+    rt.uri = uri;
+    rt.version = QTypeRevision::fromVersion(vmaj, vmin);
+    rt.elementName = qmlName;
+    rt.metaObject = mo;
+    rt.parserStatusCast = -1;
+    rt.valueSourceCast = -1;
+    rt.valueInterceptorCast = -1;
+    rt.finalizerCast = -1;
+    rt.revision = QTypeRevision::fromVersion(vmaj, vmin);
+    QQmlPrivate::qmlregister(QQmlPrivate::TypeRegistration, &rt);
+    return t;
+}
+#endif // QTD_HAVE_QML
 
 } // extern "C"

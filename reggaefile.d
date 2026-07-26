@@ -79,8 +79,11 @@ Build reggaeBuild() {
     auto qml = qtdBinding(root, "spec_cxx_qml.json", ["Qt6Qml", "Qt6Gui"]);
     auto qmlExtra = buildPath(root, "runtime", "qrc", "qrc.d")
         ~ " -I" ~ buildPath(root, "runtime", "qrc") ~ " -J=" ~ buildPath(root, "tests", "qml");
-    foreach (dc; DCS)
+    foreach (dc; DCS) {
+        // backend_test: D object via setContextProperty. register_test: D type via qmlRegisterType.
         all ~= qtdTest("qml-" ~ dc, t("qml", "backend_test.d"), qml, dc, qmlExtra);
+        all ~= qtdTest("qmlreg-" ~ dc, t("qml", "register_test.d"), qml, dc, qmlExtra);
+    }
 
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);

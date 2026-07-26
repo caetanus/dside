@@ -24,6 +24,13 @@ alias PropCb = extern (C) void function(void*, int, int, void**) nothrow;
 extern (C) nothrow {
     void* qtd_moc_new(const(char)*, const(char)**, int, const(char)**, int,
                       const(char)**, const(char)**, const(int)*, int, void*, SlotCb, PropCb);
+    // Register a D @QObject type as a QML element (only linked in for QtQml bindings).
+    alias MakeCb = extern (C) void* function(void*, void*) nothrow;
+    alias DestroyCb = extern (C) void function(void*, void*) nothrow;
+    void* qtd_qml_register_type(const(char)*, int, int, const(char)*,
+                      const(char)*, const(char)**, int, const(char)**, int,
+                      const(char)**, const(char)**, const(int)*, int,
+                      MakeCb, DestroyCb, SlotCb, PropCb);
     void  qtd_moc_activate(void*, int, void**);
     void* qtd_connect_meta(void*, const(char)*, void*, const(char)*);
     // marshaling de QString (implementado em qtdmoc.cpp, que linka QtCore)
@@ -274,20 +281,26 @@ T newQObject(T, Args...)(Args ctorArgs) {
         pnp.ptr, ptp.ptr, pnt.ptr, cast(int) pnames.length,
         cast(void*) o, &__mocGlobalDispatch, &__mocGlobalProp);
     static if (__traits(hasMember, T, "_adopt")) o._adopt(qobj);   // WRAPPER: _cpp + pin
-    // liga cada campo Signal ao (qobj, índice local)
+    wireQObject(o, qobj);
+    return o;
+}
+
+// Liga os campos Signal ao (qobj, índice) e registra o despacho de slots/props de `o`.
+// Compartilhado por newQObject (qobj vem de qtd_moc_new) e pela factory de QML
+// (qobj = o QtdMocObject que o engine alocou).
+private void wireQObject(T)(T o, void* qobj) {
+    enum pnotif = propNotify!T;
     int si = 0;
     static foreach (m; signalMembers!T) {
         __traits(getMember, o, m)._bind(qobj, si);
         si++;
     }
-    // delegate de despacho de slots (captura `o` tipado; idx local -> chama o slot)
     void delegate(int, void**) nothrow disp = (int idx, void** a) nothrow {
         try {
             static foreach (i, m; slotMembers!T)
                 if (idx == i) { callSlot!(T, m)(o, a); return; }
         } catch (Exception e) { qtdOnCallbackError(e); }
     };
-    // delegate de read/write de propriedades
     void delegate(int, int, void**) nothrow prop = (int idx, int write, void** a) nothrow {
         try {
             static foreach (i, m; propMembers!T)
@@ -295,7 +308,62 @@ T newQObject(T, Args...)(Args ctorArgs) {
         } catch (Exception e) { qtdOnCallbackError(e); }
     };
     _reg[cast(void*) o] = MocReg(qobj, disp, prop);
-    return o;
+}
+
+// ---- QML type registration --------------------------------------------------
+// Registra um @QObject D como elemento QML: `import <uri> <maj>.<min>; <T> { ... }`.
+// O engine instancia o carrier C++ (QtdMocObject) e chama de volta o `create` (C++),
+// que por sua vez chama a factory D abaixo pra criar+ligar o T que respalda o objeto.
+// Todas as instâncias D compartilham o mesmo typeId C++ (QtdMocObject*), distintas
+// pelo QMetaObject de runtime — comprovado por probe que N tipos coexistem.
+private __gshared void* delegate(void* qobj) nothrow[void*] _qmlFactories;   // key = QtdQmlType* (C++)
+
+// Callbacks C ÚNICOS (não por-T -> sem colisão de símbolo extern(C)); despacham
+// pela QtdQmlType* que o C++ passa de volta como `self`.
+private extern (C) void* __qmlMake(void* self, void* qobj) nothrow {
+    if (auto f = self in _qmlFactories) return (*f)(qobj);
+    return null;
+}
+private extern (C) void __qmlDestroy(void* self, void* dobj) nothrow {
+    _reg.remove(dobj);   // solta o T do registro -> o GC pode recolhê-lo
+}
+
+/// Registra o tipo `T` (@QObject D) como elemento QML instanciável. Chame antes de
+/// carregar o .qml (ex.: `qmlRegisterType!Backend("App", 1, 0, "Backend");`).
+void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
+    static assert(hasUDA!(T, QObject),
+        "qtmoc: " ~ T.stringof ~ " precisa da UDA @QObject");
+    static assert(__traits(compiles, new T()),
+        "qtmoc: " ~ T.stringof ~ " precisa de construtor sem argumentos (o QML instancia sem args)");
+    enum sigs = signalSigs!T;
+    enum slts = slotSigs!T;
+    enum pnames = propMembers!T;
+    enum ptypes = propTypes!T;
+    enum pnotif = propNotify!T;
+    const(char)*[sigs.length + 1] sigp;
+    const(char)*[slts.length + 1] sltp;
+    const(char)*[pnames.length + 1] pnp;
+    const(char)*[ptypes.length + 1] ptp;
+    int[pnotif.length + 1] pnt;
+    static foreach (i; 0 .. sigs.length)   sigp[i] = (sigs[i] ~ "\0").ptr;
+    static foreach (i; 0 .. slts.length)   sltp[i] = (slts[i] ~ "\0").ptr;
+    static foreach (i; 0 .. pnames.length) pnp[i]  = (pnames[i] ~ "\0").ptr;
+    static foreach (i; 0 .. ptypes.length) ptp[i]  = (ptypes[i] ~ "\0").ptr;
+    static foreach (i; 0 .. pnotif.length) pnt[i]  = pnotif[i];
+    void* key = qtd_qml_register_type(
+        (uri ~ "\0").ptr, vmaj, vmin, (qmlName ~ "\0").ptr,
+        (T.stringof ~ "\0").ptr,
+        sigp.ptr, cast(int) sigs.length, sltp.ptr, cast(int) slts.length,
+        pnp.ptr, ptp.ptr, pnt.ptr, cast(int) pnames.length,
+        &__qmlMake, &__qmlDestroy, &__mocGlobalDispatch, &__mocGlobalProp);
+    // factory por-T: o engine chama isto (via __qmlMake) por instância criada no QML.
+    _qmlFactories[key] = (void* qobj) nothrow {
+        try {
+            T o = new T();
+            wireQObject(o, qobj);
+            return cast(void*) o;
+        } catch (Exception e) { qtdOnCallbackError(e); return null; }
+    };
 }
 
 // ---- widget subclass + moc (merge trampolim + meta-objeto) ------------------
