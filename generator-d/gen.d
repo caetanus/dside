@@ -1,7 +1,7 @@
-// gen.d — the qt-dlang-gen binding generator, in D on the libclang C API.
-// Native (no Python cindex overhead). Mirrors generator/gen.py's core pipeline:
-// discover classes, extract public ctors/methods, map types across the C-ABI
-// boundary, emit the C shim + extern(C) D decls + an idiomatic D struct.
+// gen.d — shared front-end for the binding generator, in D on the libclang C API
+// (native, no Python cindex). Discovery, the shiboken typesystem rules (loadRules),
+// name/keyword helpers, and AST utilities used by the extern(C++) emitter (emit_cxx.d).
+// (A few unused C-ABI helper functions still linger here from the removed old path.)
 module gen;
 
 import clang_c;

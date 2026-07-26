@@ -682,6 +682,14 @@ string mapCxxType(CXType t, ref string imp) {
 // must be unwrapped (param) / wrapped (return). Empty for anything else.
 __gshared bool[string] WRAPREFS;   // object types referenced as wrappers -> wrapper stubs
 __gshared long CXX_SKIP;   // extern(C++) methods/ctors dropped as unmapped-type (honest coverage)
+// Per-symbol coverage manifest (round-4 #1): one TSV row per processed API symbol with its
+// FATE — bound / shimmed / signal / inherited / pure-virtual / unmapped-type / inline-failed /
+// opaque-stub. Answers "what happened to each Qt symbol?", not just an aggregate count.
+__gshared string[] MANIFEST;
+void recordSym(string cppClass, string sym, string fate) {
+    MANIFEST ~= cppClass ~ "\t" ~ sym ~ "\t" ~ fate;
+    if (fate == "unmapped-type" || fate == "inline-failed") CXX_SKIP++;   // only real drops
+}
 string wrapperTypeOf(CXType t) {
     auto ck = clang_getCanonicalType(t);
     if (ck.kind != CXType_Pointer) return "";
@@ -1799,9 +1807,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // guard forwarder takes `&__raw` (its address) -> forces a reference to a symbol that
         // doesn't exist in the Qt lib -> link error (surfaces on dmd's whole-program link).
         if (mn == "qt_check_for_QGADGET_macro") continue;
+        // Per-symbol coverage manifest: one row per method, its fate filled in below and written
+        // on every exit path (signal/inherited/shim/bound/unmapped) via scope(exit).
+        string _fate = "bound";
+        scope(exit) recordSym(cppName, mn, _fate);
         // Qt signal -> a connect<Signal>(delegate) method (via a gen-phase functor
         // shim), NOT a callable binding. Non-overloaded; args marshaled to the delegate.
         if (isSignal(c)) {
+            _fate = "signal";
             if (sigNameCount.get(mn, 0) == 1 && allNameCount.get(mn, 0) == 1 && mn !in seenSig) {
                 Signal s; s.dClass = name; s.cppClass = cppName; s.name = mn;
                 bool ok = true;
@@ -1827,12 +1840,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // base decl. A method merely SHARING a base name is a NEW overload: emit it, and
         // re-alias the base's (emittable) overloads it would otherwise hide in D.
         if ((clang_CXXMethod_isVirtual(c) != 0 && (mn in baseM) !is null)
-                || (clang_getCursorDisplayName(c).str in baseSig)) continue;
+                || (clang_getCursorDisplayName(c).str in baseSig)) { _fate = "inherited"; continue; }
         if ((mn in baseM) !is null && (mn in baseAliasable) !is null) {
             aliasNames[mn] = true;
             impSet[aliasBase[mn]] = true;   // the aliased base type must be imported
         }
-        if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; continue; }
+        if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; _fate = "pure-virtual"; continue; }
         // Route through a C++ trampoline shim (`static_cast<Class*>(self)->method(args)`) in TWO
         // cases:
         //   (1) INLINE methods — no out-of-line symbol exists to pragma(mangle), so we must call
@@ -1906,12 +1919,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         // inline methods (their Qt symbol doesn't exist out-of-line anyway).
                         methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
                             kw, retD, dname(mn), rps.join(", "), cst, ret, shimFn, callArgs);
-                        handled = true;
+                        handled = true; _fate = "shimmed";
                     }
                 }
             } catch (Unmappable) { if (isInline(c)) handled = true; }
             if (handled) continue;
-            if (isInline(c)) continue;   // opaque inline with no workable shim -> drop (no symbol)
+            if (isInline(c)) { _fate = "inline-failed"; continue; }   // opaque inline, no workable shim
             // else: a virtual with a complex signature -> fall through to the direct guard path.
         }
         try {
@@ -2025,7 +2038,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             }
             auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
             if (ov.length) methodLines ~= ov;
-        } catch (Unmappable) { CXX_SKIP++; /* skip method with an unmapped type */ }
+        } catch (Unmappable) { _fate = "unmapped-type"; /* recordSym (scope-exit) counts it */ }
     }
     // Re-alias base overloads that our new same-name overloads would hide (D name-hiding):
     // e.g. QGridLayout emits addWidget(w,row,col,...) -> without this, QLayout::addWidget(w)

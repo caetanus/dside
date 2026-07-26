@@ -39,6 +39,25 @@ extern (C) nothrow {
     void  qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
 }
 
+// ---- callback error policy (round-4 #6: silence is not acceptable) ----------
+// A slot/property/signal callback invoked BY Qt must be `nothrow` — a D exception can't
+// unwind across the C++ frame. Instead of swallowing it, record it: a thread-local last
+// error + count (inspectable/testable), an optional global hook, and a debug stderr note.
+// (Errors — asserts, etc. — are bugs and are intentionally NOT caught here: they terminate.)
+__gshared void function(Throwable) nothrow qtdCallbackErrorHook;   // opt-in global sink
+size_t qtdCallbackErrors;          // thread-local (module scope) — count for asserts/tests
+Throwable qtdLastCallbackError;    // thread-local — the most recent swallowed exception
+void qtdOnCallbackError(Throwable e) nothrow {
+    qtdCallbackErrors++;
+    qtdLastCallbackError = e;
+    if (qtdCallbackErrorHook !is null) qtdCallbackErrorHook(e);
+    debug {
+        import core.stdc.stdio : fprintf, stderr;
+        fprintf(stderr, "qtd: callback threw (swallowed at C++ boundary): %.*s\n",
+            cast(int) e.msg.length, e.msg.ptr);
+    }
+}
+
 // converte um QString* (arg de meta-call) numa string D.
 string qsToD(void* qs) {
     int n = qtd_qs_utf8len(qs);
@@ -266,14 +285,14 @@ T newQObject(T, Args...)(Args ctorArgs) {
         try {
             static foreach (i, m; slotMembers!T)
                 if (idx == i) { callSlot!(T, m)(o, a); return; }
-        } catch (Exception) {}
+        } catch (Exception e) { qtdOnCallbackError(e); }
     };
     // delegate de read/write de propriedades
     void delegate(int, int, void**) nothrow prop = (int idx, int write, void** a) nothrow {
         try {
             static foreach (i, m; propMembers!T)
                 if (idx == i) { callProp!(T, m)(o, qobj, pnotif[i], write, a); return; }
-        } catch (Exception) {}
+        } catch (Exception e) { qtdOnCallbackError(e); }
     };
     _reg[cast(void*) o] = MocReg(qobj, disp, prop);
     return o;

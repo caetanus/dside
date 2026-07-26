@@ -320,14 +320,30 @@ void main(string[] args) {
 
     writefln("\ncxx path: %d D bindings emitted, %d methods/ctors dropped (unmapped-type).",
         cxxBound, CXX_SKIP);
-    // Persist coverage per spec so it is a tracked artifact, not a number that scrolls past.
+    // Per-symbol manifest (round-4 #1): one TSV row per API method with its fate. Answers
+    // "what happened to each Qt symbol?" — bound/shimmed/signal/inherited/pure-virtual/
+    // unmapped-type/inline-failed. Covers the object-method path (the bulk); value-type and
+    // wrapper drops are in the aggregate CXX_SKIP. Sorted for a stable, diffable artifact.
+    import std.algorithm : sort, count;
+    auto rows = MANIFEST.dup.sort.array;
+    long[string] byFate;
+    foreach (r; rows) byFate[r.split("\t")[$ - 1]]++;
+    string man = "# cppClass\tsymbol\tfate\n";
+    foreach (r; rows) man ~= r ~ "\n";
+    std.file.write(buildPath(outDir, "coverage-manifest.tsv"), man);
+
+    // coverage.txt: the human summary. The fate breakdown is the per-symbol manifest, which
+    // covers the OBJECT-METHOD path. Value-type/wrapper-path drops aren't per-symbol yet, so they
+    // show only in the aggregate — stated plainly rather than folded in to look complete.
+    long manifestDrops = byFate.get("unmapped-type", 0) + byFate.get("inline-failed", 0);
     string cov = format("qt-dlang-gen coverage — %s (extern(C++))\n"
         ~ "%d classes emitted, %d shiboken-rejected.\n"
-        ~ "%d public D bindings emitted (methods/ctors/overloads).\n"
-        ~ "%d methods/ctors dropped as unmapped-type.\n"
-        ~ "(Per-method status manifest — bound/skipped-by-rule/inline-failed/shimmed — is a\n"
-        ~ "tracked follow-up; these are path-level counters, not per-method.)\n",
-        spec["qt_version"].str, ok, rejected, cxxBound, CXX_SKIP);
+        ~ "per-symbol manifest (object-method path): coverage-manifest.tsv, %d rows. fate breakdown:\n",
+        spec["qt_version"].str, ok, rejected, rows.length);
+    foreach (f; byFate.byKey.array.sort) cov ~= format("  %-14s %d\n", f, byFate[f]);
+    cov ~= format("aggregate drops across ALL paths (incl. value-type/wrapper, not yet per-symbol): %d\n"
+        ~ "  of which %d are in the manifest above; %d are value-type/wrapper-path drops (TODO: per-symbol).\n",
+        CXX_SKIP, manifestDrops, CXX_SKIP - manifestDrops);
     std.file.write(buildPath(outDir, "coverage.txt"), cov);
 }
 
