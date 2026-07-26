@@ -1,25 +1,27 @@
 {
-  "schema": "qt-dlang-gen expected-fails v1",
-  "note": "Structured state for known gaps/exclusions — not prose. Each entry has an id, area, reason, the commit/date it was introduced, and a removal condition so it blocks regression and measures progress instead of just describing. See docs/test-suite.md for the suite and CRITICS.md for the review these track.",
+  "schema": "qt-dlang-gen expected-fails v2",
+  "note": "Structured state for known gaps/exclusions/risks — CONSUMED by tests/expected_fails_check.d (schema + kind + probe-target existence). Each entry has an id, area, reason, since, remove_when, and a `kind`: `permanent_exclusion` (not public API / platform), `known_gap` (a generator limitation with no failing target), or `risk` (a private-API dependency that MUST keep compiling — its `probe_targets` name the build targets that guard it, and the checker verifies those targets exist).",
+  "kinds": ["permanent_exclusion", "known_gap", "risk"],
   "entries": [
     {
       "id": "uic-private-widgets",
+      "kind": "permanent_exclusion",
       "area": "uic/corpus",
       "reason": "QUiLoader-only private Qt widgets (QFileDialog internals, QtGradient editors, qprintpropertieswidget) are not public API, so the differential oracle can't hold them.",
-      "excludes": "a subset of tests/uic/corpus/*.ui from corpus-check",
       "since": "branch codegen-tools",
       "remove_when": "never (these are not public Qt API)"
     },
     {
       "id": "virtual-container-return",
+      "kind": "known_gap",
       "area": "gen/virtual-dispatch",
-      "reason": "An overridden virtual that returns a container/QList still dispatches non-virtually — the C++ method shim can't sret those, so it falls back to the direct-symbol guard.",
-      "impact": "no known Qt override is affected",
+      "reason": "An overridden virtual that returns a container/QList still dispatches non-virtually — the C++ method shim can't sret those, so it falls back to the direct-symbol guard. No known Qt override is affected.",
       "since": "commit 8c49a82",
       "remove_when": "a container/QList-return-capable virtual shim lands"
     },
     {
       "id": "moveonly-byvalue-params",
+      "kind": "known_gap",
       "area": "gen/params",
       "reason": "A method with a move-only (deleted-copy) by-value param uses the direct pragma decl, or is dropped if inline — the shim/guard would copy the param.",
       "since": "commit f0eef1a",
@@ -27,6 +29,7 @@
     },
     {
       "id": "windows-msvc",
+      "kind": "permanent_exclusion",
       "area": "platform",
       "reason": "Linux/POSIX is Tier 1; Windows/MSVC-x64 is a documented roadmap (docs/windows-roadmap.md), not tested.",
       "since": "always",
@@ -34,27 +37,29 @@
     },
     {
       "id": "qml-private-qqmlprivate",
+      "kind": "risk",
       "area": "qml/private-api",
-      "reason": "qmlRegisterType fills QQmlPrivate::RegisterType and calls QQmlPrivate::qmlregister — a private struct whose layout (structVersion, CreationMethod) can shift between Qt minor versions. No public API registers a runtime QMetaObject as a QML type.",
-      "probe": "qmlreg-{ldc2,dmd} compile+link against QQmlPrivate; they FAIL to build if the struct/symbol changes — that IS the per-version guard.",
-      "risk_tier": "same as QMetaObjectBuilder (moc)",
+      "reason": "qmlRegisterType fills QQmlPrivate::RegisterType and calls QQmlPrivate::qmlregister — a private struct whose layout differs Qt5<->Qt6 (handled behind a QT_VERSION seam) and can shift between Qt minor versions.",
+      "probe_targets": ["qmlreg-ldc2", "qmlreg-dmd", "qmlreg-qt5-ldc2", "qmlreg-qt5-dmd"],
       "since": "commit 5191609",
-      "remove_when": "Qt exposes a public API to register a runtime metaobject as a QML type, or the probe is extended across a Qt version matrix in CI"
+      "remove_when": "Qt exposes a public API to register a runtime QMetaObject as a QML type, or the probe runs across a Qt-version matrix in CI"
     },
     {
       "id": "qml-private-typedescreader",
+      "kind": "risk",
       "area": "qml/private-api",
-      "reason": ".qmltypes validation uses QQmlJSTypeDescriptionReader from Qt6QmlCompiler private API (the same reader qmllint/qmltyperegistrar use). Private; can change across versions.",
-      "probe": "qmltypes-{ldc2,dmd} compile the validator against it and skip cleanly if Qt6QmlCompiler is absent; a signature change breaks the build.",
+      "reason": ".qmltypes validation uses QQmlJSTypeDescriptionReader from Qt6QmlCompiler private API (the reader qmllint/qmltyperegistrar use). Qt6-only; can change across versions.",
+      "probe_targets": ["qmltypes-ldc2", "qmltypes-dmd"],
       "since": "commit 0fc73b3",
-      "remove_when": "a public qmltypes parser ships, or the probe runs across a Qt version matrix"
+      "remove_when": "a public qmltypes parser ships, or the probe runs across a Qt-version matrix"
     },
     {
       "id": "moc-private-metaobjectbuilder",
+      "kind": "risk",
       "area": "moc/private-api",
-      "reason": "The runtime moc (qtdmoc.cpp) builds QMetaObjects with QMetaObjectBuilder, a Qt private API. Long-standing dependency (documented in README); listed here so it is tracked as structured risk, not just prose.",
-      "probe": "every moc/qml/tr target compiles qtdmoc.cpp against it; exercised on the Qt versions in the matrix (6.11, and 5.15 via the wrap specs).",
-      "since": "commit (moc-via-ctfe)",
+      "reason": "The runtime moc (qtdmoc.cpp) builds QMetaObjects with QMetaObjectBuilder, a Qt private API. Long-standing dependency; every moc/qml/tr target compiles against it.",
+      "probe_targets": ["moc_test-ldc2-qt6", "moc_test-dmd-qt6", "moc_test-ldc2-qt5", "moc_test-dmd-qt5"],
+      "since": "commit moc-via-ctfe",
       "remove_when": "never expected (no public equivalent); revisit if Qt ships a public runtime-metaobject builder"
     }
   ]
