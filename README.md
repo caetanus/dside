@@ -74,15 +74,10 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 | `generated/` | **generated** | gitignored, on-demand output |
 | `tests/`, `examples/`, `apps/` | **tests only** | ldc2×dmd × Qt5×Qt6 matrix |
 | `docs/` | **supported** | `FEATURES.md`, `test-suite.md`, `uic-spec.md`, `windows-roadmap.md` |
-| `generator/` (specs) | **supported** | `spec_cxx_*.json` (the C-ABI `*_d.json` specs are legacy) |
-| `legacy/` | **legacy/reference** | the old C-ABI shim path + early QML/metaobject demos — not built by default |
-| `bootstrap/` | **legacy/reference** | the original hand-written C-ABI hello-world |
+| `generator/` (specs) | **supported** | `spec_cxx_*.json` |
 
 ## Known risks / honest gaps
 
-- **`emit.d` still carries both ABIs.** The `abi == "cxx"` branch is canonical; the
-  older C-ABI emission (`emitContainers`, the non-`cxx` path) is deprecated and slated
-  to move under `legacy/`. Until then, `emit.d` is dual-model — read the `cxx` path.
 - **The generator is a large orchestrator.** `emit_cxx.d`/`emit.d` mix AST walk, type
   policy, textual emission, and (for inline recovery) a compile-check-and-retry pass.
   An explicit IR is the intended refactor; not done.
@@ -99,5 +94,5 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 ## Roadmap
 
 - Make GC-wrapper mode the **default** so raw-path objects also construct with `new`.
-- Move the C-ABI emitter fully under `legacy/`; introduce a generator IR.
+- Introduce a generator IR (drop the remaining dead C-ABI helper functions in `gen.d`).
 - Persist a coverage manifest per spec; ownership-invariant tests for `holder`.

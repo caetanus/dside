@@ -5,11 +5,9 @@ The Qt binding generator: native D on the **libclang C API** (`clang_c.d`, no
 and emits a **pure `extern(C++)`** D binding (`emit_cxx.d`) — modules mangle
 straight to the Qt symbols; there is no per-class C shim to compile.
 
-> **Canonical path: `extern(C++)`** (spec `"abi": "cxx"`, the `spec_cxx_*.json`
-> files). `emit.d` still contains an **older C-ABI emitter** (`emitContainers`,
-> the non-`cxx` branch) — that path is **legacy/deprecated** and slated to move
-> under `legacy/`. When reading the code, follow the `cxxAbi` branch. Anything in
-> this file describing "a C shim + `extern(C)` decls" refers to the legacy path.
+> **The generator emits `extern(C++)` only** (spec `"abi": "cxx"`). The earlier C-ABI
+> shim emitter was **removed** from `emit.d` (a few dead helper functions still linger
+> in `gen.d`, referenced by nothing, pending a cleanup). A non-`cxx` spec now errors.
 
 ## Build & run
 
@@ -54,7 +52,7 @@ The generator pulls PySide's typesystem XML as data (no shiboken fork), but only
 |------|------|
 | `gen.d` | entry point: spec parsing, discovery, `loadRules` (typesystem regex) |
 | `emit_cxx.d` | the **canonical** `extern(C++)` emitter (methods, ctors, wrapper/GC mode, exceptions, uic/moc glue) |
-| `emit.d` | orchestration + file writing + coverage; still carries the **legacy** C-ABI emitter (`emitContainers`) |
+| `emit.d` | driver: discovery, drives the `extern(C++)` emitter, writes files, reports coverage |
 | `clang_c.d` | libclang C API bindings |
 
 See the repo `README.md` for the overall architecture and status matrix, and

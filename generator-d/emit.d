@@ -1,205 +1,11 @@
-// emit.d — emission (C shim + extern(C) D + idiomatic struct) and the driver.
+// emit.d — the generator driver: parse the spec, discover classes, drive the
+// extern(C++) emitter (emit_cxx.d), write the .d/.cpp files, and report coverage.
 module emit;
 
 import clang_c, gen, emit_cxx;
 import std.stdio, std.string, std.array, std.algorithm, std.conv, std.json,
        std.process, std.file, std.path, std.datetime.stopwatch;
 
-string cIdent(string cty) {
-    return cty.replace("unsigned ", "u").replace("*", "p").replace(" ", "_");
-}
-
-// (DKEYWORDS/dname moved to gen.d so both emitters share them.)
-
-// Root `Object` methods a `class` wrapper inherits — a Qt method of the same name
-// would implicitly override them (different semantics), so escape it with a `_`.
-enum string[] OBJECTMEMBERS = ["toString", "toHash", "opEquals", "opCmp", "factory"];
-
-struct Out { string h, cpp, d; }
-
-Out emitClass(string name, string cppName, string include, string dpkg, Method[] ms, string manifest, bool isQObject) {
-    auto pfx = "qtd_" ~ name;   // name = unqualified (D/file/pfx); cppName = qualified (C++)
-    // overload-aware, collision-free C names
-    int[string] baseCount;
-    foreach (m; ms) baseCount[m.kind == "ctor" ? pfx ~ "_new" : pfx ~ "_" ~ m.name]++;
-    bool[string] used = [pfx ~ "_delete": true];
-    string fname(string base, Param[] ps) {
-        auto cand = base;
-        if (baseCount[base] > 1 && ps.length)
-            cand = base ~ ps.map!(p => "_" ~ cIdent(p.m.cty)).join;
-        auto fin = cand; int n = 1;
-        while (fin in used) { n++; fin = text(cand, "_", n); }
-        used[fin] = true; return fin;
-    }
-
-    string[] hdr, cpp, decl;
-    hdr ~= format("void %s_delete(%sHandle self);", pfx, pfx);
-    cpp ~= format("void %s_delete(%sHandle self) { delete static_cast<%s*>(self); }", pfx, pfx, cppName);
-    decl ~= format("    void %s_delete(void* self);", pfx);
-
-    foreach (ref m; ms) {
-        auto cargs = m.params.map!(p => p.m.cpp.replace("{}", p.name)).join(", ");
-        auto dparams = m.params.map!(p => p.m.dty ~ " " ~ p.name).array;   // D types for extern(C)
-        if (m.kind == "ctor") {
-            m.fn = fname(pfx ~ "_new", m.params);
-            auto sig = m.params.map!(p => p.m.cty ~ " " ~ p.name).join(", ");
-            hdr ~= format("%sHandle %s(%s);", pfx, m.fn, sig);
-            cpp ~= format("%sHandle %s(%s) { return new %s(%s); }", pfx, m.fn, sig, cppName, cargs);
-            decl ~= format("    void* %s(%s);", m.fn, dparams.join(", "));
-        } else {
-            string sig, callexpr, dsig;
-            if (m.isStatic) {
-                sig = m.params.map!(p => p.m.cty ~ " " ~ p.name).join(", ");
-                dsig = dparams.join(", ");
-                callexpr = format("%s::%s(%s)", cppName, m.name, cargs);
-            } else {
-                sig = ([format("%sHandle self", pfx)] ~ m.params.map!(p => p.m.cty ~ " " ~ p.name).array).join(", ");
-                dsig = (["void* self"] ~ dparams).join(", ");
-                callexpr = format("static_cast<%s*>(self)->%s(%s)", cppName, m.name, cargs);
-            }
-            m.fn = fname(pfx ~ "_" ~ m.name, m.params);
-            auto body_ = m.ret.cpp.replace("{}", callexpr);
-            auto ret = m.ret.cty == "void" ? "" : "return ";
-            hdr ~= format("%s %s(%s);", m.ret.cty, m.fn, sig);
-            cpp ~= format("%s %s(%s) { %s%s; }", m.ret.cty, m.fn, sig, ret, body_);
-            decl ~= format("    %s %s(%s);", m.ret.dty, m.fn, dsig);
-        }
-    }
-
-    auto usesContainer = ms.any!(m => m.kind != "ctor" && (m.ret.containerTid.length || m.ret.assocKey.length));
-    auto uses = ms.any!(m => m.params.any!(p => p.m.convertible)
-        || (m.kind != "ctor" && m.ret.convertible))
-        || ms.any!(m => m.kind != "ctor" && m.ret.containerTid.length
-            && CONTAINERS[m.ret.containerTid].elemFromRaw.length)
-        || ms.any!(m => m.kind != "ctor" && m.ret.assocKey.length
-            && (ASSOCS[m.ret.assocKey].keyFrom.length || ASSOCS[m.ret.assocKey].valFrom.length));
-    auto imports = (uses ? "import qtd_convert;\n" : "")
-        ~ (usesContainer ? "import qtcontainers;\n" : "")
-        ~ (isQObject ? "import bindingmanager;\n" : "");
-    auto guard = "QTD_" ~ name.toUpper ~ "_H";
-    Out o;
-    o.h = format("%s\n#ifndef %s\n#define %s\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
-        ~ "typedef void *%sHandle; /* %s* */\n\n%s\n\n#ifdef __cplusplus\n}\n#endif\n#endif\n",
-        manifest, guard, guard, pfx, name, hdr.join("\n"));
-    auto incLine = (include.canFind('/') || include.endsWith(".h") || include.endsWith(".hpp"))
-        ? format("#include \"%s\"", include) : format("#include <%s>", include);
-    o.cpp = format("%s\n#include \"%s.h\"\n#include <QString>\n#include <QVariant>\n%s\n\nextern \"C\" {\n\n%s\n\n} // extern \"C\"\n",
-        manifest, name.toLower, incLine, cpp.join("\n"));
-    o.d = format("%s\nmodule %s.%s;\n%s\nextern (C) nothrow @nogc {\n%s\n}\n\n%s",
-        manifest, dpkg, name.toLower, imports,
-        decl.join("\n"), emitStruct(name, pfx, ms, isQObject));
-    return o;
-}
-
-// Idiomatic D reference wrapper: a `class` with real constructors, so Qt classes
-// are built the D way — `new QLabel("hi")`. QObject-derived classes additionally
-// go through the BindingManager (à la Shiboken): wrap() returns the SAME wrapper
-// for a pointer (identity), the wrapper is invalidated when C++ destroys the
-// object (destroyed() hook), and dispose() never deletes an object Qt owns.
-string emitStruct(string name, string pfx, Method[] ms, bool isQObject) {
-    string[] L = [format("class %s {", name), "    void* _h;", "    alias _h this;",
-        "    private this(void* h, typeof(null)) @nogc nothrow { _h = h; }"];
-    if (isQObject) {
-        L ~= "    private void _register() { bindingmanager.register(_h, this, &_invalidate, true); }";
-        L ~= format("    private static void _invalidate(Object o) nothrow { (cast(%s) o)._h = null; }", name);
-        L ~= format("    static %s wrap(void* h) {", name);
-        L ~= "        if (h is null) return null;";
-        L ~= format("        if (auto e = bindingmanager.retrieve(h)) return cast(%s) e;", name);
-        L ~= format("        auto w = new %s(h, null); w._register(); return w;", name);
-        L ~= "    }";
-        L ~= "    void dispose() {";
-        L ~= "        if (_h is null) return;";
-        L ~= format("        if (!bindingmanager.cppOwns(_h)) %s_delete(_h);", pfx);
-        L ~= "    }";
-    } else {
-        L ~= format("    static %s wrap(void* h) { return new %s(h, null); }", name, name);
-        L ~= format("    void dispose() { %s_delete(_h); }", pfx);
-    }
-    bool[string] seen;
-    foreach (m; ms) {
-        // D method name: escape keywords, the fixed class members (dispose/wrap),
-        // and inherited Object methods (toString/toHash/opEquals/...).
-        auto dn = m.kind == "ctor" ? "\0ctor" : dname(m.name);
-        if (m.kind != "ctor" && (dn == "dispose" || dn == "wrap" || OBJECTMEMBERS.canFind(dn)))
-            dn ~= "_";
-        auto key = text(dn, "|", m.params.map!(p => p.m.idty).join(","), "|", m.isStatic);
-        if (key in seen) continue;
-        seen[key] = true;
-        auto idp = m.params.map!(p => p.m.idty ~ " " ~ p.name).join(", ");
-        string[] pre; string[] callArgs;
-        if (m.kind != "ctor" && !m.isStatic) callArgs ~= "_h";
-        foreach (i, p; m.params) {
-            if (p.m.toRaw.length) {
-                auto v = text("_a", i);
-                pre ~= format("        auto %s = %s;", v, p.m.toRaw.replace("{}", p.name));
-                if (p.m.free.length)
-                    pre ~= format("        scope(exit) %s;", p.m.free.replace("{}", v));
-                callArgs ~= v;
-            } else callArgs ~= p.name;
-        }
-        auto call = format("%s(%s)", m.fn, callArgs.join(", "));
-        if (m.kind == "ctor") {
-            L ~= format("    this(%s) {", idp);
-            L ~= pre;
-            L ~= format("        _h = %s;", call);
-            if (isQObject) L ~= "        _register();";   // identity + destroyed() hook
-            L ~= "    }";
-        } else {
-            auto kw = m.isStatic ? "static " : "";
-            if (m.ret.containerTid.length) {                    // QList<T> -> T[]
-                auto ct = CONTAINERS[m.ret.containerTid];
-                auto cp = "qtd_QList_" ~ ct.tid;
-                auto elem = ct.elemFromRaw.length
-                    ? ct.elemFromRaw.replace("{}", cp ~ "_at(_r, _i)")
-                    : cp ~ "_at(_r, _i)";
-                L ~= format("    %s%s[] %s(%s) {", kw, ct.elemIdty, dn, idp);
-                L ~= pre;
-                L ~= format("        auto _r = %s;", call);
-                L ~= format("        auto _n = %s_size(_r);", cp);
-                L ~= format("        %s[] _v; _v.length = _n;", ct.elemIdty);
-                L ~= format("        foreach (_i; 0 .. _n) _v[_i] = %s;", elem);
-                L ~= format("        %s_delete(_r);", cp);
-                L ~= "        return _v;"; L ~= "    }";
-            } else if (m.ret.assocKey.length) {                // QHash/QMap -> V[K]
-                auto a = ASSOCS[m.ret.assocKey];
-                auto ap = a.pfx;
-                auto kE = a.keyFrom.length ? a.keyFrom.replace("{}", ap ~ "_iter_key(_it)") : ap ~ "_iter_key(_it)";
-                auto vE = a.valFrom.length ? a.valFrom.replace("{}", ap ~ "_iter_val(_it)") : ap ~ "_iter_val(_it)";
-                L ~= format("    %s%s[%s] %s(%s) {", kw, a.valIdty, a.keyIdty, dn, idp);
-                L ~= pre;
-                L ~= format("        auto _r = %s;", call);
-                L ~= format("        %s[%s] _aa;", a.valIdty, a.keyIdty);
-                L ~= format("        auto _it = %s_iter_new(_r);", ap);
-                L ~= format("        while (%s_iter_valid(_r, _it)) {", ap);
-                L ~= format("            auto _k = %s; auto _v2 = %s;", kE, vE);
-                L ~= "            _aa[_k] = _v2;";
-                L ~= format("            %s_iter_next(_it);", ap);
-                L ~= "        }";
-                L ~= format("        %s_iter_delete(_it);", ap);
-                L ~= format("        %s_delete(_r);", ap);
-                L ~= "        return _aa;"; L ~= "    }";
-            } else if (m.ret.cty == "void") {
-                L ~= format("    %svoid %s(%s) {", kw, dn, idp);
-                L ~= pre; L ~= format("        %s;", call); L ~= "    }";
-            } else if (m.ret.convertible) {
-                L ~= format("    %s%s %s(%s) {", kw, m.ret.idty, dn, idp);
-                L ~= pre;
-                L ~= format("        auto _r = %s;", call);
-                L ~= format("        auto _v = %s;", m.ret.fromRaw.replace("{}", "_r"));
-                if (m.ret.free.length)
-                    L ~= format("        %s;", m.ret.free.replace("{}", "_r"));
-                L ~= "        return _v;"; L ~= "    }";
-            } else {
-                L ~= format("    %s%s %s(%s) {", kw, m.ret.idty, dn, idp);
-                L ~= pre; L ~= format("        return %s;", call); L ~= "    }";
-            }
-        }
-    }
-    L ~= "}";
-    return L.join("\n") ~ "\n";
-}
-
-// --- discovery / driver ----------------------------------------------------
 struct DiscCtx { CXCursor[] classes; CXCursor[] functions; bool[string] seen; }
 extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
     auto ctx = cast(DiscCtx*) d;
@@ -236,16 +42,6 @@ extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
 // (mocPrivateFlags) moved to reggae/qtd_build.d.
 
 void main(string[] args) {
-    CONV["QString"]    = Conv("*static_cast<QString*>({})", "new QString({})", "toQString({})", "toDString({})", "toDStringOwned({})", "qtd_qstring_delete({})");
-    CONV["QByteArray"] = Conv("*static_cast<QByteArray*>({})", "new QByteArray({})", "toQByteArray({})", "fromQByteArray({})", "fromQByteArrayOwned({})", "qtd_qbytearray_delete({})");
-    CONV["QUrl"]       = Conv("*static_cast<QUrl*>({})", "new QUrl({})", "toQUrl({})", "fromQUrl({})", "fromQUrlOwned({})", "qtd_qurl_delete({})");
-    // string views: reuse the QString/QByteArray helpers; only the C++ deref/wrap differ
-    CONV["QStringView"]    = Conv("QStringView(*static_cast<QString*>({}))", "new QString(({}).toString())", "toQString({})", "toDString({})", "toDStringOwned({})", "qtd_qstring_delete({})");
-    CONV["QAnyStringView"] = Conv("QAnyStringView(*static_cast<QString*>({}))", "new QString(({}).toString())", "toQString({})", "toDString({})", "toDStringOwned({})", "qtd_qstring_delete({})");
-    CONV["QByteArrayView"] = Conv("QByteArrayView(*static_cast<QByteArray*>({}))", "new QByteArray(({}).toByteArray())", "toQByteArray({})", "fromQByteArray({})", "fromQByteArrayOwned({})", "qtd_qbytearray_delete({})");
-    // QVariant -> idiomatic QtVariant struct (owns the handle; no temp free)
-    CONV["QVariant"] = Conv("*static_cast<QVariant*>({})", "new QVariant({})", "({}).handle", "QtVariant({})", "QtVariant({})", "", "QtVariant");
-
     auto specPath = args.length > 1 ? args[1] : "spec.json";
     auto spec = parseJSON(readText(specPath));
     auto outDir = buildNormalizedPath(specPath.dirName, spec["out_dir"].str);
@@ -352,7 +148,7 @@ void main(string[] args) {
         cxxGen["QAnyStringView"] = true;
         cxxGen["qtcontainers"] = true;
     }
-    int ok, total;
+    int ok;
     int rejected;
     long cxxBound;   // public D bindings emitted on the extern(C++) path (methods/ctors/overloads)
     // Count callable D bindings in a generated unit: a line that defines/declares something
@@ -376,7 +172,6 @@ void main(string[] args) {
         // Provided by a hand-written smart runtime (QString/QByteArray/QAnyStringView)
         // — pre-marked in cxxGen; must NOT be overwritten by a generated class.
         if (cxxAbi && name in cxxGen) continue;
-        auto inc = discMod.length ? discMod : (i < includes.length ? includes[i] : name);
         try {
             if (cxxAbi) {   // pure extern(C++): one .d, no shim
                 string[] imps;
@@ -386,13 +181,7 @@ void main(string[] args) {
                 foreach (r; imps) cxxRef[r] = true;
                 ok++; cxxBound += countBindings(d);
             } else {
-                auto ms = extract(cur);
-                auto o = emitClass(name, cppName, inc, dpkg, ms, manifest, isQObject(cur));
-                auto base = buildPath(outDir, name.toLower);
-                std.file.write(base ~ ".h", o.h);
-                std.file.write(base ~ ".cpp", o.cpp);
-                std.file.write(base ~ ".d", o.d);
-                ok++; total += cast(int) ms.length;
+                throw new Exception("only abi:cxx is supported (the C-ABI emitter was removed)");
             }
         } catch (Exception e) {
             stderr.writefln("[%s] skipped: %s", name, e.msg);
@@ -525,96 +314,20 @@ void main(string[] args) {
             }
         writefln("cxx: %d full + %d enum + %d opaque stub modules", ok, ENUMS.length, stubs);
     }
-    if (CONTAINERS.length || ASSOCS.length)
-        emitContainers(outDir, manifest, discMod, headers);
     sw.stop();
-    writefln("done: %d classes emitted (%d shiboken-rejected), %d %s, %d list + %d assoc containers -> %s  (%d ms)",
-        ok, rejected, cxxAbi ? cxxBound : total, cxxAbi ? "D bindings" : "functions",
-        CONTAINERS.length, ASSOCS.length, outDir, sw.peek.total!"msecs");
+    writefln("done: %d classes emitted (%d shiboken-rejected), %d D bindings -> %s  (%d ms)",
+        ok, rejected, cxxBound, outDir, sw.peek.total!"msecs");
 
-    import std.algorithm : sort;
-    auto miss = MISSING.byKeyValue.array.sort!((a, b) => a.value > b.value);
-    long skipped = 0; foreach (kv; miss) skipped += kv.value;
-    // Counters are per-path — the extern(C++) and the legacy C-ABI emitters are separate, so
-    // printing one path's numbers under the other lies. cxxBound/CXX_SKIP describe the cxx path;
-    // total/MISSING describe the legacy C-ABI path (both zero on the path you're not using).
-    if (cxxAbi)
-        writefln("\ncxx path: %d D bindings emitted, %d methods/ctors dropped (unmapped-type).",
-            cxxBound, CXX_SKIP);
-    else {
-        writefln("\nUNMAPPED (C-ABI path): %d methods skipped across %d distinct types. top 30:",
-            skipped, miss.length);
-        foreach (kv; miss[0 .. min(30, $)]) writefln("  %5d  %s", kv.value, kv.key);
-    }
-
-    // Persist the coverage per spec so it is a tracked artifact, not a number that scrolls past.
-    string cov;
-    if (cxxAbi)
-        cov = format("qt-dlang-gen coverage — %s (extern(C++) path)\n"
-            ~ "%d classes emitted, %d shiboken-rejected.\n"
-            ~ "%d public D bindings emitted (methods/ctors/overloads).\n"
-            ~ "%d methods/ctors dropped as unmapped-type.\n"
-            ~ "(Per-method status manifest — bound/skipped-by-rule/inline-failed/shimmed — is a\n"
-            ~ "tracked follow-up; these are path-level counters, not per-method.)\n",
-            spec["qt_version"].str, ok, rejected, cxxBound, CXX_SKIP);
-    else {
-        cov = format("qt-dlang-gen coverage — %s (legacy C-ABI path)\n"
-            ~ "%d classes emitted, %d shiboken-rejected, %d functions bound, %d list + %d assoc.\n"
-            ~ "UNMAPPED: %d methods skipped across %d distinct types:\n",
-            spec["qt_version"].str, ok, rejected, total, CONTAINERS.length, ASSOCS.length,
-            skipped, miss.length);
-        foreach (kv; miss) cov ~= format("  %5d  %s\n", kv.value, kv.key);
-    }
+    writefln("\ncxx path: %d D bindings emitted, %d methods/ctors dropped (unmapped-type).",
+        cxxBound, CXX_SKIP);
+    // Persist coverage per spec so it is a tracked artifact, not a number that scrolls past.
+    string cov = format("qt-dlang-gen coverage — %s (extern(C++))\n"
+        ~ "%d classes emitted, %d shiboken-rejected.\n"
+        ~ "%d public D bindings emitted (methods/ctors/overloads).\n"
+        ~ "%d methods/ctors dropped as unmapped-type.\n"
+        ~ "(Per-method status manifest — bound/skipped-by-rule/inline-failed/shimmed — is a\n"
+        ~ "tracked follow-up; these are path-level counters, not per-method.)\n",
+        spec["qt_version"].str, ok, rejected, cxxBound, CXX_SKIP);
     std.file.write(buildPath(outDir, "coverage.txt"), cov);
 }
 
-void emitContainers(string outDir, string manifest, string discMod, string[] headers) {
-    string[] hdr, cpp, decl;
-    foreach (ct; CONTAINERS.byValue) {
-        auto p = "qtd_QList_" ~ ct.tid, T = ct.cppType, E = ct.elemC;
-        auto at = ct.atWrap.replace("{}", format("static_cast<%s*>(h)->at(i)", T));
-        hdr ~= [format("void *%s_new(void);", p), format("int %s_size(void *h);", p),
-                format("%s %s_at(void *h, int i);", E, p), format("void %s_delete(void *h);", p)];
-        cpp ~= [format("void *%s_new(void) { return new %s(); }", p, T),
-                format("int %s_size(void *h) { return static_cast<%s*>(h)->size(); }", p, T),
-                format("%s %s_at(void *h, int i) { return %s; }", E, p, at),
-                format("void %s_delete(void *h) { delete static_cast<%s*>(h); }", p, T)];
-        decl ~= [format("    void* %s_new();", p), format("    int %s_size(void* h);", p),
-                 format("    %s %s_at(void* h, int i);", ct.elemDRaw, p), format("    void %s_delete(void* h);", p)];
-    }
-    foreach (a; ASSOCS.byValue) {                          // QHash<K,V>/QMap<K,V>
-        auto p = a.pfx, T = a.cppType, IT = format("%s::const_iterator", a.cppType);
-        auto itc = format("(*static_cast<%s*>(it))", IT);
-        auto keyRet = a.keyWrap.replace("{}", itc ~ ".key()");
-        auto valRet = a.valWrap.replace("{}", itc ~ ".value()");
-        hdr ~= [format("void *%s_new(void);", p), format("int %s_size(void *h);", p),
-                format("void *%s_iter_new(void *h);", p), format("int %s_iter_valid(void *h, void *it);", p),
-                format("%s %s_iter_key(void *it);", a.keyC, p), format("%s %s_iter_val(void *it);", a.valC, p),
-                format("void %s_iter_next(void *it);", p), format("void %s_iter_delete(void *it);", p),
-                format("void %s_delete(void *h);", p)];
-        cpp ~= [format("void *%s_new(void) { return new %s(); }", p, T),
-                format("int %s_size(void *h) { return static_cast<%s*>(h)->size(); }", p, T),
-                format("void *%s_iter_new(void *h) { return new %s(static_cast<%s*>(h)->constBegin()); }", p, IT, T),
-                format("int %s_iter_valid(void *h, void *it) { return *static_cast<%s*>(it) != static_cast<%s*>(h)->constEnd(); }", p, IT, T),
-                format("%s %s_iter_key(void *it) { return %s; }", a.keyC, p, keyRet),
-                format("%s %s_iter_val(void *it) { return %s; }", a.valC, p, valRet),
-                format("void %s_iter_next(void *it) { ++%s; }", p, itc),
-                format("void %s_iter_delete(void *it) { delete static_cast<%s*>(it); }", p, IT),
-                format("void %s_delete(void *h) { delete static_cast<%s*>(h); }", p, T)];
-        decl ~= [format("    void* %s_new();", p), format("    int %s_size(void* h);", p),
-                 format("    void* %s_iter_new(void* h);", p), format("    int %s_iter_valid(void* h, void* it);", p),
-                 format("    %s %s_iter_key(void* it);", a.keyDRaw, p), format("    %s %s_iter_val(void* it);", a.valDRaw, p),
-                 format("    void %s_iter_next(void* it);", p), format("    void %s_iter_delete(void* it);", p),
-                 format("    void %s_delete(void* h);", p)];
-    }
-    auto incs = discMod.length ? format("#include <%s>\n", discMod)
-        : headers.map!(h => format("#include \"%s\"\n", h)).join;
-    std.file.write(buildPath(outDir, "qtcontainers.h"),
-        format("%s\n#ifndef QTD_CONTAINERS_H\n#define QTD_CONTAINERS_H\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n%s\n#ifdef __cplusplus\n}\n#endif\n#endif\n",
-            manifest, hdr.join("\n")));
-    std.file.write(buildPath(outDir, "qtcontainers.cpp"),
-        format("%s\n#include \"qtcontainers.h\"\n#include <QString>\n#include <QList>\n#include <QHash>\n#include <QMap>\n%s\nextern \"C\" {\n\n%s\n\n} // extern \"C\"\n",
-            manifest, incs, cpp.join("\n")));
-    std.file.write(buildPath(outDir, "qtcontainers.d"),
-        format("%s\nmodule qtcontainers;\n\nextern (C) nothrow @nogc {\n%s\n}\n", manifest, decl.join("\n")));
-}
