@@ -6,10 +6,11 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 
 ## Core binding (generator)
 - **extern(C++) codegen** — per-class modules, à-la-carte (`--gc-sections` drops unused shims).
-- **Construction** — object types: `new QWidget(parent)` (idiomatic D). Value types: `QSize(w, h)`.
-  **`X_new(...)` is UNACCEPTABLE and being eliminated.** A factory, only if genuinely justified, is
-  `make!Foo(args)` — never `Foo_new`. `new` is safe only on the GC-wrapper path (see below); the raw
-  path still carries `_new` until wrapper mode becomes the default.
+- **Construction** — object types: `new QWidget(parent)` (idiomatic D). Value types:
+  `QColor(r,g,b,a)` (struct ctor) or `make!QVariant()` (justified no-arg factory — D forbids a struct
+  no-arg `this()` and a CoW `.init` is a null d-pointer). **`X_new(...)` is UNACCEPTABLE** — never a
+  factory named `Foo_new`. Done: value types (all modes) and objects in wrapper mode. Raw-path
+  objects still carry `_new` until wrapper mode becomes the default.
 - **Types** — value types (correct sizeof/ABI, incl. CoW non-trivial like QIcon/QFont); enums
   (incl. 2-part `Qt::X` via a `qt` aggregator + `Class::X`); containers (`QList`↔`T[]`, QHash/QMap);
   multiple inheritance (secondary-base upcasts); forward iterators → D ranges (`foreach (x; t[])`).
@@ -48,8 +49,8 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 - Windows/MSVC-x64: deferred — see `docs/windows-roadmap.md`.
 
 ## In progress / next
-- **Kill `X_new`** (unacceptable). Construction is `new QWidget(parent)`; a justified factory is
-  `make!Foo(args)`, never `Foo_new`. Done in wrapper mode: the wrapper is a GC class, so `new`
-  GC-allocates the wrapper whose ctor allocates the C++ object (`__cpp_new`), runs the C++ ctor,
-  registers in the holder, and pins on parent. Literal `new` is unsafe in the raw path (D `new`
-  GC-allocates; Qt would C++-`delete` a GC block) — so the wrapper/GC path should become the DEFAULT.
+- **Kill `X_new` — front #2**: make the GC-wrapper path the DEFAULT so raw-mode objects also
+  construct with `new`. (Front #1 done: value-type `make!Foo`, and wrapper-mode objects `new X`.)
+  Literal `new` is unsafe in the raw path (D `new` GC-allocates the object; Qt would C++-`delete` a
+  GC block), so the fix is to flip `spec_cxx_qtwidgets{,_qt5}.json` + webengine to `"wrapper": true`
+  and migrate the committed cxx-path tests (cannon_t1..9, qlist_roundtrip, container_qvector).
