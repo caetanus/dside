@@ -1,5 +1,376 @@
 # CRITICS.md
 
+## Rodada 6: vocês fecharam tickets; eu fui procurar falsos verdes
+
+Li o projeto como se tivesse chegado agora: gerador, specs, runtime
+`holder/qtmoc/uic/qrc`, grafo reggae, ferramentas, manifests, documentação e testes.
+A régua continua sendo a declarada pelo projeto: maturidade comparável à do PySide,
+não “funciona no meu app”.
+
+Esta rodada não discute esforço. Discute se cada afirmação forte é sustentada pelo
+contrato que o código e os testes realmente impõem.
+
+### Verificação desta rodada
+
+- O worktree já tinha uma alteração em `runtime/uic/uiform.d`; preservei-a.
+- Durante a revisão apareceu também uma alteração do autor em
+  `tools/lupdate/lupdate.d`; preservei-a e atualizei o texto abaixo para não criticar
+  como ausente o que essa mudança já implementa.
+- `./build --list` lista **149 targets**, não os 136 ainda citados no topo antigo.
+- Os targets novos de QML/tr para Qt 5.15 passaram em ldc2 e dmd:
+  `qml-qt5`, `qmlreg-qt5`, `moclife-qt5` e `tr-qt5`.
+- `qml`, `qmlreg`, `qmlaot`, `qmltypes`, `tr`, UIC diferencial 60/60 e os dois
+  manifest gates passaram nos caminhos exercitados.
+- `dub test --root=tools/lupdate` passou: `1 modules passed unittests`.
+- `lupdate-check` passou isoladamente.
+- A matriz completa precisou ser repetida fora do sandbox porque `dub build`, chamado
+  por `lupdate-check`, tentou reescrever o cache global `~/.dub`; isso é uma limitação
+  ambiental desta execução, mas também mostra que o build não é hermético.
+- A repetição de `./build` fora do sandbox passou completa, incluindo libsample em
+  ldc2+dmd (`ALL PASS`), QML Qt5/Qt6, AOT, qmltypes, UIC 60/60 e os gates.
+- Reproduzi um falso verde do manifest gate: baseline com dois overloads
+  `C::foo` (`bound` e `unmapped-type`), current com apenas o segundo, e o gate retornou
+  **exit 0 / OK**.
+
+### O que melhorou de verdade
+
+1. **A expansão Qt5 é substancial.** O mesmo backend QML, registro de tipo, lifetime
+   do carrier e tradução rodam em Qt 5.15 e Qt 6.11, nos dois compiladores. O seam
+   `QT_VERSION` para `QQmlPrivate::RegisterType` está localizado. Isso é engenharia
+   real de compatibilidade, não uma segunda demo.
+
+2. **Os drops agregados foram trazidos para o manifest.** QtWidgets agora tem 8343
+   linhas e 681 `unmapped-type`; QML tem 2546 linhas e 544 `unmapped-type`. O residual
+   “não per-symbol” reportado por `coverage.txt` chegou a zero nos dois bindings
+   principais.
+
+3. **A política de callback ficou coerente.** Os callbacks `nothrow` que antes
+   engoliam `Exception` agora passam por `qtdOnCallbackError`. A busca atual não
+   encontrou os catches silenciosos apontados na rodada anterior.
+
+4. **`lupdate-d` entrou no grafo principal.** Há parser AST, fixture e golden. O
+   downpayment é correto; a crítica agora é sobre semântica de atualização, não mais
+   sobre ausência de integração.
+
+5. **Há uma primeira camada de governança executável.** Manifest gate e report TSV
+   existem. Ambos estão incompletos, mas já são código que pode ser endurecido em vez
+   de uma intenção no README.
+
+6. **O Lippincott por assinatura é uma das melhores peças do projeto.** Aqui o
+   elogio precisa ser específico. Em vez de gerar milhares de wrappers C++ completos,
+   o gerador declara o símbolo Qt apenas para obter seu endereço, agrupa chamadas pela
+   assinatura ABI, passa o endereço a um guard C++ compartilhado e faz o
+   `reinterpret_cast` para a função exata. O guard captura qualquer exceção C++ e o
+   Lippincott central a classifica (`typeid` + `what()`), chama `qtd_throw_d` e a
+   reergue como `QtCppException` do lado D.
+
+   Isso resolve simultaneamente três problemas difíceis: exceção C++ não atravessa
+   cegamente uma chamada `extern(C++)`, o custo não cresce como um wrapper por método,
+   e `-ffunction-sections`/`--gc-sections` mantém no binário apenas os guards usados.
+   O teste não é decorativo: `uicheck` lança uma exceção C++ real, atravessa o guard e
+   a captura tipada em D; libsample também pressiona o caminho nos dois compiladores.
+
+   Julgamento seco: isto é engenhoso de verdade. É o tipo de mecanismo que diferencia
+   este projeto de um gerador superficial. A ressalva não diminui a conquista: ele
+   depende conscientemente do ABI Itanium e do unwinder compartilhado no POSIX. A
+   maturidade seguinte é transformar essa hipótese em probes formais por compilador/
+   plataforma e definir a estratégia SEH/MSVC, não substituir a arquitetura que já
+   funciona.
+
+Reconhecimento seco: vocês responderam às oito prioridades com implementação. Isso
+merece crédito. O problema é que algumas resoluções foram declaradas mais completas
+do que são.
+
+### Achados críticos
+
+#### 1. O cleanup de `g_moAttach` continua quebrado no caminho `QtdWidget`
+
+A resolução da rodada 5 diz que o destrutor limpa os side-tables “em TODO caminho”.
+Isso é falso.
+
+`runtime/qtmoc/qtdmoc.cpp` chama `qtd_moc_teardown` apenas no destrutor de
+`QtdMocObject`. O caminho `QtdWidget` não usa esse carrier: `virtCpp` gera
+`struct Qtd_<Base> : <Base>`, anexa metadata por `qtd_moc_attach`, mas não gera
+destrutor nem conexão `destroyed` que remova `g_moAttach` e `_reg`.
+
+O teste `moclife_test.d` deleta exclusivamente um objeto criado por `newQObject`,
+portanto prova apenas o caminho que já possui `~QtdMocObject`. `cannon_widget.d`
+exercita a subclasse anexada, mas nunca a destrói nem compara a contagem do side-table.
+
+Impacto: destruir um `CannonField : QWidget @QObject` deixa:
+
+- uma entrada stale em `g_moAttach`, sujeita a alias por reutilização de endereço;
+- uma entrada em `_reg` contendo delegates que capturam o objeto D;
+- o objeto D retido, mesmo depois do C++ morrer.
+
+Isto não é só cobertura faltando. É um leak/lifetime bug exatamente no caminho que a
+resolução afirmou ter fechado.
+
+#### 2. O manifest gate perde overloads e já aceita regressão real
+
+`tests/manifest_gate.d` usa a chave `class + symbol`. Assinatura não participa. Em uma
+API como Qt isso é estruturalmente insuficiente.
+
+Números atuais:
+
+- QtWidgets: **356** chaves duplicadas; **136** têm fates diferentes.
+- QML: **124** chaves duplicadas; **34** têm fates diferentes.
+- O arquivo QtWidgets tem 8343 linhas, mas o gate anuncia apenas 7832 chaves.
+
+Como o loader grava em associative array, o último overload sobrescreve os anteriores.
+Um overload pode desaparecer, regredir ou trocar de fate e o gate continuar verde.
+Eu reproduzi o desaparecimento com um manifest sintético e o programa respondeu
+`manifest-gate OK`.
+
+Enquanto a chave não incluir assinatura canônica/USR, a frase “falha quando um símbolo
+desaparece” é objetivamente falsa. Ele falha quando desaparece o último overload
+colapsado daquela classe+nome.
+
+Também só há gates para Qt6 raw QtWidgets e Qt6 QML. Qt5, wrapper mode, WebEngine e
+os demais specs não têm baseline. Isso é um gate útil de duas superfícies, não um
+contrato da matriz.
+
+#### 3. `expected-fails.json` ainda não tem consumidor
+
+Adicionar `QQmlPrivate`, `QQmlJSTypeDescriptionReader` e `QMetaObjectBuilder` ao JSON
+melhora o inventário, mas não cria enforcement. Nenhum código lê o arquivo.
+
+Hoje não existe:
+
+- schema validation;
+- verificação de que `probe` nomeia targets existentes;
+- avaliação de condição por Qt/compiler/plataforma;
+- unexpected-pass;
+- unexpected-fail;
+- expiração ou `remove_when` executável;
+- exigência de entrada para um gap novo.
+
+Pior: dependência de API privada que deve compilar não é semanticamente um
+“expected-fail”. Misturar risco, exclusão permanente e falha esperada no mesmo array
+sem `kind` torna o modelo ambíguo antes mesmo de existir um runner.
+
+`docs/test-suite.md` diz que essas entradas “block regression”. Não bloqueiam.
+
+### Achados altos
+
+#### 4. O report TSV não descreve a matriz que diz descrever
+
+`tools/test-report.sh` é um bom protótipo, mas os dados já saem incorretos:
+`qml-ldc2`, que é Qt6, aparece com coluna `qt` igual a `-`, porque o script infere os
+eixos apenas do nome do target. O mesmo vale para grande parte dos targets Qt6
+implícitos.
+
+Além disso:
+
+- targets opcionais ausentes são omitidos por `./build --list`; nunca aparece
+  `status=skip`;
+- `optional=yes` não informa qual capability faltou;
+- o script só conhece `pass`/`fail`, apesar do contrato pedir skip/expected-fail;
+- stderr/stdout são descartados, então um failure row não é diagnosticável;
+- não há Qt patch version, tool versions, plataforma ou estado dirty;
+- o report não é target do build nem artefato de CI;
+- se `./build --list` falhar, sem `pipefail`, o script pode produzir totais vazios.
+
+Ele é uma tabela sobre nomes de targets, não ainda um resultado auditável da matriz.
+
+#### 5. Não existe CI no repositório
+
+Não há workflow GitHub/GitLab/Azure. Portanto “matriz” hoje significa uma máquina com
+Qt 5.15 e Qt 6.11 instalados, não uma política contínua.
+
+Para o norte PySide isto é o maior buraco organizacional: nenhuma mudança é obrigada
+pelo repositório a passar nos dois compiladores, nas duas versões Qt, nos probes
+privados, nos gates ou no corpus. A suíte local é forte; a governança automática é
+zero.
+
+O barulho de scheduling repetido no `libsample` também continua extremo: os mesmos
+`gen.stamp`, `libsample.a`, `libbinding_*` e `libshims.a` são anunciados muitas vezes.
+O `flock` evita corrupção, mas não transforma o grafo em um DAG limpo.
+
+#### 6. A frente QML é real, mas a superfície pública ainda é estreita
+
+O bridge provado hoje cobre um happy path importante: property escalar, sinal e slot
+`void`, exposição por context property, instanciação pelo engine e `.qmltypes`.
+Isso não é demo. Também não é ainda uma API QML madura.
+
+`cppSig` aceita apenas `int`, `bool`, `double`, `float`, `uint` e `string`. Faltam,
+entre outros, enum/flags, QObject, value types Qt, QVariant, listas/modelos, URLs,
+cores, datas e nullability. Também faltam método com retorno, read-only/required/
+constant/final/resettable property, revisions, singleton, uncreatable type, attached/
+extension types e ownership explícito.
+
+Há corner cases concretos no registro:
+
+- Qt5 usa um pool global fixo de 256 creators. No overflow, registra `create=nullptr`,
+  continua chamando `qmlregister` e devolve sucesso aparente.
+- registros repetidos também consomem o pool; não há dedup nem teste do limite;
+- `QQmlPrivate::qmlregister` tem o resultado ignorado;
+- `buildMo` cacheia somente por nome de classe, ignorando superclass e a descrição
+  completa. Duas classes D homônimas podem receber o metaobject errado;
+- os testes registram um único `Backend`; o comentário sobre “N tipos coexistem” se
+  refere a um probe que não está no repositório;
+- não há asserção de cleanup quando o engine destrói uma instância QML.
+
+Para maturidade PySide, o próximo passo não é mais outro hello-world QML. É uma matriz
+de tipos e lifetime adversarial, compartilhada por Qt5 e Qt6.
+
+#### 7. `lupdate-d` corrigiu o risco imediato; agora falta provar a semântica
+
+O extrator D é AST-based, decisão correta. O driver de atualização ainda não possui a
+semântica comprovada de um `lupdate` maduro.
+
+Durante esta revisão o código foi alterado para copiar o `.ts` existente para o merge,
+retornar erro quando `lupdate`/`lconvert` falham e rejeitar uma invocação sem inputs.
+Isso endereça corretamente os dois bugs mais graves que encontrei na leitura inicial.
+
+O gap que resta é de teste e fidelidade:
+
+- o teste golden cobre extração D, não preservação de tradução, merge D+QML/UI,
+  plural/numerus, source locations, translator comments ou propagação de erro;
+- a extração profunda de literais pode tratar strings internas de expressões não
+  literais como source/disambiguation.
+
+Chamar o conjunto de “pipeline fechado” ainda é generoso demais até o novo merge ser
+testado com catálogo traduzido e subprocessos falsamente quebrados. Mas a crítica
+correta agora é “mudança não provada”, não “driver ainda descarta traduções”.
+
+### Achados médios
+
+#### 8. A documentação voltou a contradizer o código imediatamente
+
+Exemplos atuais:
+
+- README e `docs/FEATURES.md` ainda dizem UIC **53/53**; a suíte é 60/60.
+- README e `docs/test-suite.md` ainda dizem que 493/425 drops ficam fora do manifest;
+  o código agora reporta residual zero.
+- README afirma que `X_new(...)` “não é supported spelling”, enquanto raw mode é o
+  default e dezenas de testes, UIC e QML usam exatamente `QWidget_new`,
+  `QQmlApplicationEngine_new`, etc.
+- README afirma que **every feature** roda em Qt5 e Qt6, mas o próprio grafo marca
+  Qt5 AOT como follow-up e valida `.qmltypes` apenas com Qt6QmlCompiler.
+- `docs/test-suite.md` diz que todo target roda em ldc2 e dmd; `lupdate-check` e os
+  manifest gates são singletons.
+- `docs/FEATURES.md` chama UIC de feature-complete; `docs/uic-spec.md` ainda abre como
+  roadmap de proof-of-concept, mantém checklist majoritariamente incompleto e diz
+  “tr() is a later pass”.
+
+O problema não é polish. A documentação não pode ser usada para decidir o que está
+suportado.
+
+#### 9. “UIC feature-complete” excede o poder do oracle atual
+
+60/60 é um ótimo corpus baseline. O dump diferencial, porém, compara:
+
+- objetos nomeados;
+- classe, parent e um texto visível;
+- uma lista selecionada de propriedades;
+- alguns value types especiais.
+
+Ele ordena linhas, logo não verifica ordem de siblings, e não cobre toda propriedade,
+layout semantics, action ordering, overload gerado ou equivalência de código com
+`pyside6-uic`. Existem checks comportamentais extras, mas o oracle continua parcial.
+
+A formulação madura é “60 forms passam no oracle definido”, não “spec completa”.
+
+#### 10. O QRC é útil, mas está muito menos coberto que o UIC
+
+O parser manual de `.qrc` tem um único fixture ASCII. Não há testes para language/
+country, compression, threshold, aliases com path, entidades XML, duplicatas,
+prefixos múltiplos, nomes Unicode ou arquivos vazios.
+
+`utf16be` afirma BMP-only sem validar; o name length usa bytes UTF-8, não unidades
+UTF-16. Nome não ASCII pode gerar blob inválido, e non-BMP certamente não tem surrogate
+pair correto.
+
+Isto é um CTFE resource packer funcional para o subset atual. Não é ainda substituto
+geral auditado de `rcc`.
+
+### Correções de linguagem obrigatórias
+
+Até os contratos serem ampliados, parem de escrever:
+
+- “cleanup em TODO caminho”;
+- “símbolo desaparecido sempre falha o gate”;
+- “expected-fails bloqueiam regressão”;
+- “every feature em Qt5 e Qt6”;
+- “`X_new` não é suportado”;
+- “UIC feature-complete”.
+
+Essas frases não são ambiciosas. São falsas no estado atual.
+
+### Prioridade brutal da rodada 6
+
+1. **Consertar lifetime de `QtdWidget`.** Gerar destrutor/teardown para o trampoline
+   anexado e adicionar teste que destrói a subclasse e exige `g_moAttach` + `_reg`
+   de volta ao baseline.
+2. **Dar identidade real ao manifest.** Classe + assinatura canônica/USR + kind;
+   rejeitar chaves duplicadas; testar overload sumido/regredido.
+3. **Criar runner de expected-fails/risk registry.** Schema, condições, probe target,
+   unexpected-pass/fail e expiração. Separar `risk`, `expected_fail` e `permanent_exclusion`.
+4. **Pôr a matriz em CI.** Pelo menos Linux, dmd+ldc2, Qt 5.15+Qt 6.x, artifacts de
+   report/coverage e gates obrigatórios.
+5. **Tornar o report verdadeiro.** Metadata explícita no target, Qt exato, skip reason,
+   expected status, dirty state e log de falha; não inferir tudo do nome.
+6. **Provar o `lupdate-d` endurecido.** Testar merge/preservação, falha de subprocesso,
+   plural e fazer um único fixture atravessar o pipeline inteiro.
+7. **Fazer a matriz QML adversarial.** Múltiplos tipos homônimos/diferentes, registro
+   repetido, limite Qt5, destruição pelo engine, erros de factory, enums, QObject,
+   listas/modelos, retornos e property flags.
+8. **Reescrever docs a partir do grafo atual.** Sem números e absolutos stale; gerar
+   partes da matriz/coverage automaticamente.
+9. **Definir honestamente os subsets de UIC e QRC.** Expandir oracle/corpus antes de
+   promover a palavra “complete”.
+10. **Continuar a dívida estrutural já conhecida.** Wrapper como default, IR do
+    gerador, typesystem sem regex, ABI probes e Windows/MSVC continuam abertas.
+
+## Resolução da rodada 6 (commits c5240e0..948dcb9)
+
+Rodada sobre falsos verdes. Cada achado atacado — provando que o verde não esconde a regressão:
+
+1. **QtdWidget lifetime (#1, era falso "TODO caminho").** O trampolim `Qtd_<Base>` ganhou
+   destrutor `~Qtd_<Base>() { qtd_moc_detach(this, d); }`; `moclife_widget.d` cria a subclasse,
+   destrói e EXIGE `g_moAttach`+`_reg` no baseline. `moclife_widget-{ldc2,dmd}-{qt5,qt6}` verde.
+2. **Manifest com identidade real (#2, false-green reproduzido).** Chave = classe + **USR** do
+   clang (inclui assinatura) → overloads são linhas distintas (QtWidgets 7832→8343). Gate detecta
+   dup-key, e roda `-unittest --DRT-testmode=run-main` (testa overload sumido/regredido) ANTES do
+   check real. Provado: dropar 1 overload agora dá exit 1.
+3. **Consumer de expected-fails (#3).** Schema v2 com `kind` (permanent_exclusion/known_gap/risk)
+   + `probe_targets` estruturados; `expected_fails_check.d` valida schema + que todo probe nomeia
+   target REAL de `./build --list`. Target `expected-fails-check`.
+4. **CI (#5, maior buraco).** `.github/workflows/ci.yml`: Linux, dmd+ldc2, Qt5+Qt6, gates
+   obrigatórios, artifacts. HONESTO: não validado em runner real (Qt distro ~6.4 ≠ 6.11 do dev box).
+5. **Report verdadeiro (#4).** Eixo Qt correto (`qml-ldc2`→qt6, não `-`), header com commit/dirty/
+   versões exatas/caps, coluna de log em falha, pipefail.
+6. **lupdate endurecido (#6).** Falha de subprocess → exit≠0; catálogo existente PRESERVADO (merge
+   lconvert com o catálogo por último = vence); `lupdate-check` testa preservação (KEEP_ME).
+7. **QML adversarial (#7, parcial).** buildMo agora chaveia por FORMA (não só nome) → homônimos não
+   colidem; overflow do pool Qt5 não finge sucesso; resultado de `qmlregister` checado. `qmltwo`
+   registra 2 tipos distintos e instancia AMBOS. Achou limitação real (typeId compartilhado quebra
+   property tipada cross-tipo no Qt6) → known_gap. Falta a matriz de tipos completa.
+8. **Docs sem falsos absolutos (#8/#9 + linguagem).** Corrigidos: X_new (raw mode USA), 53→60,
+   493/425→residual 0, "every feature Qt5+Qt6" qualificado, "expected-fails bloqueiam" → é
+   inventário, "feature-complete" → "60 forms passam no oracle definido".
+
+Aberto (assumido): matriz de tipos QML completa (#7 tail), unexpected-pass/fail runner (#3 tail),
+plural/merge do lupdate (#6 tail), gates além de Qt6-raw/Qt6-QML, e a dívida estrutural (#10:
+wrapper-default, IR, typesystem sem regex, Windows). CI precisa de primeiro verde num runner real.
+
+### Veredito da rodada 6
+
+O projeto está claramente melhor. A paridade QML/tr Qt5+Qt6, os callbacks observáveis,
+o manifest completo para drops e o lupdate no grafo são trabalho sério. Não retiro
+nenhum desses créditos.
+
+Mas esta foi a rodada em que a governança nova começou a ser testada contra si mesma,
+e ela falhou em pontos básicos: overloads desaparecem sem quebrar o gate,
+expected-fails não são executados, o report mente o eixo Qt e o cleanup “total” omite
+o caminho de subclasse anexada.
+
+Resumo brutal: vocês não estão mais construindo uma demo. Também não podem mais usar
+testes estreitos para autorizar frases universais. A próxima maturidade não virá de
+mais targets verdes; virá de provar que um verde não consegue esconder a regressão
+que ele afirma vigiar.
+
 ## Rodada 5 refeita: QML entrou no jogo, agora a cobranca muda
 
 Esta rodada substitui a "Rodada 5" anterior. Ela estava factual e temporalmente
