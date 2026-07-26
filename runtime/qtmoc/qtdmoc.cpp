@@ -13,13 +13,16 @@
 #include <unordered_map>
 
 // QML type registration is compiled in ONLY when reggae defines QTD_ENABLE_QML — i.e. the
-// binding's pkg-config modules include Qt6Qml. (An __has_include probe does NOT work: the base
-// `-I…/qt6` exposes QtQml headers to EVERY binding, so a widgets binding would wrongly pull in
-// QQmlPrivate::qmlregister and fail to link against Qt6Qml.) Widgets/core stay Qt6Qml-free.
+// binding's pkg-config modules include Qt5Qml or Qt6Qml. (An __has_include probe does NOT work:
+// the base `-I…/qt6` exposes QtQml headers to EVERY binding, so a widgets binding would wrongly
+// pull in QQmlPrivate::qmlregister and fail to link against QtQml.) Widgets/core stay QtQml-free.
+// The QQmlPrivate::RegisterType layout differs between Qt5 and Qt6 — handled below via QT_VERSION.
 #ifdef QTD_ENABLE_QML
 #  define QTD_HAVE_QML 1
 #  include <QtQml/qqmlprivate.h>
 #  include <QtQml/qqmllist.h>
+#  include <array>
+#  include <utility>
 #endif
 
 extern "C" {
@@ -249,13 +252,13 @@ struct QtdQmlType {
     void* (*makeInstance)(void*, void*);   // (self=QtdQmlType*, qobj) -> D backing object
     void  (*destroyInstance)(void*, void*); // (self, dobj) -> unregister on the D side
 };
-// QQmlPrivate create hook: memory is QML-owned (objectSize bytes), udata is the QtdQmlType*.
-static void qtd_qml_create(void* mem, void* udata) {
-    auto* t = static_cast<QtdQmlType*>(udata);
+// Shared creation: placement-new the carrier in QML-owned memory, wire its meta-object, and
+// call back into D to build + bind the backing T instance.
+static void qtd_qml_construct(void* mem, QtdQmlType* t) {
     auto* o = new (mem) QtdMocObject();
     o->mo = t->mo; o->slotcb = t->slotcb; o->propcb = t->propcb;
     o->nsig = t->nsig; o->nslot = t->nslot; o->nprop = t->nprop;
-    o->qmlUserdata = udata;
+    o->qmlUserdata = t;
     g_moAttach[o] = MocInfo{o->mo, nullptr, t->slotcb, t->propcb, t->nsig, t->nslot, t->nprop};
     void* dobj = t->makeInstance(t, o);   // D: new T, bind signals to `o`, register dispatch
     o->dobj = dobj;
@@ -268,6 +271,25 @@ static void qtd_qml_on_destroy(void* self) {
     g_moAttach.erase(self);
     if (t && o->dobj && t->destroyInstance) t->destroyInstance(t, o->dobj);
 }
+#if QT_VERSION >= 0x060000
+// Qt6: RegisterType.create carries userdata (the QtdQmlType*).
+static void qtd_qml_create6(void* mem, void* udata) { qtd_qml_construct(mem, static_cast<QtdQmlType*>(udata)); }
+#else
+// Qt5: RegisterType.create is `void(*)(void*)` with NO userdata field. Give each registered type
+// its own create trampoline from a fixed pool, each hardwired (compile-time) to a slot that holds
+// the QtdQmlType*. Caps registrable D QML types at the pool size — plenty for a real app.
+// (extern "C++": this whole file is inside `extern "C"`, but templates need C++ linkage.)
+extern "C++" {
+static QtdQmlType* g_qt5Types[256];
+static int g_qt5Count = 0;
+template<size_t N> static void qt5_create(void* mem) { qtd_qml_construct(mem, g_qt5Types[N]); }
+template<size_t... Is>
+static std::array<void(*)(void*), sizeof...(Is)> mkCreators(std::integer_sequence<size_t, Is...>) {
+    return {{ &qt5_create<Is>... }};
+}
+static const auto g_qt5Creators = mkCreators(std::make_index_sequence<256>());
+}
+#endif
 } // namespace
 
 // Register a D @QObject type `cn` as the QML element `uri/qmlName vmaj.vmin`. Same
@@ -283,21 +305,35 @@ void* qtd_qml_register_type(
         sigs, nsig, slotSigs, nslot, propNames, propTypes, propNotify, nprop);
     auto* t = new QtdQmlType{mo, nsig, nslot, nprop, slotcb, propcb, makeInstance, destroyInstance};
     QQmlPrivate::RegisterType rt{};
-    rt.structVersion = int(QQmlPrivate::RegisterType::CurrentVersion);
-    rt.typeId = QMetaType::fromType<QtdMocObject*>();
-    rt.listId = QMetaType::fromType<QQmlListProperty<QtdMocObject>>();
     rt.objectSize = int(sizeof(QtdMocObject));
-    rt.create = &qtd_qml_create;
-    rt.userdata = t;
     rt.uri = uri;
-    rt.version = QTypeRevision::fromVersion(vmaj, vmin);
     rt.elementName = qmlName;
     rt.metaObject = mo;
     rt.parserStatusCast = -1;
     rt.valueSourceCast = -1;
     rt.valueInterceptorCast = -1;
+#if QT_VERSION >= 0x060000
+    rt.structVersion = int(QQmlPrivate::RegisterType::CurrentVersion);
+    rt.typeId = QMetaType::fromType<QtdMocObject*>();
+    rt.listId = QMetaType::fromType<QQmlListProperty<QtdMocObject>>();
+    rt.create = &qtd_qml_create6;   // userdata carries the QtdQmlType*
+    rt.userdata = t;
+    rt.version = QTypeRevision::fromVersion(vmaj, vmin);
     rt.finalizerCast = -1;
     rt.revision = QTypeRevision::fromVersion(vmaj, vmin);
+#else
+    rt.version = 0;   // Qt5 RegisterType struct version
+    // Built-in QObject* metatype (id 39): every carrier is a QObject subclass, and QML keys the
+    // element on the metaObject, not the metatype. Avoids qRegisterMetaType<QtdMocObject*>, which
+    // in Qt5 pulls a sizeof(QWidget) probe (QtWidgets isn't included here).
+    rt.typeId = int(QMetaType::QObjectStar);
+    rt.listId = 0;
+    rt.create = (g_qt5Count < 256) ? g_qt5Creators[g_qt5Count] : nullptr;   // per-type trampoline
+    if (g_qt5Count < 256) g_qt5Types[g_qt5Count++] = t;
+    rt.versionMajor = vmaj;
+    rt.versionMinor = vmin;
+    rt.revision = 0;
+#endif
     QQmlPrivate::qmlregister(QQmlPrivate::TypeRegistration, &rt);
     return t;
 }

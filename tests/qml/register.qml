@@ -1,5 +1,5 @@
 import App 1.0
-import QtQml   // for the Component.onCompleted attached signal
+import QtQml 2.15   // for the Component.onCompleted attached signal
 // Instantiates the D-registered type. Setting inValue writes a D @Property; onCompleted
 // reads it back through the QML binding and calls the D @Slot fromQml.
 Backend {

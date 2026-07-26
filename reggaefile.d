@@ -77,18 +77,26 @@ Build reggaeBuild() {
 
     // --- QML: a D @QObject backend (runtime meta-object) driving a qrc-embedded .qml. No C++
     //     type registrar — the moc builds the QMetaObject, qrc bundles the .qml (:/), engine loads it.
-    auto qml = qtdBinding(root, "spec_cxx_qml.json", ["Qt6Qml", "Qt6Gui"]);
     auto qmlExtra = buildPath(root, "runtime", "qrc", "qrc.d")
         ~ " -I" ~ buildPath(root, "runtime", "qrc") ~ " -J=" ~ buildPath(root, "tests", "qml");
-    foreach (dc; DCS) {
-        // backend_test: D object via setContextProperty. register_test: D type via qmlRegisterType.
-        all ~= qtdTest("qml-" ~ dc, t("qml", "backend_test.d"), qml, dc, qmlExtra);
-        all ~= qtdTest("qmlreg-" ~ dc, t("qml", "register_test.d"), qml, dc, qmlExtra);
-        all ~= qtdTest("moclife-" ~ dc, t("qml", "moclife_test.d"), qml, dc);   // side-table cleanup
+    // The Qt5 and Qt6 QML bindings share d_package qt.qml, so ONE set of test sources runs on
+    // both — the runtime features (setContextProperty, qmlRegisterType, moc lifetime, tr) are the
+    // parity surface. Qt-version seams (e.g. QQmlPrivate::RegisterType layout) live in qtdmoc.cpp
+    // behind a single QT_VERSION branch, so a future Qt7 is a small localized delta, not a rewrite.
+    void qmlSuite(QtdBinding b, string tag) {
+        foreach (dc; DCS) {
+            all ~= qtdTest("qml" ~ tag ~ "-" ~ dc, t("qml", "backend_test.d"), b, dc, qmlExtra);   // setContextProperty
+            all ~= qtdTest("qmlreg" ~ tag ~ "-" ~ dc, t("qml", "register_test.d"), b, dc, qmlExtra); // qmlRegisterType
+            all ~= qtdTest("moclife" ~ tag ~ "-" ~ dc, t("qml", "moclife_test.d"), b, dc);           // side-table cleanup
+        }
+        all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
     }
-    all ~= qmlAotTargets(root, qml);   // qmlcachegen: .qml -> linked bytecode (skipped if absent)
-    all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes, validated by Qt's own reader
-    all ~= qmlTrTargets(root, qml);   // runtime tr(): mixin Tr + lrelease .qm round-trip
+    auto qml = qtdBinding(root, "spec_cxx_qml.json", ["Qt6Qml", "Qt6Gui"]);
+    qmlSuite(qml, "");
+    all ~= qmlAotTargets(root, qml);   // qmlcachegen (Qt6 unit/loader format); Qt5 AOT is a follow-up
+    all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes (Qt-agnostic), validated by Qt's reader
+    if (haveQt5())
+        qmlSuite(qtdBinding(root, "spec_cxx_qml_qt5.json", ["Qt5Qml", "Qt5Gui"]), "-qt5");
 
     // --- lupdate-d extraction, in the build of record: run the D-aware extractor on a fixture
     //     and diff its .ts against the checked-in golden (module context + tr/UFCS/translate forms).
@@ -204,20 +212,20 @@ Target[] lupdateCheckTargets(string root) {
 // it compiles tr_test.ts -> .qm, loads it, and checks the translation — the runtime end of the
 // lupdate-d -> .ts -> lrelease -> .qm -> tr() loop. Passing the .qm as argv[1] triggers the
 // full round-trip; without lrelease the target still runs (identity only).
-Target[] qmlTrTargets(string root, QtdBinding qml) {
+Target[] qmlTrTargets(string root, QtdBinding qml, string tag = "") {
     auto here = buildPath(root, "tests", "qml");
     auto tsFile = buildPath(here, "tr_test.ts");
     auto lrelease = lreleasePath();
     Target[] ts;
     foreach (dc; DCS) {
-        auto bin = qtdApp("tr-" ~ dc ~ "-bin", buildPath(here, "tr_test.d"), qml, dc);
+        auto bin = qtdApp("tr" ~ tag ~ "-" ~ dc ~ "-bin", buildPath(here, "tr_test.d"), qml, dc);
         if (lrelease.length) {
-            auto qm = buildPath(qml.bdir, "tr-" ~ dc ~ ".qm");
+            auto qm = buildPath(qml.bdir, "tr" ~ tag ~ "-" ~ dc ~ ".qm");
             auto qmT = Target(qm, lrelease ~ " " ~ tsFile ~ " -qm $out", [Target(tsFile)]);
             // deps [bin, qmT] -> $in = "<test-bin> <qm>" -> the test loads the .qm (full check).
-            ts ~= Target.phony("tr-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin, qmT]);
+            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin, qmT]);
         } else {
-            ts ~= Target.phony("tr-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
         }
     }
     return ts;

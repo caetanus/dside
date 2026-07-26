@@ -6,6 +6,14 @@ headers instead. The generated binding is **pure `extern(C++)` D** — modules m
 straight to the Qt symbols, so there is no per-class C++ shim to compile and a class
 you never `import` costs nothing (à la carte).
 
+**Runs on Qt 5 and Qt 6** (5.15 and 6.11 in the test matrix) from day one — that dual
+coverage is deliberate: the generator re-runs against either version's headers, and the
+few genuine Qt-version differences (value-type ABI, and private-API shapes like
+`QQmlPrivate::RegisterType`) are isolated behind single `QT_VERSION` seams, so a future
+Qt 7 should be a small localized delta rather than a rewrite. Every feature — bindings,
+moc, uic, qrc, QML (`setContextProperty`, `qmlRegisterType`), and translation (`tr`) — is
+verified on **both** Qt 5 and Qt 6, on **both** ldc2 and dmd.
+
 > **Platform: Linux / POSIX is Tier 1.** The build orchestrates `clang++`/`ldc2`/`dmd`
 > through reggae with POSIX shell (`flock`, `find`, globs). Windows/MSVC-x64 is a
 > documented, not-yet-working roadmap — see `docs/windows-roadmap.md`.

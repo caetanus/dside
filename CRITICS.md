@@ -419,4 +419,6 @@ Os 8 pontos, atacados um a um e verificados (ldc2+dmd, matriz cheia verde):
    os targets qmlreg/qmltypes/moc SÃO os probes por-build. (`ff19f33`)
 
 Resta explícito como follow-up (não bloqueante): counters por-categoria com histórico em
-CI, e rodar o probe de API privada numa matriz de versões Qt (só 6.11 instalada aqui).
+CI. **CORREÇÃO:** as features de QML/tr da rodada 5 foram feitas só no Qt6, violando a
+regra double-Qt (day 1) — Qt5 5.15 ESTÁ instalado. Paridade Qt5 sendo levada em seguida
+(binding Qt5 QML + targets Qt5 para tr/moc/qml; `RegisterType` do Qt5 tem layout distinto).

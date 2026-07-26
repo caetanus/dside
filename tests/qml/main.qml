@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Headless round-trip: binds to a D @Property, and on change calls a D @Slot.
 QtObject {
     property int mirror: backend.inValue          // D property -> QML binding (ReadProperty)

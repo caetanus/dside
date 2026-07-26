@@ -234,6 +234,12 @@ bool signalArg(CXType at, int i, ref Signal s) {
         lp = "%s a%d".format(canon(at), i); pass = "static_cast<int>(a%d)".format(i);
         cbc = "int"; cbd = ed;
     } else if (ak.kind == CXType_Pointer && isRecord(clang_getPointeeType(ak))) {
+        // A pointer to a forward-declared-only (foreign) object type — e.g. QWidget* on
+        // QSignalMapper::mapped, in a QtQml binding that doesn't include QtWidgets — can't be a
+        // proper QMetaType: Qt5's functor-connect instantiates QMetaTypeId<T*>, which needs T
+        // complete. It's also opaque from D. Skip the whole signal (bound module types are full
+        // definitions here, so this only drops genuinely-foreign object signals).
+        if (!clang_isCursorDefinition(clang_getTypeDeclaration(clang_getPointeeType(ak)))) return false;
         auto dn = clang_getPointeeType(ak).canon.lastNs; s.imports ~= dn;
         lp = "%s a%d".format(cpp, i); pass = "a%d".format(i);   // cpp spelling keeps ptr/qualification
         cbc = cpp; cbd = dn;
