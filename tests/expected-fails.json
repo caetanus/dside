@@ -31,6 +31,31 @@
       "reason": "Linux/POSIX is Tier 1; Windows/MSVC-x64 is a documented roadmap (docs/windows-roadmap.md), not tested.",
       "since": "always",
       "remove_when": "the windows-roadmap tiers are implemented and green"
+    },
+    {
+      "id": "qml-private-qqmlprivate",
+      "area": "qml/private-api",
+      "reason": "qmlRegisterType fills QQmlPrivate::RegisterType and calls QQmlPrivate::qmlregister — a private struct whose layout (structVersion, CreationMethod) can shift between Qt minor versions. No public API registers a runtime QMetaObject as a QML type.",
+      "probe": "qmlreg-{ldc2,dmd} compile+link against QQmlPrivate; they FAIL to build if the struct/symbol changes — that IS the per-version guard.",
+      "risk_tier": "same as QMetaObjectBuilder (moc)",
+      "since": "commit 5191609",
+      "remove_when": "Qt exposes a public API to register a runtime metaobject as a QML type, or the probe is extended across a Qt version matrix in CI"
+    },
+    {
+      "id": "qml-private-typedescreader",
+      "area": "qml/private-api",
+      "reason": ".qmltypes validation uses QQmlJSTypeDescriptionReader from Qt6QmlCompiler private API (the same reader qmllint/qmltyperegistrar use). Private; can change across versions.",
+      "probe": "qmltypes-{ldc2,dmd} compile the validator against it and skip cleanly if Qt6QmlCompiler is absent; a signature change breaks the build.",
+      "since": "commit 0fc73b3",
+      "remove_when": "a public qmltypes parser ships, or the probe runs across a Qt version matrix"
+    },
+    {
+      "id": "moc-private-metaobjectbuilder",
+      "area": "moc/private-api",
+      "reason": "The runtime moc (qtdmoc.cpp) builds QMetaObjects with QMetaObjectBuilder, a Qt private API. Long-standing dependency (documented in README); listed here so it is tracked as structured risk, not just prose.",
+      "probe": "every moc/qml/tr target compiles qtdmoc.cpp against it; exercised on the Qt versions in the matrix (6.11, and 5.15 via the wrap specs).",
+      "since": "commit (moc-via-ctfe)",
+      "remove_when": "never expected (no public equivalent); revisit if Qt ships a public runtime-metaobject builder"
     }
   ]
 }
