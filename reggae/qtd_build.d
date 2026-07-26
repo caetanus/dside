@@ -53,6 +53,15 @@ string qmlcachegenPath() {
     return exists(p) ? p : "";
 }
 
+// lrelease (Qt's .ts -> .qm compiler) — a user-facing tool, usually in bindir or PATH.
+// Returns "" if absent so the translation round-trip test degrades to an identity-only check.
+string lreleasePath() {
+    auto bd = execute(["pkg-config", "--variable=bindir", "Qt6Core"]).output.strip;
+    foreach (p; [buildPath(bd, "lrelease"), "/usr/bin/lrelease"])
+        if (exists(p)) return p;
+    return execute(["which", "lrelease"]).status == 0 ? "lrelease" : "";
+}
+
 // --- the binding graph --------------------------------------------------------
 
 struct QtdBinding {

@@ -87,6 +87,7 @@ Build reggaeBuild() {
     }
     all ~= qmlAotTargets(root, qml);   // qmlcachegen: .qml -> linked bytecode (skipped if absent)
     all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes, validated by Qt's own reader
+    all ~= qmlTrTargets(root, qml);   // runtime tr(): mixin Tr + lrelease .qm round-trip
 
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);
@@ -147,6 +148,30 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]);
         ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+    }
+    return ts;
+}
+
+// Runtime tr(): a class with `mixin Tr` gets a Qt-style bare tr("…") (context = class name).
+// The test always checks the identity (no translator -> source), and when lrelease is present
+// it compiles tr_test.ts -> .qm, loads it, and checks the translation — the runtime end of the
+// lupdate-d -> .ts -> lrelease -> .qm -> tr() loop. Passing the .qm as argv[1] triggers the
+// full round-trip; without lrelease the target still runs (identity only).
+Target[] qmlTrTargets(string root, QtdBinding qml) {
+    auto here = buildPath(root, "tests", "qml");
+    auto tsFile = buildPath(here, "tr_test.ts");
+    auto lrelease = lreleasePath();
+    Target[] ts;
+    foreach (dc; DCS) {
+        auto bin = qtdApp("tr-" ~ dc ~ "-bin", buildPath(here, "tr_test.d"), qml, dc);
+        if (lrelease.length) {
+            auto qm = buildPath(qml.bdir, "tr-" ~ dc ~ ".qm");
+            auto qmT = Target(qm, lrelease ~ " " ~ tsFile ~ " -qm $out", [Target(tsFile)]);
+            // deps [bin, qmT] -> $in = "<test-bin> <qm>" -> the test loads the .qm (full check).
+            ts ~= Target.phony("tr-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin, qmT]);
+        } else {
+            ts ~= Target.phony("tr-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+        }
     }
     return ts;
 }

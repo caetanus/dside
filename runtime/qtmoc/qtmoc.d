@@ -36,6 +36,8 @@ extern (C) nothrow {
     // marshaling de QString (implementado em qtdmoc.cpp, que linka QtCore)
     void* qtd_str_to_qs(const(char)*, int);
     void  qtd_qs_free(void*);
+    void* qtd_tr(const(char)*, const(char)*, const(char)*, int);   // QCoreApplication::translate
+    bool  qtd_install_translator(const(char)*);                    // new QTranslator + install (C++)
     void  qtd_qs_set(void*, const(char)*, int);   // assign a D string into an existing QString
     int   qtd_qs_utf8len(void*);
     void  qtd_qs_utf8(void*, char*);
@@ -71,6 +73,23 @@ string qsToD(void* qs) {
     auto buf = new char[n];
     if (n) qtd_qs_utf8(qs, buf.ptr);
     return cast(string) buf[0 .. n];
+}
+
+// ---- tradução (tr / install) ------------------------------------------------
+/// `tr` LIVRE e UFCS — `"foo".tr`, `"foo".tr("Contexto")`. Traduz `source` via
+/// QCoreApplication.translate. Sem tradutor/`.qm` cobrindo a string, o Qt devolve `source`
+/// inalterada, então é sempre seguro. `disambig`/`n` (plural) opcionais.
+string tr(string source, string context = "", string disambig = null, int n = -1) {
+    auto qs = qtd_tr((context ~ "\0").ptr, (source ~ "\0").ptr,
+                     disambig is null ? null : (disambig ~ "\0").ptr, n);
+    auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
+
+/// Instala um tradutor SEM `_new`: `QTranslator.install("app_pt")`. O QTranslator (e um
+/// QCoreApplication, se ainda não houver) são construídos no lado C++ — o usuário nunca
+/// constrói nada à mão. `.qm` vazio -> tradutor vazio (identidade). Retorna se o `.qm` carregou.
+struct QTranslator {
+    static bool install(string qm = "") { return qtd_install_translator((qm ~ "\0").ptr); }
 }
 
 /// UDA de classe: marca um QObject D com meta-objeto em runtime (sinais/slots).

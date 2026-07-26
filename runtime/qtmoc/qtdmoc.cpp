@@ -4,6 +4,8 @@
 // por CTFE). qt_metacall relaciona: índices de sinal -> activate; de slot -> D.
 #include <QObject>
 #include <QString>
+#include <QCoreApplication>
+#include <QTranslator>
 #include <QtCore/private/qmetaobjectbuilder_p.h>
 #include <cstring>
 #include <new>
@@ -167,6 +169,29 @@ int   qtd_qs_utf8len(void* qs) { return (int) static_cast<QString*>(qs)->toUtf8(
 void  qtd_qs_utf8(void* qs, char* dst) {
     QByteArray b = static_cast<QString*>(qs)->toUtf8();
     memcpy(dst, b.constData(), b.size());
+}
+
+// tr(): QCoreApplication::translate(context, source[, disambiguation[, n]]). Returns a heap
+// QString* (freed by qtd_qs_free on the D side, like qtd_str_to_qs). No translator installed
+// -> Qt returns `source` unchanged, so tr() is always safe to call.
+void* qtd_tr(const char* ctx, const char* src, const char* disambig, int n) {
+    return new QString(QCoreApplication::translate(ctx, src, disambig, n));
+}
+
+// Install a translator that loaded `qmBase` (.qm; empty -> an empty translator). Ensures a
+// QCoreApplication exists first (installTranslator needs the app singleton), so it works even
+// before the user builds one. Everything is heap-constructed in C++ — no D-side _new/factory.
+bool qtd_install_translator(const char* qmBase) {
+    if (!QCoreApplication::instance()) {
+        static int argc = 1;
+        static char arg0[] = "qtd";
+        static char* argv[] = { arg0, nullptr };
+        new QCoreApplication(argc, argv);
+    }
+    auto* t = new QTranslator();
+    bool ok = (qmBase && *qmBase) ? t->load(QString::fromUtf8(qmBase)) : true;
+    QCoreApplication::installTranslator(t);
+    return ok;
 }
 
 // acesso a propriedades por nome via QVariant (roda ReadProperty/WriteProperty no
