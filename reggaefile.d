@@ -11,9 +11,10 @@ import reggae;
 import qtd_build;
 import std.file : getcwd, exists, dirEntries, SpanMode;
 import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
-import std.array : array, replace;
+import std.array : array, replace, join;
 import std.algorithm : map, filter, sort;
 import std.process : execute;
+import std.string : strip;
 
 enum DCS = ["ldc2", "dmd"];
 
@@ -85,6 +86,7 @@ Build reggaeBuild() {
         all ~= qtdTest("qmlreg-" ~ dc, t("qml", "register_test.d"), qml, dc, qmlExtra);
     }
     all ~= qmlAotTargets(root, qml);   // qmlcachegen: .qml -> linked bytecode (skipped if absent)
+    all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes, validated by Qt's own reader
 
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);
@@ -145,6 +147,40 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]);
         ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+    }
+    return ts;
+}
+
+// .qmltypes emission: a D driver (qmltypes_gen) writes App.qmltypes from the CTFE meta-object
+// of a @QObject type (the qmltyperegistrar equivalent), then Qt's OWN parser
+// (QQmlJSTypeDescriptionReader, what qmllint/qmltyperegistrar use) validates it — proving the
+// generated type description is well-formed and has the right shape. Needs Qt6QmlCompiler
+// (private API); skipped if absent. The C++ validator is dc-independent but named per-dc so
+// reggae never double-schedules the shared node.
+Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
+    if (execute(["pkg-config", "--exists", "Qt6QmlCompiler"]).status != 0) return [];
+    auto here = buildPath(root, "tests", "qml");
+    auto genD = buildPath(here, "qmltypes_gen.d");
+    auto checkCpp = buildPath(here, "qtd_qmltypes_check.cpp");
+    auto ccflags = pkgCflags(["Qt6QmlCompiler", "Qt6Qml", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 "
+        ~ (modulePrivateFlags(pkgCflags(["Qt6QmlCompiler"]), "QtQmlCompiler")
+           ~ modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")
+           ~ modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")).join(" ");
+    // raw pkg-config libs (this is a clang++ link, not the D linker's -L= form).
+    auto clibs = execute(["pkg-config", "--libs", "Qt6QmlCompiler", "Qt6Qml", "Qt6Core"]).output.strip;
+    Target[] ts;
+    foreach (dc; DCS) {
+        // the CTFE generator binary. Built against the qml binding so libshims resolves the
+        // qtd_* symbols dmd emits for an (unused) Signal.emit; --gc-sections drops the rest.
+        auto gen = qtdApp("qmltypes-gen-" ~ dc ~ "-bin", genD, qml, dc);
+        // run the generator -> App.qmltypes (deps=[gen] so $in is the generator path).
+        auto outTypes = buildPath(qml.bdir, "App-" ~ dc ~ ".qmltypes");
+        auto types = Target(outTypes, "$in $out", [gen]);
+        // Qt's authoritative .qmltypes reader.
+        auto check = Target("qmltypes-check-" ~ dc ~ "-bin",
+            "clang++ " ~ ccflags ~ " " ~ checkCpp ~ " -o $out " ~ clibs, [Target(checkCpp)]);
+        // validate: deps=[check, types] -> $in = "<validator> <App.qmltypes>".
+        ts ~= Target.phony("qmltypes-" ~ dc, "$in", [check, types]);
     }
     return ts;
 }

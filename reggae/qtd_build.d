@@ -33,14 +33,17 @@ string pkgLibs(string[] mods) {
 // QMetaObjectBuilder lives in Qt's PRIVATE API: from the pkg-config `-I…/QtCore`, find
 // the sibling `-I…/QtCore/<full.patch.version>[/QtCore]` that has QtCore/private. Ported
 // verbatim from the old generator (emit.d) — qtdmoc.cpp needs these to compile.
-string[] mocPrivateFlags(string cflags) {
+// For a Qt module dir `-I…/QtX`, find the sibling `-I…/QtX/<full.patch.ver>[/QtX]` that holds
+// `QtX/private` (Qt private API). Generic over the module name.
+string[] modulePrivateFlags(string cflags, string mod) {
     foreach (f; cflags.split)
-        if (f.startsWith("-I") && f.endsWith("/QtCore") && exists(f[2 .. $]))
+        if (f.startsWith("-I") && f.endsWith("/" ~ mod) && exists(f[2 .. $]))
             foreach (de; dirEntries(f[2 .. $], SpanMode.shallow))
-                if (de.isDir && exists(buildPath(de.name, "QtCore", "private")))
-                    return ["-I" ~ de.name, "-I" ~ buildPath(de.name, "QtCore")];
+                if (de.isDir && exists(buildPath(de.name, mod, "private")))
+                    return ["-I" ~ de.name, "-I" ~ buildPath(de.name, mod)];
     return [];
 }
+string[] mocPrivateFlags(string cflags) { return modulePrivateFlags(cflags, "QtCore"); }
 
 // qmlcachegen (Qt's AOT QML bytecode compiler) lives under the Qt libexecdir. Returns "" if
 // it isn't installed, so callers can skip the AOT targets on a system that lacks it.
