@@ -166,7 +166,9 @@ private string[] splitSlash(string s) {
 
 // Generate the D that embeds every file via import(), builds the blob, and registers it at
 // module init. Resource path = prefix + '/' + (alias or the file's basename path).
-string qrcRegister(string qrcXml) {
+// `qresourcePkg` is the generated binding's d_package (where QResource lives); defaults to
+// qt.widgets, the common case. QML/other-module apps pass their own (e.g. "qt.qml").
+string qrcRegister(string qrcXml, string qresourcePkg = "qt.widgets") {
     auto files = parseQrc(qrcXml);
     string entries;
     foreach (f; files) {
@@ -178,7 +180,7 @@ string qrcRegister(string qrcXml) {
         entries ~= "        qrc.QrcFile(" ~ segLit ~ ", cast(immutable(ubyte)[]) import(\""
             ~ f.path ~ "\")),\n";
     }
-    return "import qrc; import qt.widgets.qresource;\n"
+    return "import qrc; import " ~ qresourcePkg ~ ".qresource;\n"
         ~ "shared static this() {\n"
         ~ "    static immutable ubyte[] _rccBlob = qrc.buildRcc([\n" ~ entries ~ "    ]);\n"
         ~ "    QResource.registerResource(cast(ubyte*) _rccBlob.ptr, \"\");\n"

@@ -74,6 +74,14 @@ Build reggaeBuild() {
     foreach (dc; DCS)
         all ~= qtdTest("webengine-" ~ dc, t("webengine", "webengine_smoke.d"), we, dc);
 
+    // --- QML: a D @QObject backend (runtime meta-object) driving a qrc-embedded .qml. No C++
+    //     type registrar — the moc builds the QMetaObject, qrc bundles the .qml (:/), engine loads it.
+    auto qml = qtdBinding(root, "spec_cxx_qml.json", ["Qt6Qml", "Qt6Gui"]);
+    auto qmlExtra = buildPath(root, "runtime", "qrc", "qrc.d")
+        ~ " -I" ~ buildPath(root, "runtime", "qrc") ~ " -J=" ~ buildPath(root, "tests", "qml");
+    foreach (dc; DCS)
+        all ~= qtdTest("qml-" ~ dc, t("qml", "backend_test.d"), qml, dc, qmlExtra);
+
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);
 
