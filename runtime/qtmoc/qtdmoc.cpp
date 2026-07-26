@@ -140,6 +140,8 @@ void qtd_moc_activate(void* self, int sigIdx, void** args) {
 // pode importar os helpers de QString gerados; aqui já linkamos QtCore).
 void* qtd_str_to_qs(const char* p, int n) { return new QString(QString::fromUtf8(p, n)); }
 void  qtd_qs_free(void* qs) { delete static_cast<QString*>(qs); }
+// ReadProperty metacall: a[0] points to an existing QString to assign the value INTO.
+void  qtd_qs_set(void* dest, const char* p, int n) { *static_cast<QString*>(dest) = QString::fromUtf8(p, n); }
 int   qtd_qs_utf8len(void* qs) { return (int) static_cast<QString*>(qs)->toUtf8().size(); }
 void  qtd_qs_utf8(void* qs, char* dst) {
     QByteArray b = static_cast<QString*>(qs)->toUtf8();

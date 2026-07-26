@@ -521,6 +521,17 @@ void main(string[] args) {
     writefln("\nUNMAPPED: %d methods skipped across %d distinct types. top 30:", skipped, miss.length);
     foreach (kv; miss[0 .. min(30, $)])
         writefln("  %5d  %s", kv.value, kv.key);
+
+    // Persist the FULL coverage report per spec (not just the stdout top 30) so skipped
+    // methods are a tracked artifact, not a number that scrolls past — an honest coverage
+    // contract per the project's "no silent skips" goal. Lives next to the generated code.
+    string cov = format("qt-dlang-gen coverage — %s\n%d classes emitted, %d shiboken-rejected, "
+        ~ "%d functions bound, %d list + %d assoc containers.\nUNMAPPED: %d methods skipped across "
+        ~ "%d distinct types (skipped-by-rule or unmapped-type):\n",
+        spec["qt_version"].str, ok, rejected, total, CONTAINERS.length, ASSOCS.length,
+        skipped, miss.length);
+    foreach (kv; miss) cov ~= format("  %5d  %s\n", kv.value, kv.key);
+    std.file.write(buildPath(outDir, "coverage.txt"), cov);
 }
 
 void emitContainers(string outDir, string manifest, string discMod, string[] headers) {

@@ -29,6 +29,7 @@ extern (C) nothrow {
     // marshaling de QString (implementado em qtdmoc.cpp, que linka QtCore)
     void* qtd_str_to_qs(const(char)*, int);
     void  qtd_qs_free(void*);
+    void  qtd_qs_set(void*, const(char)*, int);   // assign a D string into an existing QString
     int   qtd_qs_utf8len(void*);
     void  qtd_qs_utf8(void*, char*);
     // acesso a propriedades por nome (via QVariant)
@@ -206,8 +207,11 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
                 }
             }
         }
-    } else {
-        static if (is(X == string)) { /* leitura de QString property: TODO */ }
+    } else {   // ReadProperty: assign the D value into the QVariant/typed slot at a[0]
+        static if (is(X == string)) {
+            auto s = __traits(getMember, o, m);
+            qtd_qs_set(a[0], s.ptr, cast(int) s.length);   // *(QString*)a[0] = s
+        }
         else *cast(X*) a[0] = __traits(getMember, o, m);
     }
 }
