@@ -45,6 +45,14 @@
       "remove_when": "Qt exposes a public API to register a runtime QMetaObject as a QML type, or the probe runs across a Qt-version matrix in CI"
     },
     {
+      "id": "qml-shared-typeid-typed-property",
+      "kind": "known_gap",
+      "area": "qml/register",
+      "reason": "All D @QObject types registered via qmlRegisterType share one C++ typeId (QtdMocObject* on Qt6, QObjectStar on Qt5), differing only by runtime QMetaObject. On Qt6 this makes a TYPED cross-property assignment (`property Alpha a: Alpha{}`) fail QML's metatype assignability check. Instantiation and `property var` work on both; the qmltwo test proves N distinct types coexist.",
+      "since": "commit 5191609",
+      "remove_when": "each registered runtime type gets a DISTINCT QMetaType (a dynamic QMetaTypeInterface per type) instead of the shared carrier metatype"
+    },
+    {
       "id": "qml-private-typedescreader",
       "kind": "risk",
       "area": "qml/private-api",

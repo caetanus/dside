@@ -8,6 +8,7 @@
 #include <QTranslator>
 #include <QtCore/private/qmetaobjectbuilder_p.h>
 #include <cstring>
+#include <cstdio>
 #include <new>
 #include <string>
 #include <unordered_map>
@@ -75,15 +76,23 @@ struct QtdMocObject : QObject {
     }
 };
 
-// meta-objeto construído uma vez por classe (cache por nome). `super` = meta da
-// superclasse (QObject pro QtdMocObject; QWidget/etc. pros trampolins de subclasse).
+// meta-objeto construído uma vez por FORMA. `super` = meta da superclasse (QObject pro
+// QtdMocObject; QWidget/etc. pros trampolins de subclasse). The cache key is the class name PLUS
+// the super's name PLUS every signal/slot/property signature — NOT the name alone (critics r6 #6:
+// two homonymous D classes with different shapes would otherwise share, and get, the wrong
+// metaobject). Two identically-shaped homonyms still share (harmless — they ARE the same shape).
 std::unordered_map<std::string, const QMetaObject*> g_moCache;
 const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
                            const char** sigs, int nsig,
                            const char** slotSigs, int nslot,
                            const char** propNames, const char** propTypes,
                            const int* propNotify, int nprop) {
-    auto it = g_moCache.find(cn);
+    std::string key(cn);
+    key += '\x1'; key += (super ? super->className() : "");
+    for (int i = 0; i < nsig; ++i)  { key += '\x2'; key += sigs[i]; }
+    for (int i = 0; i < nslot; ++i) { key += '\x3'; key += slotSigs[i]; }
+    for (int i = 0; i < nprop; ++i) { key += '\x4'; key += propNames[i]; key += ':'; key += propTypes[i]; }
+    auto it = g_moCache.find(key);
     if (it != g_moCache.end()) return it->second;
     QMetaObjectBuilder b;
     b.setClassName(cn);
@@ -96,7 +105,7 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
         if (propNotify[i] >= 0) p.setNotifySignal(b.method(propNotify[i]));  // sinais são os 1ºs métodos
     }
     const QMetaObject* mo = b.toMetaObject();
-    g_moCache[cn] = mo;
+    g_moCache[key] = mo;
     return mo;
 }
 
@@ -334,13 +343,21 @@ void* qtd_qml_register_type(
     // in Qt5 pulls a sizeof(QWidget) probe (QtWidgets isn't included here).
     rt.typeId = int(QMetaType::QObjectStar);
     rt.listId = 0;
-    rt.create = (g_qt5Count < 256) ? g_qt5Creators[g_qt5Count] : nullptr;   // per-type trampoline
-    if (g_qt5Count < 256) g_qt5Types[g_qt5Count++] = t;
+    if (g_qt5Count >= 256) {   // pool exhausted -> HONEST failure, not apparent success (critics r6 #6)
+        fprintf(stderr, "qtd: qmlRegisterType Qt5 create-pool exhausted (>256 D QML types); '%s' NOT registered\n", qmlName);
+        delete t; return nullptr;
+    }
+    rt.create = g_qt5Creators[g_qt5Count];   // per-type trampoline
+    g_qt5Types[g_qt5Count++] = t;
     rt.versionMajor = vmaj;
     rt.versionMinor = vmin;
     rt.revision = 0;
 #endif
-    QQmlPrivate::qmlregister(QQmlPrivate::TypeRegistration, &rt);
+    int tid = QQmlPrivate::qmlregister(QQmlPrivate::TypeRegistration, &rt);
+    if (tid < 0) {   // the registration itself failed -> don't pretend it worked
+        fprintf(stderr, "qtd: qmlRegisterType failed for '%s' (qmlregister returned %d)\n", qmlName, tid);
+        return nullptr;
+    }
     return t;
 }
 #endif // QTD_HAVE_QML

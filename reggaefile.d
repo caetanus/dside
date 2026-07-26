@@ -88,6 +88,7 @@ Build reggaeBuild() {
         foreach (dc; DCS) {
             all ~= qtdTest("qml" ~ tag ~ "-" ~ dc, t("qml", "backend_test.d"), b, dc, qmlExtra);   // setContextProperty
             all ~= qtdTest("qmlreg" ~ tag ~ "-" ~ dc, t("qml", "register_test.d"), b, dc, qmlExtra); // qmlRegisterType
+            all ~= qtdTest("qmltwo" ~ tag ~ "-" ~ dc, t("qml", "register_two_test.d"), b, dc, qmlExtra); // 2 distinct types
             all ~= qtdTest("moclife" ~ tag ~ "-" ~ dc, t("qml", "moclife_test.d"), b, dc);           // side-table cleanup
         }
         all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
