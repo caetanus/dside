@@ -1,200 +1,139 @@
 # CRITICS.md
 
-Uma leitura adversarial e pedante do projeto. A ideia aqui nao e negar que ha
-engenharia real: ha. O problema e que o projeto vende varias teses fortes antes
-de separar com nitidez o que e produto, experimento, legado e contrato publico.
+Reassessment depois da rodada de correcoes. A primeira critica mirava dois
+problemas principais: narrativa desonesta/desatualizada e falta de fronteira entre
+produto, experimento e legado. Essa parte melhorou bastante. O projeto agora se
+apresenta de forma mais honesta: binding amplo de Qt, `extern(C++)` canonico,
+Linux/POSIX como Tier 1, reggae como build de verdade, e gaps declarados.
 
-## Status das resolucoes
+## Verificacao feita nesta rodada
 
-Critica endereamos ponto a ponto. A tese central — desonestidade de narrativa e
-fronteira borrada — foi atacada reescrevendo o README para bater com o codigo real.
+- `cd generator-d && dub build` passa.
+- `./build moc_test-ldc2-qt6` passa.
+- `./build moc_test-dmd-qt6` passa.
+- `./build wraptest-ldc2` passa.
+- `./build wraptest-dmd` passa.
+- `coverage.txt` existe em geracoes recentes, por exemplo:
+  `generated/qt-6.11/cxx-qtwidgets-wrap/coverage.txt`.
 
-| # | Tema | Status | Acao |
-|---|------|--------|------|
-| 1 | Narrativa arquitetural inconsistente | **Resolvido (doc)** | README reescrito p/ uma unica arquitetura canonica (`extern(C++)`), matriz de status, gaps honestos. Codigo: `emit.d` ainda dual-ABI — listado como gap; C-ABI marcado deprecated (roadmap: mover p/ `legacy/`). |
-| 2 | "QML not Widgets" nao bate | **Resolvido (doc)** | Narrativa corrigida: "binding amplo de Qt, Widgets e o campo de prova"; parei de vender QML-first. |
-| 3 | Build hostil / POSIX-only | **Parcial** | "Linux/POSIX e Tier 1" agora no topo do README, sem rodeio. Encapsular comandos em argv estruturado: adiado (roadmap). |
-| 4 | Gerador monolitico / sem IR | **Adiado (reconhecido)** | Listado explicitamente como known gap + roadmap (IR). Refactor grande, nao feito nesta passada. |
-| 5 | Regex XML = economia falsa | **Resolvido (doc)** | Promessa reduzida honestamente: "subconjunto regex (rejections + object/value-type), NAO semantica de ownership/rename". |
-| 6 | Skips silenciosos sem contrato | **Parcial** | Gerador agora persiste `coverage.txt` por spec (lista completa de unmapped, nao so top-30 no stdout). Manifest por-metodo com status (bound/skipped/shimmed/…): follow-up. |
-| 7 | Buraco de runtime (prop `string`) | **Resolvido (codigo)** | `qtmoc` le QString property via novo `qtd_qs_set` (ReadProperty). moc tests verdes ldc+dmd. Risco de `QMetaObjectBuilder` (API privada) documentado. |
-| 8 | Entulho historico no caminho principal | **Resolvido (doc)** | Matriz de status (supported/experimental/legacy/tests-only). Milestones-fosseis removidos do README (dirs ja deletados: runtime/app,metaobject,vibe_qt,convert). C-ABI/bootstrap marcados legacy. |
-| 9 | Sucesso medido por demos que compilam | **Parcial** | `wraptest` ja cobre identidade/parenting-pin/reclamacao-de-orfao; invariantes mais paranoicos (destruicao C++ antes do wrapper, deleteLater em shutdown, reparent, app singleton, nao-QObject): follow-up rastreado. |
-| 10 | Veredito pedante | **Endereado** | README enxuto, menos retorica, gaps honestos, legado fora da narrativa principal. Contrato publico -> `docs/FEATURES.md`. |
+Isso nao e a matriz inteira, mas cobre as areas que eu tinha criticado mais
+diretamente: gerador, moc e holder/wrapper.
 
-Follow-ups rastreados (roadmap no README): wrapper como default; mover C-ABI p/ `legacy/`
-+ IR do gerador; manifest de cobertura por-metodo; testes de invariante de ownership do
-`holder`; encapsular comandos de build perigosos.
+## Assessment atualizado
 
----
+| # | Tema antigo | Novo status | Avaliacao atual |
+|---|-------------|-------------|-----------------|
+| 1 | Narrativa arquitetural inconsistente | **Majoritariamente resolvido** | O README agora declara `extern(C++)` como caminho canonico e coloca o C-ABI antigo como legado/gap. Bom. Ainda sobra comentario antigo em `generator-d/gen.d` e documentacao velha em `generator-d/README.md` falando C-ABI como se fosse a tese atual. |
+| 2 | "QML not Widgets" contradizia o repo | **Resolvido** | O README parou de vender QML-first e assume binding amplo/Widgets como campo de prova. Isso bate melhor com os testes e specs. |
+| 3 | Build POSIX hostil | **Honestamente aceito, nao resolvido** | A critica tecnica continua: comandos shell concatenados, POSIX-hardcoded, paths fragilizados. Mas agora isso esta declarado como Tier 1 Linux/POSIX. Para um projeto de laboratorio isso e aceitavel; para produto multiplataforma ainda e divida. |
+| 4 | Gerador monolitico / sem IR | **Nao resolvido, mas declarado** | Continua sendo a maior divida tecnica real. `emit.d`/`emit_cxx.d` ainda misturam AST, politica, emissao textual, compilacao/verificacao e reescrita. A honestidade no README reduz confusao, nao reduz risco. |
+| 5 | XML de shiboken via regex vendido demais | **Resolvido na narrativa** | O README agora diz claramente que e subconjunto regex: rejections + object/value-type, nao ownership/rename completo. A implementacao continua simples, mas a promessa agora cabe no codigo. |
+| 6 | Skips silenciosos | **Parcialmente melhorado** | `coverage.txt` persistido e progresso real. Mas o arquivo ainda e agregado por tipo unmapped, nao um manifest por metodo com status (`bound`, `skipped-by-rule`, `inline-failed`, `shimmed`, etc.). O contrato de cobertura ainda nao e auditavel o suficiente para bindings. |
+| 7 | `qtmoc` nao lia property `string` | **Implementado, teste direto ainda desejavel** | `qtd_qs_set` e o caminho `ReadProperty` para `string` existem em `runtime/qtmoc/qtmoc.d`. Os alvos `moc_test` passam em ldc2/dmd, mas o teste atual exercita sinal/slot e override; eu nao vi um teste focado em `@Property string` read/write. |
+| 8 | Entulho historico confundindo o caminho principal | **Resolvido no README principal** | A matriz de status ajuda bastante. Ainda existe documentacao secundaria velha (`generator-d/README.md`) que reabre confusao C-ABI. |
+| 9 | Sucesso medido por demos/smoke | **Melhorou um pouco, ainda pendente** | `wraptest` cobre identidade, parenting-pins e reclamacao de orfaos. Ainda faltam invariantes mais agressivos: C++ destroi antes da wrapper D, `deleteLater` em shutdown, app singleton, reparenting variado, objeto nao-QObject, e teste direto de property string. |
+| 10 | "Colecao de provas tecnicas" | **Bem menos verdadeiro** | O README agora tem mapa, status e riscos. O projeto ainda e uma ferramenta em maturacao, mas a fronteira mental esta muito melhor. |
 
-*A critica original, preservada:*
+## Criticas novas / remanescentes
 
-## 1. A narrativa arquitetural esta inconsistente
+### 1. `CRITICS.md` nao deve preservar critica velha como se ainda valesse
 
-O README abre dizendo que a direcao atual e `extern(C++)`, geracao sob demanda e
-saida nao commitada (`README.md:20-30`). Poucas linhas depois, a secao
-"Architecture decisions" ainda afirma explicitamente "C-ABI shim boundary, not
-extern(C++)" e que os gerados devem ser commitados por versao de Qt
-(`README.md:54-63`). A secao de layout tambem descreve `generated/qt-6.11/`
-como saida commitada e `bootstrap/` como C-ABI (`README.md:71-80`).
+A versao anterior do arquivo tinha uma tabela dizendo que pontos foram resolvidos,
+mas preservava a critica original inteira logo abaixo. Isso era historico util,
+mas ruim como assessment atual: um leitor encontra acusacoes que o proprio topo
+diz que ja foram corrigidas. Este arquivo agora substitui a critica antiga por
+estado atual.
 
-Isso nao e apenas "documentacao velha": o codigo tambem carrega os dois modelos.
-`generator-d/gen.d` ainda se apresenta como pipeline C-ABI (`generator-d/gen.d:1-4`),
-`generator-d/emit.d` escolhe entre `abi == "cxx"` e o emissor antigo
-(`generator-d/emit.d:337-380`), e `emitContainers` ainda emite `extern(C)`/C++
-shim no fim do mesmo arquivo (`generator-d/emit.d:526+`). O leitor precisa
-inferir qual arquitetura e canonica a partir de comentarios, specs e build graph.
-Isso e uma pessima interface para contribuidores e para voce mesmo daqui a seis
-meses.
+### 2. O README ainda tem uma pequena inconsistencia sobre cobertura
 
-Acao recomendada: declarar uma unica arquitetura canonica. Mover o emissor C-ABI
-para `legacy/` ou para um modulo explicitamente deprecated, e deixar o README
-principal conter apenas a direcao suportada.
+O README diz que cobertura e reportada a stderr e que "persisted per-spec
+manifest" e follow-up. O codigo ja grava `coverage.txt` em `outDir`, e eu vi
+arquivos gerados. O que ainda e follow-up nao e "persistir alguma coisa"; e
+persistir um manifest por metodo/status. Ajuste recomendado: trocar o texto para
+"`coverage.txt` agregado existe; manifest por-metodo ainda falta".
 
-## 2. "QML + QJS, not Widgets" nao bate com o centro de gravidade do repo
+### 3. `generator-d/README.md` ficou para tras
 
-O README diz que o alvo deliberado e QML + QJSEngine, nao Widgets
-(`README.md:32-45`). Mas o build principal gira fortemente em torno de Widgets:
-`widget_test`, `moc_test`, exemplos `cannon_*`, CTFE uic, corpus de `.ui`,
-QRC, WebEngine e libsample (`reggaefile.d` e `./build --list`). Isso pode ser
-uma estrategia valida para provar cobertura de ABI, mas entao a tese do produto
-nao e "QML first"; e "binding amplo de Qt, com QML como caso de uso".
+O README principal foi corrigido, mas `generator-d/README.md` ainda abre dizendo
+que o gerador mapeia pela fronteira C-ABI e emite C shim + `extern(C)`. Isso agora
+contradiz a tese principal. Como esse arquivo fica dentro do gerador, ele e mais
+perigoso que doc historica em `legacy/`: e facil um contribuidor ler isso como
+verdade atual.
 
-O risco e gastar energia expandindo superficie antes de ter uma API publica
-minima e polida. Hoje o projeto parece uma prova de dominio tecnico, nao uma
-biblioteca que alguem externo consegue adotar com confianca.
+Acao recomendada: reescrever `generator-d/README.md` com o mesmo contrato do README
+principal ou marcar explicitamente quais paragrafos sao historicos.
 
-Acao recomendada: escolher o pacote de entrega. Se for QML, crie um exemplo
-canonico pequeno e repetivel no fluxo atual. Se for bindings Qt amplos, pare de
-diminuir Widgets na narrativa.
+### 4. `coverage.txt` com zero unmapped pode ser enganoso
 
-## 3. O build e poderoso, mas hostil e fragil
+Os `coverage.txt` que inspecionei mostram `0 functions bound` e `0 unmapped` para
+bindings enormes. Isso pode estar correto se `total` conta apenas o caminho C-ABI
+antigo e o caminho `extern(C++)` nao alimenta esse contador. Mas entao o arquivo
+nao e uma cobertura honesta ainda; e um resumo parcial com numeros potencialmente
+sem sentido para o caminho canonico.
 
-O build real e reggae, nao DUB. `dub build :generator` passa, mas
-`dub build :runtime` falha porque o subpacote e `sourceLibrary` e nao e
-construivel isoladamente via comando normal. Isso combina com
-`runtime/dub.json:3-6`, mas ainda significa que o workspace DUB nao e um fluxo de
-validacao completo.
+Acao recomendada: fazer a cobertura nascer da IR/diagnostics do emissor C++ real,
+ou no minimo separar contadores: `cxx_methods_bound`, `cxx_methods_skipped`,
+`legacy_c_functions_bound`.
 
-O build graph em `reggae/qtd_build.d` monta comandos shell por concatenacao,
-com `rm -rf`, `flock`, `find`, `for`, `$(...)`, `sed -i`, globs e redirecionamento
-(`reggae/qtd_build.d:58-67`, `91-123`, `193-223`). O proprio roadmap de Windows
-admite que todos os alvos dependem de dialeto POSIX shell (`docs/windows-roadmap.md:144-153`).
+### 5. Testar contra PySide e o caminho certo; agora isso precisa virar contrato
 
-Isso ate pode ser aceitavel para um laboratorio Linux, mas e uma base ruim para
-uma ferramenta que promete atravessar Qt5/Qt6, dmd/ldc2 e eventualmente Windows.
-Tambem ha pouca protecao contra paths com espacos ou caracteres especiais, porque
-os comandos sao strings, nao argv estruturado.
+Se a suite PySide/shiboken e o oracle de compatibilidade real do projeto, isso
+muda bastante a avaliacao: deixa de ser "demos que compilam" e passa a ser uma
+estrategia madura de diferencial contra uma implementacao dominante. Esse e o
+caminho correto para mirar maturidade PySide.
 
-Acao recomendada: manter reggae se quiser, mas encapsular comandos perigosos em
-programas D pequenos ou helpers com argv estruturado. No minimo, documentar
-"Linux/POSIX shell e requisito de Tier 1" no topo, sem rodeio.
+Mas para contar como maturidade, precisa estar claro e auditavel:
 
-## 4. O gerador e um arquivo-orquestrador grande demais
+- qual subconjunto da suite PySide roda hoje;
+- quais testes sao expected-fail e por qual gap;
+- quais testes sao gate de CI;
+- se a suite cobre libsample apenas, Qt modules reais, uic, metaobject,
+  ownership, overloads, exceptions e containers;
+- qual matriz de Qt/compilador/plataforma roda regularmente.
 
-`generator-d/emit.d` e `generator-d/emit_cxx.d` concentram descoberta, emissao,
-runtime embutido, verificacao de inline, geracao de C++ auxiliar, stubs opacos,
-copias de runtime e relatorio. `emit.d` escreve dezenas de arquivos diretamente
-(`generator-d/emit.d:345-513`) e ainda dispara a verificacao de inlines no meio
-do pipeline (`generator-d/emit.d:429-432`). `emit_cxx.d` inclui logica de parse,
-verificacao com `dmd`, regex sobre erros do compilador e reescrita de arquivos
-(`generator-d/emit_cxx.d:1069-1138`).
+Acao recomendada: documentar o "PySide compatibility suite" como artefato de
+primeira classe, com contadores por categoria e historico de regressao. Isso vale
+mais do que qualquer lista manual de features.
 
-Isso e funcional, mas pouco auditavel. Em gerador de binding, o maior inimigo e
-erro silencioso de ABI. Quanto mais o pipeline mistura AST, politica de tipos,
-emissao textual, validacao e mutacao posterior dos arquivos, mais dificil fica
-responder "por que este simbolo foi gerado assim?".
+### 6. A documentacao agora e honesta, mas o codigo ainda carrega o custo do legado
 
-Acao recomendada: introduzir uma IR intermediaria explicita para classes,
-metodos, tipos, ownership e shims requeridos. O emissor deve consumir IR; a
-validacao deve produzir diagnostics sobre IR ou artefatos, nao reescrever texto
-como etapa normal.
+Declarar o C-ABI como deprecated e correto. Mas enquanto o emissor antigo mora no
+mesmo `emit.d`, ele continua aumentando custo de leitura e risco de alteracao
+errada. Isso nao precisa ser resolvido antes de qualquer feature, mas deveria ser
+tratado como refactor de saude, nao como limpeza cosmetica.
 
-## 5. O tratamento de XML de shiboken por regex e uma economia falsa
+## Veredito novo
 
-`loadRules` parseia typesystem XML com regex simples
-(`generator-d/gen.d:118-132`). O comentario vende isso como "no XML dep", mas a
-dependencia real e mais cara: voce esta dependendo de um formato XML externo,
-versionado por PySide, com semantica de rejeicao, ownership e tipos. Regex pega
-os casos felizes, nao a semantica.
+Voce resolveu a parte mais grave: o projeto agora diz o que e, o que nao e, em
+qual plataforma vive, e quais riscos esta aceitando. Isso muda a avaliacao de
+"prova tecnica com narrativa inflada" para "projeto tecnicamente ambicioso com
+dividas conhecidas".
 
-Pior: o README diz que consome ownership/ignore/rename (`README.md:51-53`), mas
-o codigo mostrado captura rejeicoes, object-type e value-type. Isso e uma
-distancia entre promessa e implementacao.
+As pendencias reais agora sao mais estreitas e mais tecnicas:
 
-Acao recomendada: ou usar parser XML de verdade, ou reduzir a promessa: "usamos
-um subconjunto muito pequeno do typesystem". Do jeito atual, parece mais robusto
-do que e.
+- separar ou aposentar o emissor C-ABI antigo;
+- introduzir IR/diagnostics para o gerador;
+- transformar cobertura em manifest por metodo/status;
+- tornar a suite PySide/shiboken um gate documentado, com expected-fails
+  rastreados;
+- corrigir docs secundarias que ainda contam a historia antiga;
+- ampliar testes de ownership e `qtmoc` properties.
 
-## 6. Skips silenciosos sao aceitaveis para exploracao, nao para contrato
+Em termos pedantes: antes a critica era de coerencia. Agora a critica e de
+industrializacao.
 
-O gerador acumula `UNMAPPED` e imprime top 30 (`generator-d/emit.d:518-523`), e
-varios caminhos simplesmente fazem `continue`, `return []` ou geram stub opaco.
-Para um prototipo isso e pragmatico. Para bindings, "compila" nao e sinonimo de
-"cobertura honesta": um metodo omitido pode ser a diferenca entre exemplo bonito
-e uso real.
+## Resolucao da rodada 2
 
-O problema aparece tambem na traducao de inline: a politica e "tenta, compila,
-se nao der remove ou troca por shim" (`README.md:197-204`,
-`generator-d/emit_cxx.d:1076-1138`). Isso e esperto, mas precisa virar relatorio
-persistente por spec, nao apenas stdout.
+| # | Critica nova | Status | Acao |
+|---|--------------|--------|------|
+| 1 | CRITICS.md preservava critica velha | **Resolvido (por voce)** | Voce substituiu a critica antiga por reassessment atual. |
+| 2 | README inconsistente sobre cobertura | **Resolvido** | Bullet trocado: `coverage.txt` agregado EXISTE; falta o manifest POR-METODO (bound/skipped-by-rule/inline-failed/shimmed). |
+| 3 | `generator-d/README.md` ficou p/ tras | **Resolvido** | Reescrito p/ a tese `extern(C++)` canonica; C-ABI marcado legacy no proprio arquivo; tabela apontando `emit_cxx.d`. |
+| 4 | `coverage.txt` com 0 unmapped enganoso | **Resolvido** | Contadores POR-CAMINHO. cxx-qtwidgets: `7630 D bindings emitted, 681 methods/ctors dropped (unmapped-type)`. `done:`/stdout idem. `total`/`MISSING` (C-ABI) so no caminho legacy. |
+| 5 | Suite PySide precisa virar contrato | **Parcial** | Suite documentada como artefato em `docs/test-suite.md` (categorias, matriz Qt/compilador, o que roda). Contadores por-categoria + historico de regressao no CI: follow-up. |
+| 6 | Codigo ainda carrega custo do legado | **Aceito, adiado** | C-ABI ainda em `emit.d`; documentado deprecated no README e `generator-d/README.md`. Mover p/ `legacy/` fica no roadmap (refactor de saude). |
 
-Acao recomendada: gerar um manifest de cobertura por classe/metodo com status:
-bound, skipped-by-rule, unmapped-type, no-symbol, inline-failed, shimmed. Testar
-regressao desse manifest.
-
-## 7. O runtime ainda tem buracos de produto
-
-`qtmoc` ainda tem TODO direto em leitura de propriedade `string`
-(`runtime/qtmoc/qtmoc.d:209-211`). Isso atinge uma das promessas centrais:
-meta-objeto/QML com propriedades dinamicas. O projeto tambem depende de
-`QMetaObjectBuilder`, uma API privada do Qt, reconhecida no build
-(`reggae/qtd_build.d:33-42`). Pode ser a unica rota pragmatica, mas deve ser
-tratada como risco central de compatibilidade, nao como detalhe de implementacao.
-
-Acao recomendada: fechar o caminho basico de propriedades `string` antes de
-expandir mais UIC/Widgets. E documentar explicitamente quais versoes de Qt foram
-testadas com a API privada.
-
-## 8. O repo carrega muito entulho historico no caminho principal
-
-Ha `legacy/`, `bootstrap/`, `generator/` Python historico, `generator-d/`,
-runtime atual, docs antigas, specs antigas e specs atuais. O README ate tenta
-explicar que partes sao historicas (`README.md:27-30`), mas depois continua
-descrevendo bootstrap e gerador Python como milestones vivos (`README.md:130-183`).
-
-Isso aumenta custo cognitivo e reduz confianca. Um revisor nao deveria precisar
-descobrir por arqueologia quais diretorios sao fonte de verdade.
-
-Acao recomendada: criar uma matriz simples no README: "supported", "experimental",
-"legacy/reference", "tests only". Depois mover todo texto antigo para docs
-historicos e deixar o README curto.
-
-## 9. O projeto mede sucesso demais por demos que compilam
-
-Ha muitos alvos e isso e bom. Mas o criterio dominante parece ser "compila nos
-dois compiladores e roda um smoke/headless". Faltam garantias mais proximas do
-risco real: ABI/layout, ownership, destruicao, excecoes, propagacao de parent,
-thread/main-loop, diferencas Qt patch/minor e diagnosticos de cobertura.
-
-Exemplo concreto: `holder.d` tem um design ambicioso de identidade, invalidacao
-e parenting pins, mas isso e uma area onde testes deveriam ser paranoicos:
-destruicao C++ antes da wrapper D, deleteLater em shutdown, child parented sem
-referencia D, reparenting, app singleton, objetos nao-QObject. Ha algum teste de
-holder, mas a criticidade pede mais do que "um alvo existe".
-
-Acao recomendada: escrever testes de comportamento por invariantes de ownership,
-nao apenas apps exemplo.
-
-## 10. Veredito pedante
-
-O projeto tem ambicao tecnica legitima e varias solucoes boas: libclang C API,
-`pragma(mangle)` a partir do clang, arquivos por modulo, arquivos gerados fora do
-repo, build por arquivos objeto em archive, comparacao diferencial de UIC contra
-QUiLoader. O problema e disciplina de produto e fronteira.
-
-Hoje ele parece uma colecao de provas tecnicas que cresceram rapido demais em
-torno de uma tese boa. Para virar ferramenta confiavel, precisa de menos retorica
-no README, menos legado no caminho principal, mais manifest de cobertura, e um
-contrato publico pequeno que seja mantido sem desculpas.
+Follow-ups tecnicos remanescentes: aposentar o emissor C-ABI de `emit.d`;
+IR/diagnostics no gerador; cobertura por-metodo/status; contadores por-categoria +
+historico de regressao da suite; testes de invariante de ownership do `holder`;
+teste focado de `@Property string`.

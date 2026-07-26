@@ -73,7 +73,7 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 | `reggae/`, `reggaefile.d` | **supported** | the build of record (POSIX/Linux) |
 | `generated/` | **generated** | gitignored, on-demand output |
 | `tests/`, `examples/`, `apps/` | **tests only** | ldc2×dmd × Qt5×Qt6 matrix |
-| `docs/` | **supported** | `FEATURES.md`, `uic-spec.md`, `windows-roadmap.md` |
+| `docs/` | **supported** | `FEATURES.md`, `test-suite.md`, `uic-spec.md`, `windows-roadmap.md` |
 | `generator/` (specs) | **supported** | `spec_cxx_*.json` (the C-ABI `*_d.json` specs are legacy) |
 | `legacy/` | **legacy/reference** | the old C-ABI shim path + early QML/metaobject demos — not built by default |
 | `bootstrap/` | **legacy/reference** | the original hand-written C-ABI hello-world |
@@ -91,8 +91,10 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
   general typesystem parser.
 - **`QMetaObjectBuilder` is a Qt private API.** The moc bridge depends on it; treated
   as a compatibility risk, exercised on the Qt versions in the test matrix (6.11, 5.15).
-- **Coverage is reported** per generation run (bound / skipped-by-rule / unmapped /
-  inline-failed) to stderr; a persisted per-spec manifest is a tracked follow-up.
+- **Coverage** is written per spec to `generated/<dir>/coverage.txt` (path-aware:
+  D bindings emitted + methods/ctors dropped as unmapped-type). A **per-method**
+  status manifest (bound / skipped-by-rule / inline-failed / shimmed) is still a
+  tracked follow-up — today's counters are path-level, not per-method.
 
 ## Roadmap
 

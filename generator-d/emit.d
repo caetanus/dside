@@ -354,6 +354,21 @@ void main(string[] args) {
     }
     int ok, total;
     int rejected;
+    long cxxBound;   // public D bindings emitted on the extern(C++) path (methods/ctors/overloads)
+    // Count callable D bindings in a generated unit: a line that defines/declares something
+    // callable (extern(D)/final/static/this), excluding the private raw/guard plumbing.
+    static long countBindings(string d) {
+        import std.string : stripLeft, startsWith, indexOf;
+        long n;
+        foreach (line; d.splitter('\n')) {
+            auto s = line.stripLeft;
+            if (s.startsWith("private")) continue;                 // __raw_/__ctor_/guard decls
+            if ((s.startsWith("extern(D)") || s.startsWith("final ") || s.startsWith("static ")
+                 || s.startsWith("this(")) && s.indexOf('(') >= 0)
+                n++;
+        }
+        return n;
+    }
     foreach (i, cur; targets) {
         auto name = clang_getCursorSpelling(cur).str;
         auto cppName = clang_getTypeSpelling(clang_getCursorType(cur)).str;  // qualified (Qt3DCore::QEntity)
@@ -369,7 +384,7 @@ void main(string[] args) {
                 std.file.write(buildPath(dsub, modBase(name) ~ ".d"), d);
                 cxxGen[name] = true;
                 foreach (r; imps) cxxRef[r] = true;
-                ok++;
+                ok++; cxxBound += countBindings(d);
             } else {
                 auto ms = extract(cur);
                 auto o = emitClass(name, cppName, inc, dpkg, ms, manifest, isQObject(cur));
@@ -401,6 +416,7 @@ void main(string[] args) {
                 std.file.write(buildPath(dsub, modBase(bn) ~ ".d"), d);
                 cxxGen[bn] = true;
                 foreach (r; bimps) cxxRef[r] = true;
+                cxxBound += countBindings(d);
             } catch (Exception e) {
                 stderr.writefln("[%s base] skipped: %s", bn, e.msg);
                 cxxGen[bn] = true;
@@ -512,25 +528,43 @@ void main(string[] args) {
     if (CONTAINERS.length || ASSOCS.length)
         emitContainers(outDir, manifest, discMod, headers);
     sw.stop();
-    writefln("done: %d classes emitted (%d shiboken-rejected), %d functions, %d list + %d assoc containers -> %s  (%d ms)",
-        ok, rejected, total, CONTAINERS.length, ASSOCS.length, outDir, sw.peek.total!"msecs");
+    writefln("done: %d classes emitted (%d shiboken-rejected), %d %s, %d list + %d assoc containers -> %s  (%d ms)",
+        ok, rejected, cxxAbi ? cxxBound : total, cxxAbi ? "D bindings" : "functions",
+        CONTAINERS.length, ASSOCS.length, outDir, sw.peek.total!"msecs");
 
     import std.algorithm : sort;
     auto miss = MISSING.byKeyValue.array.sort!((a, b) => a.value > b.value);
     long skipped = 0; foreach (kv; miss) skipped += kv.value;
-    writefln("\nUNMAPPED: %d methods skipped across %d distinct types. top 30:", skipped, miss.length);
-    foreach (kv; miss[0 .. min(30, $)])
-        writefln("  %5d  %s", kv.value, kv.key);
+    // Counters are per-path — the extern(C++) and the legacy C-ABI emitters are separate, so
+    // printing one path's numbers under the other lies. cxxBound/CXX_SKIP describe the cxx path;
+    // total/MISSING describe the legacy C-ABI path (both zero on the path you're not using).
+    if (cxxAbi)
+        writefln("\ncxx path: %d D bindings emitted, %d methods/ctors dropped (unmapped-type).",
+            cxxBound, CXX_SKIP);
+    else {
+        writefln("\nUNMAPPED (C-ABI path): %d methods skipped across %d distinct types. top 30:",
+            skipped, miss.length);
+        foreach (kv; miss[0 .. min(30, $)]) writefln("  %5d  %s", kv.value, kv.key);
+    }
 
-    // Persist the FULL coverage report per spec (not just the stdout top 30) so skipped
-    // methods are a tracked artifact, not a number that scrolls past — an honest coverage
-    // contract per the project's "no silent skips" goal. Lives next to the generated code.
-    string cov = format("qt-dlang-gen coverage — %s\n%d classes emitted, %d shiboken-rejected, "
-        ~ "%d functions bound, %d list + %d assoc containers.\nUNMAPPED: %d methods skipped across "
-        ~ "%d distinct types (skipped-by-rule or unmapped-type):\n",
-        spec["qt_version"].str, ok, rejected, total, CONTAINERS.length, ASSOCS.length,
-        skipped, miss.length);
-    foreach (kv; miss) cov ~= format("  %5d  %s\n", kv.value, kv.key);
+    // Persist the coverage per spec so it is a tracked artifact, not a number that scrolls past.
+    string cov;
+    if (cxxAbi)
+        cov = format("qt-dlang-gen coverage — %s (extern(C++) path)\n"
+            ~ "%d classes emitted, %d shiboken-rejected.\n"
+            ~ "%d public D bindings emitted (methods/ctors/overloads).\n"
+            ~ "%d methods/ctors dropped as unmapped-type.\n"
+            ~ "(Per-method status manifest — bound/skipped-by-rule/inline-failed/shimmed — is a\n"
+            ~ "tracked follow-up; these are path-level counters, not per-method.)\n",
+            spec["qt_version"].str, ok, rejected, cxxBound, CXX_SKIP);
+    else {
+        cov = format("qt-dlang-gen coverage — %s (legacy C-ABI path)\n"
+            ~ "%d classes emitted, %d shiboken-rejected, %d functions bound, %d list + %d assoc.\n"
+            ~ "UNMAPPED: %d methods skipped across %d distinct types:\n",
+            spec["qt_version"].str, ok, rejected, total, CONTAINERS.length, ASSOCS.length,
+            skipped, miss.length);
+        foreach (kv; miss) cov ~= format("  %5d  %s\n", kv.value, kv.key);
+    }
     std.file.write(buildPath(outDir, "coverage.txt"), cov);
 }
 

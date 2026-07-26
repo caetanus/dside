@@ -681,6 +681,7 @@ string mapCxxType(CXType t, ref string imp) {
 // the boundary as a wrapper on the D side but a raw C++ pointer on the C++ side, so it
 // must be unwrapped (param) / wrapped (return). Empty for anything else.
 __gshared bool[string] WRAPREFS;   // object types referenced as wrappers -> wrapper stubs
+__gshared long CXX_SKIP;   // extern(C++) methods/ctors dropped as unmapped-type (honest coverage)
 string wrapperTypeOf(CXType t) {
     auto ck = clang_getCanonicalType(t);
     if (ck.kind != CXType_Pointer) return "";
@@ -1452,7 +1453,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
                     if (ov.length) rawDecls ~= ov;
                 }
-            } catch (Unmappable) { /* unmapped type -> skip method */ }
+            } catch (Unmappable) { CXX_SKIP++; /* unmapped type -> skip method */ }
         }
         // Verificação de inlines adiada p/ um lote único no fim (verifyInlinesBatched)
         // — compilar um ldc2 por classe aqui era o gargalo da geração.
@@ -1533,7 +1534,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (ovc.length) ctorMethods ~= ovc;
                 }
                 vci++;
-            } catch (Unmappable) {}
+            } catch (Unmappable) { CXX_SKIP++; }
         }
         // Deep copy: a non-POD value type (std::string/CoW/... by value) can't be
         // copied bitwise — the SSO self-pointer / the CoW refcount break. We emit a
@@ -1687,7 +1688,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 }
                 wm ~= format("    %s%s %s(%s) { %s }", kw, retD, dname(mn), wps.join(", "), body_);
                 wi++;
-            } catch (Unmappable) {}
+            } catch (Unmappable) { CXX_SKIP++; }
         }
         // one constructor: a _new factory that heap-allocates, runs the C++ ctor, and wraps.
         int wci; bool[string] seenCW;
@@ -1739,7 +1740,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     dparams.join(", "), name, ctorFn,
                     callargs.length ? ", " ~ callargs.join(", ") : "");
                 wci++;
-            } catch (Unmappable) {}
+            } catch (Unmappable) { CXX_SKIP++; }
         }
         foreach (c; children(cur))
             if (isPublic(c) && c.kind == CXCursor_CXXMethod) emitWrapMethod(c);
@@ -2024,7 +2025,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             }
             auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
             if (ov.length) methodLines ~= ov;
-        } catch (Unmappable) { /* skip method with an unmapped type */ }
+        } catch (Unmappable) { CXX_SKIP++; /* skip method with an unmapped type */ }
     }
     // Re-alias base overloads that our new same-name overloads would hide (D name-hiding):
     // e.g. QGridLayout emits addWidget(w,row,col,...) -> without this, QLayout::addWidget(w)
@@ -2129,7 +2130,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             ctorHelpers ~= "    return self;";
             ctorHelpers ~= "}";
             ci++;
-        } catch (Unmappable) { /* skip ctor with an unmapped param */ }
+        } catch (Unmappable) { CXX_SKIP++; /* skip ctor with an unmapped param */ }
     }
 
     string[] body_;

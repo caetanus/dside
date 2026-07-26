@@ -1,163 +1,61 @@
-# generator-d — the generator, in D (fast)
+# generator-d — the generator, in D
 
-A native D port of `generator/gen.py`, calling the **libclang C API directly**
-(`clang_c.d`) instead of Python's `clang.cindex`. Same pipeline — discover
-classes, extract public ctors/methods, map types across the C-ABI boundary, emit
-the C shim + `extern(C)` D decls + an idiomatic D `struct` — but without the
-per-cursor Python↔C overhead.
+The Qt binding generator: native D on the **libclang C API** (`clang_c.d`, no
+`clang.cindex`). It discovers classes, extracts public ctors/methods, maps types,
+and emits a **pure `extern(C++)`** D binding (`emit_cxx.d`) — modules mangle
+straight to the Qt symbols; there is no per-class C shim to compile.
+
+> **Canonical path: `extern(C++)`** (spec `"abi": "cxx"`, the `spec_cxx_*.json`
+> files). `emit.d` still contains an **older C-ABI emitter** (`emitContainers`,
+> the non-`cxx` branch) — that path is **legacy/deprecated** and slated to move
+> under `legacy/`. When reading the code, follow the `cxxAbi` branch. Anything in
+> this file describing "a C shim + `extern(C)` decls" refers to the legacy path.
+
+## Build & run
+
+```sh
+dub build                                   # -> ./gend  (ldc2 or dmd)
+./gend ../generator/spec_cxx_qtwidgets.json # emits generated/<...>/qt/widgets/*.d
+```
+
+`gend <spec.json>` writes the binding into a gitignored `generated/` dir and a
+`coverage.txt` (D bindings emitted + methods dropped as unmapped-type) beside it.
 
 ## Speed
 
-Whole **QtCore** (243 classes, ~4.5k shim functions):
+Native libclang (C API) vs the retired Python `clang.cindex` port: whole QtCore
+generated in seconds where Python took minutes. The generator is a dev-time tool,
+so its language is invisible to users — but at whole-Qt scale the speed matters.
 
-| generator | time |
-|---|---|
-| Python (`clang.cindex`) | minutes (didn't finish a full run in one sitting) |
-| **D (libclang C API)** | **~4.7 s** |
+## Bind your own Qt C++
 
-The generator is a dev-time tool (FFTW model), so its language is invisible to
-users — but at whole-Qt scale the speed matters to the maintainer, and D
-dogfoods the project.
-
-## Build / run
-
-```sh
-ldc2 gen.d emit.d clang_c.d -L-lclang -of=gend      # dmd works too
-./gend ../generator/spec_qtcore_d.json               # discover_module: "QtCore"
-```
-
-## Coverage (first pass)
-
-Discovery binds every public class in a module and all its own public methods
-(no hand-picked method lists). On a 60-class QtCore sample, **~83% of shims
-compile clean** after the initial type-rule pass; the rest are edge cases
-(QCbor*, QDataStream, some abstract models) that need incremental type rules —
-not architectural gaps. Fixes already applied: correct C-vs-D primitive spelling
-(`unsigned int` vs `uint`), `(void*)` const-strip on pointer returns, skipping
-moc boilerplate (`metaObject`/`qt_metacall`/`tr`/…) and `QPrivateSignal` params.
-
-## Bind your own Qt C++ (not just the framework)
-
-The generator binds *any* Qt C++ — your own `QObject` subclasses and value types,
-not only Qt's classes. Point it at your headers with a source filter:
+Point `headers` + `source_filter` at your project and it binds your own `QObject`
+subclasses and value types the same way — no `Q` prefix required.
 
 ```json
-"headers": [".../shape.h"],
-"source_filter": "examples/userlib",
-"include_paths": [".../userlib"]
+"headers": [".../shape.h"], "source_filter": "examples/userlib"
 ```
 
-It discovers every class defined in your files (no `Q` prefix required) and emits
-the same dual-layer binding. Demo (`examples/userlib/shape.h`): a `Shape : QObject`
-and a plain `Circle` become idiomatic D structs — `Shape.create()`, `setSize(int,int)`,
-`describe()` returning a native D `string` (QString conversion) — both shims
-compile clean. Same machinery as the framework binding; your code is just another
-input.
+## Rules from shiboken — a small regex subset
 
-## Rules from shiboken — "what doesn't come for free"
+The generator pulls PySide's typesystem XML as data (no shiboken fork), but only a
+**small regex-extracted subset**: `<rejection>` (skip a class/method) and
+`<object-type>` vs `<value-type>` (never heap-copy an object by value). It does
+**not** parse ownership/rename semantics — it is not a general typesystem parser.
 
-The ~17% that don't map automatically are handled by pulling PySide/shiboken's
-hand-tuned **typesystem XML** (`/usr/share/PySide6/typesystems/`, matching the
-installed Qt) as data — no fork of shiboken, just its rules:
-
-- `<rejection>` (class + optional `function-name`) → skip exactly what PySide
-  skips (private helpers, problematic methods).
-- `<object-type>` vs `<value-type>` → object-types are QObject-derived /
-  non-copyable, so we never heap-copy them by value (only value-types are).
-
-Wire it via the spec:
 ```json
 "typesystem_dir": "/usr/share/PySide6/typesystems",
 "typesystem_glob": "typesystem_core*.xml"
 ```
-The generator parses these once (regex, no XML dep) and applies them during
-discovery/extraction. For QtCore that's 19 rejected classes, 11 rejected
-methods, 104 object-types, 89 value-types.
 
-## Version-agnostic (Qt5 and Qt6)
+## Files
 
-The generator is not Qt6-specific — it reads whatever headers pkg-config points
-at. Regenerating for Qt5 is just a different spec (no code changes):
+| File | Role |
+|------|------|
+| `gen.d` | entry point: spec parsing, discovery, `loadRules` (typesystem regex) |
+| `emit_cxx.d` | the **canonical** `extern(C++)` emitter (methods, ctors, wrapper/GC mode, exceptions, uic/moc glue) |
+| `emit.d` | orchestration + file writing + coverage; still carries the **legacy** C-ABI emitter (`emitContainers`) |
+| `clang_c.d` | libclang C API bindings |
 
-```json
-"pkg_config": "Qt5Core", "discover_module": "QtCore", "qt_marker": "/qt/",
-"typesystem_dir": "/usr/share/PySide2/typesystems"
-```
-
-That produced the whole **Qt 5.15 QtCore — 208 classes, ~4.1k functions in ~2s**,
-using PySide2's typesystem for the rules. Same machine, same generator; the
-"regenerate against any Qt version" thesis, demonstrated.
-
-## Beyond gen.py — the one to use
-
-Everything the Python generator did, faster, plus more:
-value types (`QString`/`QByteArray`/`QUrl`), **sequence containers (`QList<T>`/
-`QVector<T>` → native `T[]`)** and **associative containers (`QHash<K,V>`/
-`QMap<K,V>` → native `V[K]`, iterator-based)** — both with explicit C++ template
-instantiation per concrete type into `qtcontainers.{h,cpp,d}`, element conversion
-composing (`QHash<QString,int>` → `int[string]`, `QMap<QString,QString>` →
-`string[string]`). Plus enums/`QFlags`, handles, abstract detection, overload/
-collision, base-walk, the dual-layer idiomatic struct, and the shiboken rules.
-
-Verified on both sides (C++ shim + generated `.d` compile).
-
-## Scale — whole modules
-
-| module | classes | functions | list/assoc containers | time |
-|---|---|---|---|---|
-| QtCore | 243 | ~4.5k | 7 / 1 | ~3.7s |
-| QtGui  | 441 | ~8.6k | 18 / 1 | ~4.6s |
-| QtQml  | 333 | ~6.0k | 9 / 1 | ~4.3s |
-
-~1000 classes / ~19k functions across three modules in ~13s. Each is just a spec
-(`discover_module` + `pkg_config` + the matching PySide typesystem). Framework and
-your own classes can even be mixed in one spec.
-
-## Whole-module D-side compile + the meta system
-
-Discovery includes **`struct`s too** (not just classes), so the reflection system
-binds: `QMetaObject`, `QMetaType`, `QMetaMethod`, `QMetaProperty`, `QMetaEnum`
-(and `QModelIndex`, `QMargins`, …) — QtCore went 243 → **287 classes**. That work
-surfaced/fixed several general robustness issues, and now the **entire generated
-D side compiles clean across all three modules**:
-
-| module | classes | functions | D-side compile |
-|---|---|---|---|
-| QtCore | 287 | ~4.8k | 0 errors / 288 files |
-| QtGui  | 494 | ~9.3k | 0 errors / 495 files |
-| QtQml  | 386 | ~6.4k | 0 errors / 387 files |
-
-(~1,170 classes, ~20.5k functions.) The fixes behind it:
-- `extern(C)` decls use D types (`long`, `uint`) not C spellings (`long long`,
-  `unsigned int`);
-- method names that are **D keywords or aliases** (`cast`, `function`, `scope`,
-  `version`, `in`, `string`, …) are escaped (`cast_`, `string_`);
-- ctor factory (`create`) is renamed when a class already has a `create` method;
-- `std::function` / callback params are skipped.
-
-## Coverage — ~83% → ~96%
-
-A round of type-mapper work lifted the compile pass rate from ~83% to **QtCore
-58/60 (97%)**, **QtGui 38/40 (95%)**. What it added:
-- full primitives (`char`/`uchar`/`short`/`ushort`/`ulong`/`char16_t`/`char32_t`/…),
-  covering the OpenGL typedefs (`GLuint`/`GLboolean`/…);
-- `void*` and typed pointer-to-primitive (`qintptr*` → `long long*`);
-- **reference returns** (`const QBrush& brush()` → borrowed handle) — the real
-  cause behind the "const T&" skips;
-- iterator methods (`begin`/`end`) and recursive **abstract-class** detection
-  (bases' unimplemented pure virtuals) → no invalid `new`;
-- **string views** idiomatic: `QStringView`/`QAnyStringView`/`QByteArrayView` →
-  native `string` (reusing the QString/QByteArray helpers).
-
-**`QVariant` is idiomatic** now too: it maps to a D `QtVariant` struct (owns the
-handle, no temp-free) with a type tag (`QtVariantKind`) and accessors
-(`from(int/double/bool/string)`, `.kind`, `.toLong/.toDouble/.toBool/.toStr`).
-Round-trip verified. This also makes `QVariant` usable as the meta-object's
-dynamic transport for properties and signal/slot args, and pulls in
-`QList<QVariant>` / `QVariantMap` container instantiations for free.
-
-Instrument with the built-in `UNMAPPED` histogram (printed each run) to see what's
-left. The remaining tail is legitimate and compiles today as opaque handles:
-function pointers (`QFunctionPointer`), rvalue-ref move params (`T&&`),
-`std::nullptr_t`, and `QChar`/`QCborValue` (a `dchar` map and another tagged type
-would finish those).
+See the repo `README.md` for the overall architecture and status matrix, and
+`docs/FEATURES.md` for the capability list.
