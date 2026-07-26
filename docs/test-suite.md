@@ -5,18 +5,22 @@ The binding is validated by a target matrix run through reggae (`./build --list`
 Qt-version-specific, on **Qt5 AND Qt6** — but some are deliberately single-config
 (the `manifest-gate-*` gates and `lupdate-check` are singletons; `qmlaot`/`qmltypes`
 are Qt6-only). This document is the contract: what is tested, on what config, and what
-is a known gap. There is **no CI**: the "matrix" is one machine with Qt 5.15 + 6.11
-installed, not a repo-enforced policy — the biggest open governance gap.
+is a known gap. There is a **CI scaffold** (`.github/workflows/ci.yml`, master +
+codegen-tools) that provisions Qt5/Qt6 + the pyside-setup libsample corpus and runs
+the matrix; the version-independent gates are mandatory, the manifest gates advisory
+(baselines are Qt 6.11, distro-CI Qt differs). **HONEST: it is not yet proven green on
+a real runner** — treat the local machine (Qt 5.15 + 6.11) as the current source of
+truth until CI goes green.
 
 ## Categories
 
 | Category | Targets | What it proves |
 |----------|---------|----------------|
 | **libsample (shiboken corner cases)** | `sample_*` (28 cases) + `sample_cornercases` | The hard binding cases shiboken's own test lib is built to expose: value types, object types, MI, enums/flags, overloads, references, function pointers, inject-code, modified ctors, comparison/operators, exceptions, `MoveOnly`. `cornercases` asserts `ALL PASS`. |
-| **GC / lifetime (wrapper mode)** | `wraptest`, `widget_test` (qt5+qt6), `moc_test` (qt5+qt6) | Holder identity, parenting-pins, orphan reclamation on GC, reparent detection; a real QApplication+widgets app; a moc subclass (`CannonField : QWidget`, `paintEvent` override) — construction via `new QWidget(parent)`. |
+| **GC / lifetime (wrapper mode)** | `wraptest`, `widget_test` (qt5+qt6), `moc_test` (qt5+qt6), `moclife_widget` (qt5+qt6) | Holder identity, parenting-pins, orphan reclamation on GC, reparent detection; a real QApplication+widgets app; a moc subclass (`CannonField : QWidget`, `paintEvent` override) — construction via `new QWidget(parent)`; `moclife_widget` destroys an attached QtdWidget subclass and requires `g_moAttach`+`_reg` back to baseline. |
 | **moc / signals / properties** | `cannon_t1..t9`, `cannon_widget` | CTFE `@QObject`/`Signal`/`@Slot`/`@Property` via `QMetaObjectBuilder`: custom signals (incl. `QString` args), NOTIFY properties → QML/binding updates, value-type ctors, parenting. |
 | **uic (CTFE)** | `uic`, `dialog`, `tabs`, `mainwin`, `hello`, `egroup`, `combo`, `spacer`, `icon`, `uicheck`, `corpus-check` | `mixin(uiForm(import(".ui")))` → typed struct. `uicheck` + `corpus-check` are **differential**: our tree must serialize identically to `QUiLoader`'s over the whole Qt baseline corpus (**60/60**). |
-| **QML (D backend)** | `qml`, `qmlreg`, `qmlaot`, `qmltypes`, `moclife` | D `@QObject` driving QML: exposed via `setContextProperty` (`qml`); registered as an instantiable element via `qmlRegisterType` (`qmlreg`); the `.qml` precompiled to bytecode by `qmlcachegen` and linked with **no source shipped** (`qmlaot`); a `.qmltypes` emitted by CTFE and validated by Qt's own `QQmlJSTypeDescriptionReader` (`qmltypes`); the moc side-table lifetime (`moclife`). Targets that need `qmlcachegen`/`Qt6QmlCompiler` skip if absent. |
+| **QML (D backend)** | `qml`, `qmlreg`, `qmltwo`, `homonym`, `qmlaot`, `qmltypes`, `moclife` | D `@QObject` driving QML: exposed via `setContextProperty` (`qml`); registered as an instantiable element via `qmlRegisterType` (`qmlreg`); the `.qml` precompiled to bytecode by `qmlcachegen` and linked with **no source shipped** (`qmlaot`); a `.qmltypes` emitted by CTFE and validated by Qt's own `QQmlJSTypeDescriptionReader` (`qmltypes`); the moc side-table lifetime (`moclife`). Targets that need `qmlcachegen`/`Qt6QmlCompiler` skip if absent. |
 | **i18n (tr / lupdate)** | `tr`, `lupdate-check` | Runtime `"str".tr` (free UFCS, module context) + `QTranslator.install` translating a real `lrelease` `.qm`; and `lupdate-d` (libdparse) extracting `tr`/UFCS/`translate`, diffed against a golden `.ts`. Together they span D source → `lupdate-d` → `.ts` → `.qm` → `tr()`. |
 | **governance gates** | `manifest-gate-qtwidgets`, `manifest-gate-qml` | Regenerate a binding and diff its per-symbol `coverage-manifest.tsv` against a checked-in baseline (`tests/coverage/`); **fail** on a disappeared symbol, a worsened fate, or a new unmapped/inline-failed drop. |
 | **qrc / containers / misc** | `qrc`, `container_qvector`, `qlist_roundtrip`, `holder_test`, `webengine` | CTFE `.rcc`; `QList`/`QVector` round-trips; holder unit; a WebEngine private-type smoke. |
@@ -37,9 +41,11 @@ installed, not a repo-enforced policy — the biggest open governance gap.
 Inventoried as **structured state** in `tests/expected-fails.json` (id / area / reason /
 since / remove-when): `uic-private-widgets`, `virtual-container-return`,
 `moveonly-byvalue-params`, `windows-msvc`, plus the QML/moc private-API risks.
-**Honest caveat:** this is an INVENTORY, not enforcement — nothing yet reads the file,
-so it does not by itself block a regression (a runner with schema + kinds + unexpected-
-pass/fail is a tracked follow-up). `@Property string` read/write has a focused test
+**Honest scope:** `expected-fails-lint` reads the file and STRICTLY validates it (fixed
+schema value + kind enum, unique IDs, field-by-kind rules, and every `risk` probe naming
+a real target) — a typo can't invent an accepted category. It is a schema LINTER, not an
+expected-fail RUNNER: it does not execute probes, evaluate `remove_when`, or detect
+unexpected pass/fail (that runner is the tracked follow-up). `@Property string` read/write has a focused test
 (`cannon_t10`); ownership destruction invariants have one too (`ownership`).
 
 ## Coverage manifest (gated)
@@ -58,9 +64,9 @@ wrapper, webengine don't) — that's the open follow-up.
 ## Tracked follow-ups (to make this a real contract)
 
 - Per-category **counters + regression history** in CI (pass/expected-fail per category),
-  not just a green/red matrix, and a structured test report (JSON/TSV) over the ~140 targets.
-- A consumer for `expected-fails.json` (schema, `kind` = risk / expected_fail / permanent_exclusion,
-  probe-target existence, unexpected-pass/fail) so the inventory becomes enforcement.
+  not just a green/red matrix, and a structured test report (JSON/TSV) over the ~162 targets.
+- An expected-fail RUNNER on top of the existing strict linter (execute probes, evaluate
+  `remove_when`/expiration, detect unexpected pass/fail) — the linter validates structure only.
 - Extend the manifest gates to Qt5, wrapper mode and webengine (only Qt6 raw-QtWidgets + Qt6-QML
   have baselines today).
 - Ownership-invariant tests for `holder` beyond `wraptest` (C++ destroy before the D

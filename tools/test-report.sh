@@ -30,9 +30,9 @@ category() {
     wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*) echo lifetime ;;
     cannon*) echo moc ;;
     uic-*|dialog-*|tabs-*|mainwin-*|hello-*|egroup-*|combo-*|spacer-*|icon-*|uicheck*|corpus-check*) echo uic ;;
-    qml-*|qmlreg-*|qmlaot-*|qmltypes-*|moclife-*) echo qml ;;
+    qml-*|qmlreg-*|qmlaot-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*) echo qml ;;
     tr-*|lupdate-check) echo i18n ;;
-    manifest-gate-*) echo gate ;;
+    manifest-gate-*|expected-fails-lint) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
     *) echo other ;;
   esac
@@ -43,7 +43,7 @@ compiler() { case "$1" in *-ldc2*) echo ldc2 ;; *-dmd*) echo dmd ;; *) echo - ;;
 qtaxis() {
   case "$1" in
     *-qt5*) echo qt5 ;;
-    manifest-gate-*|lupdate-check|holder_test*|sample_*) echo - ;;
+    manifest-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*) echo - ;;
     *) echo qt6 ;;
   esac
 }
