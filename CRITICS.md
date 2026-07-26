@@ -1,5 +1,173 @@
 # CRITICS.md
 
+## Rodada 5 refeita: QML entrou no jogo, agora a cobranca muda
+
+Esta rodada substitui a "Rodada 5" anterior. Ela estava factual e temporalmente
+defasada: dizia worktree limpa e 126 targets. O estado atual tem alteracao local em
+`runtime/uic/uiform.d`, adicionou a frente QML/lupdate e a matriz local agora lista
+**136** targets.
+
+### Verificacao desta rodada
+
+- Worktree **nao** estava limpa: `CRITICS.md` e `runtime/uic/uiform.d` modificados.
+  Nao reverti nem sobrescrevi a mudanca de `uiform.d`.
+- `./build --list` lista **136** targets.
+- `./build` passou completo localmente.
+- Novos alvos QML passaram em ldc2+dmd:
+  `qml`, `qmlreg`, `qmlaot`, `qmltypes`, `tr`.
+- UIC diferencial passou com **60/60** no corpus atual.
+- `dub test` em `tools/lupdate` passa: `1 modules passed unittests`.
+- `generated/qt-6.11/cxx-qtwidgets/coverage.txt`: 7850 linhas no manifest
+  object-method; 681 drops agregados; **493 drops ainda fora do manifest por simbolo**.
+- `generated/qt-6.11/cxx-qml/coverage.txt`: 2121 linhas no manifest
+  object-method; 544 drops agregados; **425 drops ainda fora do manifest por simbolo**.
+
+### O que melhorou de verdade
+
+1. **A frente QML e real.** Nao e README bait. Ha D `@QObject` exposto via
+   `setContextProperty`, `qmlRegisterType!T`, QML instanciando tipo D, property/slot
+   round-trip, qrc, qmlcachegen AOT sem `.qml` fonte, `.qmltypes` gerado por CTFE e
+   validado pelo leitor Qt, alem de `tr()` com `.qm`.
+
+2. **A direcao PySide ficou mais crivel.** Antes o projeto parecia "Qt Widgets +
+   runtime moc". Agora existe uma historia de QML frontend / D backend com type
+   registration, tooling metadata e traducao. Isso e o caminho certo para competir
+   em ergonomia real, nao so em ABI.
+
+3. **A matriz local ficou mais forte.** 136 targets verdes, dmd+ldc2, Qt5/Qt6 onde
+   aplicavel, QML, WebEngine, UIC diferencial, qrc, holder, ownership e libsample.
+   Isso nao e demo. Repito porque agora e ainda mais verdadeiro.
+
+4. **`g_moAttach` nao esta mais "sem cleanup algum".** O caminho QML-created apaga
+   `g_moAttach` no destroy e chama o destroy callback D. A critica antiga precisa
+   ser reduzida: o cleanup existe num caminho importante.
+
+5. **`lupdate-d` usa parser, nao regex.** Isso importa. Para traducao em D, usar
+   libdparse e delegar `.ui/.qml` ao lupdate Qt e uma decisao tecnicamente adulta.
+
+### O que ainda esta errado
+
+#### 1. QML adiciona valor, mas tambem adiciona dependencia privada pesada
+
+`qmlRegisterType` usa `QQmlPrivate`, e `.qmltypes` usa
+`QQmlJSTypeDescriptionReader` / QtQmlCompiler private API. Isso pode ser a escolha
+pragmatica certa agora, mas precisa ser tratado como risco de compatibilidade de
+primeira classe, igual `QMetaObjectBuilder`.
+
+PySide-mature nao significa "usa private API e torce". Significa: matriz de Qt
+versions, probes dedicados, expected-fails quando a private API muda, e docs
+assumindo explicitamente o risco.
+
+#### 2. O manifest continua parcial, agora tambem no modulo QML
+
+O manifest por simbolo existe e e util. Mas QtWidgets ainda tem 493 drops fora do
+manifest, e QML tem 425. Isso mata qualquer frase forte do tipo "sabemos o destino
+de cada simbolo".
+
+Assessment duro: o manifest atual e um manifest do caminho object-method, nao da
+API inteira. Enquanto value-type/wrapper/ctor/stub drops ficarem agregados no
+rodape, coverage ainda e evidencia parcial.
+
+#### 3. Manifest e expected-fails continuam sem enforcement
+
+Eu ainda nao vi um target que falhe quando:
+
+- aparece novo `unmapped-type`;
+- aumenta o numero de drops fora do manifest;
+- um `shimmed` vira `inline-failed`;
+- um simbolo some;
+- um expected-fail passa sem ser removido;
+- surge gap sem entrada em `tests/expected-fails.json`.
+
+`tests/expected-fails.json` e um bom artefato, mas sem consumidor ele e inventario,
+nao policia.
+
+#### 4. A politica de callback error ainda e incompleta
+
+`newQObject` e `qmlRegisterType` usam `qtdOnCallbackError`. Ainda existem
+`catch(Exception){}` silenciosos em caminhos relevantes:
+
+- virtual override trampolines gerados por `__ovTramp`;
+- delegates de slot/property do `QtdWidget`;
+- signal-to-delegate trampoline em `emit_cxx.d`;
+- callbacks de conversao de containers em `emit_cxx.d`.
+
+O projeto agora tem QML chamando D. Isso torna silencio em callback ainda mais
+grave: erro engolido em binding QML vira bug de UI invisivel.
+
+#### 5. Cleanup de metaobject ainda e parcial
+
+O caminho QML-created limpa `g_moAttach`. Bom. Mas `qtd_moc_new` tambem insere em
+`g_moAttach`, e `qtd_moc_attach` para trampolim/subclasse tambem. Eu nao vi cleanup
+equivalente para esses caminhos.
+
+Se a resposta for "esses objetos vivem ate o fim", escreva e teste isso. Se nao,
+limpe. O estado atual e melhor que antes, mas ainda nao fecha a historia de vida
+util do side-table.
+
+#### 6. `lupdate-d` passa unittest, mas nao esta no build de record
+
+`dub test` em `tools/lupdate` passa. Ponto para o projeto. Mas `./build` nao roda o
+extrator; o target `tr-*` usa `.ts` existente e `lrelease`, validando o runtime de
+traducao, nao o pipeline completo `D source -> lupdate-d -> .ts -> .qm -> tr()`.
+
+Para maturidade, `lupdate-d` precisa entrar no grafo principal ou em um target de
+tools, com golden `.ts` e round-trip.
+
+#### 7. Docs ficaram stale de novo
+
+README ainda diz que per-method manifest e follow-up, mas
+`coverage-manifest.tsv` ja existe. A verdade atual e: manifest existe, mas e
+parcial e sem gate.
+
+`docs/test-suite.md` ainda fala em coverage manifest como se fosse
+`coverage.txt`, e a suite documentada ainda nao reflete os 136 targets/QML/AOT/
+qmltypes/tr/UIC 60/60. Isso precisa ser corrigido rapido. Neste projeto, doc stale
+nao e estetica; e perda de auditabilidade.
+
+#### 8. Build verde ainda nao e report estruturado
+
+`./build` passou, mas a prova e stdout enorme. Nao ha JSON/TSV com target,
+categoria, compiler, Qt, status, duracao, skip/opcional e commit. Agora que a
+matriz tem 136 targets e alvos opcionais por disponibilidade (`qmlcachegen`,
+`Qt6QmlCompiler`, `lrelease`), isso deixa de ser luxo.
+
+Tambem continua aparecendo ruido de agendamento no libsample (`gen.stamp`,
+`libbinding_*`, `libshims.a`, `libsample.a` anunciados repetidamente). O guard
+segura a execucao; o grafo ainda nao parece limpo.
+
+### Prioridade da rodada 5 refeita
+
+1. **Atualizar docs da suite e coverage para o estado real.** 136 targets, QML,
+   AOT, qmltypes, tr, UIC 60/60, manifest parcial.
+2. **Completar o manifest por simbolo.** Zerar "drops fora do manifest" em
+   QtWidgets e QML.
+3. **Criar gate do manifest + expected-fails.** Baseline, diff, unexpected-pass,
+   unexpected-fail e gap nao rastreado.
+4. **Aplicar `qtdOnCallbackError` em todos os callbacks nothrow.**
+5. **Fechar cleanup de `g_moAttach` para todos os caminhos ou documentar/testar a
+   vida util intencional.**
+6. **Adicionar `lupdate-d` ao build de record.** Golden `.ts` + round-trip para
+   `.qm` + `tr()`.
+7. **Gerar test report estruturado.** Principalmente agora que ha targets
+   opcionais e matriz maior.
+8. **Tratar APIs privadas QML como risco versionado.** Probes e expected-fails por
+   versao Qt, nao apenas comentarios.
+
+### Veredito da rodada 5 refeita
+
+O projeto melhorou mais do que a rodada 5 anterior reconhecia. A frente QML muda
+o patamar: agora ha uma historia plausivel de app real, nao so binding de classes
+Qt. `qmlRegisterType`, AOT, `.qmltypes`, traducao e UIC 60/60 sao substancia.
+
+Mas a nova maturidade cobrada tambem sobe. QML privado, tooling metadata,
+traducao, ownership de objetos criados pelo engine e callbacks cross-language
+precisam de governanca. O projeto esta mais forte; tambem ficou mais perigoso.
+
+Resumo brutal: voce esta construindo algo real. Agora pare de deixar artefatos
+bons viverem como ilhas. Suite, manifest, expected-fails, lupdate, QML private API
+e callback policy precisam virar contrato unico, versionado e quebravel.
+
 > **Resolucao da rodada 4 (resumo no topo; detalhe por commit d5910b6).** Ataquei pela
 > "prioridade brutal": **#1 manifest por simbolo** -> `coverage-manifest.tsv` (fate por metodo:
 > bound/shimmed/signal/inherited/pure-virtual/unmapped-type/inline-failed) + `coverage.txt` com
@@ -217,3 +385,38 @@ cada excecao engolida precisa virar politica observavel.
 Resumo brutal: pare de medir o projeto por narrativa. Meça por manifest. Quando o
 manifest por simbolo e o placar historico existirem, a conversa muda de "isso e
 ambicioso" para "isso e auditavel".
+
+---
+
+## Resolução da rodada 5 refeita (commits 7226e4a..f251e17)
+
+Os 8 pontos, atacados um a um e verificados (ldc2+dmd, matriz cheia verde):
+
+1. **Docs stale** — `docs/test-suite.md` e `README` atualizados: uic 60/60, categorias
+   QML/i18n/gate, seção "Coverage manifest (gated)" honesta sobre per-symbol vs agregado.
+   (`ce9a114`)
+2. **Manifest parcial** — os 5 `catch(Unmappable){CXX_SKIP++}` (value-type/wrapper/ctor)
+   agora fazem `recordSym`. Resíduo "não per-symbol" → **0** nos dois bindings
+   (widgets unmapped-type 188→681; qml resíduo 0). `coverage.txt` diz "all per-symbol"
+   dinamicamente. (`bc385d3`)
+3. **Sem enforcement** — `manifest-gate-{qtwidgets,qml}`: regenera e faz diff do manifest
+   contra baseline commitado; **falha** em símbolo sumido, fate piorado, ou novo drop.
+   Verificado: exit 1 em regressão forjada, 0 limpo. (`b37f24f`)
+4. **Callback silencioso** — `qtdOnCallbackError` em TODOS os callbacks nothrow restantes:
+   trampolines de virtual-override, delegates de slot/prop do QtdWidget, trampoline de
+   sinal e callbacks de container (gerados). De brinde, consertei o gate `__has_include`
+   quebrado (widgets puxava QQmlPrivate) → `-DQTD_ENABLE_QML` explícito. (`7226e4a`)
+5. **Cleanup do side-table** — destrutor do QtdMocObject agora limpa `g_moAttach`+`_reg`
+   em TODO caminho (não só QML), via hook genérico. Vida útil documentada (objeto sem
+   pai vive até o fim, igual QObject C++). Testado: `moclife-{ldc2,dmd}`. (`94a39d3`)
+6. **lupdate fora do build** — `lupdate-check`: roda o extrator em `fixture.d` e faz diff
+   contra golden `.ts` (tr/UFCS/translate/contexto-módulo). Junto com `tr-*` fecha
+   D source → lupdate-d → .ts → .qm → tr(). (`5b76f48`)
+7. **Sem report estruturado** — `tools/test-report.sh`: TSV com target/categoria/compiler/
+   qt/opcional/status/ms + commit + totais sobre a matriz. (`f251e17`)
+8. **API privada QML** — entradas estruturadas em `expected-fails.json` para QQmlPrivate,
+   QQmlJSTypeDescriptionReader e QMetaObjectBuilder (área/razão/probe/since/remove-when);
+   os targets qmlreg/qmltypes/moc SÃO os probes por-build. (`ff19f33`)
+
+Resta explícito como follow-up (não bloqueante): counters por-categoria com histórico em
+CI, e rodar o probe de API privada numa matriz de versões Qt (só 6.11 instalada aqui).
