@@ -206,8 +206,16 @@ Target[] lupdateCheckTargets(string root) {
     auto fixt = buildPath(root, "tests", "lupdate", "fixture.d");
     auto golden = buildPath(root, "tests", "lupdate", "fixture.golden.ts");
     auto outTs = buildPath(root, ".build", "lupdate-fixture.ts");
+    auto pres = buildPath(root, ".build", "lupdate-preserve.ts");
+    // 1) extraction matches the golden; 2) an EXISTING translation SURVIVES a re-run (critics r6 #6
+    // catalog preservation). Fill one translation, re-extract, and require it's still there.
     auto cmd = "dub build --root=" ~ dir ~ " -q && " ~ bin ~ " " ~ fixt ~ " -ts " ~ outTs
-        ~ " >/dev/null && diff -u " ~ golden ~ " " ~ outTs ~ " && echo 'lupdate-check OK: fixture.d -> .ts matches golden'";
+        ~ " >/dev/null && diff -u " ~ golden ~ " " ~ outTs
+        ~ " && cp " ~ golden ~ " " ~ pres
+        ~ " && sed -i '0,/type=.unfinished.><.translation>/s@<translation type=.unfinished.></translation>@<translation>KEEP_ME</translation>@' " ~ pres
+        ~ " && " ~ bin ~ " " ~ fixt ~ " -ts " ~ pres ~ " >/dev/null"
+        ~ " && grep -q KEEP_ME " ~ pres
+        ~ " && echo 'lupdate-check OK: golden match + existing translation preserved across re-run'";
     return [Target.phony("lupdate-check", "sh -c \"" ~ cmd ~ "\"", [])];
 }
 

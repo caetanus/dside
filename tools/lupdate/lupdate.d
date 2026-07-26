@@ -111,7 +111,7 @@ string qtTool(string n) {
 }
 
 version (unittest) {} else
-void main(string[] args) {
+int main(string[] args) {
     string[] dfiles, uiqml; string tsOut = "out.ts";
     for (size_t i = 1; i < args.length; i++) {
         auto a = args[i];
@@ -130,22 +130,31 @@ void main(string[] args) {
         std.file.write(dts, tsDoc(all));
         parts ~= dts;
     }
-    // .ui / .qml -> Qt's normal lupdate (it handles those natively; the "gotcha" lives there).
+    // .ui / .qml -> Qt's normal lupdate. A subprocess FAILURE must fail us, not be swallowed.
     if (uiqml.length) {
         auto qts = tsOut ~ ".ui.ts";
         auto r = execute([qtTool("lupdate")] ~ uiqml ~ ["-ts", qts, "-no-obsolete", "-silent"]);
-        if (r.status != 0) stderr.writeln("qt lupdate: ", r.output);
-        if (exists(qts)) parts ~= qts;
+        if (r.status != 0) { stderr.writeln("lupdate-d: qt lupdate FAILED: ", r.output); return 1; }
+        if (!exists(qts)) { stderr.writeln("lupdate-d: qt lupdate produced no .ts"); return 1; }
+        parts ~= qts;
     }
+    // Preserve an EXISTING catalog: fold tsOut in as the LAST merge part so its (non-empty)
+    // translations WIN over the fresh-unfinished ones on collision — lconvert lets the last input
+    // win (verified). A real lupdate never discards existing translations.
+    string prev;
+    if (exists(tsOut)) { prev = tsOut ~ ".prev.ts"; std.file.copy(tsOut, prev); parts ~= prev; }
 
-    // Merge with Qt's lconvert (it dedups + preserves existing translations across .ts files).
-    if (parts.length == 1) rename(parts[0], tsOut);
-    else if (parts.length > 1) {
+    if (parts.length == 0) { stderr.writeln("lupdate-d: nothing to extract"); return 1; }
+    if (parts.length == 1) {
+        rename(parts[0], tsOut);   // single D-only source, no prior catalog -> raw tsDoc
+    } else {
+        // Merge with Qt's lconvert (dedups + preserves existing translations). Fail on error.
         auto r = execute([qtTool("lconvert")] ~ parts ~ ["-o", tsOut]);
-        if (r.status != 0) stderr.writeln("lconvert: ", r.output);
-        foreach (p; parts) if (exists(p)) remove(p);
+        if (r.status != 0) { stderr.writeln("lupdate-d: lconvert FAILED: ", r.output); return 1; }
+        foreach (p; parts) if (p != tsOut && exists(p)) remove(p);
     }
     writefln("lupdate-d: %d D source(s), %d ui/qml -> %s", dfiles.length, uiqml.length, tsOut);
+    return 0;
 }
 
 // Build a Qt .ts document from extracted messages (one <context> per name, sorted/diffable).
