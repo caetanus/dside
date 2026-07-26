@@ -1,5 +1,313 @@
 # CRITICS.md
 
+## Rodada 7: o código local amadureceu; a promessa institucional ainda não
+
+Recomecei pelo estado atual, sem aceitar a resolução da rodada 6 como prova. Li os
+changesets, o runtime QML/moc, os gates, o report, o grafo reggae, a CI, os testes
+novos e a documentação; também voltei aos pontos estruturais de UIC/QRC, libsample e
+geração. A régua continua sendo PySide: não basta uma máquina conseguir ficar verde.
+O repositório precisa tornar difícil publicar uma regressão e precisa comunicar
+falhas na API, não apenas no stderr.
+
+### Verificação desta rodada
+
+- Preservei a alteração preexistente em `runtime/uic/uiform.d` e o experimento
+  não rastreado em `tests/qmltc/`.
+- `./build --list` lista **158 targets**, dos quais **58** são `sample_*`.
+- `./build` passou completo no ambiente local: Qt 5.15 + Qt 6.11, ldc2 + dmd,
+  libsample/cornercases, QML, AOT, `.qmltypes`, WebEngine, UIC 60/60, QRC,
+  lupdate e os gates.
+- Os quatro `moclife_widget-*` passaram; os quatro `qmltwo-*` passaram.
+- Os manifests reais passaram com **8343** símbolos QtWidgets e **2546** QML,
+  agora chaveados por classe + USR.
+- Reproduzi três falsos verdes com fixtures sintéticas:
+  - baseline do manifest com a mesma classe+USR duas vezes: **exit 0 / OK**;
+  - fate inexistente `typo-fate`: **exit 0 / OK**, contado como novo bound;
+  - `expected-fails.json` com schema errado e dois IDs iguais: **exit 0 / OK**.
+- O report classifica `expected-fails-check` como `other / qt6` e
+  `qmltwo-ldc2` como `other / qt6`. O primeiro não pertence ao eixo Qt; o segundo
+  pertence à categoria QML.
+- `git diff --check` passou.
+
+### O que foi realmente fechado
+
+1. **O lifetime de `QtdWidget` foi corrigido.** O destrutor do trampoline chama
+   `qtd_moc_detach`, e o teste exige que `g_moAttach` e `_reg` retornem ao baseline
+   em Qt5/Qt6 e dmd/ldc2. A crítica anterior não permanece aberta.
+
+2. **USR resolveu a colisão de overloads do manifest.** A identidade
+   classe+USR é adequada para o problema observado, os manifests reais não têm
+   colisões e o unittest pega overload desaparecido/regredido. O defeito novo está
+   na robustez do loader, não na escolha da identidade.
+
+3. **A preservação básica do lupdate agora é provada.** Catálogo traduzido sobrevive
+   à atualização e falha de subprocesso é propagada. Plural, locations, comments e
+   merge misto continuam incompletos, mas seria desonesto repetir que o driver
+   simplesmente destrói traduções.
+
+4. **A matriz local é séria.** Cinquenta e oito alvos derivados do libsample, nos
+   dois compiladores, mais as superfícies Qt5/Qt6, não são demonstrações. O projeto
+   está pressionando corner cases de binding que projetos superficiais nem modelam.
+
+5. **O Lippincott continua sendo uma peça excepcional.** O guard compartilhado por
+   assinatura ABI, com classificação central da exceção C++ e reerguimento tipado
+   em D, continua bem desenhado e exercitado por exceção real. Ele reduz geração,
+   preserva dead stripping e resolve uma fronteira de unwinding genuinamente difícil.
+   A dívida é formalizar os pressupostos Itanium/POSIX e construir a resposta para
+   SEH/MSVC. Não há razão técnica para diminuir o mérito do mecanismo.
+
+### Achados críticos
+
+#### 1. A CI adicionada não executa a matriz que o projeto chama de contrato
+
+O workflow ainda é um arquivo não validado, e há bloqueios objetivos:
+
+- o repositório usa `master` e `codegen-tools`, mas o trigger aceita `main` e
+  `codegen-tools`; pushes em `master` não disparam;
+- o install pede `libqt6qmlcompiler6-dev`, nome que não existe nos repositórios do
+  Ubuntu 24.04 usados pelo runner;
+- o grafo sempre cria os targets Qt6 WebEngine, mas a CI não instala
+  `qt6-webengine-dev`;
+- o workflow não obtém `../pyside-setup`; `libsampleTargets` retorna `[]` quando o
+  clone não existe. Assim, os **58 targets que materializam o norte PySide somem
+  silenciosamente da CI**;
+- os baselines foram gerados em Qt 6.11, enquanto o comentário prevê Qt 6.4 no
+  runner. O gate trata símbolos ausentes como regressão. Um baseline único entre
+  minors diferentes tende a medir diferença de SDK, não regressão do gerador.
+
+Isto é pior do que “pode precisar de ajuste”. A pipeline, como escrita, provavelmente
+falha no `apt`; se passar dessa etapa, falha no WebEngine ou no manifest; e mesmo que
+fique verde, pode fazê-lo sem a suíte libsample. Portanto a resolução “CI: Linux,
+dmd+ldc2, Qt5+Qt6” ainda não é um fato.
+
+Para a régua PySide, o clone/corpus externo não pode ser uma capability silenciosa.
+Ou a CI o provisiona numa revisão pinada, ou o configure deve falhar quando o job
+de conformance não o encontra.
+
+#### 2. `qmlRegisterType` detecta falha em C++ e a perde na API D
+
+`qtd_qml_register_type` retorna `nullptr` quando o pool Qt5 acaba ou quando
+`QQmlPrivate::qmlregister` falha. Mas `qmlRegisterType(T)` retorna `void` e grava
+incondicionalmente:
+
+```d
+_qmlFactories[key] = factory;
+```
+
+Logo uma falha vira uma factory sob a chave `null` e o chamador recebe sucesso
+aparente. O comentário “HONEST failure” descreve o backend C++, não o contrato
+público.
+
+Há efeitos adicionais:
+
+- se `qmlregister` falha, o `QtdQmlType` alocado não é liberado;
+- em Qt5 o slot do pool já foi consumido antes dessa falha e não é revertido;
+- registrar o mesmo tipo repetidamente continua consumindo slots; `qmltwo` faz uma
+  repetição, mas não verifica deduplicação nem o limite;
+- se a factory D lança, `__qmlMake` retorna `null`; o carrier C++ já foi construído
+  e QML recebe uma instância sem backend D, em vez de uma criação explicitamente
+  rejeitada.
+
+Uma API madura precisa retornar type id/resultado ou lançar uma exceção D, limpar a
+alocação e definir a semântica de registro duplicado. Escrever no stderr não é
+propagação de erro.
+
+#### 3. O cache de metaobject ainda não chaveia a forma completa, e o teste não testa homônimos
+
+`buildMo` inclui classe, superclass, sinais, slots e `nome:tipo` das propriedades na
+chave. Ele não inclui `propNotify`. Duas formas idênticas que diferem apenas no sinal
+NOTIFY compartilham o mesmo `QMetaObject`; a segunda herda a associação de notify da
+primeira.
+
+O teste `register_two_test.d` diz que exercita “same-named-but-different types”, mas
+declara `Alpha` e `Beta`. Como o nome da classe é a primeira parte da chave, esse
+teste não pode colidir no cache nem provar a correção que o comentário reivindica.
+Ele prova algo útil, porém diferente: dois nomes e duas formas distintas coexistem.
+
+O teste correto precisa criar homônimos de módulos diferentes com o mesmo `T.stringof`
+e variar separadamente sinais, slots, tipo de propriedade, superclass e NOTIFY.
+A chave deve serializar todo dado que participa de `QMetaObjectBuilder`, inclusive
+flags quando elas forem adicionadas.
+
+### Achados altos
+
+#### 4. Os novos gates aceitam metadado corrompido
+
+O manifest loader coleta `baseDups`, mas `main` nunca consulta essa lista. Uma chave
+duplicada no baseline é sobrescrita e aceita. Linhas com menos de quatro colunas são
+silenciosamente ignoradas. Fate desconhecido recebe rank 2; quando novo, não é drop
+e entra como bound benigno.
+
+O unittest testa apenas `classify` com maps construídos em memória. Ele não passa
+pelo parser, portanto não protege schema, duplicatas ou enum de fate. Foi assim que
+os dois falsos verdes desta rodada passaram.
+
+O checker de expected-fails tem o mesmo padrão:
+
+- não valida o valor de `schema`;
+- não rejeita IDs duplicados;
+- não valida tipos ou strings vazias;
+- confia no array `kinds` fornecido pelo próprio documento;
+- não rejeita campos proibidos/incoerentes por kind.
+
+Gates de governança devem fazer parsing estrito e falhar fechado. Se um typo inventa
+uma nova categoria aceita, o contrato não existe.
+
+#### 5. O “consumer de expected-fails” ainda não consome expectativas
+
+O checker prova que certos campos existem e que nomes de probes aparecem em
+`./build --list`. Ele não executa probes, não relaciona resultado a uma condição,
+não representa expected-fail, não detecta unexpected-pass/fail e não expira
+`remove_when`.
+
+As entradas `known_gap` continuam sendo prosa sem evidência executável. As entradas
+`risk` são melhor descritas como referências a targets; o fato de o target existir
+não prova que foi rodado naquele ambiente. `windows-msvc` é chamado
+`permanent_exclusion`, embora seu próprio `remove_when` diga que deve desaparecer
+quando implementado.
+
+É um schema linter útil. Ainda não é um runner de expected failures. O nome e a
+documentação precisam manter essa distinção até existir avaliação de estado.
+
+#### 6. O report continua inferindo fatos e já produz linhas falsas
+
+As reproduções desta rodada bastam:
+
+```text
+expected-fails-check  other  -     qt6
+qmltwo-ldc2           other  ldc2  qt6
+```
+
+O primeiro deveria ser governance/gate com Qt `-`; o segundo deveria ser QML.
+Além disso:
+
+- dirty state ignora arquivos não rastreados;
+- ausência de capability remove o target do grafo, portanto nunca vira `skip`;
+- não existem `expected-fail` e `unexpected-pass`;
+- metadata depende de padrões de nome crescentemente frágeis;
+- na CI, `test-report.sh` reroda individualmente os **158 targets** depois de
+  `./build`, e seu exit code é descartado com `|| true`.
+
+O script agora guarda logs e versões, avanço real sobre a rodada anterior. Mas uma
+tabela auditável precisa receber metadata estruturada do grafo e observar uma
+execução, não reconstruir a realidade pelo nome e repetir a suíte inteira.
+
+#### 7. As APIs privadas continuam testadas em duas instalações, não numa matriz de versões
+
+Qt5 5.15 e Qt6 6.11 verdes na máquina local são evidência boa. Não cobrem os minors
+Qt6 nos quais `QQmlPrivate::RegisterType`, `QMetaObjectBuilder` e
+`QQmlJSTypeDescriptionReader` podem mudar. A CI proposta usa justamente outro minor,
+mas não resolve como versionar baseline, capability e expected result.
+
+Para dizer “um futuro Qt7 será delta localizado”, primeiro é preciso provar pelo
+menos dois minors Qt6 em jobs verdes e tornar falha de private API diagnosticável
+como compatibilidade, não como um `./build` vermelho indistinto.
+
+### Achados médios
+
+#### 8. O grafo libsample ainda agenda o mesmo produtor repetidamente
+
+Na execução completa, `libsample.a`, `gen.stamp`, `libbinding_{ldc2,dmd}.a` e
+`libshims.a` foram anunciados muitas vezes em paralelo. Os locks impediram corrupção
+e a suíte passou, mas o grafo não está deduplicando produtores compartilhados como
+um DAG deveria.
+
+Isso custa tempo, polui diagnóstico e aumenta muito o preço da CI, especialmente
+quando o report repete todos os targets. `flock` é defesa de concorrência; não é
+substituto para uma única instância de target por artefato.
+
+#### 9. QRC permanece um subset estreito e sem oracle diferencial
+
+Nada nesta rodada ampliou o único fixture ASCII. O parser manual continua sem
+entidades XML, aspas simples, language/country, compression/threshold e validação de
+duplicatas. O encoding de nomes continua perigoso para Unicode/non-BMP.
+
+O projeto já mostrou no UIC a disciplina correta: corpus e comparação com a
+implementação Qt. A mesma técnica deve comparar o blob/lookup produzido contra
+`rcc`, incluindo aliases com path, prefixos múltiplos, vazio, Unicode e compressão.
+
+#### 10. A documentação já ficou atrás do código novo
+
+`docs/test-suite.md` ainda afirma “There is no CI” e “nothing yet reads the file”,
+embora workflow e checker existam. Também fala em `~140` targets quando há 158 e
+não lista `qmltwo`/`moclife_widget` nas categorias correspondentes.
+
+Curiosamente, essas frases antigas são mais honestas sobre a efetividade atual do
+que a resolução da rodada 6. Ainda assim, documentação contraditória impede que o
+usuário saiba qual é o contrato pretendido. Parte da matriz e dos contadores deve ser
+gerada do próprio grafo.
+
+### Prioridade brutal da rodada 7
+
+1. **Obter o primeiro verde real da CI.** Corrigir branch/pacotes/WebEngine, pinar
+   Qt e provisionar uma revisão exata de `pyside-setup`. Falhar se os 58 `sample_*`
+   não existirem no job de conformance.
+2. **Fechar o contrato de erro de `qmlRegisterType`.** Retorno/exception, rollback
+   Qt5, cleanup de `QtdQmlType`, duplicação definida e falha de factory observável.
+3. **Testar o cache QML que vocês dizem ter corrigido.** Homônimos reais e variação
+   isolada de NOTIFY/super/signatures; chave completa da forma.
+4. **Tornar gates fail-closed.** Schema version fixo, enum fixo no programa, linhas
+   malformadas, duplicatas dos dois lados, IDs únicos e testes que atravessem parser
+   + `main`.
+5. **Separar registry linter de expected-fail runner.** Condições estruturadas,
+   execução, expected/unexpected pass/fail e expiração verificável.
+6. **Eliminar inferência por nome no report.** Metadata no target, skip explícito e
+   coleta do resultado da execução principal sem rerodar 158 alvos.
+7. **Criar matriz real de Qt minors para private APIs e baselines por ambiente.**
+8. **Deduplicar produtores do libsample no grafo.**
+9. **Dar ao QRC o tratamento diferencial que tornou UIC convincente.**
+10. **Continuar as dívidas estruturais:** IR do gerador, typesystem sem regex,
+    wrapper como default e estratégia Windows/MSVC para o Lippincott.
+
+## Resolução da rodada 7 (commits 327ac47..6482018)
+
+Rodada sobre "verde que esconde regressão". Os três falsos verdes reproduzidos + os bugs reais:
+
+1. **CI destravada dos erros objetivos (#1).** Trigger `master` (era `main`), pacotes reais
+   (dropado o inexistente `libqt6qmlcompiler6-dev`), `qt6-webengine-dev` incluído, `../pyside-setup`
+   provisionado (tag pinada) + **passo de conformance que falha se os `sample_*` sumirem**. Gates
+   version-independent MANDATÓRIOS; manifest gates ADVISORY (baseline 6.11 ≠ Qt distro do runner —
+   dito no arquivo). HONESTO: ainda não verde num runner real.
+2. **Contrato de erro do `qmlRegisterType` (#2).** Agora **lança** exceção D se o backend recusa
+   (pool Qt5 / `qmlregister`), em vez de gravar factory sob chave `null` e fingir sucesso; registro
+   repetido é idempotente (não consome slot); C++ libera o `QtdQmlType` e faz rollback do slot Qt5.
+3. **Cache de metaobject + teste de homônimo real (#3).** Chave inclui `propNotify` agora. E o teste
+   `homonym` define DUAS classes `Dup` (mesmo `T.stringof`, módulos diferentes, formas diferentes),
+   registra e instancia ambas — cada uma dispara SEU slot. Prova a chave-por-forma. Qt5+Qt6.
+4. **Gates fail-closed (#4).** manifest gate: enum de fate FIXO no programa (typo-fate falha),
+   dup-key rejeitado nos DOIS lados, linha malformada falha, e unittest atravessa o PARSER. Os três
+   falsos verdes reproduzidos agora dão exit 1.
+5. **Linter ≠ runner (#5).** O checker de expected-fails virou linter ESTRITO (schema/kinds/campos
+   fixos no programa, IDs únicos, field-by-kind) e foi renomeado `expected-fails-lint`, honesto que
+   não executa probes.
+6. **Report corrigido (#6, concreto).** `expected-fails-lint`→gate/`-`, `qmltwo`/`homonym`→qml. A
+   inferência-por-nome mais profunda (metadata do grafo) segue follow-up.
+7. **Docs recorrigidos (#10).** "no CI"/"nothing reads the file" flertaram com o oposto; agora
+   refletem o scaffold de CI + o linter; ~140→162 targets; qmltwo/homonym/moclife_widget listados.
+
+Aberto, assumido sem fingir: primeiro verde REAL da CI num runner (#1/#7), matriz de Qt minors +
+baselines por ambiente (#7), runner de expected-fails de verdade (#5 tail), dedup de produtores do
+libsample no grafo (#8), oracle diferencial do QRC vs `rcc` (#9), matriz de tipos QML completa e
+dívida estrutural (#10: IR, typesystem, wrapper-default, Windows/SEH).
+
+### Veredito da rodada 7
+
+O projeto passou de “ideia ambiciosa” para implementação tecnicamente séria. A matriz
+local, o corpus libsample, a dupla Qt5/Qt6, o lifetime corrigido, o manifest por USR
+e, especialmente, o Lippincott por assinatura são ativos reais. Eu não reduziria
+isso a demo sem mentir.
+
+Mas ainda não é PySide-mature. Hoje a prova mais forte vive numa workstation; a CI
+não reproduz o corpus que define o objetivo e provavelmente nem instala. No runtime
+QML, falha interna ainda vira sucesso público. Nos gates, entrada malformada ainda
+vira verde. Esses são exatamente os lugares onde maturidade deixa de ser quantidade
+de features e vira confiabilidade do contrato.
+
+Resumo brutal: o mecanismo de binding já merece respeito. A governança ainda não
+merece confiança automática. A próxima rodada não precisa de mais superfície para
+parecer grande; precisa fazer CI, registro QML e gates falharem de modo impossível
+de confundir.
+
 ## Rodada 6: vocês fecharam tickets; eu fui procurar falsos verdes
 
 Li o projeto como se tivesse chegado agora: gerador, specs, runtime
