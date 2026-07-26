@@ -94,6 +94,11 @@ Build reggaeBuild() {
     //     and diff its .ts against the checked-in golden (module context + tr/UFCS/translate forms).
     all ~= lupdateCheckTargets(root);
 
+    // --- coverage manifest gate: regenerate a binding and diff its per-symbol manifest against a
+    //     checked-in baseline, failing on regression (disappeared/worsened/new-drop symbol).
+    all ~= manifestGateTargets(root, [ex, qml], ["qtwidgets", "qml"],
+                               ["qtwidgets.manifest.tsv", "qml.manifest.tsv"]);
+
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);
 
@@ -153,6 +158,26 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]);
         ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+    }
+    return ts;
+}
+
+// Coverage manifest gate: the per-symbol manifest becomes a CONTRACT. For each binding, the gen
+// step rewrites coverage-manifest.tsv; the gate diffs it against tests/coverage/<b>.manifest.tsv
+// and fails on a disappeared symbol, a fate that worsened (e.g. bound -> unmapped), or a new
+// unmapped/inline-failed drop. Accept intended changes by regenerating the baseline. The gate
+// program is compiler-independent (built once with dmd).
+Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels, string[] baselines) {
+    auto gateD = buildPath(root, "tests", "manifest_gate.d");
+    auto gateBin = buildPath(root, ".build", "manifest-gate-bin");
+    auto gate = Target(gateBin, "dmd -of=$out " ~ gateD, [Target(gateD)]);
+    Target[] ts;
+    foreach (i, b; bindings) {
+        auto baseline = buildPath(root, "tests", "coverage", baselines[i]);
+        auto curMan = buildPath(b.genDir, "coverage-manifest.tsv");
+        // deps: the gate binary + the binding's gen (so the manifest is freshly regenerated).
+        ts ~= Target.phony("manifest-gate-" ~ labels[i],
+            gateBin ~ " " ~ baseline ~ " " ~ curMan ~ " " ~ labels[i], [gate, b.gen]);
     }
     return ts;
 }
