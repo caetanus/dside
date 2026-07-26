@@ -86,13 +86,16 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
   general typesystem parser.
 - **`QMetaObjectBuilder` is a Qt private API.** The moc bridge depends on it; treated
   as a compatibility risk, exercised on the Qt versions in the test matrix (6.11, 5.15).
-- **Coverage** is written per spec to `generated/<dir>/coverage.txt` (path-aware:
-  D bindings emitted + methods/ctors dropped as unmapped-type). A **per-method**
-  status manifest (bound / skipped-by-rule / inline-failed / shimmed) is still a
-  tracked follow-up — today's counters are path-level, not per-method.
+- **Coverage** is written per spec to `generated/<dir>/coverage.txt` (summary) and a
+  **per-symbol manifest** `coverage-manifest.tsv` (`cppClass · symbol · fate`; fates:
+  bound / shimmed / signal / inherited / pure-virtual / unmapped-type / inline-failed).
+  The manifest is **gated** against a checked-in baseline (`manifest-gate-*` targets fail
+  on regression). It covers the object-method path per-symbol; value-type/wrapper/ctor/stub
+  drops are still aggregate-only in `coverage.txt` (the open follow-up).
 
 ## Roadmap
 
 - Make GC-wrapper mode the **default** so raw-path objects also construct with `new`.
 - Introduce a generator IR (drop the remaining dead C-ABI helper functions in `gen.d`).
-- Persist a coverage manifest per spec; ownership-invariant tests for `holder`.
+- Emit value-type/wrapper/ctor/stub drops **per-symbol** (finish the coverage manifest);
+  ownership-invariant tests for `holder`.
