@@ -156,9 +156,15 @@ void qtd_moc_activate2(void* self, int idx, void** a) {
 
 // D registra aqui (uma vez, no init do módulo) o callback que limpa o registro D na destruição.
 void qtd_moc_set_destroy_cb(QtdMocDestroyCb cb) { g_mocDestroy = cb; }
+// Chamado pelo destrutor do trampolim de subclasse (Qtd_<Base>, gerado) quando o Qt o destrói:
+// solta g_moAttach[self] E a entrada de _reg do objeto D. Fecha o caminho QtdWidget (não só o
+// QtdMocObject de newQObject).
+void qtd_moc_detach(void* self, void* dobj) { qtd_moc_teardown(self, dobj); }
 // diagnóstico/teste: entradas vivas no side-table; e deleta um QtdMocObject (seu dtor limpa tudo).
 size_t qtd_moc_attach_count() { return g_moAttach.size(); }
 void qtd_moc_delete(void* o) { delete static_cast<QtdMocObject*>(o); }
+// deleta QUALQUER QObject pelo dtor virtual (serve pro trampolim Qtd_<Base> — seu ~ chama detach).
+void qtd_qobject_delete(void* o) { delete static_cast<QObject*>(o); }
 
 // cria um QObject cujo meta-objeto tem os sinais/slots/propriedades dados.
 void* qtd_moc_new(const char* cn, const char** sigs, int nsig,

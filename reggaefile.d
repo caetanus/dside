@@ -38,6 +38,7 @@ Build reggaeBuild() {
         foreach (dc; DCS) {
             all ~= qtdTest("widget_test-" ~ dc ~ "-" ~ tag, t("wrapper", "widget_test.d"), b, dc);
             all ~= qtdTest("moc_test-" ~ dc ~ "-" ~ tag, t("wrapper", "moc_test.d"), b, dc);
+            all ~= qtdTest("moclife_widget-" ~ dc ~ "-" ~ tag, t("wrapper", "moclife_widget.d"), b, dc);
         }
     }
     widgets("spec_cxx_qtwidgets_wrap.json", ["Qt6Widgets"], "qt6");

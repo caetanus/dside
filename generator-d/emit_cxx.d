@@ -2804,7 +2804,10 @@ string virtCpp(string manifest, string includeLine) {
             ~ "        return qtd_moc_metacall((void*)this, (int)c, id, a); }\n",
             t.cppClass, t.cppClass, t.cppClass);
         body ~= format("struct Qtd_%s : %s {\n    void* d;\n%s%s"
-            ~ "    Qtd_%s(void* dobj%s): d(dobj)%s {}\n%s};\n"
+            ~ "    Qtd_%s(void* dobj%s): d(dobj)%s {}\n"
+            // Qt destroys the trampoline (parent ownership) -> drop the side-tables (g_moAttach +
+            // the D _reg), closing the QtdWidget lifetime the same way ~QtdMocObject closes newQObject.
+            ~ "    ~Qtd_%s() { qtd_moc_detach((void*)this, d); }\n%s};\n"
             ~ "extern \"C\" void* qtd_sub_%s(void* dobj%s) { return new Qtd_%s(dobj%s); }\n"
             // liga um meta-objeto runtime ao trampolim já criado (Base::staticMetaObject como super).
             ~ "extern \"C\" void qtd_sub_%s_attach(void* self, const char* cn,\n"
@@ -2813,7 +2816,7 @@ string virtCpp(string manifest, string includeLine) {
             ~ "    void* dobj, QtdSlotCb slotcb, QtdPropCb propcb) {\n"
             ~ "    qtd_moc_attach(self, cn, &%s::staticMetaObject, sigs, nsig, slotSigs, nslot,\n"
             ~ "        propN, propT, propNotify, nprop, dobj, slotcb, propcb); }\n",
-            t.dClass, t.cppClass, fields, moc, t.dClass, ctorPs, ctorInit, methods,
+            t.dClass, t.cppClass, fields, moc, t.dClass, ctorPs, ctorInit, t.dClass, methods,
             t.dClass, subPs, t.dClass, subAs, t.dClass, t.cppClass);
     }
     // declara os helpers genéricos do moc (em qtdmoc.cpp / lib qtmoc) usados acima.
@@ -2824,7 +2827,8 @@ string virtCpp(string manifest, string includeLine) {
         ~ "const void* qtd_moc_meta(void*);\n"
         ~ "int qtd_moc_metacall(void*, int, int, void**);\n"
         ~ "void qtd_moc_attach(void*, const char*, const void*, const char**, int, const char**, int,\n"
-        ~ "    const char**, const char**, const int*, int, void*, QtdSlotCb, QtdPropCb);\n}\n";
+        ~ "    const char**, const char**, const int*, int, void*, QtdSlotCb, QtdPropCb);\n"
+        ~ "void qtd_moc_detach(void*, void*);\n}\n";
     // força um paintEvent síncrono num QWidget (render headless / teste): grab()
     // renderiza (repaint()/processEvents() sem-arg são inline, sem símbolo).
     auto forcePaint = "#include <QWidget>\n#include <QPixmap>\nextern \"C\" void qtd_force_paint(void* w) {\n"
