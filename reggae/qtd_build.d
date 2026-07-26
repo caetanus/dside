@@ -42,6 +42,14 @@ string[] mocPrivateFlags(string cflags) {
     return [];
 }
 
+// qmlcachegen (Qt's AOT QML bytecode compiler) lives under the Qt libexecdir. Returns "" if
+// it isn't installed, so callers can skip the AOT targets on a system that lacks it.
+string qmlcachegenPath() {
+    auto le = execute(["pkg-config", "--variable=libexecdir", "Qt6Qml"]).output.strip;
+    auto p = buildPath(le, "qmlcachegen");
+    return exists(p) ? p : "";
+}
+
 // --- the binding graph --------------------------------------------------------
 
 struct QtdBinding {

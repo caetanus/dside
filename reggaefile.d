@@ -84,6 +84,7 @@ Build reggaeBuild() {
         all ~= qtdTest("qml-" ~ dc, t("qml", "backend_test.d"), qml, dc, qmlExtra);
         all ~= qtdTest("qmlreg-" ~ dc, t("qml", "register_test.d"), qml, dc, qmlExtra);
     }
+    all ~= qmlAotTargets(root, qml);   // qmlcachegen: .qml -> linked bytecode (skipped if absent)
 
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);
@@ -144,6 +145,45 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]);
         ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+    }
+    return ts;
+}
+
+// qmlcachegen AOT: compile tests/qml/register.qml to a bytecode unit + a cache-loader hook
+// (Qt's own tool), link both into an app that ships NO .qml source, and prove the engine
+// serves qrc:/register.qml from the precompiled unit. Skipped when qmlcachegen isn't installed.
+// The loader's output file name MUST end in `qmlcache_loader.cpp` — that's how qmlcachegen
+// switches from unit to loader mode. The generated .cpp are pure C++ (compiled once per dc so
+// reggae never double-schedules a shared node), so the unit/loader are regenerated per compiler.
+Target[] qmlAotTargets(string root, QtdBinding qml) {
+    auto gen = qmlcachegenPath();
+    if (!gen.length) return [];   // no qmlcachegen on this system -> skip the AOT path
+    auto here = buildPath(root, "tests", "qml");
+    auto qmlFile = buildPath(here, "register.qml");
+    auto qrcFile = buildPath(here, "register.qrc");
+    auto aotMain = buildPath(here, "aot_test.d");
+    auto qmlCxx = pkgCflags(qml.mods) ~ " -std=c++17 -fPIC -O2";
+    auto libPathOf(string dc) { return buildPath(qml.bdir, "libbinding_" ~ dc ~ ".a"); }
+    auto shimsPath = buildPath(qml.bdir, "libshims.a");
+    Target[] ts;
+    foreach (dc; DCS) {
+        // .qml -> bytecode unit; and the cache loader that hooks it in for qrc:/register.qml.
+        auto unitCpp = buildPath(qml.bdir, "aot_register_qml-" ~ dc ~ ".cpp");
+        auto unitCppT = Target(unitCpp,
+            gen ~ " --resource-path /register.qml -o $out " ~ qmlFile, []);
+        auto loaderCpp = buildPath(qml.bdir, "aot-" ~ dc ~ "_qmlcache_loader.cpp");
+        auto loaderCppT = Target(loaderCpp,
+            gen ~ " --resource-name qmlcache_qmlreg -o $out --resource " ~ qrcFile ~ " /register.qml", []);
+        auto unitO = buildPath(qml.bdir, "aot_register_qml-" ~ dc ~ ".o");
+        auto unitOT = Target(unitO, "clang++ " ~ qmlCxx ~ " -c " ~ unitCpp ~ " -o $out", [unitCppT]);
+        auto loaderO = buildPath(qml.bdir, "aot_qmlcache_loader-" ~ dc ~ ".o");
+        auto loaderOT = Target(loaderO, "clang++ " ~ qmlCxx ~ " -c " ~ loaderCpp ~ " -o $out", [loaderCppT]);
+        auto lib = qtdBindLib(qml, dc);
+        auto link = dc ~ " -of=$out " ~ aotMain ~ " " ~ unitO ~ " " ~ loaderO ~ " -I" ~ qml.genDir
+            ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPathOf(dc) ~ " -L=" ~ shimsPath
+            ~ " -L--end-group " ~ pkgLibs(qml.mods);
+        auto bin = Target("qmlaot-" ~ dc ~ "-bin", link, [Target(aotMain), unitOT, loaderOT, lib, qml.shims]);
+        ts ~= Target.phony("qmlaot-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
     }
     return ts;
 }
