@@ -179,14 +179,17 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
 Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels, string[] baselines) {
     auto gateD = buildPath(root, "tests", "manifest_gate.d");
     auto gateBin = buildPath(root, ".build", "manifest-gate-bin");
-    auto gate = Target(gateBin, "dmd -of=$out " ~ gateD, [Target(gateD)]);
+    // -unittest: the gate runs its own regression-detection unittests (dropped/regressed overload)
+    // at startup before checking the real manifest — the gate proves it can't be fooled.
+    auto gate = Target(gateBin, "dmd -unittest -of=$out " ~ gateD, [Target(gateD)]);
     Target[] ts;
     foreach (i, b; bindings) {
         auto baseline = buildPath(root, "tests", "coverage", baselines[i]);
         auto curMan = buildPath(b.genDir, "coverage-manifest.tsv");
         // deps: the gate binary + the binding's gen (so the manifest is freshly regenerated).
+        // --DRT-testmode=run-main: run the gate's regression-detection unittests, THEN the real check.
         ts ~= Target.phony("manifest-gate-" ~ labels[i],
-            gateBin ~ " " ~ baseline ~ " " ~ curMan ~ " " ~ labels[i], [gate, b.gen]);
+            gateBin ~ " --DRT-testmode=run-main " ~ baseline ~ " " ~ curMan ~ " " ~ labels[i], [gate, b.gen]);
     }
     return ts;
 }

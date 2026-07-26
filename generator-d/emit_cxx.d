@@ -692,8 +692,13 @@ __gshared long CXX_SKIP;   // extern(C++) methods/ctors dropped as unmapped-type
 // FATE — bound / shimmed / signal / inherited / pure-virtual / unmapped-type / inline-failed /
 // opaque-stub. Answers "what happened to each Qt symbol?", not just an aggregate count.
 __gshared string[] MANIFEST;
-void recordSym(string cppClass, string sym, string fate) {
-    MANIFEST ~= cppClass ~ "\t" ~ sym ~ "\t" ~ fate;
+// The USR (clang Unified Symbol Resolution) is a canonical per-symbol identity that INCLUDES the
+// signature — so overloads get distinct rows (critics r6 #2: class+name collapsed them and let a
+// regressed/vanished overload pass the gate). Column order keeps `fate` LAST so the coverage.txt
+// breakdown (splits on the last column) is unaffected.
+void recordSym(string cppClass, string sym, string fate, CXCursor c) {
+    auto usr = clang_getCursorUSR(c).str;
+    MANIFEST ~= cppClass ~ "\t" ~ sym ~ "\t" ~ usr ~ "\t" ~ fate;
     if (fate == "unmapped-type" || fate == "inline-failed") CXX_SKIP++;   // only real drops
 }
 string wrapperTypeOf(CXType t) {
@@ -1467,7 +1472,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
                     if (ov.length) rawDecls ~= ov;
                 }
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
         }
         // Verificação de inlines adiada p/ um lote único no fim (verifyInlinesBatched)
         // — compilar um ldc2 por classe aqui era o gargalo da geração.
@@ -1548,7 +1553,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (ovc.length) ctorMethods ~= ovc;
                 }
                 vci++;
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
         }
         // Deep copy: a non-POD value type (std::string/CoW/... by value) can't be
         // copied bitwise — the SSO self-pointer / the CoW refcount break. We emit a
@@ -1702,7 +1707,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 }
                 wm ~= format("    %s%s %s(%s) { %s }", kw, retD, dname(mn), wps.join(", "), body_);
                 wi++;
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
         }
         // one constructor: a _new factory that heap-allocates, runs the C++ ctor, and wraps.
         int wci; bool[string] seenCW;
@@ -1754,7 +1759,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     dparams.join(", "), name, ctorFn,
                     callargs.length ? ", " ~ callargs.join(", ") : "");
                 wci++;
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
         }
         foreach (c; children(cur))
             if (isPublic(c) && c.kind == CXCursor_CXXMethod) emitWrapMethod(c);
@@ -1816,7 +1821,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // Per-symbol coverage manifest: one row per method, its fate filled in below and written
         // on every exit path (signal/inherited/shim/bound/unmapped) via scope(exit).
         string _fate = "bound";
-        scope(exit) recordSym(cppName, mn, _fate);
+        scope(exit) recordSym(cppName, mn, _fate, c);
         // Qt signal -> a connect<Signal>(delegate) method (via a gen-phase functor
         // shim), NOT a callable binding. Non-overloaded; args marshaled to the delegate.
         if (isSignal(c)) {
@@ -2149,7 +2154,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             ctorHelpers ~= "    return self;";
             ctorHelpers ~= "}";
             ci++;
-        } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
+        } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
     }
 
     string[] body_;

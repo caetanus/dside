@@ -328,7 +328,7 @@ void main(string[] args) {
     auto rows = MANIFEST.dup.sort.array;
     long[string] byFate;
     foreach (r; rows) byFate[r.split("\t")[$ - 1]]++;
-    string man = "# cppClass\tsymbol\tfate\n";
+    string man = "# cppClass\tsymbol\tusr\tfate\n";
     foreach (r; rows) man ~= r ~ "\n";
     std.file.write(buildPath(outDir, "coverage-manifest.tsv"), man);
 
