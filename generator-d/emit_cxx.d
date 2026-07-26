@@ -1461,7 +1461,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
                     if (ov.length) rawDecls ~= ov;
                 }
-            } catch (Unmappable) { CXX_SKIP++; /* unmapped type -> skip method */ }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
         }
         // Verificação de inlines adiada p/ um lote único no fim (verifyInlinesBatched)
         // — compilar um ldc2 por classe aqui era o gargalo da geração.
@@ -1542,7 +1542,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (ovc.length) ctorMethods ~= ovc;
                 }
                 vci++;
-            } catch (Unmappable) { CXX_SKIP++; }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
         }
         // Deep copy: a non-POD value type (std::string/CoW/... by value) can't be
         // copied bitwise — the SSO self-pointer / the CoW refcount break. We emit a
@@ -1696,7 +1696,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 }
                 wm ~= format("    %s%s %s(%s) { %s }", kw, retD, dname(mn), wps.join(", "), body_);
                 wi++;
-            } catch (Unmappable) { CXX_SKIP++; }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
         }
         // one constructor: a _new factory that heap-allocates, runs the C++ ctor, and wraps.
         int wci; bool[string] seenCW;
@@ -1748,7 +1748,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     dparams.join(", "), name, ctorFn,
                     callargs.length ? ", " ~ callargs.join(", ") : "");
                 wci++;
-            } catch (Unmappable) { CXX_SKIP++; }
+            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
         }
         foreach (c; children(cur))
             if (isPublic(c) && c.kind == CXCursor_CXXMethod) emitWrapMethod(c);
@@ -2143,7 +2143,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             ctorHelpers ~= "    return self;";
             ctorHelpers ~= "}";
             ci++;
-        } catch (Unmappable) { CXX_SKIP++; /* skip ctor with an unmapped param */ }
+        } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type"); }
     }
 
     string[] body_;

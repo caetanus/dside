@@ -332,18 +332,21 @@ void main(string[] args) {
     foreach (r; rows) man ~= r ~ "\n";
     std.file.write(buildPath(outDir, "coverage-manifest.tsv"), man);
 
-    // coverage.txt: the human summary. The fate breakdown is the per-symbol manifest, which
-    // covers the OBJECT-METHOD path. Value-type/wrapper-path drops aren't per-symbol yet, so they
-    // show only in the aggregate — stated plainly rather than folded in to look complete.
+    // coverage.txt: the human summary. The fate breakdown IS the per-symbol manifest — now
+    // covering the object-method AND the value-type/wrapper/ctor paths (every Unmappable drop is
+    // recordSym'd). Any residual (aggregate drops not in the manifest) is stated plainly.
     long manifestDrops = byFate.get("unmapped-type", 0) + byFate.get("inline-failed", 0);
+    long residual = CXX_SKIP - manifestDrops;
     string cov = format("qt-dlang-gen coverage — %s (extern(C++))\n"
         ~ "%d classes emitted, %d shiboken-rejected.\n"
-        ~ "per-symbol manifest (object-method path): coverage-manifest.tsv, %d rows. fate breakdown:\n",
+        ~ "per-symbol manifest: coverage-manifest.tsv, %d rows. fate breakdown:\n",
         spec["qt_version"].str, ok, rejected, rows.length);
     foreach (f; byFate.byKey.array.sort) cov ~= format("  %-14s %d\n", f, byFate[f]);
-    cov ~= format("aggregate drops across ALL paths (incl. value-type/wrapper, not yet per-symbol): %d\n"
-        ~ "  of which %d are in the manifest above; %d are value-type/wrapper-path drops (TODO: per-symbol).\n",
-        CXX_SKIP, manifestDrops, CXX_SKIP - manifestDrops);
+    if (residual == 0)
+        cov ~= format("aggregate drops across ALL paths: %d — all per-symbol in the manifest above.\n", CXX_SKIP);
+    else
+        cov ~= format("aggregate drops across ALL paths: %d; %d in the manifest, %d not yet per-symbol.\n",
+            CXX_SKIP, manifestDrops, residual);
     std.file.write(buildPath(outDir, "coverage.txt"), cov);
 }
 
