@@ -7,13 +7,13 @@ void main() {
     auto raw = __cpp_new(__QApplication_size);
     __qapp_ctor(raw, argc, argv.ptr, 0);
     auto app = QApplication.wrap(raw);
-    auto w = QWidget_new();
+    auto w = new QWidget();
     auto sz = QSize(200, 120); w.resize(sz);
-    auto lbl = qstr("Quit"); auto b = QPushButton_new(lbl, w);   // child of w -> pinned
+    auto lbl = qstr("Quit"); auto b = new QPushButton(lbl, w);   // child of w -> pinned
     auto bc = b.ptr();
     b.connectClicked((bool _) { QApplication.quit(); });
     w.show();
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(30);
     QApplication.exec();
     b = null; foreach (_; 0..5) GC.collect();

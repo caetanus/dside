@@ -1570,6 +1570,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     if (WRAPPER) {
         auto wbase = baseName.length ? baseName : "QtdObject";
         string[] wm;      // wrapper class methods
+        string[] wctors;  // idiomatic `this(args)` constructors -> `new QWidget(parent)`
         string[] wd;      // module-scope decls (pragma(mangle) members, enum size, ctor factories)
         bool[string] seenW, seenSigW;
         int[string] sigNameCountW, allNameCountW;
@@ -1724,9 +1725,16 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     wd ~= format("private pragma(mangle, \"%s\") extern(C++) void %s(void* self%s);",
                         clang_Cursor_getMangling(c).str, ctorFn, declps.length ? ", " ~ declps.join(", ") : "");
                 }
-                wd ~= format("%s %s_new(%s) {\n    auto __r = __cpp_new(__%s_size);\n    %s(__r%s);\n    return %s.wrap(__r);\n}",
-                    name, name, dparams.join(", "), name, ctorFn,
-                    callargs.length ? ", " ~ callargs.join(", ") : "", name);
+                // Idiomatic `new QWidget(parent)`: the wrapper is a GC class, so `new` allocates
+                // the wrapper; the ctor heap-allocates the C++ object (__cpp_new), runs its C++
+                // ctor, delegates to the adopt ctor `this(void* c)` (sets _cpp up the base chain),
+                // then _register()s for identity + destroyed()-tracking + parent-pin. Safe because
+                // the C++ object is C++-heap-owned (Qt deletes it) while the GC owns only the small
+                // wrapper. `this(void* c)` (the wrap adopt ctor) stays distinct by param type.
+                wctors ~= format("    this(%s) {\n        auto __r = __cpp_new(__%s_size);\n"
+                    ~ "        %s(__r%s);\n        this(__r);\n        _register();\n    }",
+                    dparams.join(", "), name, ctorFn,
+                    callargs.length ? ", " ~ callargs.join(", ") : "");
                 wci++;
             } catch (Unmappable) {}
         }
@@ -1748,7 +1756,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         auto ctorBody = format("    this(void* c) @nogc nothrow { %s; }\n"
             ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(p)); }",
             ctorSuper, name, name, name);
-        auto body_ = ([ctorBody] ~ nestedEnumLines(cur) ~ wm ~ miMethods).join("\n");
+        auto body_ = ([ctorBody] ~ wctors ~ nestedEnumLines(cur) ~ wm ~ miMethods).join("\n");
         return format("%s\nmodule %s.%s;\n%s\n\nenum __%s_size = %d;\nclass %s : %s {\n%s\n}\n\n%s\n",
             manifest, dpkg, modBase(name), impLines, name, clang_Type_getSizeOf(clang_getCursorType(cur)),
             name, wbase, body_, wd.join("\n"));

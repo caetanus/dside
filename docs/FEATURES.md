@@ -1,0 +1,55 @@
+# qt-dlang-gen — Feature Summary
+
+Pure-D Qt bindings generated as `extern(C++)` (no C++ wrapper shim). The generator
+(`generator-d/`, builds `gend`) parses Qt headers via libclang and emits per-class `.d` plus
+minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dmd**, **Qt5 + Qt6**.
+
+## Core binding (generator)
+- **extern(C++) codegen** — per-class modules, à-la-carte (`--gc-sections` drops unused shims).
+- **Construction** — object types: `new QWidget(parent)` (idiomatic D). Value types: `QSize(w, h)`.
+  **`X_new(...)` is UNACCEPTABLE and being eliminated.** A factory, only if genuinely justified, is
+  `make!Foo(args)` — never `Foo_new`. `new` is safe only on the GC-wrapper path (see below); the raw
+  path still carries `_new` until wrapper mode becomes the default.
+- **Types** — value types (correct sizeof/ABI, incl. CoW non-trivial like QIcon/QFont); enums
+  (incl. 2-part `Qt::X` via a `qt` aggregator + `Class::X`); containers (`QList`↔`T[]`, QHash/QMap);
+  multiple inheritance (secondary-base upcasts); forward iterators → D ranges (`foreach (x; t[])`).
+- **`const ObjectType&` params** bound (a reference is ABI-a-pointer).
+- **Overridden virtuals** dispatch correctly via the C++ method shim (simple **and** value returns,
+  e.g. `sizeHint`); only container/QList-return virtuals remain non-virtual.
+
+## Memory / lifetime — GC wrapper (`"wrapper": true`, gated; legacy raw path is default)
+- **QtdObject** wrapper layer (`runtime/holder/`): nullable `_cpp` + `checkAlive` (destroyed object
+  throws, no segfault); C++-side identity map; **parenting-pins** (a parented child is a GC root);
+  `destroyed()` invalidation; GC finalizer → `deleteLater` for D-owned objects; runtime reparent
+  detection. Works incl. moc/subclass trampolines. Functionally complete; still gated.
+
+## moc — CTFE meta-objects
+- `@QObject` / `Signal` / `@Slot` / `@Property` via `QMetaObjectBuilder` at CTFE — D QObjects with
+  own signals/slots/properties (qmlRegisterType-capable).
+- Signals/slots → D delegates; subclass **virtual-override trampolines** (model/view, paintEvent, …).
+
+## uic — CTFE, feature-complete
+- `mixin(uiForm(import("x.ui")))` → typed `Ui_` struct. Generic property engine; layouts
+  (box/grid/form + margins); QMainWindow chrome (menus/toolbars/actions/statusbar); tabs/stacked;
+  button groups; tab order; font/sizePolicy/palette; icons; shortcuts; buddies; `<connections>` +
+  `connectSlotsByName`; **tr() translation**.
+- **Corpus 53/53** vs QUiLoader (differential oracle). Targets: `uicheck-*`, `corpus-check-*`.
+- Spec: `docs/uic-spec.md`.
+
+## qrc — CTFE
+- `mixin(qrcRegister(import("x.qrc")))` → Qt `.rcc` blob registered at runtime (no `rcc` tool).
+
+## Exceptions
+- C++/Qt exception → D `QtCppException` (Lippincott + **per-signature guards**, complete coverage);
+  error-return wrappers for out-param errors (bad JSON/PNG). Gated by `"exceptions"`.
+
+## Build / platform
+- reggae binary backend; ldc2 + dmd; Qt5 + Qt6 parity; à-la-carte binaries.
+- Windows/MSVC-x64: deferred — see `docs/windows-roadmap.md`.
+
+## In progress / next
+- **Kill `X_new`** (unacceptable). Construction is `new QWidget(parent)`; a justified factory is
+  `make!Foo(args)`, never `Foo_new`. Done in wrapper mode: the wrapper is a GC class, so `new`
+  GC-allocates the wrapper whose ctor allocates the C++ object (`__cpp_new`), runs the C++ ctor,
+  registers in the holder, and pins on parent. Literal `new` is unsafe in the raw path (D `new`
+  GC-allocates; Qt would C++-`delete` a GC block) — so the wrapper/GC path should become the DEFAULT.

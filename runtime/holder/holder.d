@@ -41,6 +41,17 @@ class QtdObject {
     /// C++ deleted the object -> mark dead; a later call throws via checkAlive.
     final void _invalidate() @nogc nothrow { _cpp = null; }
 
+    /// Register a freshly-constructed wrapper (built by a `new X(args)` ctor, whose _cpp is
+    /// already set via super) for identity + lifetime: the same step wrap() runs after make() —
+    /// map the C++ pointer to this wrapper, track destroyed(), and pin if it was born parented.
+    final void _register() nothrow {
+        qtd_holder_reg(_cpp, cast(void *) this);
+        if (_isQObj) {
+            qtd_holder_track(_cpp);
+            if (qtd_holder_has_parent(_cpp) != 0) _pinned[_cpp] = this;
+        }
+    }
+
     /// A D subclass / @QObject object adopts its C++ trampoline pointer: set _cpp, register
     /// for identity, PIN (C++ holds a raw dself back-ref, so the GC must not collect this),
     /// and track destroyed(). Called by the moc mixin/newQObject (wrapper mode only).
@@ -92,12 +103,8 @@ QtdObject find(void *cptr) @nogc nothrow {
 QtdObject wrap(void *cptr, scope QtdObject delegate(void *) make) {
     if (cptr is null) return null;
     if (auto w = find(cptr)) return w;
-    auto w = make(cptr);
-    qtd_holder_reg(cptr, cast(void *) w);
-    if (w._isQObj) {   // non-QObjects have no destroyed()/parent()
-        qtd_holder_track(cptr);
-        if (qtd_holder_has_parent(cptr) != 0) _pinned[cptr] = w;   // parenting pins
-    }
+    auto w = make(cptr);           // make() sets w._cpp = cptr via the adopt ctor
+    w._register();                 // map + track destroyed() + pin if parented (shared with `new X`)
     return w;
 }
 
