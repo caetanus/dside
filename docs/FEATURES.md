@@ -29,12 +29,12 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
   own signals/slots/properties (qmlRegisterType-capable).
 - Signals/slots → D delegates; subclass **virtual-override trampolines** (model/view, paintEvent, …).
 
-## uic — CTFE, feature-complete
+## uic — CTFE (60 baseline forms pass the differential oracle)
 - `mixin(uiForm(import("x.ui")))` → typed `Ui_` struct. Generic property engine; layouts
   (box/grid/form + margins); QMainWindow chrome (menus/toolbars/actions/statusbar); tabs/stacked;
   button groups; tab order; font/sizePolicy/palette; icons; shortcuts; buddies; `<connections>` +
   `connectSlotsByName`; **tr() translation**.
-- **Corpus 53/53** vs QUiLoader (differential oracle). Targets: `uicheck-*`, `corpus-check-*`.
+- **Corpus 60/60** vs QUiLoader (differential oracle). Targets: `uicheck-*`, `corpus-check-*`.
 - Spec: `docs/uic-spec.md`.
 
 ## qrc — CTFE

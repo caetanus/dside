@@ -10,9 +10,13 @@ you never `import` costs nothing (à la carte).
 coverage is deliberate: the generator re-runs against either version's headers, and the
 few genuine Qt-version differences (value-type ABI, and private-API shapes like
 `QQmlPrivate::RegisterType`) are isolated behind single `QT_VERSION` seams, so a future
-Qt 7 should be a small localized delta rather than a rewrite. Every feature — bindings,
-moc, uic, qrc, QML (`setContextProperty`, `qmlRegisterType`), and translation (`tr`) — is
-verified on **both** Qt 5 and Qt 6, on **both** ldc2 and dmd.
+Qt 7 should be a small localized delta rather than a rewrite. The **runtime** features —
+bindings, moc, uic, qrc, QML (`setContextProperty`, `qmlRegisterType`, moc lifetime), and
+translation (`tr`) — are verified on **both** Qt 5 and Qt 6, on **both** ldc2 and dmd. Two
+QML build-tool paths are Qt6-only for now: `qmlcachegen` AOT (the Qt5 loader format differs)
+and `.qmltypes` validation (its reader, QtQmlCompiler, is Qt6-only) — the `.qmltypes`
+generation itself is Qt-agnostic. Not every target is a full matrix cell either: the
+manifest gates and `lupdate-check` are single-config.
 
 > **Platform: Linux / POSIX is Tier 1.** The build orchestrates `clang++`/`ldc2`/`dmd`
 > through reggae with POSIX shell (`flock`, `find`, globs). Windows/MSVC-x64 is a
@@ -49,9 +53,13 @@ reggae is the build of record, not dub.)
 
 ## Construction
 
-Object types (GC-wrapper mode) construct with idiomatic `new`; value types with a
-plain ctor, or `make!T` for the rare justified no-arg factory. `X_new(...)` is not a
-supported spelling.
+Two modes. In **GC-wrapper mode** object types construct with idiomatic `new`
+(`new QWidget(parent)`); value types use a plain ctor or `make!T`. In **raw
+(non-wrapper) mode** — still the default for several bindings (QtWidgets raw, QML,
+the uic harness) — object construction is the generated `X_new(...)` factory
+(e.g. `QQmlApplicationEngine_new`, `QWidget_new`), which the tests and generated
+uic use today. Making wrapper mode the default so `new` is the ONLY spelling is a
+roadmap item, not the current state.
 
 ```d
 auto w   = new QWidget(parent);      // GC wrapper owns a C++-heap object; Qt deletes it
@@ -67,7 +75,7 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 - **GC lifetime layer** (`runtime/holder/`, wrapper mode): a nullable `_cpp` with
   identity map, parenting-pins, `destroyed()` invalidation — no dangling pointers.
 - **CTFE tooling**: `uic` (`mixin(uiForm(import(".ui")))` → typed struct; matches
-  QUiLoader on the full baseline corpus, 53/53, incl. `tr()`), `moc`
+  QUiLoader on the full baseline corpus, 60/60, incl. `tr()`), `moc`
   (`@QObject`/`Signal`/`@Slot`/`@Property` via `QMetaObjectBuilder`), `qrc`.
 - **Exception translation**: C++/Qt exceptions → D via a Lippincott + per-signature
   guard layer (gated).
@@ -95,15 +103,15 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 - **`QMetaObjectBuilder` is a Qt private API.** The moc bridge depends on it; treated
   as a compatibility risk, exercised on the Qt versions in the test matrix (6.11, 5.15).
 - **Coverage** is written per spec to `generated/<dir>/coverage.txt` (summary) and a
-  **per-symbol manifest** `coverage-manifest.tsv` (`cppClass · symbol · fate`; fates:
+  **per-symbol manifest** `coverage-manifest.tsv` (`cppClass · symbol · usr · fate`; fates:
   bound / shimmed / signal / inherited / pure-virtual / unmapped-type / inline-failed).
   The manifest is **gated** against a checked-in baseline (`manifest-gate-*` targets fail
   on regression). It covers the object-method path per-symbol; value-type/wrapper/ctor/stub
-  drops are still aggregate-only in `coverage.txt` (the open follow-up).
+  drops are now emitted per-symbol too; the aggregate residual in `coverage.txt` is 0.
 
 ## Roadmap
 
 - Make GC-wrapper mode the **default** so raw-path objects also construct with `new`.
 - Introduce a generator IR (drop the remaining dead C-ABI helper functions in `gen.d`).
-- Emit value-type/wrapper/ctor/stub drops **per-symbol** (finish the coverage manifest);
+- Expand manifest gates beyond Qt6 raw-QtWidgets + Qt6-QML (Qt5, wrapper, webengine);
   ownership-invariant tests for `holder`.

@@ -1,8 +1,11 @@
-# CTFE uic — the full `.ui` spec and implementation roadmap
+# CTFE uic — the `.ui` spec and implementation status
 
-Goal: grow `runtime/uic/uiform.d` (`mixin(uiForm(import("x.ui")))`) from the current
-proof-of-concept to the **complete `.ui` spec**, matching what Qt's `uic` / `pyside6-uic`
-produce. Source of truth: the observable input→output contract in the PySide corpus at
+Status (honest): `runtime/uic/uiform.d` (`mixin(uiForm(import("x.ui")))`) builds a tree that
+**60/60 Qt baseline forms serialize identically to `QUiLoader`** under the differential oracle
+(see below for what that oracle does and does NOT compare — sibling order, every property, code
+equivalence with `pyside6-uic` are not fully covered). That is "60 forms pass the defined oracle",
+NOT a complete `.ui` spec. The checklist below is the roadmap toward matching Qt's `uic` /
+`pyside6-uic`; many items remain open. Source of truth: the observable input→output contract in the PySide corpus at
 `../pyside-setup/examples/**` (`*.ui` files + their generated `ui_*.py`) — Qt's uic C++
 source is not vendored, but the corpus pins every element→code pattern.
 
@@ -67,7 +70,8 @@ struct Ui_<class> {
     }
 }
 ```
-(i18n: emit plain string literals for now; a later pass can route through a `tr()` binding.)
+(i18n: DONE — translatable properties route through `QCoreApplication.translate(context, source)`,
+which is what makes localized forms match QUiLoader.)
 
 ## Structural specials (not the generic rule)
 

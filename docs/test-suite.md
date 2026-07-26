@@ -1,11 +1,12 @@
 # Test suite
 
 The binding is validated by a target matrix run through reggae (`./build --list`,
-`./build <target>`). Every target **compiles and runs** on **ldc2 AND dmd**; the
-Qt-version axis (**Qt5 AND Qt6**) is exercised where a target is Qt-version-specific.
-This document is the contract: what is tested, on what matrix, and what is a known
-expected-fail. The per-symbol coverage manifest is now gated (see **governance gates**);
-a per-category CI counter with regression history is still a tracked follow-up (see below).
+`./build <target>`). MOST targets compile and run on **ldc2 AND dmd** and, where
+Qt-version-specific, on **Qt5 AND Qt6** — but some are deliberately single-config
+(the `manifest-gate-*` gates and `lupdate-check` are singletons; `qmlaot`/`qmltypes`
+are Qt6-only). This document is the contract: what is tested, on what config, and what
+is a known gap. There is **no CI**: the "matrix" is one machine with Qt 5.15 + 6.11
+installed, not a repo-enforced policy — the biggest open governance gap.
 
 ## Categories
 
@@ -33,28 +34,35 @@ a per-category CI counter with regression history is still a tracked follow-up (
 
 ## Known expected-fails / exclusions (honest gaps)
 
-Tracked as **structured state** in `tests/expected-fails.json` (id / area / reason /
-since / remove-when), not prose — so they block regression and measure progress:
-`uic-private-widgets`, `virtual-container-return`, `moveonly-byvalue-params`,
-`windows-msvc`. `@Property string` read/write now has a focused test (`cannon_t10`);
-ownership destruction invariants have one too (`ownership`).
+Inventoried as **structured state** in `tests/expected-fails.json` (id / area / reason /
+since / remove-when): `uic-private-widgets`, `virtual-container-return`,
+`moveonly-byvalue-params`, `windows-msvc`, plus the QML/moc private-API risks.
+**Honest caveat:** this is an INVENTORY, not enforcement — nothing yet reads the file,
+so it does not by itself block a regression (a runner with schema + kinds + unexpected-
+pass/fail is a tracked follow-up). `@Property string` read/write has a focused test
+(`cannon_t10`); ownership destruction invariants have one too (`ownership`).
 
 ## Coverage manifest (gated)
 
-Each binding emits a per-symbol `coverage-manifest.tsv` (`cppClass · symbol · fate`, fates:
-`bound` / `shimmed` / `signal` / `inherited` / `pure-virtual` / `unmapped-type` /
-`inline-failed`) plus a `coverage.txt` summary. The **object-method path is per-symbol**; the
-`manifest-gate-*` targets diff it against `tests/coverage/*.manifest.tsv` and fail on regression.
-**Still partial:** value-type / wrapper / ctor / stub drops are counted in the `coverage.txt`
-aggregate but not yet emitted per-symbol (widgets: 493, qml: 425 aggregate-only). Completing that
-is the open manifest follow-up.
+Each binding emits a per-symbol `coverage-manifest.tsv` (`cppClass · symbol · usr · fate`, fates:
+`bound` / `shimmed` / `signal` / `inherited` / `pure-virtual` / `unmapped-type` / `inline-failed`)
+plus a `coverage.txt` summary. The key is class + the clang **USR**, so overloads are distinct rows
+(a class+name key collapsed them). Every Unmappable drop is `recordSym`'d, so the object-method AND
+value-type/wrapper/ctor paths are per-symbol — the `coverage.txt` "not per-symbol" residual is 0.
+The `manifest-gate-*` targets diff the fresh manifest against `tests/coverage/*.manifest.tsv` and
+fail on a disappeared/regressed/new-drop symbol or a duplicate-USR collision; each is built
+`-unittest` and run `--DRT-testmode=run-main`, so it runs its own regression-detection tests before
+vouching. **Gate coverage is still partial: only Qt6 raw-QtWidgets + Qt6-QML have baselines** (Qt5,
+wrapper, webengine don't) — that's the open follow-up.
 
 ## Tracked follow-ups (to make this a real contract)
 
 - Per-category **counters + regression history** in CI (pass/expected-fail per category),
   not just a green/red matrix, and a structured test report (JSON/TSV) over the ~140 targets.
-- Emit the value-type/wrapper/ctor/stub drops **per-symbol** so the manifest covers the whole
-  API surface, not only the object-method path.
+- A consumer for `expected-fails.json` (schema, `kind` = risk / expected_fail / permanent_exclusion,
+  probe-target existence, unexpected-pass/fail) so the inventory becomes enforcement.
+- Extend the manifest gates to Qt5, wrapper mode and webengine (only Qt6 raw-QtWidgets + Qt6-QML
+  have baselines today).
 - Ownership-invariant tests for `holder` beyond `wraptest` (C++ destroy before the D
   wrapper, `deleteLater` at shutdown, app singleton, varied reparenting, non-QObject).
 - Treat the QML/tooling private APIs (`QQmlPrivate`, `QQmlJSTypeDescriptionReader`,
