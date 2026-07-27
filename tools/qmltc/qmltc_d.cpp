@@ -35,38 +35,76 @@ static const char *dtypeOf(const QString &qmlType) {
     return "";
 }
 
-// If `st` is a literal initializer (number / string / true / false), render it as a D literal
-// into `out` and return true. Otherwise (an identifier ref, an arithmetic expr, a call, ...) it
-// is a binding for a later phase: return false and leave `out` untouched.
+// A QML string literal as a D double-quoted literal (escape the few chars that would break it).
+static std::string dstr(const QString &v) {
+    std::string s = "\"";
+    for (QChar c : v) {
+        if (c == '"' || c == '\\') s += '\\';
+        if (c == '\n') { s += "\\n"; continue; }
+        s += qs(QString(c));
+    }
+    return s + "\"";
+}
+static std::string dnum(double v, bool isInt, bool neg) {
+    char buf[64];
+    if (isInt) std::snprintf(buf, sizeof buf, "%s%lld", neg ? "-" : "", (long long)v);
+    else       std::snprintf(buf, sizeof buf, "%s%g",   neg ? "-" : "", v);
+    return buf;
+}
+
+// If `st` is a pure LITERAL (no identifiers), render it as a D literal into `out`. Only these can
+// become a D field INITIALIZER (D field inits must be compile-time constants). Anything with an
+// identifier/operator is a binding -> compileExpr + a constructor assignment (Phase 2).
 static bool literalOf(Statement *st, const QString &dtype, std::string &out) {
     auto *es = cast<ExpressionStatement *>(st);
     if (!es || !es->expression) return false;
     ExpressionNode *e = es->expression;
-
-    // `-5` / `-3.5` parse as a UnaryMinus over a NumericLiteral.
     bool neg = false;
     if (auto *u = cast<UnaryMinusExpression *>(e)) { neg = true; e = u->expression; }
-
-    if (auto *num = cast<NumericLiteral *>(e)) {
-        char buf[64];
-        if (dtype == "int") std::snprintf(buf, sizeof buf, "%s%lld", neg ? "-" : "", (long long)num->value);
-        else                std::snprintf(buf, sizeof buf, "%s%g",   neg ? "-" : "", num->value);
-        out = buf; return true;
-    }
-    if (neg) return false;   // -"str" / -true are not literals we emit
-    if (auto *str = cast<StringLiteral *>(e)) {
-        // D and QML string escaping differ in general; Phase 1 emits a plain double-quoted D
-        // string and escapes the few characters that would break it.
-        std::string s = "\"";
-        for (QChar c : str->value.toString()) {
-            if (c == '"' || c == '\\') s += '\\';
-            if (c == '\n') { s += "\\n"; continue; }
-            s += qs(QString(c));
-        }
-        s += "\""; out = s; return true;
-    }
+    if (auto *num = cast<NumericLiteral *>(e)) { out = dnum(num->value, dtype == "int", neg); return true; }
+    if (neg) return false;
+    if (auto *str = cast<StringLiteral *>(e)) { out = dstr(str->value.toString()); return true; }
     if (cast<TrueLiteral *>(e))  { out = "true";  return true; }
     if (cast<FalseLiteral *>(e)) { out = "false"; return true; }
+    return false;
+}
+
+// PHASE 2/3 seed: compile a QML binding expression into a D expression. Handles property/id
+// references (as bare names), literals, unary minus, parenthesised groups, and the binary
+// operators +,-,*,/ (with `+` -> `~` when the target property is a string, i.e. concatenation).
+// `dtype` is the target D type, used to pick the operator and format numeric literals. Returns
+// false on anything outside this subset (calls, member access, comparisons, ...) -> the caller
+// falls back to PARTIAL, so an uncompilable binding is reported and skipped, never mis-emitted.
+static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &out) {
+    if (!e) return false;
+    if (auto *nested = cast<NestedExpression *>(e)) {
+        std::string inner;
+        if (!compileExpr(nested->expression, dtype, inner)) return false;
+        out = "(" + inner + ")"; return true;
+    }
+    if (auto *id = cast<IdentifierExpression *>(e)) { out = qs(id->name.toString()); return true; }
+    if (auto *str = cast<StringLiteral *>(e)) { out = dstr(str->value.toString()); return true; }
+    if (auto *num = cast<NumericLiteral *>(e)) { out = dnum(num->value, dtype == "int", false); return true; }
+    if (cast<TrueLiteral *>(e))  { out = "true";  return true; }
+    if (cast<FalseLiteral *>(e)) { out = "false"; return true; }
+    if (auto *u = cast<UnaryMinusExpression *>(e)) {
+        std::string inner;
+        if (!compileExpr(u->expression, dtype, inner)) return false;
+        out = "(-" + inner + ")"; return true;
+    }
+    if (auto *bin = cast<BinaryExpression *>(e)) {
+        std::string op;
+        switch (bin->op) {
+        case QSOperator::Add: op = (dtype == "string") ? "~" : "+"; break;
+        case QSOperator::Sub: if (dtype == "string") return false; op = "-"; break;
+        case QSOperator::Mul: if (dtype == "string") return false; op = "*"; break;
+        case QSOperator::Div: if (dtype == "string") return false; op = "/"; break;
+        default: return false;   // comparisons, logical, bitwise, ... -> later
+        }
+        std::string l, r;
+        if (!compileExpr(bin->left, dtype, l) || !compileExpr(bin->right, dtype, r)) return false;
+        out = "(" + l + " " + op + " " + r + ")"; return true;
+    }
     return false;
 }
 
@@ -105,7 +143,8 @@ int main(int argc, char **argv) {
     if (!root) { std::fprintf(stderr, "qmltc-d: %s: root is not a plain object definition (unsupported)\n", inPath); return 3; }
 
     int partial = 0;   // count of things we saw but can't emit yet -> exit 3 (PARTIAL), never silent.
-    std::string body;
+    std::string body;         // @Property field declarations
+    std::string ctorBody;     // binding assignments, evaluated in declaration order in this()
     std::vector<std::string> propNames;   // for the --dump checker (sorted before emit)
     for (auto *m = root->initializer ? root->initializer->members : nullptr; m; m = m->next) {
         auto *mem = m->member;
@@ -113,19 +152,29 @@ int main(int argc, char **argv) {
         if (pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
             const char *dt = dtypeOf(qmlType);
-            std::string lit;
-            if (dt[0] && pub->statement && literalOf(pub->statement, qmlType, lit)) {
-                body += "    @Property " + std::string(dt) + " " + qs(pub->name.toString()) + " = " + lit + ";\n";
-                propNames.push_back(qs(pub->name.toString()));
+            std::string name = qs(pub->name.toString());
+            std::string expr;
+            if (dt[0] && pub->statement && literalOf(pub->statement, qmlType, expr)) {
+                // Pure literal -> D field initializer (Phase 1).
+                body += "    @Property " + std::string(dt) + " " + name + " = " + expr + ";\n";
+                propNames.push_back(name);
+            } else if (dt[0] && pub->statement && cast<ExpressionStatement *>(pub->statement)
+                       && compileExpr(cast<ExpressionStatement *>(pub->statement)->expression, qmlType, expr)) {
+                // Binding over prop refs/operators -> a field + a ctor assignment evaluated in order
+                // (Phase 2). NOTE: this computes the binding's INITIAL value; live re-evaluation on a
+                // dependency change (connect NOTIFY -> recompute) is the tracked next step.
+                body += "    @Property " + std::string(dt) + " " + name + ";\n";
+                ctorBody += "        " + name + " = " + expr + ";\n";
+                propNames.push_back(name);
             } else {
-                std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is a binding/unsupported type — not yet emitted (phase>1)\n",
+                std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — not yet emitted (phase>2)\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
                 ++partial;
             }
             continue;
         }
         // Everything else (signals, methods, object/script bindings, child objects) is a later phase.
-        std::fprintf(stderr, "qmltc-d: %s: a non-property member is not yet handled (phase>1)\n", inPath);
+        std::fprintf(stderr, "qmltc-d: %s: a non-property member is not yet handled (phase>2)\n", inPath);
         ++partial;
     }
 
@@ -133,7 +182,10 @@ int main(int argc, char **argv) {
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
     std::printf("import qtmoc;\n\n");
-    std::printf("@QObject class %s {\n%s}\n", qPrintable(cls), body.c_str());
+    std::printf("@QObject class %s {\n%s", qPrintable(cls), body.c_str());
+    if (!ctorBody.empty())   // field initializers run first, so bindings can read literal props.
+        std::printf("    this() {\n%s    }\n", ctorBody.c_str());
+    std::printf("}\n");
 
     if (dump) {
         // A checker main: instantiate and print each scalar property as `name\tvalue`, SORTED by
