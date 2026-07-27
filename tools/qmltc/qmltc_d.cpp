@@ -47,9 +47,17 @@ static std::map<std::string, std::vector<std::string>> g_funcReads;
 static std::map<std::string, std::string> g_enumMember;
 static std::string g_className;
 
-// Declared (param-less) QML signals of this object, so a call `ping()` emits (`ping.emit()`) and a
-// handler `onPing` connects to it. Scoped per object.
+// Declared QML signals of this object, so a call `ping()` emits (`ping.emit()`) and a handler
+// `onPing` connects to it. g_signalParams holds each signal's (paramName, dtype) list, for typed
+// signals and their handler slots. Scoped per object.
 static std::set<std::string> g_signals;
+static std::map<std::string, std::vector<std::pair<std::string, std::string>>> g_signalParams;
+
+// D scalar type -> the C++ meta type our qtmoc runtime uses in a signal/slot signature.
+static std::string cppTypeOf(const std::string &dtype) {
+    if (dtype == "string") return "QString";
+    return dtype;   // int/double/bool map through unchanged
+}
 
 // dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
 static std::string qname(UiQualifiedId *id) {
@@ -155,16 +163,27 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
             return false;
         }
-        // plain call `name(args)` -> a method of this class (a QML `function`).
+        // plain call `name(args)` -> a method of this class (a QML `function`) or a signal emit.
         if (auto *fnId = cast<IdentifierExpression *>(call->base)) {
+            std::string nm = qs(fnId->name.toString());
+            // A signal emit: type each argument to the signal's declared parameter type.
+            if (g_signals.count(nm)) {
+                std::string joined; int i = 0;
+                auto &params = g_signalParams[nm];
+                for (auto *a = call->arguments; a; a = a->next, ++i) {
+                    std::string s, at = (i < (int)params.size()) ? params[i].second : std::string();
+                    if (!compileExpr(a->expression, QString::fromStdString(at), s)) return false;
+                    joined += (joined.empty() ? "" : ", ") + s;
+                }
+                out = nm + ".emit(" + joined + ")";
+                return true;
+            }
             std::string joined;
             for (auto *a = call->arguments; a; a = a->next) {
                 std::string s;
                 if (!compileExpr(a->expression, dtype, s)) return false;
                 joined += (joined.empty() ? "" : ", ") + s;
             }
-            std::string nm = qs(fnId->name.toString());
-            if (g_signals.count(nm)) { out = nm + ".emit(" + joined + ")"; return true; }   // emit a declared signal
             out = nm + "(" + joined + ")";
             // Coerce a double-returning function into an int target (QML coerces on assignment;
             // D has no implicit double->int). g_funcRet holds this object's function return types.
@@ -430,17 +449,27 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedEnumMember = g_enumMember;
     auto savedClassName = g_className;
     auto savedSignals = g_signals;
+    auto savedSignalParams = g_signalParams;
     g_funcRet.clear();
     g_funcReads.clear();
     g_enumMember.clear();
     g_signals.clear();
+    g_signalParams.clear();
     g_className = cls;
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *en = cast<UiEnumDeclaration *>(m->member))
             for (auto *em = en->members; em; em = em->next)
                 g_enumMember[qs(em->member.toString())] = qs(en->name.toString());
-        if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Signal && !pub->parameters)
-            g_signals.insert(qs(pub->name.toString()));
+        if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Signal) {
+            std::vector<std::pair<std::string, std::string>> ps;
+            bool ok = true;
+            for (auto *p = pub->parameters; p; p = p->next) {
+                const char *dt = p->type ? dtypeOf(p->type->toString()) : "";
+                if (!dt[0]) { ok = false; break; }
+                ps.push_back({qs(p->name.toString()), dt});
+            }
+            if (ok) { std::string sn = qs(pub->name.toString()); g_signals.insert(sn); g_signalParams[sn] = ps; }
+        }
     }
     {
         std::map<std::string, std::string> pt0;
@@ -502,11 +531,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
             continue;
         }
-        // A declared `signal ping()` (param-less) -> a runtime Signal field.
+        // A declared `signal name(type arg, ...)` -> a runtime `Signal!(dtypes) name;`.
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Signal) {
-            if (!pub->parameters) { signalDecls += "    Signal!() " + qs(pub->name.toString()) + ";\n"; continue; }
-            std::fprintf(stderr, "qmltc-d: %s: signal '%s' with parameters not yet supported — skipped (later phase)\n", inPath, qPrintable(pub->name.toString()));
-            ++partial; continue;
+            std::string sn = qs(pub->name.toString());
+            if (!g_signals.count(sn)) {   // pre-scan rejected a param type
+                std::fprintf(stderr, "qmltc-d: %s: signal '%s' has an unsupported parameter type — skipped (later phase)\n", inPath, sn.c_str());
+                ++partial; continue;
+            }
+            std::string types;
+            for (auto &pp : g_signalParams[sn]) types += (types.empty() ? "" : ", ") + pp.second;
+            signalDecls += "    Signal!(" + types + ") " + sn + ";\n";
+            continue;
         }
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
@@ -625,8 +660,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (!notifyProp.empty() && std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
             needsNotify.push_back(notifyProp);
-        handlerSlots += "    @Slot void __h_" + h.first + "() {\n" + hbody + "    }\n";
-        handlerWire += "        connectMeta(this, \"" + h.first + "()\", this, \"__h_" + h.first + "()\");\n";
+        // A custom signal handler takes the signal's parameters (accessible by name in the body);
+        // the connect uses the typed C++ signature. Property-change and param-less signals -> ().
+        std::string dparams, cppsig;
+        auto sp = g_signalParams.find(h.first);
+        if (sp != g_signalParams.end())
+            for (auto &pp : sp->second) {
+                dparams += (dparams.empty() ? "" : ", ") + pp.second + " " + pp.first;
+                cppsig += (cppsig.empty() ? "" : ",") + cppTypeOf(pp.second);
+            }
+        handlerSlots += "    @Slot void __h_" + h.first + "(" + dparams + ") {\n" + hbody + "    }\n";
+        handlerWire += "        connectMeta(this, \"" + h.first + "(" + cppsig + ")\", this, \"__h_" + h.first + "(" + cppsig + ")\");\n";
     }
     // Component.onCompleted runs once at construction — emit its body at the tail of __qmltcWire
     // (after children built, bindings initialised, handlers connected), matching QML's timing.
@@ -720,6 +764,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_enumMember = savedEnumMember;
     g_className = savedClassName;
     g_signals = savedSignals;
+    g_signalParams = savedSignalParams;
     return node;
 }
 
