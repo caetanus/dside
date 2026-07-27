@@ -353,6 +353,10 @@ private bool derivesFromRec(CXCursor node, string baseName, ref bool[string] see
 // (e.g. QQuickImplicitSizeItem) can't back a trampoline that default-constructs its base.
 bool isSubclassable(CXCursor node) {
     if (clang_CXXRecord_isAbstract(node)) return false;
+    // Must be EXPORTED (Q_*_EXPORT -> Default visibility under -fvisibility=hidden): a subclass
+    // references the base's ctor + staticMetaObject, so those symbols must be linkable. Legacy
+    // compat types (QQuickPre64TextEdit) are hidden -> their symbols aren't in the .so -> link error.
+    if (clang_getCursorVisibility(node) != 3) return false;
     bool anyCtor = false, pubDefault = false;
     foreach (c; children(node))
         if (c.kind == CXCursor_Constructor) {
