@@ -15,6 +15,11 @@
 #include <string>
 #include <vector>
 
+// Recurse the object tree: dump each QML-declared scalar property as `<prefix>name\tvalue`, and
+// descend into QObject* properties (a child object) with a dotted prefix — matching qmltc-d's
+// generated dump, which reads o.kid.y directly.
+static void dumpObj(QObject *obj, const std::string &prefix, std::vector<std::string> &lines);
+
 static std::string fmt(const QVariant &v) {
     switch (v.typeId()) {
     case QMetaType::Bool:   return v.toBool() ? "true" : "false";
@@ -52,15 +57,24 @@ int main(int argc, char **argv) {
         obj->setProperty(a.left(eq).toUtf8().constData(), QVariant(a.mid(eq + 1)));
     }
 
-    // QML-declared properties live at [propertyOffset, propertyCount) — i.e. above everything the
-    // C++ base (QObject/QtObject) contributes. That's exactly the set qmltc-d emits.
-    const QMetaObject *mo = obj->metaObject();
     std::vector<std::string> lines;
-    for (int i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
-        QMetaProperty p = mo->property(i);
-        lines.push_back(std::string(p.name()) + "\t" + fmt(p.read(obj)));
-    }
+    dumpObj(obj, "", lines);
     std::sort(lines.begin(), lines.end());
     for (const auto &l : lines) std::printf("%s\n", l.c_str());
     return 0;
+}
+
+void dumpObj(QObject *obj, const std::string &prefix, std::vector<std::string> &lines) {
+    // QML-declared properties live at [propertyOffset, propertyCount) — above everything the C++
+    // base (QObject/QtObject) contributes. That's exactly the set qmltc-d emits.
+    const QMetaObject *mo = obj->metaObject();
+    for (int i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
+        QMetaProperty p = mo->property(i);
+        QVariant v = p.read(obj);
+        if (v.metaType().flags() & QMetaType::PointerToQObject) {
+            if (auto *child = v.value<QObject *>()) dumpObj(child, prefix + p.name() + ".", lines);
+        } else {
+            lines.push_back(prefix + std::string(p.name()) + "\t" + fmt(v));
+        }
+    }
 }

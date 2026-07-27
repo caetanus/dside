@@ -204,10 +204,163 @@ static bool compileStmt(Statement *st, const std::map<std::string, std::string> 
     return true;
 }
 
+// The emitted shape of an object: its scalar properties (name+type) and its child objects
+// (field name + subtree). Used to generate the differential dump with dotted paths (`kid.y`).
+struct ObjNode {
+    std::vector<std::pair<std::string, std::string>> scalars;   // (name, dtype)
+    std::vector<std::pair<std::string, ObjNode>> kids;          // (field name, child)
+};
+
+// Compile one QML object (its initializer) into a D @QObject class `cls`, appending the class text
+// (and any nested child classes) to `classes`. Recursive: a child object `field: Type { ... }`
+// (a UiObjectBinding) becomes a nested @QObject `cls_field` held in a plain field and constructed
+// in __qmltcWire, so the whole tree materialises without the QML engine. Returns the ObjNode.
+static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
+                             std::string &classes, int &partial, const char *inPath) {
+    std::string savedId = g_selfId;
+    g_selfId = "";
+    for (auto *m = init ? init->members : nullptr; m; m = m->next)   // pre-scan this object's id
+        if (auto *sb = cast<UiScriptBinding *>(m->member))
+            if (qname(sb->qualifiedId) == "id")
+                if (auto *es = cast<ExpressionStatement *>(sb->statement))
+                    if (auto *idn = cast<IdentifierExpression *>(es->expression))
+                        g_selfId = qs(idn->name.toString());
+
+    std::vector<Prop> props;
+    std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
+    std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
+    for (auto *m = init ? init->members : nullptr; m; m = m->next) {
+        if (auto *sb = cast<UiScriptBinding *>(m->member)) {
+            std::string hid = qname(sb->qualifiedId);
+            if (hid == "id") continue;
+            if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) {
+                std::string sig = hid.substr(2);
+                sig[0] = (char)std::tolower((unsigned char)sig[0]);
+                rawHandlers.push_back({sig, sb->statement});
+                continue;
+            }
+        }
+        // `field: Type { ... }` re-binding an existing property to a child object.
+        if (auto *ob = cast<UiObjectBinding *>(m->member)) {
+            childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
+            continue;
+        }
+        if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
+            QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
+            const char *dt = dtypeOf(qmlType);
+            std::string name = qs(pub->name.toString());
+            std::string expr;
+            auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+            // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
+            if (pub->binding) {
+                if (auto *ob = cast<UiObjectBinding *>(pub->binding)) { childBindings.push_back({name, ob->initializer}); continue; }
+                if (auto *od = cast<UiObjectDefinition *>(pub->binding)) { childBindings.push_back({name, od->initializer}); continue; }
+            }
+            if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
+            if (dt[0] && pub->statement && literalOf(pub->statement, qmlType, expr)) {
+                props.push_back({name, dt, expr, false, {}});
+            } else if (dt[0] && es && compileExpr(es->expression, qmlType, expr)) {
+                std::vector<std::string> ids; collectIds(es->expression, ids);
+                props.push_back({name, dt, expr, true, ids});
+            } else {
+                std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — skipped (later phase)\n",
+                             inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
+                ++partial;
+            }
+            continue;
+        }
+        std::fprintf(stderr, "qmltc-d: %s: a member of %s is not yet handled — skipped (later phase)\n", inPath, cls.c_str());
+        ++partial;
+    }
+
+    std::vector<std::string> propNames, needsNotify;
+    for (auto &p : props) propNames.push_back(p.name);
+    auto isProp = [&](const std::string &n){ return std::find(propNames.begin(), propNames.end(), n) != propNames.end(); };
+
+    std::map<std::string, std::string> ptype;
+    for (auto &p : props) ptype[p.name] = p.dtype;
+    std::string handlerSlots, handlerWire;
+    for (auto &h : rawHandlers) {
+        std::string notifyProp, hbody;
+        if (h.first.size() > 7 && h.first.compare(h.first.size() - 7, 7, "Changed") == 0)
+            notifyProp = h.first.substr(0, h.first.size() - 7);
+        if (notifyProp.empty() || !isProp(notifyProp) || !compileStmt(h.second, ptype, hbody)) {
+            std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
+            ++partial; continue;
+        }
+        if (std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
+            needsNotify.push_back(notifyProp);
+        handlerSlots += "    @Slot void __h_" + h.first + "() {\n" + hbody + "    }\n";
+        handlerWire += "        connectMeta(this, \"" + h.first + "()\", this, \"__h_" + h.first + "()\");\n";
+    }
+
+    for (auto &p : props) {
+        if (p.bound && std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
+            needsNotify.push_back(p.name);
+        for (auto &d : p.deps)
+            if (isProp(d) && std::find(needsNotify.begin(), needsNotify.end(), d) == needsNotify.end())
+                needsNotify.push_back(d);
+    }
+    auto notified = [&](const std::string &n){ return std::find(needsNotify.begin(), needsNotify.end(), n) != needsNotify.end(); };
+
+    ObjNode node;
+    std::string body, recompute;
+    bool anyBound = false;
+    for (auto &p : props) {
+        node.scalars.push_back({p.name, p.dtype});
+        std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
+        if (p.bound) {
+            body += "    " + notifyUda + p.dtype + " " + p.name + ";\n";
+            if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
+            recompute += "    @Slot void __rc_" + p.name + "() {\n"
+                       + "        auto _v = " + p.expr + ";\n"
+                       + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
+                       + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
+            anyBound = true;
+        } else {
+            body += "    " + notifyUda + p.dtype + " " + p.name + " = " + p.expr + ";\n";
+            if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
+        }
+    }
+
+    // Child objects: a plain field per child, recursively compiled, constructed in __qmltcWire.
+    std::string childFields, childWire;
+    for (auto &cb : childBindings) {
+        std::string childCls = cls + "_" + cb.first;
+        ObjNode kid = compileObject(cb.second, childCls, classes, partial, inPath);   // restores g_selfId
+        childFields += "    " + childCls + " " + cb.first + ";\n";
+        childWire += "        " + cb.first + " = newQObject!" + childCls + "();\n";
+        node.kids.push_back({cb.first, kid});
+    }
+
+    std::string wire;
+    if (anyBound || !handlerWire.empty() || !childWire.empty()) {
+        wire = "    void __qmltcWire() {\n";
+        wire += childWire;   // build children first
+        for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
+        for (auto &p : props) if (p.bound)
+            for (auto &d : p.deps) if (isProp(d))
+                wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+        wire += handlerWire;
+        wire += "    }\n";
+    }
+
+    classes += "@QObject class " + cls + " {\n" + body + childFields + recompute + handlerSlots + wire + "}\n";
+    g_selfId = savedId;
+    return node;
+}
+
+// Flatten the object tree into (label, D-access) dump lines with dotted paths (`kid.y` <- o.kid.y).
+static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
+                        std::vector<std::pair<std::string, std::string>> &out) {
+    for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first});
+    for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
+}
+
 int main(int argc, char **argv) {
-    // --dump: also emit a `main` that instantiates the type and prints each scalar property as
-    // `name\tvalue` (sorted), so the generated D can be diffed against the QQmlComponent oracle
-    // over the same document (the corpus-check-style differential for qmltc-d).
+    // --dump: also emit a `main` that instantiates the type, applies `name=value` mutations, and
+    // prints each scalar property (dotted path for children) as `name\tvalue` sorted — the
+    // corpus-check-style differential vs the QQmlComponent oracle.
     bool dump = false;
     std::vector<char *> pos;
     for (int i = 1; i < argc; ++i) {
@@ -219,7 +372,6 @@ int main(int argc, char **argv) {
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", pos[0]); return 2; }
     QString code = QString::fromUtf8(f.readAll());
     const char *inPath = pos[0];
-    // Class/module name defaults to the file base name (QML's own convention: File.qml -> File).
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
 
     Engine engine;
@@ -238,155 +390,33 @@ int main(int argc, char **argv) {
     auto *root = cast<UiObjectDefinition *>(program->members->member);
     if (!root) { std::fprintf(stderr, "qmltc-d: %s: root is not a plain object definition (unsupported)\n", inPath); return 3; }
 
-    // Pre-scan for the root `id:` so self references (`<id>.<prop>`) resolve while compiling
-    // bindings/handlers below (QML allows an expression to reference the id before its line).
-    for (auto *m = root->initializer ? root->initializer->members : nullptr; m; m = m->next)
-        if (auto *sb = cast<UiScriptBinding *>(m->member))
-            if (qname(sb->qualifiedId) == "id")
-                if (auto *es = cast<ExpressionStatement *>(sb->statement))
-                    if (auto *idn = cast<IdentifierExpression *>(es->expression))
-                        g_selfId = qs(idn->name.toString());
-
-    int partial = 0;   // count of things we saw but can't emit yet -> exit 3 (PARTIAL), never silent.
-    std::vector<Prop> props;
-    std::vector<std::pair<std::string, Statement *>> rawHandlers;   // (signal name, handler body)
-    for (auto *m = root->initializer ? root->initializer->members : nullptr; m; m = m->next) {
-        auto *pub = cast<UiPublicMember *>(m->member);
-        // A property-change handler `on<Prop>Changed: <stmt>` is a UiScriptBinding whose id begins
-        // with `on` + an uppercase letter. Signal = lowercase-first of the rest (onCountChanged ->
-        // countChanged). Collect it; compile after the property types are known.
-        if (auto *sb = cast<UiScriptBinding *>(m->member)) {
-            std::string hid = qname(sb->qualifiedId);
-            if (hid == "id") continue;   // captured in the pre-scan above
-            if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) {
-                std::string sig = hid.substr(2);
-                sig[0] = (char)std::tolower((unsigned char)sig[0]);
-                rawHandlers.push_back({sig, sb->statement});
-                continue;
-            }
-        }
-        if (pub && pub->type == UiPublicMember::Property) {
-            QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
-            const char *dt = dtypeOf(qmlType);
-            std::string name = qs(pub->name.toString());
-            std::string expr;
-            auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
-            if (dt[0] && pub->statement && literalOf(pub->statement, qmlType, expr)) {
-                props.push_back({name, dt, expr, /*bound*/false, {}});
-            } else if (dt[0] && es && compileExpr(es->expression, qmlType, expr)) {
-                std::vector<std::string> ids;
-                collectIds(es->expression, ids);
-                props.push_back({name, dt, expr, /*bound*/true, ids});
-            } else {
-                std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — not yet emitted (phase>3)\n",
-                             inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
-                ++partial;
-            }
-            continue;
-        }
-        std::fprintf(stderr, "qmltc-d: %s: a non-property member is not yet handled (phase>3)\n", inPath);
-        ++partial;
-    }
-
-    // A property needs a NOTIFY signal iff it is bound (to notify its own dependents) OR it is a
-    // dependency of some binding (so that binding can connect and re-evaluate on its change). Props
-    // that are neither stay a plain @Property — literal-only classes are byte-identical to Phase 1.
-    std::vector<std::string> propNames;
-    std::vector<std::string> needsNotify;
-    for (auto &p : props) propNames.push_back(p.name);
-    auto isProp = [&](const std::string &n){ return std::find(propNames.begin(), propNames.end(), n) != propNames.end(); };
-
-    // Signal handlers: compile each body (property types now known) and require the source
-    // property's change signal, connected in __qmltcWire. Only `on<Prop>Changed` over a known
-    // property is handled; anything else is reported and skipped.
-    std::map<std::string, std::string> ptype;
-    for (auto &p : props) ptype[p.name] = p.dtype;
-    std::string handlerSlots, handlerWire;
-    for (auto &h : rawHandlers) {
-        std::string notifyProp, hbody;
-        if (h.first.size() > 7 && h.first.compare(h.first.size() - 7, 7, "Changed") == 0)
-            notifyProp = h.first.substr(0, h.first.size() - 7);
-        if (notifyProp.empty() || !isProp(notifyProp) || !compileStmt(h.second, ptype, hbody)) {
-            std::fprintf(stderr, "qmltc-d: %s: signal handler 'on%c%s' not yet supported — skipped (phase>4)\n",
-                         inPath, std::toupper((unsigned char)h.first[0]), h.first.c_str() + 1);
-            ++partial; continue;
-        }
-        if (std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
-            needsNotify.push_back(notifyProp);
-        handlerSlots += "    @Slot void __h_" + h.first + "() {\n" + hbody + "    }\n";
-        handlerWire += "        connectMeta(this, \"" + h.first + "()\", this, \"__h_" + h.first + "()\");\n";
-    }
-
-    for (auto &p : props) {
-        if (p.bound && std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
-            needsNotify.push_back(p.name);
-        for (auto &d : p.deps)
-            if (isProp(d) && std::find(needsNotify.begin(), needsNotify.end(), d) == needsNotify.end())
-                needsNotify.push_back(d);
-    }
-    auto notified = [&](const std::string &n){ return std::find(needsNotify.begin(), needsNotify.end(), n) != needsNotify.end(); };
-
-    // Emit the D module. The generated type is a qtmoc @QObject; construct it with newQObject!T.
-    std::string body, recompute, wire;
-    bool anyBound = false;
-    for (auto &p : props) {
-        std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
-        if (p.bound) {
-            body += "    " + notifyUda + p.dtype + " " + p.name + ";\n";
-            if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
-            // recompute slot: re-evaluate, and if the value changed, store it and notify dependents.
-            recompute += "    @Slot void __rc_" + p.name + "() {\n"
-                       + "        auto _v = " + p.expr + ";\n"
-                       + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
-                       + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
-            anyBound = true;
-        } else {
-            body += "    " + notifyUda + p.dtype + " " + p.name + " = " + p.expr + ";\n";
-            if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
-        }
-    }
-    if (anyBound || !handlerWire.empty()) {
-        // Compute binding initials in declaration order, then wire each binding to its
-        // dependencies' change signals so a later write re-evaluates it (a live QML binding), and
-        // connect each signal handler to its source property's change signal.
-        wire = "    void __qmltcWire() {\n";
-        for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
-        for (auto &p : props) if (p.bound)
-            for (auto &d : p.deps) if (isProp(d))
-                wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
-        wire += handlerWire;
-        wire += "    }\n";
-    }
+    int partial = 0;
+    std::string classes;
+    ObjNode rootNode = compileObject(root->initializer, qs(cls), classes, partial, inPath);
 
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
-    std::printf("import qtmoc;\n\n");
-    std::printf("@QObject class %s {\n%s%s%s%s}\n", qPrintable(cls),
-                body.c_str(), recompute.c_str(), handlerSlots.c_str(), wire.c_str());
+    std::printf("import qtmoc;\n\n%s", classes.c_str());
 
     if (dump) {
-        // A checker main: optionally apply `name=value` mutations (via the meta-object, so a write
-        // fires the NOTIFY and any live binding re-evaluates), then print each property as
-        // `name\tvalue`, SORTED by name (stable diff). The C++ oracle does the same over the same
-        // document; equal output proves the generated D matches the engine — statically (no args)
-        // AND dynamically (with a mutation, exercising live bindings).
-        std::vector<Prop> sorted = props;
-        std::sort(sorted.begin(), sorted.end(), [](const Prop &a, const Prop &b){ return a.name < b.name; });
+        std::vector<std::pair<std::string, std::string>> lines;   // (label, access)
+        collectDump(rootNode, "o.", "", lines);
+        std::sort(lines.begin(), lines.end());
         std::printf("\nvoid main(string[] args) {\n");
         std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n");
         std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
         std::printf("    foreach (a; args[1 .. $]) {\n");
         std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
-        for (auto &p : sorted) {   // meta writes only for the types qtmoc has setters for
-            if (p.dtype == "string")
-                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v);\n", p.name.c_str(), p.name.c_str());
-            else if (p.dtype == "int")
-                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v.to!int);\n", p.name.c_str(), p.name.c_str());
+        for (auto &s : rootNode.scalars) {   // dynamic mutation on ROOT scalar props (int/string)
+            if (s.second == "string")
+                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v);\n", s.first.c_str(), s.first.c_str());
+            else if (s.second == "int")
+                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v.to!int);\n", s.first.c_str(), s.first.c_str());
         }
         std::printf("    }\n");
-        for (auto &p : sorted)
-            std::printf("    writefln(\"%s\\t%%s\", o.%s);\n", p.name.c_str(), p.name.c_str());
+        for (auto &l : lines)
+            std::printf("    writefln(\"%s\\t%%s\", %s);\n", l.first.c_str(), l.second.c_str());
         std::printf("}\n");
     }
     return partial ? 3 : 0;
