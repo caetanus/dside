@@ -104,6 +104,7 @@ Build reggaeBuild() {
     qmlSuite(qml, "");
     all ~= qmlAotTargets(root, qml);   // qmlcachegen (Qt6 unit/loader format); Qt5 AOT is a follow-up
     all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes (Qt-agnostic), validated by Qt's reader
+    all ~= qmltcTargets(root, qml);   // qmltc-d: .qml -> D, diffed against the QQmlComponent oracle
     if (haveQt5())
         qmlSuite(qtdBinding(root, "spec_cxx_qml_qt5.json", ["Qt5Qml", "Qt5Gui"]), "-qt5");
 
@@ -304,6 +305,64 @@ Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
             "clang++ " ~ ccflags ~ " " ~ checkCpp ~ " -o $out " ~ clibs, [Target(checkCpp)]);
         // validate: deps=[check, types] -> $in = "<validator> <App.qmltypes>".
         ts ~= Target.phony("qmltypes-" ~ dc, "$in", [check, types]);
+    }
+    return ts;
+}
+
+// qmltc-d: compile each tests/qmltc/corpus/*.qml to D and DIFF the generated object's property
+// values against the REAL QML engine (QQmlComponent) — the corpus-check-style differential for
+// the QML->D compiler. Two C++ programs: qmltc-d itself (frontend = Qt's private QQmlJS parser,
+// so QtQml+QtCore private flags) which emits D + a --dump checker main, and the oracle
+// (qtd_qmlvalues, public QQmlComponent) that prints the engine's values. Per (corpus file x dc):
+// generate <Name>.d, link it against the qml binding, run it and the oracle, diff. All artifact
+// paths are absolute (under the qml binding's bdir) so reggae keeps them where we reference them.
+// PHASE 1 corpus is literal-scalar roots; bindings/children come in later phases.
+Target[] qmltcTargets(string root, QtdBinding qml) {
+    if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
+    auto here = buildPath(root, "tests", "qmltc");
+    auto corpusDir = buildPath(here, "corpus");
+    if (!exists(corpusDir)) return [];
+    auto toolCpp = buildPath(root, "tools", "qmltc", "qmltc_d.cpp");
+    auto oracleCpp = buildPath(here, "qtd_qmlvalues.cpp");
+
+    // qmltc-d frontend needs the QQmlJS PRIVATE headers (QtQml + QtCore private subdirs).
+    auto toolFlags = pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 "
+        ~ (modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")
+           ~ modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")).join(" ");
+    auto toolLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Core"]).output.strip;
+    auto toolBin = buildPath(qml.bdir, "qmltc-d");
+    auto tool = Target(toolBin, "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " -o $out " ~ toolLibs, [Target(toolCpp)]);
+
+    // oracle uses only the PUBLIC QML API (QQmlComponent) + Gui (QGuiApplication).
+    auto oracleFlags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
+    auto oracleLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip;
+    auto oracleBin = buildPath(qml.bdir, "qmlvalues");
+    auto oracle = Target(oracleBin, "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o $out " ~ oracleLibs, [Target(oracleCpp)]);
+
+    Target[] ts;
+    auto corpus = dirEntries(corpusDir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
+    corpus.sort();
+    foreach (qmlFile; corpus) {
+        auto name = baseName(qmlFile).stripExtension;
+        foreach (dc; DCS) {
+            // 1) qmltc-d --dump <qml> <Name> -> generated D (class + a value-dumping main).
+            auto genD = buildPath(qml.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".d");
+            auto gen = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ " > $out",
+                [tool, Target(qmlFile)]);
+            // 2) link the generated D against the qml binding (same shape as qtdApp).
+            auto appBin = buildPath(qml.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
+            auto link = dc ~ " -of=$out " ~ genD ~ " -I" ~ qml.genDir
+                ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(qml.bdir, "libbinding_" ~ dc ~ ".a")
+                ~ " -L=" ~ buildPath(qml.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(qml.mods) ~ " -L-lstdc++";
+            auto app = Target(appBin, link, [gen, qtdBindLib(qml, dc), qml.shims]);
+            // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
+            auto a = genD ~ ".dvals";
+            auto b = genD ~ ".qmlvals";
+            auto cmd = "sh -c 'QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " > " ~ b
+                ~ " && diff " ~ a ~ " " ~ b ~ "'";
+            ts ~= Target.phony("qmltc-" ~ name ~ "-" ~ dc, cmd, [app, oracle]);
+        }
     }
     return ts;
 }
