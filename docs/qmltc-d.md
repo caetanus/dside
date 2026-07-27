@@ -81,7 +81,8 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
   additive private-header scanning), with base props (int/string/real incl. `QColor`), custom
   reactive bindings, default children, base props of type int/string/**real**/**bool**
   (`opacity: 0.5`, `clip: true`), **object-typed properties** (`property QtObject o: QtObject {}`),
-  the visual types **TextEdit/TextInput** (private API), and **cross-file local `.qml` types** (a
+  the visual types **TextEdit/TextInput/MouseArea** (private API), and **cross-file local `.qml`
+  types** (a
   `Foo {}` that resolves to a sibling `Foo.qml`, as both root and child, with use-site member merging
   + override dedup). **7 / 66 are diff-GREEN vs the engine on ldc2+dmd**, and — the key honesty
   guarantee — the tool's own compile-clean count EQUALS this build+diff green count: every file
@@ -131,9 +132,8 @@ and the file exits `3` (PARTIAL), never a wrong emission.
 - **Cross-file / local-type compilation** — DONE (roots + children + use-site member merge,
   cycle-guarded against self-referential files). Remaining cross-file work: nested `Component {}`,
   `QtObject`-typed object properties (`property QtObject o: QtObject {}`), `list<QtObject>`.
-- **More QtQuick type maps** (`Repeater`, `ListView`, `Flickable`) — mechanical. **MouseArea** is
-  blocked by a generator bug: it redeclares `QQuickItem`'s `enabled`, so its generated `final
-  connectEnabledChanged` collides with the inherited final one — the generator needs base-signal
-  awareness to skip re-emitting a connect helper for an inherited signal.
+- **More QtQuick type maps** (`Repeater`, `ListView`, `Flickable`) — mechanical. (`MouseArea` is
+  done; the generator now skips re-emitting a `connect<Signal>` helper for a signal a subclass
+  inherits/redeclares, so a base's `final` helper no longer collides.)
 - **Animations** (`justAnimation`): the engine runs the animation and the final value differs from
   the static binding — either read the animation's `to`/`from` or accept these as out of static scope.
