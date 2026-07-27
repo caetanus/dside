@@ -107,6 +107,29 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { out = qs(fm->name.toString()); return true; }
+        // `<string>.length` -> D length (cast to int to match QML's int result).
+        if (qs(fm->name.toString()) == "length") {
+            std::string b;
+            if (compileExpr(fm->base, "string", b)) { out = "cast(int)(" + b + ".length)"; return true; }
+        }
+        return false;
+    }
+    if (auto *call = cast<CallExpression *>(e)) {
+        // Math.max/min(a,b), Math.abs(x) -> inline D (no import needed); other calls are later.
+        auto *fm = cast<FieldMemberExpression *>(call->base);
+        auto *recv = fm ? cast<IdentifierExpression *>(fm->base) : nullptr;
+        if (recv && qs(recv->name.toString()) == "Math") {
+            std::string fn = qs(fm->name.toString());
+            std::vector<std::string> args;
+            for (auto *a = call->arguments; a; a = a->next) {
+                std::string s;
+                if (!compileExpr(a->expression, dtype, s)) return false;
+                args.push_back(s);
+            }
+            if (fn == "max" && args.size() == 2) { out = "(" + args[0] + " > " + args[1] + " ? " + args[0] + " : " + args[1] + ")"; return true; }
+            if (fn == "min" && args.size() == 2) { out = "(" + args[0] + " < " + args[1] + " ? " + args[0] + " : " + args[1] + ")"; return true; }
+            if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
+        }
         return false;
     }
     if (auto *str = cast<StringLiteral *>(e)) { out = dstr(str->value.toString()); return true; }
@@ -171,6 +194,11 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) ids.push_back(qs(fm->name.toString()));
+        else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
+        return;
+    }
+    if (auto *call = cast<CallExpression *>(e)) {
+        for (auto *a = call->arguments; a; a = a->next) collectIds(a->expression, ids);
         return;
     }
     if (auto *u = cast<UnaryMinusExpression *>(e)) { collectIds(u->expression, ids); return; }
