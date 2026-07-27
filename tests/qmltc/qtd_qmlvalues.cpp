@@ -54,7 +54,11 @@ int main(int argc, char **argv) {
         QString a = QString::fromUtf8(argv[i]);
         int eq = a.indexOf('=');
         if (eq < 0) continue;
-        obj->setProperty(a.left(eq).toUtf8().constData(), QVariant(a.mid(eq + 1)));
+        // dotted path (`kid.y`) -> walk QObject* child properties, set the leaf.
+        QStringList parts = a.left(eq).split('.');
+        QObject *cur = obj;
+        for (int j = 0; j < parts.size() - 1 && cur; ++j) cur = cur->property(parts[j].toUtf8().constData()).value<QObject *>();
+        if (cur) cur->setProperty(parts.last().toUtf8().constData(), QVariant(a.mid(eq + 1)));
     }
 
     std::vector<std::string> lines;

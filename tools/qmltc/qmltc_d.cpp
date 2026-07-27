@@ -237,6 +237,7 @@ static bool compileStmt(Statement *st, const std::map<std::string, std::string> 
 struct ObjNode {
     std::string id;                                             // this object's QML `id:` (if any)
     std::vector<std::pair<std::string, std::string>> scalars;   // (name, dtype)
+    std::vector<std::string> notified;                          // props that carry a NOTIFY signal
     std::vector<std::pair<std::string, ObjNode>> kids;          // (field name, child)
 };
 
@@ -315,19 +316,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // before anything reads it. Each child is a recursively-compiled nested @QObject in a plain field.
     ObjNode node;
     node.id = g_selfId;   // still this object's id here (the loop doesn't touch g_selfId)
-    std::string childFields, childWire;
-    // A child target `<childId>.<prop>` for an alias -> (dtype, D access `<field>.<prop>`).
+    std::string childFields, childWire, crossConnects;
+    // A child target `<childId>.<prop>` for an alias -> (dtype, D access `<field>.<prop>`, notified?).
     std::map<std::string, std::string> childType, childAccess;
+    std::map<std::string, bool> childNotified;
     for (auto &cb : childBindings) {
         std::string childCls = cls + "_" + cb.first;
         ObjNode kid = compileObject(cb.second, childCls, classes, partial, inPath);   // restores g_selfId
         childFields += "    " + childCls + " " + cb.first + ";\n";
         childWire += "        " + cb.first + " = newQObject!" + childCls + "();\n";
-        if (!kid.id.empty())
+        if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
                 childAccess[kid.id + "." + s.first] = cb.first + "." + s.first;
             }
+            for (auto &n : kid.notified) childNotified[kid.id + "." + n] = true;
+        }
         node.kids.push_back({cb.first, kid});
     }
 
@@ -348,7 +352,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (base && !g_selfId.empty() && bn == g_selfId && t.count(mem)) {
                     atype = t[mem]; expr = mem; deps.push_back(mem);            // reactive self alias
                 } else if (base && childType.count(bn + "." + mem)) {
-                    atype = childType[bn + "." + mem]; expr = childAccess[bn + "." + mem];   // child alias (initial value)
+                    atype = childType[bn + "." + mem];
+                    expr = childAccess[bn + "." + mem];   // "field.prop"
+                    // If the child prop carries a NOTIFY, the alias is LIVE: connect the child's
+                    // change signal to this alias's recompute (cross-object connect).
+                    if (childNotified.count(bn + "." + mem)) {
+                        std::string field = expr.substr(0, expr.find('.'));
+                        crossConnects += "        connectMeta(" + field + ", \"" + mem + "Changed()\", this, \"__rc_" + al.first + "()\");\n";
+                    }
                 }
             } else if (auto *id = cast<IdentifierExpression *>(al.second)) {
                 std::string bn = qs(id->name.toString());
@@ -391,6 +402,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 needsNotify.push_back(d);
     }
     auto notified = [&](const std::string &n){ return std::find(needsNotify.begin(), needsNotify.end(), n) != needsNotify.end(); };
+    node.notified = needsNotify;   // so a parent can tell whether an aliased child prop is live
 
     std::string body, recompute;
     bool anyBound = false;
@@ -419,6 +431,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &p : props) if (p.bound)
             for (auto &d : p.deps) if (isProp(d))
                 wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+        wire += crossConnects;   // live child-alias connects (cross-object)
         wire += handlerWire;
         wire += "    }\n";
     }
@@ -428,10 +441,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     return node;
 }
 
-// Flatten the object tree into (label, D-access) dump lines with dotted paths (`kid.y` <- o.kid.y).
+// Flatten the object tree into dump lines with dotted paths (`kid.y` <- access o.kid.y).
+struct DumpLine { std::string label, access, dtype; };
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
-                        std::vector<std::pair<std::string, std::string>> &out) {
-    for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first});
+                        std::vector<DumpLine> &out) {
+    for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first, s.second});
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
 }
 
@@ -477,24 +491,25 @@ int main(int argc, char **argv) {
     std::printf("import qtmoc;\n\n%s", classes.c_str());
 
     if (dump) {
-        std::vector<std::pair<std::string, std::string>> lines;   // (label, access)
+        std::vector<DumpLine> lines;
         collectDump(rootNode, "o.", "", lines);
-        std::sort(lines.begin(), lines.end());
+        std::sort(lines.begin(), lines.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });
         std::printf("\nvoid main(string[] args) {\n");
         std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n");
         std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
         std::printf("    foreach (a; args[1 .. $]) {\n");
         std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
-        for (auto &s : rootNode.scalars) {   // dynamic mutation on ROOT scalar props (int/string)
-            if (s.second == "string")
-                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v);\n", s.first.c_str(), s.first.c_str());
-            else if (s.second == "int")
-                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v.to!int);\n", s.first.c_str(), s.first.c_str());
+        for (auto &l : lines) {   // dynamic mutation of any int/string prop (dotted path -> o.kid.y)
+            if (l.dtype != "string" && l.dtype != "int") continue;
+            auto dot = l.access.rfind('.');
+            std::string obj = l.access.substr(0, dot), prop = l.access.substr(dot + 1);
+            std::string val = (l.dtype == "int") ? "v.to!int" : "v";
+            std::printf("        if (k == \"%s\") setProp(%s, \"%s\", %s);\n", l.label.c_str(), obj.c_str(), prop.c_str(), val.c_str());
         }
         std::printf("    }\n");
         for (auto &l : lines)
-            std::printf("    writefln(\"%s\\t%%s\", %s);\n", l.first.c_str(), l.second.c_str());
+            std::printf("    writefln(\"%s\\t%%s\", %s);\n", l.label.c_str(), l.access.c_str());
         std::printf("}\n");
     }
     return partial ? 3 : 0;
