@@ -286,6 +286,38 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
     return "";
 }
 
+// Does `e` use param `p` as a string (an operand of `+` whose sibling is a string)? QML params are
+// untyped; numeric params become D `double` (JS number semantics), string params `string`.
+static bool paramIsString(const std::string &p, ExpressionNode *e, const std::map<std::string, std::string> &ptype) {
+    if (!e) return false;
+    if (auto *n = cast<NestedExpression *>(e)) return paramIsString(p, n->expression, ptype);
+    if (auto *u = cast<UnaryMinusExpression *>(e)) return paramIsString(p, u->expression, ptype);
+    if (auto *nt = cast<NotExpression *>(e)) return paramIsString(p, nt->expression, ptype);
+    if (auto *c = cast<ConditionalExpression *>(e)) return paramIsString(p, c->expression, ptype) || paramIsString(p, c->ok, ptype) || paramIsString(p, c->ko, ptype);
+    if (auto *b = cast<BinaryExpression *>(e)) {
+        if (b->op == QSOperator::Add) {
+            auto isP = [&](ExpressionNode *x){ auto *id = cast<IdentifierExpression *>(x); return id && qs(id->name.toString()) == p; };
+            if ((isP(b->left) && inferType(b->right, ptype) == "string") || (isP(b->right) && inferType(b->left, ptype) == "string")) return true;
+        }
+        return paramIsString(p, b->left, ptype) || paramIsString(p, b->right, ptype);
+    }
+    if (auto *call = cast<CallExpression *>(e)) for (auto *a = call->arguments; a; a = a->next) if (paramIsString(p, a->expression, ptype)) return true;
+    return false;
+}
+
+// (name, D type) for each formal parameter of a no-body-inspected function.
+static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpression *fn, const std::map<std::string, std::string> &pt0) {
+    ExpressionNode *ret = nullptr;
+    if (fn->body && !fn->body->next) if (auto *r = cast<ReturnStatement *>(fn->body->statement)) ret = r->expression;
+    std::vector<std::pair<std::string, std::string>> ps;
+    for (auto *f = fn->formals; f; f = f->next)
+        if (f->element) {
+            std::string pn = qs(f->element->bindingIdentifier.toString());
+            ps.push_back({pn, (ret && paramIsString(pn, ret, pt0)) ? "string" : "double"});
+        }
+    return ps;
+}
+
 static bool compileStmtList(StatementList *list, const std::map<std::string, std::string> &ptype, std::string &body);
 
 static bool compileStmt(Statement *st, const std::map<std::string, std::string> &ptype, std::string &body) {
@@ -361,9 +393,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *se = cast<UiSourceElement *>(m->member))
                 if (auto *fn = se->sourceElement->asFunctionDefinition())
-                    if (!fn->formals && fn->body && !fn->body->next)   // no-arg, single-statement body
-                        if (auto *ret = cast<ReturnStatement *>(fn->body->statement))
-                            g_funcRet[qs(fn->name.toString())] = inferType(ret->expression, pt0);
+                    if (fn->body && !fn->body->next)   // single-statement `return <expr>` body
+                        if (auto *ret = cast<ReturnStatement *>(fn->body->statement)) {
+                            auto pt = pt0;
+                            for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;   // params in scope
+                            g_funcRet[qs(fn->name.toString())] = inferType(ret->expression, pt);
+                        }
     }
 
     std::vector<Prop> props;
@@ -522,28 +557,34 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // return type was inferred into g_funcRet; other bodies become void methods (assignments/calls).
     // Typed PARAMETERS are still a later step.
     std::string methods;
-    for (auto *fn : functions) {
-        std::string name = qs(fn->name.toString());
-        if (fn->formals) {
-            std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has parameters — not yet supported (later phase)\n", inPath, name.c_str(), cls.c_str());
-            ++partial; continue;
-        }
-        // Single `return <expr>` -> typed method.
-        if (fn->body && !fn->body->next) {
-            if (auto *ret = cast<ReturnStatement *>(fn->body->statement)) {
-                std::string rt = g_funcRet.count(name) ? g_funcRet[name] : "", rexpr;
-                if (!rt.empty() && compileExpr(ret->expression, QString::fromStdString(rt), rexpr)) {
-                    methods += "    " + rt + " " + name + "() { return " + rexpr + "; }\n";
-                    continue;
+    {
+        std::map<std::string, std::string> pt0;   // declared prop types, for param inference
+        for (auto &p : props) pt0[p.name] = p.dtype;
+        for (auto *fn : functions) {
+            std::string name = qs(fn->name.toString());
+            auto params = funcParams(fn, pt0);
+            std::string sig;   // "double n, string s"
+            auto ptWithParams = ptype;
+            for (auto &pp : params) { sig += (sig.empty() ? "" : ", ") + pp.second + " " + pp.first; ptWithParams[pp.first] = pp.second; }
+            // Single `return <expr>` -> typed method (return type inferred into g_funcRet).
+            if (fn->body && !fn->body->next) {
+                if (auto *ret = cast<ReturnStatement *>(fn->body->statement)) {
+                    std::string rt = g_funcRet.count(name) ? g_funcRet[name] : "", rexpr;
+                    if (!rt.empty() && compileExpr(ret->expression, QString::fromStdString(rt), rexpr)) {
+                        // params must be visible while compiling the return expr's numeric formatting
+                        methods += "    " + rt + " " + name + "(" + sig + ") { return " + rexpr + "; }\n";
+                        continue;
+                    }
                 }
             }
+            // Void body (assignments / calls). Parameters allowed but only over property/param refs.
+            std::string fbody;
+            if (!compileStmtList(fn->body, ptWithParams, fbody)) {
+                std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
+                ++partial; continue;
+            }
+            methods += "    void " + name + "(" + sig + ") {\n" + fbody + "    }\n";
         }
-        std::string fbody;
-        if (!compileStmtList(fn->body, ptype, fbody)) {
-            std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
-            ++partial; continue;
-        }
-        methods += "    void " + name + "() {\n" + fbody + "    }\n";
     }
 
     for (auto &p : props) {
