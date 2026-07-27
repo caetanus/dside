@@ -59,8 +59,14 @@ through an `id`), which is exactly the guard we want.
 - **Signal handlers**: `on<Prop>Changed: <stmt>` becomes an `@Slot` connected to the source
   property's change signal; the body may be a single statement or a brace block.
 - **`Component.onCompleted`**: its body runs at construction (tail of `__qmltcWire`).
-- **`function`s**: a no-arg `void` QML function becomes a D method; bodies are assignments and calls
-  to other functions/setters. (Typed params and return values need the type-inference layer below.)
+- **`function`s** with a **type-inference layer**: a QML function becomes a D method. Numeric
+  parameters are typed `double` (JS number semantics), string params are detected from concat use;
+  the return type is inferred bottom-up (`function times2(n){return n*2}` -> `double times2(double
+  n){return (n*2.0);}`). A call in a binding is coerced to the target property (`property int d:
+  half()` -> `cast(int)(half())`) and is reactive through its arguments. Void functions
+  (assignments/calls) and `return`-bodied functions are both supported.
+- **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
+  is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
 Fixtures (`tests/qmltc/corpus/`): Scalars, Mixed, HelloWorld, Computed, Logic, Bools, Handler,
 Ided, Nested, Aliased, Exprs, ChildAlias — 12 files, each static + dynamic on both compilers.
@@ -72,20 +78,27 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
 - **66 / 108 import `QtQuick`** — visual types (`Item`, `Rectangle`, …). These are **out of scope**:
   they need `QQuickItem`-derived base classes and visual property semantics the QtObject/QtQml
   runtime does not bind. qmltc-d targets the **QtQml (non-visual) subset**.
-- **42 / 108 are pure QtQml.** Of these, qmltc-d currently compiles **10 fully**; the rest hit
-  features that are bigger and not cleanly property-observable via the differential.
+- **42 / 108 are pure QtQml.** Of these, qmltc-d currently compiles **12 fully**; the rest hit a
+  long tail of distinct features — declared `signal`s, `enum`s, `Component`/`Connections`/`Timer`,
+  control flow inside functions (`if`/`for`), and grouped properties — no single one of which flips
+  a file on its own (each remaining file needs several).
 
 Nothing here is silently dropped: any member or binding qmltc-d can't compile is reported on stderr
 and the file exits `3` (PARTIAL), never a wrong emission.
 
 ## Tracked gaps (honest TODO)
 
-- **Typed / return-valued functions** used in bindings (`property int d: times2(x)`). This needs a
-  real type-inference layer: QML/JS numbers are all `double`, coerced to the property type on
-  assignment, and function params are untyped — so a correct port must infer types and insert
-  coercion casts (the job Qt's `QtQmlCompiler` does). No-arg void functions already work.
-- **Declared signals** (`signal foo(int)`), **`Component {}`**, **enums** — remaining pure-QtQml
-  blockers.
+- **Declared signals** (`signal foo(int)`), **`enum`s**, **`Component {}`**, **`Connections`**,
+  **`Timer`**, grouped properties — the remaining pure-QtQml blockers (a long tail of distinct
+  members).
+- **Control flow inside functions** (`if`/`for`/local `var`s) and multi-statement return bodies —
+  compileStmt currently handles assignments and calls.
+- **Reactivity of a binding to what a no-arg function reads internally** (a binding calling a
+  param-less `f()` that reads a property doesn't yet re-evaluate on that property's change;
+  param'd calls are reactive through their arguments).
+- **AOT fallback (end of flow)**: route whatever qmltc-d can't compile to the existing `qmlcachegen`
+  bytecode + engine path (Qt's own hybrid model), so a PARTIAL file becomes a working hybrid rather
+  than incomplete. Deferred until the static subset is wide enough.
 - Brace-block (multi-statement) handler bodies; **child-target alias reactivity**; **dynamic
   mutation of child properties** (the dump/oracle mutate only root scalars today).
 - More expression coverage: general member access, string methods, more `Math.*`, `Math.floor/ceil`.
