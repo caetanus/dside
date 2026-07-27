@@ -12,6 +12,7 @@
 #include <QByteArray>
 #include <algorithm>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -47,22 +48,43 @@ int main(int argc, char **argv) {
     QObject *obj = comp.create();
     if (!obj) { std::fprintf(stderr, "qmlvalues: create() failed for %s\n", argv[1]); return 1; }
 
-    // Optional `name=value` mutations (argv[2..]): write via setProperty so the engine's own
-    // bindings re-evaluate, matching what the generated D does through the meta-object. The value
-    // is passed as a string QVariant; Qt coerces it to the property's declared type.
+    // Args after the .qml: `name=value` mutations, and an optional `--props <file>` listing the
+    // exact property PATHS to dump (one per line). With --props we read those (incl. base C++
+    // Q_PROPERTYs the QML file set, which auto-discovery misses); without it we auto-discover the
+    // QML-declared properties.
+    std::string propsFile;
+    std::vector<QString> muts;
     for (int i = 2; i < argc; ++i) {
-        QString a = QString::fromUtf8(argv[i]);
+        std::string a = argv[i];
+        if (a == "--props" && i + 1 < argc) { propsFile = argv[++i]; continue; }
+        muts.push_back(QString::fromUtf8(argv[i]));
+    }
+    // Walk a dotted path to the object holding the leaf property; returns null if a hop is missing.
+    auto walk = [](QObject *root, const QStringList &parts) -> QObject * {
+        QObject *cur = root;
+        for (int j = 0; j < parts.size() - 1 && cur; ++j) cur = cur->property(parts[j].toUtf8().constData()).value<QObject *>();
+        return cur;
+    };
+    for (auto &a : muts) {
         int eq = a.indexOf('=');
         if (eq < 0) continue;
-        // dotted path (`kid.y`) -> walk QObject* child properties, set the leaf.
         QStringList parts = a.left(eq).split('.');
-        QObject *cur = obj;
-        for (int j = 0; j < parts.size() - 1 && cur; ++j) cur = cur->property(parts[j].toUtf8().constData()).value<QObject *>();
-        if (cur) cur->setProperty(parts.last().toUtf8().constData(), QVariant(a.mid(eq + 1)));
+        if (QObject *cur = walk(obj, parts)) cur->setProperty(parts.last().toUtf8().constData(), QVariant(a.mid(eq + 1)));
     }
 
     std::vector<std::string> lines;
-    dumpObj(obj, "", lines);
+    if (!propsFile.empty()) {
+        std::ifstream f(propsFile);
+        std::string label;
+        while (std::getline(f, label)) {
+            if (label.empty()) continue;
+            QStringList parts = QString::fromStdString(label).split('.');
+            if (QObject *cur = walk(obj, parts))
+                lines.push_back(label + "\t" + fmt(cur->property(parts.last().toUtf8().constData())));
+        }
+    } else {
+        dumpObj(obj, "", lines);
+    }
     std::sort(lines.begin(), lines.end());
     for (const auto &l : lines) std::printf("%s\n", l.c_str());
     return 0;

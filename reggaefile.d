@@ -356,22 +356,26 @@ Target[] qmltcTargets(string root, QtdBinding qml) {
                 ~ " -L=" ~ buildPath(qml.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(qml.mods) ~ " -L-lstdc++";
             auto app = Target(appBin, link, [gen, qtdBindLib(qml, dc), qml.shims]);
             // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
+            //    The oracle dumps the EXACT property paths qmltc-d emits (`--labels` -> a .props
+            //    file, `--props` to the oracle), so base C++ properties the .qml set are compared too.
             auto a = genD ~ ".dvals";
             auto b = genD ~ ".qmlvals";
-            auto cmd = "sh -c 'QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
-                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " > " ~ b
+            auto props = genD ~ ".props";
+            auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ " > " ~ props ~ " 2>/dev/null; ";
+            auto cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
-            ts ~= Target.phony("qmltc-" ~ name ~ "-" ~ dc, cmd, [app, oracle]);
+            ts ~= Target.phony("qmltc-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
             // 4) LIVE-BINDING differential: if a `<Name>.set` sidecar lists `name=value` mutations,
             //    apply them to BOTH the generated D and the engine, and diff the post-mutation dumps.
             //    A binding that isn't reactive would diverge here (dependent wouldn't update).
             auto setFile = buildPath(corpusDir, name ~ ".set");
             if (exists(setFile)) {
                 auto setArgs = readText(setFile).strip;
-                auto cmd2 = "sh -c 'QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
-                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " > " ~ b ~ ".set"
+                auto cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
                     ~ " && diff " ~ a ~ ".set " ~ b ~ ".set'";
-                ts ~= Target.phony("qmltc-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle]);
+                ts ~= Target.phony("qmltc-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle, tool]);
             }
         }
     }
