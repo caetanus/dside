@@ -54,6 +54,8 @@ static std::pair<std::string, std::string> boundTypeFor(const std::string &qmlTy
     if (qmlType == "Item") return {"QQuickItem", "qt.quick.qquickitem"};
     if (qmlType == "Rectangle") return {"QQuickRectangle", "qt.quick.qquickrectangle"};
     if (qmlType == "Text") return {"QQuickText", "qt.quick.qquicktext"};
+    if (qmlType == "TextEdit") return {"QQuickTextEdit", "qt.quick.qquicktextedit"};
+    if (qmlType == "TextInput") return {"QQuickTextInput", "qt.quick.qquicktextinput"};
     return {"", ""};
 }
 
@@ -966,15 +968,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // WHOLE body is compiled with g_returnType set, so multi-statement bodies (locals,
             // increments, then `return ...`) work, not just a single return.
             if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
+                // A function that RETURNS a value must emit a typed method; if its return type can't
+                // be resolved (unmapped type) or the body doesn't compile, flag PARTIAL — never fall
+                // through to the void path (which would emit `return <expr>` inside a `void` function).
                 std::string rt = g_funcRet.count(name) ? g_funcRet[name] : inferType(rexpr, ptWithParams);
+                bool done = false;
                 if (!rt.empty()) {
                     auto savedRT = g_returnType;
                     g_returnType = rt;
                     std::string fbody;
                     bool ok = compileStmtList(fn->body, ptWithParams, fbody);
                     g_returnType = savedRT;
-                    if (ok) { methods += "    " + rt + " " + name + "(" + sig + ") {\n" + fbody + "    }\n"; continue; }
+                    if (ok) { methods += "    " + rt + " " + name + "(" + sig + ") {\n" + fbody + "    }\n"; done = true; }
                 }
+                if (!done) {
+                    std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has an unsupported return type — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
+                    ++partial;
+                }
+                continue;
             }
             // Void body (assignments / calls). Parameters allowed but only over property/param refs.
             std::string fbody;
