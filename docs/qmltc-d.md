@@ -75,9 +75,14 @@ Ided, Nested, Aliased, Exprs, ChildAlias — 12 files, each static + dynamic on 
 
 Measured over the upstream `qmltc` corpus (108 `.qml`):
 
-- **66 / 108 import `QtQuick`** — visual types (`Item`, `Rectangle`, …). These are **out of scope**:
-  they need `QQuickItem`-derived base classes and visual property semantics the QtObject/QtQml
-  runtime does not bind. qmltc-d targets the **QtQml (non-visual) subset**.
+- **66 / 108 import `QtQuick`** — visual types (`Item`, `Rectangle`, `Text`, …). The **bound-type
+  backend** compiles these as D subclasses of the bound Qt type (`Item`→`QQuickItem`,
+  `Rectangle`→`QQuickRectangle`, `Text`→`QQuickText`; the latter two are private-API, discovered via
+  additive private-header scanning), with base props (int/string incl. `QColor`), custom reactive
+  bindings, and default children — **8 / 66 compile fully**, green vs the engine on ldc2+dmd. The
+  ceiling is structural: the corpus is fundamentally about compiling QML against **app-defined C++
+  types** and **local `.qml` types used as children** (cross-file), which a generic backend can't
+  bind. Each further standard-type map (`TextEdit`, `Repeater`, real/bool base props) unlocks ~1 file.
 - **42 / 108 are pure QtQml.** Of these, qmltc-d compiles **17 fully** (10 → 17 as functions, enums,
   signals, `++`/`--`, `+=`, `if`/`else`, `console.log` and function-expression handlers landed). But
   **~17 of the 42 are rooted in a custom C++ type** (`QmlGroupPropertyTestType`, …) — Qt's qmltc
@@ -105,5 +110,9 @@ and the file exits `3` (PARTIAL), never a wrong emission.
   mutation of child properties** (the dump/oracle mutate only root scalars today).
 - More expression coverage: general member access, string methods, more `Math.*`, `Math.floor/ceil`.
 - Non-scalar property types: `color`, `vector2d/3d/4d`, `url`, `size`, `rect`, `quaternion`.
-- **QtQuick visual types** — a separate, larger direction (real `QQuickItem` base mapping), not a
-  small delta on the current QtObject focus.
+- **Cross-file / local-type compilation** — the biggest remaining lever: compile a file's local
+  `.qml`-defined child types (`HelloWorld`, `ComponentWithAlias`) as their own D subclasses. This is
+  what most remaining QtQuick-corpus files need, and it's Qt's "compile a whole QML module" model —
+  a larger direction, not a small delta.
+- **More QtQuick type maps** (`TextEdit`, `TextInput`, `MouseArea`, `Repeater`, `ListView`) and
+  **non-int/string base props** (real, bool, url) — each a mechanical delta unlocking ~1 corpus file.
