@@ -36,6 +36,12 @@ static std::string g_selfId;
 // call `f()` in a binding can be coerced to the target property's type. Scoped per object.
 static std::map<std::string, std::string> g_funcRet;
 
+// QML accesses an enum member via the TYPE name and flattens members into the type scope
+// (`TypeName.Green`), while D keeps them under the enum. g_enumMember maps a member name to its D
+// enum name, and g_className is the current type name, so `TypeName.Green` -> `Color.Green` (int).
+static std::map<std::string, std::string> g_enumMember;
+static std::string g_className;
+
 // dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
 static std::string qname(UiQualifiedId *id) {
     std::string s;
@@ -111,6 +117,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { out = qs(fm->name.toString()); return true; }
+        // `TypeName.Green` -> the D enum member `Color.Green` (int-valued).
+        if (base && qs(base->name.toString()) == g_className) {
+            auto it = g_enumMember.find(qs(fm->name.toString()));
+            if (it != g_enumMember.end()) { out = it->second + "." + qs(fm->name.toString()); return true; }
+        }
         // `<string>.length` -> D length (cast to int to match QML's int result).
         if (qs(fm->name.toString()) == "length") {
             std::string b;
@@ -215,6 +226,7 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) ids.push_back(qs(fm->name.toString()));
+        else if (base && qs(base->name.toString()) == g_className && g_enumMember.count(qs(fm->name.toString()))) { /* enum member: constant, no dep */ }
         else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
         return;
     }
@@ -247,6 +259,7 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { auto it = ptype.find(qs(fm->name.toString())); return it != ptype.end() ? it->second : ""; }
+        if (base && qs(base->name.toString()) == g_className && g_enumMember.count(qs(fm->name.toString()))) return "int";   // enum member
         if (qs(fm->name.toString()) == "length") return "int";
         return "";
     }
@@ -384,7 +397,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the main loop below can resolve/coerce a call `f()` to its return type. (Declared types are
     // enough here — the binding VALUES aren't needed to type a return expression.)
     auto savedFuncRet = g_funcRet;
+    auto savedEnumMember = g_enumMember;
+    auto savedClassName = g_className;
     g_funcRet.clear();
+    g_enumMember.clear();
+    g_className = cls;
+    for (auto *m = init ? init->members : nullptr; m; m = m->next)
+        if (auto *en = cast<UiEnumDeclaration *>(m->member))
+            for (auto *em = en->members; em; em = em->next)
+                g_enumMember[qs(em->member.toString())] = qs(en->name.toString());
     {
         std::map<std::string, std::string> pt0;
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
@@ -406,6 +427,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
+    std::string enumDecls;                                                        // emitted D enums
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
@@ -418,6 +440,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 rawHandlers.push_back({sig, sb->statement});
                 continue;
             }
+        }
+        // A QML `enum Name { A, B = 5, C }` -> a D enum (int members).
+        if (auto *en = cast<UiEnumDeclaration *>(m->member)) {
+            std::string e = "    enum " + qs(en->name.toString()) + " {";
+            const char *sep = " ";
+            for (auto *em = en->members; em; em = em->next) {
+                e += std::string(sep) + qs(em->member.toString()) + " = " + std::to_string((long long)em->value);
+                sep = ", ";
+            }
+            enumDecls += e + " }\n";
+            continue;
         }
         // A QML `function name(...) { ... }` is a UiSourceElement wrapping a function definition.
         if (auto *se = cast<UiSourceElement *>(m->member)) {
@@ -630,9 +663,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire += "    }\n";
     }
 
-    classes += "@QObject class " + cls + " {\n" + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
+    classes += "@QObject class " + cls + " {\n" + enumDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
+    g_enumMember = savedEnumMember;
+    g_className = savedClassName;
     return node;
 }
 
