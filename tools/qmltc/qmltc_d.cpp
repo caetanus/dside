@@ -269,10 +269,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
+    Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
             std::string hid = qname(sb->qualifiedId);
             if (hid == "id") continue;
+            if (hid == "Component.onCompleted") { onCompleted = sb->statement; continue; }   // runs at construction
             if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) {
                 std::string sig = hid.substr(2);
                 sig[0] = (char)std::tolower((unsigned char)sig[0]);
@@ -402,6 +404,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         handlerSlots += "    @Slot void __h_" + h.first + "() {\n" + hbody + "    }\n";
         handlerWire += "        connectMeta(this, \"" + h.first + "()\", this, \"__h_" + h.first + "()\");\n";
     }
+    // Component.onCompleted runs once at construction — emit its body at the tail of __qmltcWire
+    // (after children built, bindings initialised, handlers connected), matching QML's timing.
+    std::string onCompletedBody;
+    if (onCompleted && !compileStmt(onCompleted, ptype, onCompletedBody)) {
+        std::fprintf(stderr, "qmltc-d: %s: Component.onCompleted in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
+        ++partial; onCompletedBody.clear();
+    }
 
     for (auto &p : props) {
         if (p.bound && std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
@@ -433,7 +442,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
 
     std::string wire;
-    if (anyBound || !handlerWire.empty() || !childWire.empty()) {
+    if (anyBound || !handlerWire.empty() || !childWire.empty() || !onCompletedBody.empty()) {
         wire = "    void __qmltcWire() {\n";
         wire += childWire;   // build children first
         for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
@@ -442,6 +451,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
         wire += crossConnects;   // live child-alias connects (cross-object)
         wire += handlerWire;
+        wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
     }
 
