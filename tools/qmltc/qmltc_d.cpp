@@ -235,6 +235,7 @@ static bool compileStmt(Statement *st, const std::map<std::string, std::string> 
 // The emitted shape of an object: its scalar properties (name+type) and its child objects
 // (field name + subtree). Used to generate the differential dump with dotted paths (`kid.y`).
 struct ObjNode {
+    std::string id;                                             // this object's QML `id:` (if any)
     std::vector<std::pair<std::string, std::string>> scalars;   // (name, dtype)
     std::vector<std::pair<std::string, ObjNode>> kids;          // (field name, child)
 };
@@ -310,27 +311,54 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ++partial;
     }
 
-    // Resolve `property alias <name>: <self-prop>` to a bound property of the target's type. Only
-    // self targets (`<id>.<prop>` or a bare `<prop>` of this object) are handled; child-object
-    // targets (`kid.y`) need the child's prop to carry a NOTIFY and are a later step.
+    // Child objects FIRST, so aliases can target a child property and __qmltcWire builds each child
+    // before anything reads it. Each child is a recursively-compiled nested @QObject in a plain field.
+    ObjNode node;
+    node.id = g_selfId;   // still this object's id here (the loop doesn't touch g_selfId)
+    std::string childFields, childWire;
+    // A child target `<childId>.<prop>` for an alias -> (dtype, D access `<field>.<prop>`).
+    std::map<std::string, std::string> childType, childAccess;
+    for (auto &cb : childBindings) {
+        std::string childCls = cls + "_" + cb.first;
+        ObjNode kid = compileObject(cb.second, childCls, classes, partial, inPath);   // restores g_selfId
+        childFields += "    " + childCls + " " + cb.first + ";\n";
+        childWire += "        " + cb.first + " = newQObject!" + childCls + "();\n";
+        if (!kid.id.empty())
+            for (auto &s : kid.scalars) {
+                childType[kid.id + "." + s.first] = s.second;
+                childAccess[kid.id + "." + s.first] = cb.first + "." + s.first;
+            }
+        node.kids.push_back({cb.first, kid});
+    }
+
+    // Resolve `property alias <name>: <target>`. A SELF target (`<id>.<prop>` or bare `<prop>`)
+    // becomes a reactive bound property. A CHILD target (`kid.y`) becomes an initial-value read of
+    // the child field (kid built first in __qmltcWire); live re-evaluation of a child target needs
+    // the child prop to carry a NOTIFY and is a later step.
     {
         std::map<std::string, std::string> t;
         for (auto &p : props) t[p.name] = p.dtype;
         for (auto &al : aliases) {
-            std::string ref;
+            std::string expr, atype;
+            std::vector<std::string> deps;
             if (auto *fm = cast<FieldMemberExpression *>(al.second)) {
-                if (auto *base = cast<IdentifierExpression *>(fm->base))
-                    if (!g_selfId.empty() && qs(base->name.toString()) == g_selfId) ref = qs(fm->name.toString());
+                auto *base = cast<IdentifierExpression *>(fm->base);
+                std::string bn = base ? qs(base->name.toString()) : "";
+                std::string mem = qs(fm->name.toString());
+                if (base && !g_selfId.empty() && bn == g_selfId && t.count(mem)) {
+                    atype = t[mem]; expr = mem; deps.push_back(mem);            // reactive self alias
+                } else if (base && childType.count(bn + "." + mem)) {
+                    atype = childType[bn + "." + mem]; expr = childAccess[bn + "." + mem];   // child alias (initial value)
+                }
             } else if (auto *id = cast<IdentifierExpression *>(al.second)) {
-                ref = qs(id->name.toString());
+                std::string bn = qs(id->name.toString());
+                if (t.count(bn)) { atype = t[bn]; expr = bn; deps.push_back(bn); }
             }
-            std::string expr;
-            if (ref.empty() || !t.count(ref) || !compileExpr(al.second, QString::fromStdString(t[ref]), expr)) {
-                std::fprintf(stderr, "qmltc-d: %s: alias '%s' target is not a self property — skipped (later phase)\n", inPath, al.first.c_str());
+            if (atype.empty()) {
+                std::fprintf(stderr, "qmltc-d: %s: alias '%s' target is unsupported — skipped (later phase)\n", inPath, al.first.c_str());
                 ++partial; continue;
             }
-            std::vector<std::string> ids; collectIds(al.second, ids);
-            props.push_back({al.first, t[ref], expr, true, ids});
+            props.push_back({al.first, atype, expr, true, deps});
         }
     }
 
@@ -364,7 +392,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
     auto notified = [&](const std::string &n){ return std::find(needsNotify.begin(), needsNotify.end(), n) != needsNotify.end(); };
 
-    ObjNode node;
     std::string body, recompute;
     bool anyBound = false;
     for (auto &p : props) {
@@ -382,16 +409,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             body += "    " + notifyUda + p.dtype + " " + p.name + " = " + p.expr + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
         }
-    }
-
-    // Child objects: a plain field per child, recursively compiled, constructed in __qmltcWire.
-    std::string childFields, childWire;
-    for (auto &cb : childBindings) {
-        std::string childCls = cls + "_" + cb.first;
-        ObjNode kid = compileObject(cb.second, childCls, classes, partial, inPath);   // restores g_selfId
-        childFields += "    " + childCls + " " + cb.first + ";\n";
-        childWire += "        " + cb.first + " = newQObject!" + childCls + "();\n";
-        node.kids.push_back({cb.first, kid});
     }
 
     std::string wire;
