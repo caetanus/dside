@@ -4,12 +4,13 @@
   "d_package": "qt.quick", "abi": "cxx", "wrapper": false,
   "discover_module": "QtQuick",
   "headers": ["QtQuick/private/qquickrectangle_p.h", "QtQuick/private/qquicktext_p.h",
-              "QtQuick/private/qquicktextedit_p.h", "QtQuick/private/qquicktextinput_p.h"],
+              "QtQuick/private/qquicktextedit_p.h", "QtQuick/private/qquicktextinput_p.h",
+              "QtQuick/private/qquickmousearea_p.h"],
   "include_paths": [
     "/usr/include/qt6/QtQuick/6.11.1", "/usr/include/qt6/QtQuick/6.11.1/QtQuick",
     "/usr/include/qt6/QtQml/6.11.1", "/usr/include/qt6/QtQml/6.11.1/QtQml",
     "/usr/include/qt6/QtCore/6.11.1", "/usr/include/qt6/QtCore/6.11.1/QtCore",
     "/usr/include/qt6/QtGui/6.11.1"
   ],
-  "subclass": ["QQuickItem", "QQuickRectangle", "QQuickText", "QQuickTextEdit", "QQuickTextInput"]
+  "subclass": ["QQuickItem", "QQuickRectangle", "QQuickText", "QQuickTextEdit", "QQuickTextInput", "QQuickMouseArea"]
 }

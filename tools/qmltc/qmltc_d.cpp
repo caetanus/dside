@@ -56,6 +56,7 @@ static std::pair<std::string, std::string> boundTypeFor(const std::string &qmlTy
     if (qmlType == "Text") return {"QQuickText", "qt.quick.qquicktext"};
     if (qmlType == "TextEdit") return {"QQuickTextEdit", "qt.quick.qquicktextedit"};
     if (qmlType == "TextInput") return {"QQuickTextInput", "qt.quick.qquicktextinput"};
+    if (qmlType == "MouseArea") return {"QQuickMouseArea", "qt.quick.qquickmousearea"};
     return {"", ""};
 }
 

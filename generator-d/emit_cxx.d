@@ -1831,6 +1831,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // Qt signal -> a connect<Signal>(delegate) method (via a gen-phase functor
         // shim), NOT a callable binding. Non-overloaded; args marshaled to the delegate.
         if (isSignal(c)) {
+            // A signal REDECLARED in this subclass (e.g. QQuickMouseArea shadowing QQuickItem's
+            // `enabled` -> its own `enabledChanged`) already has a `final connect<Signal>` on the
+            // base; re-emitting it here would illegally override that final method. Use the base's.
+            if ((mn in baseM) !is null) { _fate = "inherited"; continue; }
             _fate = "signal";
             if (sigNameCount.get(mn, 0) == 1 && allNameCount.get(mn, 0) == 1 && mn !in seenSig) {
                 Signal s; s.dClass = name; s.cppClass = cppName; s.name = mn;
