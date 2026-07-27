@@ -508,14 +508,23 @@ static ExpressionNode *findReturnExpr(StatementList *body) {
 
 // The emitted shape of an object: its scalar properties (name+type) and its child objects
 // (field name + subtree). Used to generate the differential dump with dotted paths (`kid.y`).
+// Local-type files currently on the resolution stack — a cycle guard so a file that references a
+// type resolving back to a file already being resolved (e.g. Connections.qml contains a
+// `Connections {}` that name-matches the file itself) stops instead of recursing forever.
+static std::set<std::string> g_resolving;
+
 // Resolve a QML type name to a sibling `<dir>/<TypeName>.qml` (a local, .qml-defined type) and parse
 // it, returning its root object definition — the engine auto-imports same-directory .qml types and
-// we mirror that. Engine/Parser are leaked (process-lifetime) so the returned AST stays valid for
-// the rest of compilation.
-static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath) {
+// we mirror that. Returns null (and leaves *outPath empty) if missing or already on the resolution
+// stack. Engine/Parser are leaked (process-lifetime) so the returned AST stays valid.
+static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
+                                         std::string *outPath = nullptr) {
     QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
     QString path = dir + "/" + QString::fromStdString(typeName) + ".qml";
+    std::string p = qs(path);
+    if (g_resolving.count(p)) return nullptr;   // cycle: this file is already being resolved
     if (!QFileInfo::exists(path)) return nullptr;
+    if (outPath) *outPath = p;
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) return nullptr;
     QString code = QString::fromUtf8(f.readAll());
@@ -747,10 +756,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
         std::string childBaseImport = cbt.second;           // its import module (for g_extraImports)
+        std::string childResolvedPath;                       // local-type file path (for the cycle guard)
         if (cbt.first.empty() && childType != "QtObject") {
             // A local `.qml`-defined type (HelloWorld { }): compile ITS OWN root as this child's
             // class, taking the local definition's base (QtObject -> fresh @QObject, Item -> bound).
-            UiObjectDefinition *lt = loadLocalType(childType, inPath);
+            UiObjectDefinition *lt = loadLocalType(childType, inPath, &childResolvedPath);
             if (!lt) {
                 std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
                              inPath, childType.c_str(), cls.c_str());
@@ -784,7 +794,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         std::string field = "_dc" + std::to_string(di);
         std::string childCls = cls + "_dc" + std::to_string(di);
+        if (!childResolvedPath.empty()) g_resolving.insert(childResolvedPath);
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase);
+        if (!childResolvedPath.empty()) g_resolving.erase(childResolvedPath);
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n";
         node.defaultKids.push_back({field, kid});
@@ -1049,10 +1061,11 @@ int main(int argc, char **argv) {
     std::string rootType = root->qualifiedTypeNameId ? qname(root->qualifiedTypeNameId) : "";
     auto bt = boundTypeFor(rootType);
     UiObjectInitializer *rootInit = root->initializer;
+    std::string rootResolvedPath;
     if (bt.first.empty() && rootType != "QtObject") {
         // A local `.qml`-defined ROOT type (e.g. `LocallyImported { ... }`): take the local
         // definition's base and MERGE this file's use-site members onto the local definition's.
-        if (UiObjectDefinition *lt = loadLocalType(rootType, inPath)) {
+        if (UiObjectDefinition *lt = loadLocalType(rootType, inPath, &rootResolvedPath)) {
             std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
             bt = boundTypeFor(ltRoot);
             rootInit = lt->initializer ? lt->initializer : root->initializer;
@@ -1076,7 +1089,9 @@ int main(int argc, char **argv) {
 
     int partial = 0;
     std::string classes;
+    if (!rootResolvedPath.empty()) g_resolving.insert(rootResolvedPath);
     ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first);
+    if (!rootResolvedPath.empty()) g_resolving.erase(rootResolvedPath);
 
     // --labels: print the sorted dump labels (property paths) for the oracle's --props mode.
     if (labels) {
