@@ -98,6 +98,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (!compileExpr(u->expression, dtype, inner)) return false;
         out = "(-" + inner + ")"; return true;
     }
+    if (auto *n = cast<NotExpression *>(e)) {
+        std::string inner;
+        if (!compileExpr(n->expression, "bool", inner)) return false;
+        out = "(!" + inner + ")"; return true;
+    }
     if (auto *cond = cast<ConditionalExpression *>(e)) {
         // ternary `c ? a : b`. The branches carry the target type; the condition is boolean.
         std::string c, a, b;
@@ -108,9 +113,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
     if (auto *bin = cast<BinaryExpression *>(e)) {
         // Comparisons yield bool and their operands are NOT the target type; compile them with a
         // neutral hint so numeric-literal formatting isn't skewed by a string/bool target.
-        bool cmp = false;
+        bool cmp = false, logical = false;
         std::string op;
         switch (bin->op) {
+        case QSOperator::And: op = "&&"; logical = true; break;   // QML `&&` (BitAnd is `&`)
+        case QSOperator::Or:  op = "||"; logical = true; break;
         case QSOperator::Add: op = (dtype == "string") ? "~" : "+"; break;
         case QSOperator::Sub: if (dtype == "string") return false; op = "-"; break;
         case QSOperator::Mul: if (dtype == "string") return false; op = "*"; break;
@@ -126,7 +133,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         case QSOperator::StrictNotEqual: op = "!=";  cmp = true; break;
         default: return false;   // logical/bitwise/in/instanceof -> later
         }
-        QString sub = cmp ? QString("") : dtype;   // "" -> dnum uses %g; fine for the operands here
+        QString sub = logical ? QString("bool") : (cmp ? QString("") : dtype);
         std::string l, r;
         if (!compileExpr(bin->left, sub, l) || !compileExpr(bin->right, sub, r)) return false;
         out = "(" + l + " " + op + " " + r + ")"; return true;
