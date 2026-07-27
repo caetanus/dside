@@ -53,8 +53,10 @@ extern (C) nothrow {
     int   qtd_qs_utf8len(void*);
     void  qtd_qs_utf8(void*, char*);
     // property access by name (via QVariant)
-    int   qtd_prop_get_int(void*, const(char)*);
-    void  qtd_prop_set_int(void*, const(char)*, int);
+    int    qtd_prop_get_int(void*, const(char)*);
+    void   qtd_prop_set_int(void*, const(char)*, int);
+    double qtd_prop_get_double(void*, const(char)*);
+    void   qtd_prop_set_double(void*, const(char)*, double);
     void* qtd_prop_get_qs(void*, const(char)*);
     void  qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
 }
@@ -678,6 +680,10 @@ mixin template QtdWidget(Base) {
 int propInt(T)(T o, string name) { return qtd_prop_get_int(qobjOf(o), (name ~ "\0").ptr); }
 /// Writes an int property by name (fires the notify, if any).
 void setProp(T)(T o, string name, int v) { qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v); }
+/// Reads a real (double) property by name.
+double propDouble(T)(T o, string name) { return qtd_prop_get_double(qobjOf(o), (name ~ "\0").ptr); }
+/// Writes a real (double) property by name (fires the notify, if any).
+void setProp(T)(T o, string name, double v) { qtd_prop_set_double(qobjOf(o), (name ~ "\0").ptr, v); }
 /// Reads a QString property by name as a D string.
 string propStr(T)(T o, string name) {
     auto qs = qtd_prop_get_qs(qobjOf(o), (name ~ "\0").ptr);

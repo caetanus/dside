@@ -152,7 +152,10 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
     if (auto *id = cast<IdentifierExpression *>(e)) {
         std::string n = qs(id->name.toString());
         auto bp = g_baseProps.find(n);   // a base C++ property -> read via meta (no D field)
-        if (bp != g_baseProps.end()) { out = (bp->second == "string" ? "propStr(this, \"" : "propInt(this, \"") + n + "\")"; return true; }
+        if (bp != g_baseProps.end()) {
+            const char *rd = bp->second == "string" ? "propStr(this, \"" : bp->second == "double" ? "propDouble(this, \"" : "propInt(this, \"";
+            out = rd + n + "\")"; return true;
+        }
         out = n; return true;
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
@@ -610,7 +613,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) continue;
                 if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
                     std::string ty = inferType(es->expression, pt0);
-                    if (ty == "int" || ty == "string") g_baseProps[hid] = ty;
+                    if (ty == "int" || ty == "string" || ty == "double") g_baseProps[hid] = ty;
                 }
             }
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
@@ -937,7 +940,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::string baseWire;
     for (auto &ba : rawBaseAssigns) {
         std::string ty = inferType(ba.second, ptype), val;
-        if ((ty != "int" && ty != "string") || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
+        if ((ty != "int" && ty != "string" && ty != "double") || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
             std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported — skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
             ++partial; continue;
         }
@@ -1048,9 +1051,9 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
     for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first, s.second});
     // Base C++ properties have no D field — read them through the meta-object (prop<Int|Str>).
     for (auto &s : n.baseProps) {
-        std::string rd = (s.second == "string") ? "propStr(" + acc.substr(0, acc.size() - 1) + ", \"" + s.first + "\")"
-                                                 : "propInt(" + acc.substr(0, acc.size() - 1) + ", \"" + s.first + "\")";
-        out.push_back({lab + s.first, rd, s.second});
+        std::string self = acc.substr(0, acc.size() - 1);
+        const char *fn = (s.second == "string") ? "propStr(" : (s.second == "double") ? "propDouble(" : "propInt(";
+        out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second});
     }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
     // Default (unnamed) children: the D field is accessed directly, but the label uses `@<i>` so the
@@ -1160,13 +1163,13 @@ int main(int argc, char **argv) {
         std::printf("    foreach (a; args[1 .. $]) {\n");
         std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
-        for (auto &l : lines) {   // dynamic mutation of any int/string prop (via meta, dotted path)
-            if (l.dtype != "string" && l.dtype != "int") continue;
+        for (auto &l : lines) {   // dynamic mutation of any int/double/string prop (via meta, dotted path)
+            if (l.dtype != "string" && l.dtype != "int" && l.dtype != "double") continue;
             if (l.label.find('@') != std::string::npos) continue;   // default-child mutation not supported
             auto dot = l.label.rfind('.');   // the PROPERTY PATH (not the read access) -> the setProp target
             std::string obj = (dot == std::string::npos) ? "o" : "o." + l.label.substr(0, dot);
             std::string prop = (dot == std::string::npos) ? l.label : l.label.substr(dot + 1);
-            std::string val = (l.dtype == "int") ? "v.to!int" : "v";
+            std::string val = (l.dtype == "int") ? "v.to!int" : (l.dtype == "double") ? "v.to!double" : "v";
             std::printf("        if (k == \"%s\") setProp(%s, \"%s\", %s);\n", l.label.c_str(), obj.c_str(), prop.c_str(), val.c_str());
         }
         std::printf("    }\n");

@@ -298,6 +298,8 @@ bool qtd_install_translator(const char* qmBase) {
 // meta-object -> propcb on the D side). Works for custom AND built-in.
 int  qtd_prop_get_int(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toInt(); }
 void qtd_prop_set_int(void* o, const char* n, int v) { static_cast<QObject*>(o)->setProperty(n, v); }
+double qtd_prop_get_double(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toDouble(); }
+void qtd_prop_set_double(void* o, const char* n, double v) { static_cast<QObject*>(o)->setProperty(n, v); }
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(static_cast<QObject*>(o)->property(n).toString()); }
 void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
     static_cast<QObject*>(o)->setProperty(n, QString::fromUtf8(p, len));
