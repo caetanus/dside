@@ -1,0 +1,7 @@
+{
+  "qt_version": "6.11", "pkg_config": "Qt6Quick Qt6Qml Qt6Gui Qt6Core",
+  "out_dir": "../generated/qt-6.11/cxx-quick",
+  "d_package": "qt.quick", "abi": "cxx", "wrapper": false,
+  "discover_module": "QtQuick",
+  "subclass": ["QQuickItem"]
+}
