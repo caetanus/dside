@@ -70,6 +70,7 @@ uint     clang_CXXMethod_isConst(CXCursor);
 uint     clang_CXXMethod_isVirtual(CXCursor);
 uint     clang_CXXMethod_isPureVirtual(CXCursor);
 uint     clang_CXXRecord_isAbstract(CXCursor);   // has an unoverridden pure virtual -> uninstantiable
+uint     clang_CXXConstructor_isDefaultConstructor(CXCursor);
 uint     clang_CXXConstructor_isCopyConstructor(CXCursor);
 uint     clang_CXXConstructor_isMoveConstructor(CXCursor);
 uint     clang_isPODType(CXType);                // trivially-copyable POD -> bitwise copy safe

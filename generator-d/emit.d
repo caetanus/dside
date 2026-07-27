@@ -125,6 +125,17 @@ void main(string[] args) {
         }
         writefln("discovered %d classes%s", targets.length,
                  discMod.length ? " in <" ~ discMod ~ ">" : " in your headers");
+        // subclass_derived: auto-subclass EVERY discovered class transitively deriving from a listed
+        // base (e.g. all QQuickItem-derived visual types). A wrapper generator must not carry a
+        // hand-maintained per-type subclass list — whatever is discovered under the base is wrapped.
+        if (auto sd = "subclass_derived" in spec.object) {
+            int n0 = cast(int) SUBCLASS.length;
+            foreach (baseJ; sd.array)
+                foreach (cur; targets)
+                    if (derivesFrom(cur, baseJ.str) && isSubclassable(cur))
+                        SUBCLASS[clang_getCursorSpelling(cur).str] = true;
+            writefln("subclass_derived: %d classes auto-subclassed", cast(int) SUBCLASS.length - n0);
+        }
     } else {
         bool[string] want;
         foreach (c; spec["classes"].array) want[c["name"].str] = true;
@@ -340,6 +351,33 @@ void main(string[] args) {
     string man = "# cppClass\tsymbol\tusr\tfate\n";
     foreach (r; rows) man ~= r ~ "\n";
     std.file.write(buildPath(outDir, "coverage-manifest.tsv"), man);
+
+    // qmlmap.tsv: the QML-element-name -> (C++ class, D module) table, read from the module's OWN
+    // plugins.qmltypes (Qt's authoritative type registry) and restricted to the classes we subclass.
+    // This is what makes the wrapper's QML type vocabulary DATA — qmltc-d looks types up here instead
+    // of carrying a hand-coded name map.
+    if (auto qt = "qmltypes" in spec.object) {
+        import std.regex : matchFirst, regex;
+        auto reName = regex(`\n {8}name: "([^"]+)"`);
+        auto reExp  = regex(`exports: \[([^\]]*)\]`);
+        auto reQml  = regex(`"[^"/]+/([A-Za-z0-9_]+) `);
+        string qmap; int rows2;
+        foreach (qtj; qt.array) {
+            if (!exists(qtj.str)) continue;
+            foreach (blk; readText(qtj.str).split("Component {")) {
+                auto nm = blk.matchFirst(reName);
+                auto ex = blk.matchFirst(reExp);
+                if (nm.empty || ex.empty) continue;
+                auto cpp = nm[1];
+                if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
+                auto qn = ex[1].matchFirst(reQml);
+                if (qn.empty) continue;
+                qmap ~= qn[1] ~ "\t" ~ cpp ~ "\t" ~ dpkg ~ "." ~ cpp.toLower ~ "\n"; rows2++;
+            }
+        }
+        std.file.write(buildPath(outDir, "qmlmap.tsv"), qmap);
+        writefln("qmlmap: %d QML-name -> class rows -> qmlmap.tsv", rows2);
+    }
 
     // coverage.txt: the human summary. The fate breakdown IS the per-symbol manifest — now
     // covering the object-method AND the value-type/wrapper/ctor paths (every Unmappable drop is

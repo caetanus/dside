@@ -356,10 +356,14 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     foreach (qmlFile; corpus) {
         auto name = baseName(qmlFile).stripExtension;
         foreach (dc; DCS) {
+            // qmlmap.tsv (QML-name -> bound C++ class) is a build output of the binding's gend run;
+            // the tool reads it so its bound-type vocabulary is DATA, not hard-coded. Absent (e.g.
+            // the QtObject binding) -> the tool just loads nothing.
+            auto qmlmapArg = " --qmlmap " ~ buildPath(bind.genDir, "qmlmap.tsv");
             // 1) qmltc-d --dump <qml> <Name> -> generated D (class + a value-dumping main).
             auto genD = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".d");
-            auto gen = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ " > $out",
-                [tool, Target(qmlFile)]);
+            auto gen = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > $out",
+                [tool, Target(qmlFile), bind.gen]);
             // 2) link the generated D against the binding (same shape as qtdApp).
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
             auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
@@ -372,7 +376,7 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             auto a = genD ~ ".dvals";
             auto b = genD ~ ".qmlvals";
             auto props = genD ~ ".props";
-            auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ " > " ~ props ~ " 2>/dev/null; ";
+            auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > " ~ props ~ " 2>/dev/null; ";
             auto cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";

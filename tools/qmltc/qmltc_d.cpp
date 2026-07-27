@@ -23,6 +23,7 @@
 #include <map>
 #include <set>
 #include <cctype>
+#include <fstream>
 
 using namespace QQmlJS;
 using namespace QQmlJS::AST;
@@ -48,16 +49,35 @@ static std::string g_returnType;
 // Extra `import` lines the generated module needs (e.g. a bound base type's module). Accumulated.
 static std::string g_extraImports;
 
-// QML type name -> (bound D type, its import module), for a non-QtObject root that qmltc-d compiles
-// as a D subclass of the bound Qt type. Empty D type = not a mapped bound type.
+// QML element name -> (bound D type, its import module). This table is DATA, loaded from the
+// binding's qmlmap.tsv (which the generator produces from Qt's own plugins.qmltypes, restricted to
+// the classes it subclasses) — NOT a hand-coded map. `--qmlmap <file>` populates it; without it,
+// only QtObject/local types compile (no bound visual types).
+static std::map<std::string, std::pair<std::string, std::string>> g_qmlMap;
+
+static void loadQmlMap(const char *path) {
+    std::ifstream f(path);
+    std::string line;
+    while (std::getline(f, line)) {
+        auto t1 = line.find('\t');
+        auto t2 = line.find('\t', t1 + 1);
+        if (t1 == std::string::npos || t2 == std::string::npos) continue;
+        std::string qml = line.substr(0, t1);
+        std::string cpp = line.substr(t1 + 1, t2 - t1 - 1);
+        std::string mod = line.substr(t2 + 1);
+        // A QML name can export more than one C++ class across import versions (e.g. TextEdit ->
+        // QQuickTextEdit and the legacy QQuickPre64TextEdit). `import QtQuick` (latest) resolves to
+        // the modern one, so prefer a non-"Pre64" class when a name repeats.
+        auto it = g_qmlMap.find(qml);
+        if (it != g_qmlMap.end() && cpp.find("Pre64") != std::string::npos) continue;
+        g_qmlMap[qml] = {cpp, mod};
+    }
+}
+
+// Empty D type = not a mapped bound type (a fresh @QObject / local type / unsupported).
 static std::pair<std::string, std::string> boundTypeFor(const std::string &qmlType) {
-    if (qmlType == "Item") return {"QQuickItem", "qt.quick.qquickitem"};
-    if (qmlType == "Rectangle") return {"QQuickRectangle", "qt.quick.qquickrectangle"};
-    if (qmlType == "Text") return {"QQuickText", "qt.quick.qquicktext"};
-    if (qmlType == "TextEdit") return {"QQuickTextEdit", "qt.quick.qquicktextedit"};
-    if (qmlType == "TextInput") return {"QQuickTextInput", "qt.quick.qquicktextinput"};
-    if (qmlType == "MouseArea") return {"QQuickMouseArea", "qt.quick.qquickmousearea"};
-    return {"", ""};
+    auto it = g_qmlMap.find(qmlType);
+    return it != g_qmlMap.end() ? it->second : std::pair<std::string, std::string>{"", ""};
 }
 
 // QML accesses an enum member via the TYPE name and flattens members into the type scope
@@ -1086,6 +1106,7 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump") == 0) dump = true;
         else if (std::strcmp(argv[i], "--labels") == 0) labels = true;   // print the dump labels (for the oracle --props)
+        else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) loadQmlMap(argv[++i]);   // QML-name->class table
         else pos.push_back(argv[i]);
     }
     if (pos.empty()) { std::fprintf(stderr, "usage: %s [--dump] <file.qml> [ClassName]\n", argv[0]); return 2; }

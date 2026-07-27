@@ -332,6 +332,35 @@ private bool isQObjectRec(CXCursor node, ref bool[string] seen) {
     }
     return false;
 }
+// True if `node` IS or transitively derives from a class named `baseName` — used to auto-select
+// every discovered subtype of a base (e.g. all QQuickItem-derived visual types) for subclassing,
+// so the wrapper generator never needs a hand-maintained per-type list.
+bool derivesFrom(CXCursor node, string baseName) {
+    bool[string] seen;
+    return derivesFromRec(node, baseName, seen);
+}
+private bool derivesFromRec(CXCursor node, string baseName, ref bool[string] seen) {
+    if (clang_getCursorSpelling(node).str == baseName) return true;
+    auto k = clang_getCursorUSR(node).str;
+    if (k.length) { if (k in seen) return false; seen[k] = true; }
+    foreach (b; baseDecls(node))
+        if (derivesFromRec(b, baseName, seen)) return true;
+    return false;
+}
+// True if `node` can be default-constructed by a D subclass: concrete (not abstract) and has a
+// PUBLIC default constructor (or no user-declared ctors -> implicit public default). Auto-subclass
+// only these — an abstract type (pure virtuals) or one whose only ctors are protected/parameterised
+// (e.g. QQuickImplicitSizeItem) can't back a trampoline that default-constructs its base.
+bool isSubclassable(CXCursor node) {
+    if (clang_CXXRecord_isAbstract(node)) return false;
+    bool anyCtor = false, pubDefault = false;
+    foreach (c; children(node))
+        if (c.kind == CXCursor_Constructor) {
+            anyCtor = true;
+            if (isPublic(c) && clang_CXXConstructor_isDefaultConstructor(c)) pubDefault = true;
+        }
+    return pubDefault || !anyCtor;
+}
 void collectVirt(CXCursor node, ref bool[string] pur, ref bool[string] impl, ref bool[string] seen) {
     auto k = clang_getCursorUSR(node).str;
     if (k.length) { if (k in seen) return; seen[k] = true; }
