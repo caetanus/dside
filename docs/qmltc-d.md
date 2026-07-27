@@ -132,8 +132,11 @@ and the file exits `3` (PARTIAL), never a wrong emission.
 - **Cross-file / local-type compilation** — DONE (roots + children + use-site member merge,
   cycle-guarded against self-referential files). Remaining cross-file work: nested `Component {}`,
   `QtObject`-typed object properties (`property QtObject o: QtObject {}`), `list<QtObject>`.
-- **More QtQuick type maps** (`Repeater`, `ListView`, `Flickable`) — mechanical. (`MouseArea` is
-  done; the generator now skips re-emitting a `connect<Signal>` helper for a signal a subclass
-  inherits/redeclares, so a base's `final` helper no longer collides.)
+- **Wider type discovery.** The bound-type vocabulary is DATA, not code: the generator
+  auto-subclasses every discovered class deriving from `QQuickItem` that is instantiable AND exported,
+  and emits `qmlmap.tsv` (QML-name → C++-class) from the module's `plugins.qmltypes`; qmltc-d reads
+  it. Adding a type is purely a discovery input (its header), never code. Only ~6 types flow through
+  today because the cross-module private-header web (e.g. `ListView` pulls `QtQmlModels`) bounds what
+  the spec currently `#include`s — widening it is adding headers + include paths, not per-type code.
 - **Animations** (`justAnimation`): the engine runs the animation and the final value differs from
   the static binding — either read the animation's `to`/`from` or accept these as out of static scope.
