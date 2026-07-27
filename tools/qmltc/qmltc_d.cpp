@@ -37,6 +37,10 @@ static std::string g_selfId;
 // call `f()` in a binding can be coerced to the target property's type. Scoped per object.
 static std::map<std::string, std::string> g_funcRet;
 
+// Property names a no-arg function reads, so a binding calling `f()` becomes reactive to them
+// (transitive dependency). Scoped per object.
+static std::map<std::string, std::vector<std::string>> g_funcReads;
+
 // QML accesses an enum member via the TYPE name and flattens members into the type scope
 // (`TypeName.Green`), while D keeps them under the enum. g_enumMember maps a member name to its D
 // enum name, and g_className is the current type name, so `TypeName.Green` -> `Color.Green` (int).
@@ -238,6 +242,12 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     }
     if (auto *call = cast<CallExpression *>(e)) {
         for (auto *a = call->arguments; a; a = a->next) collectIds(a->expression, ids);
+        // A no-arg function call depends on whatever that function reads (transitive).
+        if (!call->arguments)
+            if (auto *fnId = cast<IdentifierExpression *>(call->base)) {
+                auto it = g_funcReads.find(qs(fnId->name.toString()));
+                if (it != g_funcReads.end()) for (auto &r : it->second) ids.push_back(r);
+            }
         return;
     }
     if (auto *u = cast<UnaryMinusExpression *>(e)) { collectIds(u->expression, ids); return; }
@@ -403,10 +413,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the main loop below can resolve/coerce a call `f()` to its return type. (Declared types are
     // enough here — the binding VALUES aren't needed to type a return expression.)
     auto savedFuncRet = g_funcRet;
+    auto savedFuncReads = g_funcReads;
     auto savedEnumMember = g_enumMember;
     auto savedClassName = g_className;
     auto savedSignals = g_signals;
     g_funcRet.clear();
+    g_funcReads.clear();
     g_enumMember.clear();
     g_signals.clear();
     g_className = cls;
@@ -430,6 +442,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             auto pt = pt0;
                             for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;   // params in scope
                             g_funcRet[qs(fn->name.toString())] = inferType(ret->expression, pt);
+                            if (!fn->formals) {   // no-arg: record which properties it reads (for reactive bindings)
+                                std::vector<std::string> reads;
+                                collectIds(ret->expression, reads);
+                                for (auto &r : reads) if (pt0.count(r)) g_funcReads[qs(fn->name.toString())].push_back(r);
+                            }
                         }
     }
 
@@ -686,6 +703,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     classes += "@QObject class " + cls + " {\n" + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
+    g_funcReads = savedFuncReads;
     g_enumMember = savedEnumMember;
     g_className = savedClassName;
     g_signals = savedSignals;
