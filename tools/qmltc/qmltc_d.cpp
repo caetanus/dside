@@ -687,21 +687,35 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         bool isCustom = g_signals.count(h.first) > 0;
         if (!isCustom && h.first.size() > 7 && h.first.compare(h.first.size() - 7, 7, "Changed") == 0)
             notifyProp = h.first.substr(0, h.first.size() - 7);
-        if ((!isCustom && (notifyProp.empty() || !isProp(notifyProp))) || !compileStmt(h.second, ptype, hbody)) {
+        // A handler body may be a statement, or a function expression `function(a, b) { ... }`
+        // whose formals name the signal's arguments.
+        StatementList *fnBody = nullptr;
+        std::vector<std::string> fnParams;
+        if (auto *es = cast<ExpressionStatement *>(h.second))
+            if (auto *fe = es->expression->asFunctionDefinition()) {
+                fnBody = fe->body;
+                for (auto *f = fe->formals; f; f = f->next) if (f->element) fnParams.push_back(qs(f->element->bindingIdentifier.toString()));
+            }
+        bool bodyOk = fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(h.second, ptype, hbody);
+        if ((!isCustom && (notifyProp.empty() || !isProp(notifyProp))) || !bodyOk) {
             std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
             ++partial; continue;
         }
         if (!notifyProp.empty() && std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
             needsNotify.push_back(notifyProp);
         // A custom signal handler takes the signal's parameters (accessible by name in the body);
-        // the connect uses the typed C++ signature. Property-change and param-less signals -> ().
+        // param NAMES come from the handler function's formals when present, TYPES from the signal.
         std::string dparams, cppsig;
         auto sp = g_signalParams.find(h.first);
-        if (sp != g_signalParams.end())
+        if (sp != g_signalParams.end()) {
+            int i = 0;
             for (auto &pp : sp->second) {
-                dparams += (dparams.empty() ? "" : ", ") + pp.second + " " + pp.first;
+                std::string pn = (i < (int)fnParams.size()) ? fnParams[i] : pp.first;
+                dparams += (dparams.empty() ? "" : ", ") + pp.second + " " + pn;
                 cppsig += (cppsig.empty() ? "" : ",") + cppTypeOf(pp.second);
+                ++i;
             }
+        }
         handlerSlots += "    @Slot void __h_" + h.first + "(" + dparams + ") {\n" + hbody + "    }\n";
         handlerWire += "        connectMeta(this, \"" + h.first + "(" + cppsig + ")\", this, \"__h_" + h.first + "(" + cppsig + ")\");\n";
     }
