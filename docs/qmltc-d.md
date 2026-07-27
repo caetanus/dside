@@ -108,9 +108,18 @@ and the file exits `3` (PARTIAL), never a wrong emission.
 - **Reactivity of a binding to what a no-arg function reads internally** (a binding calling a
   param-less `f()` that reads a property doesn't yet re-evaluate on that property's change;
   param'd calls are reactive through their arguments).
-- **AOT fallback (end of flow)**: route whatever qmltc-d can't compile to the existing `qmlcachegen`
-  bytecode + engine path (Qt's own hybrid model), so a PARTIAL file becomes a working hybrid rather
-  than incomplete. Deferred until the static subset is wide enough.
+- **AOT / qmltc fallback (END OF FLOW — do NOT build yet)**: a tiered, literally-last-resort chain,
+  applied per failing unit in order:
+  1. **JS→D transpile fails** → **AOT that JS** (qmlcachegen bytecode, run by the QJSEngine); the
+     rest of the class still compiles to D. Failing JS units enter AOT granularly — the compilation
+     does not desist wholesale.
+  2. **QML→D compile fails** (the whole document) → run Qt's own **qmltc** (QML→C++) and **wrap** the
+     generated C++ for D.
+  3. **Everything failed** → **give up**.
+
+  This is deferred deliberately: building it now would MASK all the static-coverage work, because
+  every gap would silently route to fallback instead of being a visible gap to fix. It happens only
+  once the static D subset is called wide enough.
 - Brace-block (multi-statement) handler bodies; **child-target alias reactivity**; **dynamic
   mutation of child properties** (the dump/oracle mutate only root scalars today).
 - More expression coverage: general member access, string methods, more `Math.*`, `Math.floor/ceil`.
