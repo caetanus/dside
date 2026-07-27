@@ -41,11 +41,13 @@ jobs:
       # The 58 sample_* targets that materialize the PySide north (shiboken's libsample corner
       # cases) only exist if ../pyside-setup is present — otherwise libsampleTargets() returns [].
       # Provision it at a PINNED revision so conformance can't silently vanish.
-      - name: Provision shiboken libsample corpus (pinned)
+      # PINNED, no fallback (critics r8 #7): if the tag/clone fails, the JOB fails — we do NOT
+      # silently fall back to cloning HEAD (which would make "PINNED" a lie and let the corpus
+      # drift under CI). A reproducible corpus is the whole point of pinning.
+      - name: Provision shiboken libsample corpus (pinned 6.8.0, no fallback)
         run: |
           git clone --depth 1 --branch 6.8.0 https://code.qt.io/pyside/pyside-setup.git \
-            "$GITHUB_WORKSPACE/../pyside-setup" \
-            || git clone --depth 1 https://code.qt.io/pyside/pyside-setup.git "$GITHUB_WORKSPACE/../pyside-setup"
+            "$GITHUB_WORKSPACE/../pyside-setup"
 
       - uses: dlang-community/setup-dlang@v2
         with:
@@ -61,13 +63,17 @@ jobs:
       - name: Generate the reggae build binary
         run: dub run reggae -- -b binary . --reggaefile-import-path "$PWD/reggae"
 
-      # CONFORMANCE: the libsample corpus MUST be materialized. Fail the job if the sample_*
-      # targets are missing (a silent [] would let CI go green without the north-star suite).
-      - name: Assert libsample conformance targets exist
+      # CONFORMANCE (critics r8 #7): a mere n>0 would pass a partial corpus. Assert the full known
+      # contract — 58 sample_* targets (29 cases x ldc2/dmd) — AND that specific CANARY cases exist,
+      # so a truncated or reshuffled corpus fails loudly instead of going green on one target.
+      - name: Assert libsample conformance corpus is complete
         run: |
           n=$(./build --list 2>/dev/null | grep -c '^- sample_' || true)
-          echo "libsample targets: $n"
-          test "$n" -gt 0 || { echo "::error::libsample conformance targets missing (pyside-setup not provisioned)"; exit 1; }
+          echo "libsample targets: $n (expected 58)"
+          test "$n" -ge 58 || { echo "::error::libsample corpus incomplete: $n < 58 (pyside-setup partial or unpinned?)"; exit 1; }
+          for canary in sample_cornercases-ldc2 sample_cornercases-dmd sample_exceptions-ldc2 sample_color-ldc2; do
+            ./build --list 2>/dev/null | grep -qE "^- ${canary}\$" || { echo "::error::missing canary conformance target: $canary"; exit 1; }
+          done
 
       # The default `./build` runs every MANDATORY target (the manifest gates are optional and
       # excluded from defaultTargets — see the header). So this step can't fail on baseline drift.

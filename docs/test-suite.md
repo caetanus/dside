@@ -21,7 +21,7 @@ truth until CI goes green.
 |----------|---------|----------------|
 | **libsample (shiboken corner cases)** | `sample_*` (28 cases) + `sample_cornercases` | The hard binding cases shiboken's own test lib is built to expose: value types, object types, MI, enums/flags, overloads, references, function pointers, inject-code, modified ctors, comparison/operators, exceptions, `MoveOnly`. `cornercases` asserts `ALL PASS`. |
 | **GC / lifetime (wrapper mode)** | `wraptest`, `widget_test` (qt5+qt6), `moc_test` (qt5+qt6), `moclife_widget` (qt5+qt6) | Holder identity, parenting-pins, orphan reclamation on GC, reparent detection; a real QApplication+widgets app; a moc subclass (`CannonField : QWidget`, `paintEvent` override) — construction via `new QWidget(parent)`; `moclife_widget` destroys an attached QtdWidget subclass and requires `g_moAttach`+`_reg` back to baseline. |
-| **moc / signals / properties** | `cannon_t1..t9`, `cannon_widget` | CTFE `@QObject`/`Signal`/`@Slot`/`@Property` via `QMetaObjectBuilder`: custom signals (incl. `QString` args), NOTIFY properties → QML/binding updates, value-type ctors, parenting. |
+| **moc / signals / properties** | `cannon_t1..t11`, `cannon_widget` | CTFE `@QObject`/`Signal`/`@Slot`/`@Property` via `QMetaObjectBuilder`: custom signals (incl. `QString` args), NOTIFY properties → QML/binding updates, value-type ctors, parenting; `t10` a `@Property string` read/write, `t11` the nothrow-slot error policy. |
 | **uic (CTFE)** | `uic`, `dialog`, `tabs`, `mainwin`, `hello`, `egroup`, `combo`, `spacer`, `icon`, `uicheck`, `corpus-check` | `mixin(uiForm(import(".ui")))` → typed struct. `uicheck` + `corpus-check` are **differential**: our tree must serialize identically to `QUiLoader`'s over the whole Qt baseline corpus (**60/60**). |
 | **QML (D backend)** | `qml`, `qmlreg`, `qmltwo`, `homonym`, `qmlaot`, `qmltypes`, `moclife` | D `@QObject` driving QML: exposed via `setContextProperty` (`qml`); registered as an instantiable element via `qmlRegisterType` (`qmlreg`); the `.qml` precompiled to bytecode by `qmlcachegen` and linked with **no source shipped** (`qmlaot`); a `.qmltypes` emitted by CTFE and validated by Qt's own `QQmlJSTypeDescriptionReader` (`qmltypes`); the moc side-table lifetime (`moclife`). Targets that need `qmlcachegen`/`Qt6QmlCompiler` skip if absent. |
 | **i18n (tr / lupdate)** | `tr`, `lupdate-check` | Runtime `"str".tr` (free UFCS, module context) + `QTranslator.install` translating a real `lrelease` `.qm`; and `lupdate-d` (libdparse) extracting `tr`/UFCS/`translate`, diffed against a golden `.ts`. Together they span D source → `lupdate-d` → `.ts` → `.qm` → `tr()`. |
@@ -30,9 +30,12 @@ truth until CI goes green.
 
 ## Matrix
 
-- **Compilers:** ldc2 **and** dmd — every target, both. (D's own `extern(C++)` mangling
-  diverges between them on Itanium substitutions; `pragma(mangle)` with clang's exact
-  symbol keeps them identical — this axis guards that.)
+- **Compilers:** ldc2 **and** dmd for MOST targets — but not universally: the gates
+  (`manifest-gate-*`, `expected-fails-lint`) and `lupdate-check` are deliberately single-config
+  singletons, and a few targets are Qt6-only (`qmlaot`, `qmltypes`). (D's own `extern(C++)`
+  mangling diverges between ldc2 and dmd on Itanium substitutions; `pragma(mangle)` with clang's
+  exact symbol keeps them identical — this axis guards that, which is why nearly everything else
+  builds on both.)
 - **Qt:** Qt6 (6.11) is primary; Qt5 (5.15) is exercised via the `*-qt5` wrapper targets
   (`widget_test`, `moc_test`) and the Qt5 wrap specs. Value-type ABI differs Qt5↔Qt6, so
   this axis is load-bearing, not cosmetic.
