@@ -746,6 +746,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         auto cbt = boundTypeFor(childType);
         UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
+        std::string childBaseImport = cbt.second;           // its import module (for g_extraImports)
         if (cbt.first.empty() && childType != "QtObject") {
             // A local `.qml`-defined type (HelloWorld { }): compile ITS OWN root as this child's
             // class, taking the local definition's base (QtObject -> fresh @QObject, Item -> bound).
@@ -757,6 +758,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
             childBase = boundTypeFor(ltRoot).first;
+            childBaseImport = boundTypeFor(ltRoot).second;
             childInit = lt->initializer;
             // Use-site members (`HelloWorld { property string text: ... }`) EXTEND the local type:
             // append the use-site member list onto the local definition's, so the merged class carries
@@ -771,6 +773,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     tail->next = od->initializer->members;
                 }
             }
+        }
+        // A bound child type (Rectangle/Text) needs ITS module imported too (the root's import
+        // alone isn't enough); mirror the root's import + <pkg>.qtvirt, deduped.
+        if (!childBase.empty() && !childBaseImport.empty()) {
+            std::string imp = "import " + childBaseImport + ";\n";
+            if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+            std::string vimp = "import " + childBaseImport.substr(0, childBaseImport.rfind('.')) + ".qtvirt;\n";
+            if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
         std::string field = "_dc" + std::to_string(di);
         std::string childCls = cls + "_dc" + std::to_string(di);
