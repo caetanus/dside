@@ -21,6 +21,7 @@
 #include <vector>
 #include <algorithm>
 #include <map>
+#include <set>
 #include <cctype>
 
 using namespace QQmlJS;
@@ -41,6 +42,10 @@ static std::map<std::string, std::string> g_funcRet;
 // enum name, and g_className is the current type name, so `TypeName.Green` -> `Color.Green` (int).
 static std::map<std::string, std::string> g_enumMember;
 static std::string g_className;
+
+// Declared (param-less) QML signals of this object, so a call `ping()` emits (`ping.emit()`) and a
+// handler `onPing` connects to it. Scoped per object.
+static std::set<std::string> g_signals;
 
 // dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
 static std::string qname(UiQualifiedId *id) {
@@ -155,6 +160,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 joined += (joined.empty() ? "" : ", ") + s;
             }
             std::string nm = qs(fnId->name.toString());
+            if (g_signals.count(nm)) { out = nm + ".emit(" + joined + ")"; return true; }   // emit a declared signal
             out = nm + "(" + joined + ")";
             // Coerce a double-returning function into an int target (QML coerces on assignment;
             // D has no implicit double->int). g_funcRet holds this object's function return types.
@@ -399,13 +405,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedFuncRet = g_funcRet;
     auto savedEnumMember = g_enumMember;
     auto savedClassName = g_className;
+    auto savedSignals = g_signals;
     g_funcRet.clear();
     g_enumMember.clear();
+    g_signals.clear();
     g_className = cls;
-    for (auto *m = init ? init->members : nullptr; m; m = m->next)
+    for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *en = cast<UiEnumDeclaration *>(m->member))
             for (auto *em = en->members; em; em = em->next)
                 g_enumMember[qs(em->member.toString())] = qs(en->name.toString());
+        if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Signal && !pub->parameters)
+            g_signals.insert(qs(pub->name.toString()));
+    }
     {
         std::map<std::string, std::string> pt0;
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
@@ -427,7 +438,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
-    std::string enumDecls;                                                        // emitted D enums
+    std::string enumDecls, signalDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
@@ -460,6 +471,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (auto *ob = cast<UiObjectBinding *>(m->member)) {
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
             continue;
+        }
+        // A declared `signal ping()` (param-less) -> a runtime Signal field.
+        if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Signal) {
+            if (!pub->parameters) { signalDecls += "    Signal!() " + qs(pub->name.toString()) + ";\n"; continue; }
+            std::fprintf(stderr, "qmltc-d: %s: signal '%s' with parameters not yet supported — skipped (later phase)\n", inPath, qPrintable(pub->name.toString()));
+            ++partial; continue;
         }
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
@@ -566,14 +583,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (auto &p : props) ptype[p.name] = p.dtype;
     std::string handlerSlots, handlerWire;
     for (auto &h : rawHandlers) {
+        // `on<Prop>Changed` connects to a property's change signal (mark the prop notified);
+        // `on<Signal>` connects to a declared signal directly.
         std::string notifyProp, hbody;
-        if (h.first.size() > 7 && h.first.compare(h.first.size() - 7, 7, "Changed") == 0)
+        bool isCustom = g_signals.count(h.first) > 0;
+        if (!isCustom && h.first.size() > 7 && h.first.compare(h.first.size() - 7, 7, "Changed") == 0)
             notifyProp = h.first.substr(0, h.first.size() - 7);
-        if (notifyProp.empty() || !isProp(notifyProp) || !compileStmt(h.second, ptype, hbody)) {
+        if ((!isCustom && (notifyProp.empty() || !isProp(notifyProp))) || !compileStmt(h.second, ptype, hbody)) {
             std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
             ++partial; continue;
         }
-        if (std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
+        if (!notifyProp.empty() && std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
             needsNotify.push_back(notifyProp);
         handlerSlots += "    @Slot void __h_" + h.first + "() {\n" + hbody + "    }\n";
         handlerWire += "        connectMeta(this, \"" + h.first + "()\", this, \"__h_" + h.first + "()\");\n";
@@ -663,11 +683,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire += "    }\n";
     }
 
-    classes += "@QObject class " + cls + " {\n" + enumDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
+    classes += "@QObject class " + cls + " {\n" + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
     g_enumMember = savedEnumMember;
     g_className = savedClassName;
+    g_signals = savedSignals;
     return node;
 }
 
