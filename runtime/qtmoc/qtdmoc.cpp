@@ -300,6 +300,8 @@ int  qtd_prop_get_int(void* o, const char* n) { return static_cast<QObject*>(o)-
 void qtd_prop_set_int(void* o, const char* n, int v) { static_cast<QObject*>(o)->setProperty(n, v); }
 double qtd_prop_get_double(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toDouble(); }
 void qtd_prop_set_double(void* o, const char* n, double v) { static_cast<QObject*>(o)->setProperty(n, v); }
+bool qtd_prop_get_bool(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toBool(); }
+void qtd_prop_set_bool(void* o, const char* n, bool v) { static_cast<QObject*>(o)->setProperty(n, v); }
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(static_cast<QObject*>(o)->property(n).toString()); }
 void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
     static_cast<QObject*>(o)->setProperty(n, QString::fromUtf8(p, len));

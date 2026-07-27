@@ -57,6 +57,8 @@ extern (C) nothrow {
     void   qtd_prop_set_int(void*, const(char)*, int);
     double qtd_prop_get_double(void*, const(char)*);
     void   qtd_prop_set_double(void*, const(char)*, double);
+    bool   qtd_prop_get_bool(void*, const(char)*);
+    void   qtd_prop_set_bool(void*, const(char)*, bool);
     void* qtd_prop_get_qs(void*, const(char)*);
     void  qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
 }
@@ -684,6 +686,10 @@ void setProp(T)(T o, string name, int v) { qtd_prop_set_int(qobjOf(o), (name ~ "
 double propDouble(T)(T o, string name) { return qtd_prop_get_double(qobjOf(o), (name ~ "\0").ptr); }
 /// Writes a real (double) property by name (fires the notify, if any).
 void setProp(T)(T o, string name, double v) { qtd_prop_set_double(qobjOf(o), (name ~ "\0").ptr, v); }
+/// Reads a bool property by name.
+bool propBool(T)(T o, string name) { return qtd_prop_get_bool(qobjOf(o), (name ~ "\0").ptr); }
+/// Writes a bool property by name (fires the notify, if any).
+void setProp(T)(T o, string name, bool v) { qtd_prop_set_bool(qobjOf(o), (name ~ "\0").ptr, v); }
 /// Reads a QString property by name as a D string.
 string propStr(T)(T o, string name) {
     auto qs = qtd_prop_get_qs(qobjOf(o), (name ~ "\0").ptr);
