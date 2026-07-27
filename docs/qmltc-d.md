@@ -79,11 +79,15 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
   backend** compiles these as D subclasses of the bound Qt type (`Item`→`QQuickItem`,
   `Rectangle`→`QQuickRectangle`, `Text`→`QQuickText`; the latter two are private-API, discovered via
   additive private-header scanning), with base props (int/string/real incl. `QColor`), custom
-  reactive bindings, default children, base props of type int/string/**real** (`opacity: 0.5`), and
-  **cross-file local `.qml` types** (a `Foo {}` that resolves to a sibling `Foo.qml`, as both root
-  and child, with use-site member merging + override dedup). **8 / 66 are diff-GREEN vs the engine on
-  ldc2+dmd**, and the tool's own compile-clean count EQUALS this build+diff green count — every file
-  qmltc-d reports FULL genuinely diffs green, no silent-wrong emissions. Cross-file local types are essential to several (`ComponentWithAlias3`,
+  reactive bindings, default children, base props of type int/string/**real**/**bool**
+  (`opacity: 0.5`, `clip: true`), **object-typed properties** (`property QtObject o: QtObject {}`),
+  the visual types **TextEdit/TextInput** (private API), and **cross-file local `.qml` types** (a
+  `Foo {}` that resolves to a sibling `Foo.qml`, as both root and child, with use-site member merging
+  + override dedup). **7 / 66 are diff-GREEN vs the engine on ldc2+dmd**, and — the key honesty
+  guarantee — the tool's own compile-clean count EQUALS this build+diff green count: every file
+  qmltc-d reports FULL genuinely diffs green, no silent-wrong emissions. (Guards added to keep this
+  true: an unmapped app-C++ root, a `Type on prop` value source, a custom `default property` with
+  bare children, and a value-returning function with an unresolved return type all flag PARTIAL.) Cross-file local types are essential to several (`ComponentWithAlias3`,
   `myMatryoshkaItems`, `myCheckBox`, `MyBaseItem`, `LocallyImported`). The remaining ceiling is
   structural: the corpus is fundamentally about compiling QML against **app-defined C++ types**,
   which a generic backend can't bind. Each further delta (`QtObject`-typed object props, custom
@@ -127,7 +131,9 @@ and the file exits `3` (PARTIAL), never a wrong emission.
 - **Cross-file / local-type compilation** — DONE (roots + children + use-site member merge,
   cycle-guarded against self-referential files). Remaining cross-file work: nested `Component {}`,
   `QtObject`-typed object properties (`property QtObject o: QtObject {}`), `list<QtObject>`.
-- **More QtQuick type maps** (`TextEdit`, `TextInput`, `MouseArea`, `Repeater`, `ListView`) and
-  **bool/url base props** — each a mechanical delta unlocking ~1 corpus file.
+- **More QtQuick type maps** (`Repeater`, `ListView`, `Flickable`) — mechanical. **MouseArea** is
+  blocked by a generator bug: it redeclares `QQuickItem`'s `enabled`, so its generated `final
+  connectEnabledChanged` collides with the inherited final one — the generator needs base-signal
+  awareness to skip re-emitting a connect helper for an inherited signal.
 - **Animations** (`justAnimation`): the engine runs the animation and the final value differs from
   the static binding — either read the animation's `to`/`from` or accept these as out of static scope.
