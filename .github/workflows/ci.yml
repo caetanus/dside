@@ -75,27 +75,24 @@ jobs:
             ./build --list 2>/dev/null | grep -qE "^- ${canary}\$" || { echo "::error::missing canary conformance target: $canary"; exit 1; }
           done
 
-      # The default `./build` runs every MANDATORY target (the manifest gates are optional and
-      # excluded from defaultTargets — see the header). So this step can't fail on baseline drift.
-      - name: Build + run the full matrix (headless, manifest gates excluded)
+      # SINGLE recorded execution (critics r8 #8): the report script builds+runs every mandatory
+      # (non-optional) target ONCE, records per-target status/timing/log into report.tsv, and EXITS
+      # NON-ZERO if anything failed — so the artifact IS the result that gates the job, not a second
+      # matrix pass whose outcome is discarded. Manifest gates are optional (excluded here) and run
+      # advisory below. expected-fails-lint and lupdate-check are default targets, so the report
+      # covers them too.
+      - name: Build + run the full matrix and record (report gates the job)
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ./build
-
-      - name: Version-independent gates (MANDATORY)
         run: |
-          ./build expected-fails-lint
-          ./build lupdate-check
+          set -o pipefail
+          bash tools/test-report.sh | tee report.tsv
 
       - name: Manifest gates (ADVISORY — baselines are Qt 6.11; runner Qt may differ)
         continue-on-error: true
         run: |
           ./build manifest-gate-qtwidgets
           ./build manifest-gate-qml
-
-      - name: Structured test report
-        if: always()
-        run: bash tools/test-report.sh > report.tsv || true
 
       - name: Upload report + coverage artifacts
         if: always()
