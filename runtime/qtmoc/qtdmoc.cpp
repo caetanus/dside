@@ -1,7 +1,7 @@
-// Runtime genérico de meta-objeto para QObjects definidos em D (sem moc).
-// Um único trampolim QtdMocObject constrói seu QMetaObject em tempo de execução
-// via QMetaObjectBuilder a partir de assinaturas que o lado D fornece (extraídas
-// por CTFE). qt_metacall relaciona: índices de sinal -> activate; de slot -> D.
+// Generic meta-object runtime for QObjects defined in D (without moc).
+// A single QtdMocObject trampoline builds its QMetaObject at runtime
+// via QMetaObjectBuilder from signatures the D side provides (extracted
+// by CTFE). qt_metacall maps: signal indices -> activate; slot indices -> D.
 #include <QObject>
 #include <QString>
 #include <QCoreApplication>
@@ -9,9 +9,12 @@
 #include <QtCore/private/qmetaobjectbuilder_p.h>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <new>
 #include <string>
 #include <unordered_map>
+#include <thread>
+#include <mutex>
 
 // QML type registration is compiled in ONLY when reggae defines QTD_ENABLE_QML — i.e. the
 // binding's pkg-config modules include Qt5Qml or Qt6Qml. (An __has_include probe does NOT work:
@@ -28,16 +31,40 @@
 
 extern "C" {
 
-// callback D que despacha um slot: (objeto D, índice-local-do-slot, args de Qt)
+// D callback that dispatches a slot: (D object, slot-local-index, Qt args)
 typedef void (*QtdSlotCb)(void* dobj, int slotIdx, void** args);
-// callback D de propriedade: (objeto D, índice-local, write?, slot do valor a[0])
+// D property callback: (D object, local-index, write?, value slot a[0])
 typedef void (*QtdPropCb)(void* dobj, int propIdx, int write, void** args);
-// callback D chamado na destruição de um objeto moc -> solta a entrada do registro D (_reg).
+// D callback invoked when a moc object is destroyed -> drops the D registry entry (_reg).
 typedef void (*QtdMocDestroyCb)(void* dobj);
 
 namespace {
 QtdMocDestroyCb g_mocDestroy = nullptr;   // set once by D (qtd_moc_set_destroy_cb) at module init
 static void qtd_moc_teardown(void* self, void* dobj);   // side-table cleanup (defined below)
+
+// ---- thread affinity (critics r8 #6) ---------------------------------------
+// Every runtime side-table is unsynchronized global mutable state: g_moCache/g_moAttach here,
+// _reg/_qmlFactories/_qmlRegistered on the D side, _pinned in the holder. The runtime is
+// single-threaded BY DESIGN (as holder.d already declares). Rather than silent UB when a second
+// thread mutates a map (rehash mid-read = memory corruption), the FIRST mutation pins an owner
+// thread and any mutation from another thread aborts LOUDLY with the offending op. Deterministic,
+// never a corrupted map. Reads on the hot dispatch path stay lock-free. Real per-thread/locked
+// tables for worker QObjects (QThread/networking/timers) are a tracked STRUCTURAL follow-up — this
+// makes the current limitation explicit and ENFORCED instead of assumed.
+std::mutex g_ownerMx;
+std::thread::id g_ownerThread;
+bool g_ownerSet = false;
+static void qtd_thread_guard(const char* op) {
+    std::lock_guard<std::mutex> lk(g_ownerMx);
+    auto self = std::this_thread::get_id();
+    if (!g_ownerSet) { g_ownerThread = self; g_ownerSet = true; return; }
+    if (self != g_ownerThread) {
+        std::fprintf(stderr, "qtd FATAL: meta-object runtime mutated off its owner thread "
+            "(op=%s). The qtd moc/QML runtime is single-threaded — create and destroy D "
+            "@QObjects only on the thread that first used it.\n", op);
+        std::abort();
+    }
+}
 #ifdef QTD_HAVE_QML
 static void qtd_qml_on_destroy(void* self);   // QML-created instance teardown (defined below)
 #endif
@@ -71,7 +98,7 @@ struct QtdMocObject : QObject {
         id = QObject::qt_metacall(c, id, a);
         if (id < 0) return id;
         if (c == QMetaObject::InvokeMetaMethod) {
-            if (id < nsig) QMetaObject::activate(this, mo, id, a);   // relay do sinal
+            if (id < nsig) QMetaObject::activate(this, mo, id, a);   // signal relay
             else if (dobj) slotcb(dobj, id - nsig, a);               // slot -> D (guard: failed QML
                                                                      // instance has no backing obj, r8 #5)
             id -= (nsig + nslot);
@@ -84,8 +111,8 @@ struct QtdMocObject : QObject {
     }
 };
 
-// meta-objeto construído uma vez por FORMA. `super` = meta da superclasse (QObject pro
-// QtdMocObject; QWidget/etc. pros trampolins de subclasse). The cache key is the class name PLUS
+// meta-object built once per SHAPE. `super` = the superclass meta (QObject for
+// QtdMocObject; QWidget/etc. for subclass trampolines). The cache key is the class name PLUS
 // the super's name PLUS every signal/slot/property signature — NOT the name alone (critics r6 #6:
 // two homonymous D classes with different shapes would otherwise share, and get, the wrong
 // metaobject). Two identically-shaped homonyms still share (harmless — they ARE the same shape).
@@ -95,6 +122,7 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
                            const char** slotSigs, int nslot,
                            const char** propNames, const char** propTypes,
                            const int* propNotify, int nprop) {
+    qtd_thread_guard("buildMo");   // mutates g_moCache
     std::string key(cn);
     key += '\x1'; key += (super ? super->className() : "");
     for (int i = 0; i < nsig; ++i)  { key += '\x2'; key += sigs[i]; }
@@ -113,34 +141,36 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
     for (int i = 0; i < nprop; ++i) {
         QMetaPropertyBuilder p = b.addProperty(propNames[i], propTypes[i]);
         p.setReadable(true); p.setWritable(true);
-        if (propNotify[i] >= 0) p.setNotifySignal(b.method(propNotify[i]));  // sinais são os 1ºs métodos
+        if (propNotify[i] >= 0) p.setNotifySignal(b.method(propNotify[i]));  // signals are the first methods
     }
     const QMetaObject* mo = b.toMetaObject();
     g_moCache[key] = mo;
     return mo;
 }
 
-// moc GENÉRICO anexável a um trampolim de subclasse (qtvirt): a lógica do
-// meta-objeto fica aqui (side-table por objeto), então o trampolim por-classe só
-// delega metaObject/qt_metacall. Usado quando uma classe D é subclasse de um
-// widget Qt E @QObject (sinais/slots/props próprios) — ex.: CannonField.
+// GENERIC moc attachable to a subclass trampoline (qtvirt): the meta-object
+// logic lives here (per-object side-table), so the per-class trampoline only
+// delegates metaObject/qt_metacall. Used when a D class subclasses a Qt
+// widget AND is @QObject (its own signals/slots/props) — e.g.: CannonField.
 struct MocInfo {
     const QMetaObject* mo; void* dobj; QtdSlotCb slotcb; QtdPropCb propcb;
     int nsig, nslot, nprop;
 };
-std::unordered_map<void*, MocInfo> g_moAttach;   // chave = o QObject* (self do trampolim)
+std::unordered_map<void*, MocInfo> g_moAttach;   // key = the QObject* (the trampoline's self)
 // Drop both side-tables for a destroyed moc object (the D _reg via g_mocDestroy, g_moAttach here).
 static void qtd_moc_teardown(void* self, void* dobj) {
+    qtd_thread_guard("teardown");   // erases g_moAttach (+ D _reg via g_mocDestroy)
     g_moAttach.erase(self);
     if (g_mocDestroy && dobj) g_mocDestroy(dobj);
 }
 } // namespace
 
-// anexa um meta-objeto a `self` (o trampolim já construído). `super` = &Base::staticMetaObject.
+// attaches a meta-object to `self` (the already-built trampoline). `super` = &Base::staticMetaObject.
 void qtd_moc_attach(void* self, const char* cn, const void* super,
                     const char** sigs, int nsig, const char** slotSigs, int nslot,
                     const char** propNames, const char** propTypes, const int* propNotify, int nprop,
                     void* dobj, QtdSlotCb slotcb, QtdPropCb propcb) {
+    qtd_thread_guard("moc_attach");   // inserts g_moAttach
     MocInfo mi;
     mi.mo = buildMo(cn, static_cast<const QMetaObject*>(super),
                     sigs, nsig, slotSigs, nslot, propNames, propTypes, propNotify, nprop);
@@ -148,28 +178,28 @@ void qtd_moc_attach(void* self, const char* cn, const void* super,
     mi.nsig = nsig; mi.nslot = nslot; mi.nprop = nprop;
     g_moAttach[self] = mi;
 }
-// pro override metaObject() do trampolim: o mo anexado, ou null se não anexado.
+// for the trampoline's metaObject() override: the attached mo, or null if not attached.
 const void* qtd_moc_meta(void* self) {
     auto it = g_moAttach.find(self);
     return it != g_moAttach.end() ? it->second.mo : nullptr;
 }
-// pro qt_metacast() do trampolim: bate o className do metaobject anexado antes de delegar
-// à base. Sem isso, qt_metacast("Sub") sobre um QtdWidget!Sub retornava null mesmo com
-// metaObject()->className()=="Sub" (critics r8 #2), quebrando qobject_cast e descoberta de tipo.
+// for the trampoline's qt_metacast(): matches the attached metaobject's className before
+// delegating to the base. Without it, qt_metacast("Sub") on a QtdWidget!Sub returned null even with
+// metaObject()->className()=="Sub" (critics r8 #2), breaking qobject_cast and type discovery.
 bool qtd_moc_classmatch(void* self, const char* n) {
     if (!n) return false;
     auto it = g_moAttach.find(self);
     return it != g_moAttach.end() && it->second.mo &&
            std::strcmp(n, it->second.mo->className()) == 0;
 }
-// Sondas de identidade (pro teste r8 #2): qt_metacast por nome e o className do metaobject.
+// Identity probes (for the r8 #2 test): qt_metacast by name and the metaobject's className.
 extern "C" void* qtd_metacast(void* qobj, const char* n) {
     return qobj ? static_cast<QObject*>(qobj)->qt_metacast(n) : nullptr;
 }
 extern "C" const char* qtd_moc_classname(void* qobj) {
     return qobj ? static_cast<QObject*>(qobj)->metaObject()->className() : nullptr;
 }
-// pro override qt_metacall() do trampolim (chamado DEPOIS de Base::qt_metacall).
+// for the trampoline's qt_metacall() override (called AFTER Base::qt_metacall).
 int qtd_moc_metacall(void* self, int c, int id, void** a) {
     auto it = g_moAttach.find(self);
     if (it == g_moAttach.end()) return id;
@@ -184,25 +214,32 @@ int qtd_moc_metacall(void* self, int c, int id, void** a) {
     }
     return id;
 }
-// emite o sinal de índice `idx` de um trampolim anexado.
+// emits signal index `idx` of an attached trampoline.
 void qtd_moc_activate2(void* self, int idx, void** a) {
     auto it = g_moAttach.find(self);
     if (it != g_moAttach.end()) QMetaObject::activate(static_cast<QObject*>(self), it->second.mo, idx, a);
 }
 
-// D registra aqui (uma vez, no init do módulo) o callback que limpa o registro D na destruição.
+// D registers here (once, at module init) the callback that clears the D registry on destruction.
 void qtd_moc_set_destroy_cb(QtdMocDestroyCb cb) { g_mocDestroy = cb; }
-// Chamado pelo destrutor do trampolim de subclasse (Qtd_<Base>, gerado) quando o Qt o destrói:
-// solta g_moAttach[self] E a entrada de _reg do objeto D. Fecha o caminho QtdWidget (não só o
-// QtdMocObject de newQObject).
+// Called by the subclass trampoline's destructor (Qtd_<Base>, generated) when Qt destroys it:
+// drops g_moAttach[self] AND the D object's _reg entry. Closes the QtdWidget path (not just the
+// QtdMocObject from newQObject).
 void qtd_moc_detach(void* self, void* dobj) { qtd_moc_teardown(self, dobj); }
-// diagnóstico/teste: entradas vivas no side-table; e deleta um QtdMocObject (seu dtor limpa tudo).
+// diagnostic/test: live entries in the side-table; and deletes a QtdMocObject (its dtor cleans everything).
 size_t qtd_moc_attach_count() { return g_moAttach.size(); }
+// Owner-thread inspection for tests (does NOT abort): 1 = current thread IS the owner,
+// 0 = an owner is set and current thread is NOT it, -1 = no owner pinned yet (critics r8 #6).
+int qtd_moc_owner_check() {
+    std::lock_guard<std::mutex> lk(g_ownerMx);
+    if (!g_ownerSet) return -1;
+    return std::this_thread::get_id() == g_ownerThread ? 1 : 0;
+}
 void qtd_moc_delete(void* o) { delete static_cast<QtdMocObject*>(o); }
-// deleta QUALQUER QObject pelo dtor virtual (serve pro trampolim Qtd_<Base> — seu ~ chama detach).
+// deletes ANY QObject via the virtual dtor (works for the Qtd_<Base> trampoline — its ~ calls detach).
 void qtd_qobject_delete(void* o) { delete static_cast<QObject*>(o); }
 
-// cria um QObject cujo meta-objeto tem os sinais/slots/propriedades dados.
+// creates a QObject whose meta-object has the given signals/slots/properties.
 void* qtd_moc_new(const char* cn, const char** sigs, int nsig,
                   const char** slotSigs, int nslot,
                   const char** propNames, const char** propTypes, const int* propNotify, int nprop,
@@ -211,19 +248,19 @@ void* qtd_moc_new(const char* cn, const char** sigs, int nsig,
     o->mo = buildMo(cn, &QObject::staticMetaObject, sigs, nsig, slotSigs, nslot, propNames, propTypes, propNotify, nprop);
     o->dobj = dobj; o->slotcb = slotcb; o->propcb = propcb;
     o->nsig = nsig; o->nslot = nslot; o->nprop = nprop;
-    g_moAttach[o] = MocInfo{o->mo, dobj, slotcb, propcb, nsig, nslot, nprop};  // pro activate unificado
+    g_moAttach[o] = MocInfo{o->mo, dobj, slotcb, propcb, nsig, nslot, nprop};  // for the unified activate
     return o;
 }
 
-// emite o sinal de índice sigIdx (args[0]=retorno, depois valores). Unificado via
-// g_moAttach, então serve pro QtdMocObject E pros trampolins de subclasse.
+// emits signal index sigIdx (args[0]=return, then values). Unified via
+// g_moAttach, so it works for the QtdMocObject AND for subclass trampolines.
 void qtd_moc_activate(void* self, int sigIdx, void** args) {
     auto it = g_moAttach.find(self);
     if (it != g_moAttach.end()) QMetaObject::activate(static_cast<QObject*>(self), it->second.mo, sigIdx, args);
 }
 
-// marshaling de QString para args de sinal/slot (o lado D é runtime fixo e não
-// pode importar os helpers de QString gerados; aqui já linkamos QtCore).
+// QString marshaling for signal/slot args (the D side is fixed runtime and can't
+// import the generated QString helpers; here we already link QtCore).
 void* qtd_str_to_qs(const char* p, int n) { return new QString(QString::fromUtf8(p, n)); }
 void  qtd_qs_free(void* qs) { delete static_cast<QString*>(qs); }
 // ReadProperty metacall: a[0] points to an existing QString to assign the value INTO.
@@ -257,8 +294,8 @@ bool qtd_install_translator(const char* qmBase) {
     return ok;
 }
 
-// acesso a propriedades por nome via QVariant (roda ReadProperty/WriteProperty no
-// meta-objeto -> propcb no lado D). Funciona pra custom E built-in.
+// property access by name via QVariant (runs ReadProperty/WriteProperty on the
+// meta-object -> propcb on the D side). Works for custom AND built-in.
 int  qtd_prop_get_int(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toInt(); }
 void qtd_prop_set_int(void* o, const char* n, int v) { static_cast<QObject*>(o)->setProperty(n, v); }
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(static_cast<QObject*>(o)->property(n).toString()); }
@@ -266,8 +303,8 @@ void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
     static_cast<QObject*>(o)->setProperty(n, QString::fromUtf8(p, len));
 }
 
-// conecta sinal->slot por assinatura (funciona para custom E built-in: ambos têm
-// meta-objeto). Retorna uma QMetaObject::Connection* (ou null se não achou).
+// connects signal->slot by signature (works for custom AND built-in: both have a
+// meta-object). Returns a QMetaObject::Connection* (or null if not found).
 void* qtd_connect_meta(void* s, const char* sig, void* r, const char* slot) {
     auto* so = static_cast<QObject*>(s);
     auto* ro = static_cast<QObject*>(r);
@@ -297,6 +334,7 @@ struct QtdQmlType {
 // Shared creation: placement-new the carrier in QML-owned memory, wire its meta-object, and
 // call back into D to build + bind the backing T instance.
 static void qtd_qml_construct(void* mem, QtdQmlType* t) {
+    qtd_thread_guard("qml_construct");   // inserts g_moAttach (QML engine thread must be the owner)
     auto* o = new (mem) QtdMocObject();
     o->mo = t->mo; o->slotcb = t->slotcb; o->propcb = t->propcb;
     o->nsig = t->nsig; o->nslot = t->nslot; o->nprop = t->nprop;
@@ -321,6 +359,7 @@ static void qtd_qml_construct(void* mem, QtdQmlType* t) {
 }
 // ~QtdMocObject for a QML-created instance: drop the side-tables (D side + g_moAttach).
 static void qtd_qml_on_destroy(void* self) {
+    qtd_thread_guard("qml_destroy");   // erases g_moAttach (+ D _reg via destroyInstance)
     auto* o = static_cast<QtdMocObject*>(self);
     auto* t = static_cast<QtdQmlType*>(o->qmlUserdata);
     g_moAttach.erase(self);

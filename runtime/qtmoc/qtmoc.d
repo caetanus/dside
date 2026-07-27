@@ -1,19 +1,27 @@
-// qtmoc — sinais/slots para QObjects definidos em D, SEM moc: o meta-objeto é
-// construído em tempo de execução (QMetaObjectBuilder, ver qtdmoc.cpp) e, via
-// CTFE + __traits, geramos as assinaturas, o emit dos sinais e o despacho dos
-// slots. O usuário só marca a classe com @QObject e os métodos com @Slot:
+// qtmoc — signals/slots for QObjects defined in D, WITHOUT moc: the meta-object is
+// built at runtime (QMetaObjectBuilder, see qtdmoc.cpp) and, via
+// CTFE + __traits, we generate the signatures, the signal emit and the slot
+// dispatch. The user only marks the class with @QObject and the methods with @Slot:
 //
 //     @QObject class Counter {
-//         Signal!int valueChanged;                                   // um sinal
-//         @Slot void setValue(int v) { ...; valueChanged.emit(v); }  // um slot
+//         Signal!int valueChanged;                                   // a signal
+//         @Slot void setValue(int v) { ...; valueChanged.emit(v); }  // a slot
 //     }
 //
-//     auto c = newQObject!Counter();                    // constrói o meta-objeto
+//     auto c = newQObject!Counter();                    // builds the meta-object
 //     connectMeta(c, "valueChanged(int)", c, "onValue(int)");
 //
-// Em D uma UDA sozinha não injeta membros nem construtor — por isso a instância
-// nasce pela factory newQObject!T (que fica com o void* do QObject num registro
-// externo, em vez de um campo dentro da classe do usuário).
+// In D a UDA alone injects neither members nor a constructor — that's why the instance
+// is born by the newQObject!T factory (which keeps the QObject's void* in an external
+// registry, instead of a field inside the user's class).
+//
+// THREADING (critics r8 #6): this runtime is SINGLE-THREADED by design. The side-tables
+// (_reg/_qmlFactories/_qmlRegistered here; g_moCache/g_moAttach in qtdmoc.cpp) are lock-free
+// global mutable state. The restriction is not a silent assumption: the first
+// construction/registration pins an "owner thread" into the C++ runtime, and creating/destroying/registering a
+// @QObject from another thread ABORTS with a message (qtd_thread_guard) instead of corrupting a map.
+// Create and destroy D @QObjects only on the thread that first used the runtime (typically the main one).
+// Real support for worker QObjects (locking / per-thread tables) is a structural follow-up.
 module qtmoc;
 
 import std.traits : Parameters, hasUDA, getUDAs;
@@ -33,9 +41,10 @@ extern (C) nothrow {
                       MakeCb, DestroyCb, SlotCb, PropCb);
     void  qtd_moc_activate(void*, int, void**);
     void* qtd_connect_meta(void*, const(char)*, void*, const(char)*);
-    void* qtd_metacast(void*, const(char)*);   // QObject::qt_metacast(n) sobre um qobj — pro teste de identidade
-    const(char)* qtd_moc_classname(void*);     // metaObject()->className() do qobj
-    // marshaling de QString (implementado em qtdmoc.cpp, que linka QtCore)
+    void* qtd_metacast(void*, const(char)*);   // QObject::qt_metacast(n) on a qobj — for the identity test
+    const(char)* qtd_moc_classname(void*);     // metaObject()->className() of the qobj
+    int  qtd_moc_owner_check();                // 1=owner thread, 0=other thread, -1=no owner (r8 #6)
+    // QString marshaling (implemented in qtdmoc.cpp, which links QtCore)
     void* qtd_str_to_qs(const(char)*, int);
     void  qtd_qs_free(void*);
     void* qtd_tr(const(char)*, const(char)*, const(char)*, int);   // QCoreApplication::translate
@@ -43,7 +52,7 @@ extern (C) nothrow {
     void  qtd_qs_set(void*, const(char)*, int);   // assign a D string into an existing QString
     int   qtd_qs_utf8len(void*);
     void  qtd_qs_utf8(void*, char*);
-    // acesso a propriedades por nome (via QVariant)
+    // property access by name (via QVariant)
     int   qtd_prop_get_int(void*, const(char)*);
     void  qtd_prop_set_int(void*, const(char)*, int);
     void* qtd_prop_get_qs(void*, const(char)*);
@@ -69,7 +78,7 @@ void qtdOnCallbackError(Throwable e) nothrow {
     }
 }
 
-// converte um QString* (arg de meta-call) numa string D.
+// converts a QString* (meta-call arg) into a D string.
 string qsToD(void* qs) {
     int n = qtd_qs_utf8len(qs);
     auto buf = new char[n];
@@ -77,51 +86,51 @@ string qsToD(void* qs) {
     return cast(string) buf[0 .. n];
 }
 
-// ---- tradução (tr / translate / install) ------------------------------------
+// ---- translation (tr / translate / install) ---------------------------------
 private string trImpl(string context, string source, string disambig, int n) {
     auto qs = qtd_tr((context ~ "\0").ptr, (source ~ "\0").ptr,
                      disambig is null ? null : (disambig ~ "\0").ptr, n);
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
 }
 
-/// `tr` LIVRE e UFCS — `"foo".tr`, `"foo".tr("disambiguation")`. O CONTEXTO é o NOME do módulo
-/// do chamador (via `__MODULE__`, que é resolvido no call site) — casando exatamente com o que o
-/// lupdate-d extrai, então a mesma `.qm` cobre extração e runtime. Sem tradutor/`.qm` cobrindo a
-/// string, o Qt devolve `source`, então é sempre seguro. Para contexto explícito use `translate`.
+/// `tr` FREE and UFCS — `"foo".tr`, `"foo".tr("disambiguation")`. The CONTEXT is the NAME of the
+/// caller's module (via `__MODULE__`, which is resolved at the call site) — matching exactly what
+/// lupdate-d extracts, so the same `.qm` covers extraction and runtime. With no translator/`.qm` covering the
+/// string, Qt returns `source`, so it is always safe. For an explicit context use `translate`.
 string tr(string source, string disambiguation = null, int n = -1, string context = __MODULE__) {
     return trImpl(context, source, disambiguation, n);
 }
 
-/// `translate` estilo Qt: contexto EXPLÍCITO. `translate("Contexto", "foo")` — igual ao que o
-/// lupdate-d reconhece como `[QCoreApplication.]translate("Ctx","src")`.
+/// `translate` Qt-style: EXPLICIT context. `translate("Context", "foo")` — same as what
+/// lupdate-d recognizes as `[QCoreApplication.]translate("Ctx","src")`.
 string translate(string context, string source, string disambiguation = null, int n = -1) {
     return trImpl(context, source, disambiguation, n);
 }
 
-/// Instala um tradutor SEM `_new`: `QTranslator.install("app_pt")`. O QTranslator (e um
-/// QCoreApplication, se ainda não houver) são construídos no lado C++ — o usuário nunca
-/// constrói nada à mão. `.qm` vazio -> tradutor vazio (identidade). Retorna se o `.qm` carregou.
+/// Installs a translator WITHOUT `_new`: `QTranslator.install("app_pt")`. The QTranslator (and a
+/// QCoreApplication, if there isn't one yet) are built on the C++ side — the user never
+/// builds anything by hand. Empty `.qm` -> empty translator (identity). Returns whether the `.qm` loaded.
 struct QTranslator {
     static bool install(string qm = "") { return qtd_install_translator((qm ~ "\0").ptr); }
 }
 
-/// UDA de classe: marca um QObject D com meta-objeto em runtime (sinais/slots).
+/// Class UDA: marks a D QObject with a runtime meta-object (signals/slots).
 struct QObject {}
-/// UDA de método: slot (invocável por Qt / conectável a um sinal).
+/// Method UDA: slot (invokable by Qt / connectable to a signal).
 struct Slot {}
-/// UDA de campo: expõe o campo como Q_PROPERTY. `notify` = nome do sinal de
-/// mudança (opcional), p.ex. @Property("valueChanged") int value;
+/// Field UDA: exposes the field as a Q_PROPERTY. `notify` = name of the change
+/// signal (optional), e.g. @Property("valueChanged") int value;
 struct Property { string notify = ""; }
 
-/// Um sinal com os tipos de argumento dados. Emitir chama QMetaObject::activate.
+/// A signal with the given argument types. Emitting calls QMetaObject::activate.
 struct Signal(Args...) {
-    private void* _owner;   // o QObject (qtd) dono
-    private int   _idx;     // índice local do sinal no meta-objeto
+    private void* _owner;   // the owning QObject (qtd)
+    private int   _idx;     // the signal's local index in the meta-object
     void _bind(void* owner, int idx) { _owner = owner; _idx = idx; }
     void emit(Args args) {
         void*[Args.length + 1] argv;
-        void*[Args.length + 1] tofree = null;             // QStrings a liberar depois
-        argv[0] = null;                                   // slot de retorno (void)
+        void*[Args.length + 1] tofree = null;             // QStrings to free afterwards
+        argv[0] = null;                                   // return slot (void)
         static foreach (i; 0 .. Args.length) {
             static if (is(Args[i] == string)) {
                 argv[i + 1] = qtd_str_to_qs(args[i].ptr, cast(int) args[i].length);
@@ -135,13 +144,13 @@ struct Signal(Args...) {
     void opCall(Args args) { emit(args); }
 }
 
-// ---- registro por-objeto (evita injetar membros na classe do usuário) -------
+// ---- per-object registry (avoids injecting members into the user class) -----
 struct MocReg {
-    void* qobj;                                    // o QObject subjacente
-    void delegate(int, void**) nothrow disp;       // despacho de slots (captura o objeto)
-    void delegate(int, int, void**) nothrow prop;  // read/write de propriedades
+    void* qobj;                                    // the underlying QObject
+    void delegate(int, void**) nothrow disp;       // slot dispatch (captures the object)
+    void delegate(int, int, void**) nothrow prop;  // property read/write
 }
-__gshared MocReg[void*] _reg;              // chave = ponteiro do objeto D
+__gshared MocReg[void*] _reg;              // key = the D object's pointer
 
 extern (C) void __mocGlobalDispatch(void* dobj, int idx, void** args) nothrow {
     if (auto p = dobj in _reg) p.disp(idx, args);
@@ -149,21 +158,21 @@ extern (C) void __mocGlobalDispatch(void* dobj, int idx, void** args) nothrow {
 extern (C) void __mocGlobalProp(void* dobj, int idx, int write, void** args) nothrow {
     if (auto p = dobj in _reg) p.prop(idx, write, args);
 }
-// Chamado pelo destrutor do QtdMocObject (C++) -> solta a entrada de `_reg`, fechando o
-// side-table quando o objeto morre (não só no caminho QML). Registrado uma vez no init.
+// Called by the QtdMocObject destructor (C++) -> drops the `_reg` entry, closing the
+// side-table when the object dies (not only on the QML path). Registered once at init.
 extern (C) void __mocGlobalDestroy(void* dobj) nothrow { _reg.remove(dobj); }
 private alias MocDestroyCb = extern (C) void function(void*) nothrow;
 extern (C) void qtd_moc_set_destroy_cb(MocDestroyCb) nothrow;
 shared static this() { qtd_moc_set_destroy_cb(&__mocGlobalDestroy); }
 
-// Vida útil do side-table (_reg + g_moAttach): um objeto criado por `newQObject!T` mantém sua
-// entrada de `_reg` enquanto o QtdMocObject C++ existir. Se ele for destruído (parented a um
-// QObject cujo pai morre, ou criado pelo engine QML), o destrutor limpa AMBOS os side-tables via
-// este callback. Um QtdMocObject sem pai NÃO é auto-deletado (vive até o fim do processo) — é o
-// tempo de vida esperado de um hub de sinais/slots top-level, igual a um QObject C++ sem pai.
+// Side-table lifetime (_reg + g_moAttach): an object created by `newQObject!T` keeps its
+// `_reg` entry as long as the C++ QtdMocObject exists. If it is destroyed (parented to a
+// QObject whose parent dies, or created by the QML engine), the destructor clears BOTH side-tables via
+// this callback. A parentless QtdMocObject is NOT auto-deleted (it lives until process end) — that is the
+// expected lifetime of a top-level signals/slots hub, just like a parentless C++ QObject.
 
-/// Ponteiro do QObject subjacente: um void* cru passa direto; um @QObject D é
-/// resolvido pelo registro (null se não registrado).
+/// Pointer to the underlying QObject: a raw void* passes straight through; a D @QObject is
+/// resolved via the registry (null if not registered).
 void* qobjOf(T)(T o) {
     static if (is(T == void*)) return o;
     else {
@@ -172,21 +181,21 @@ void* qobjOf(T)(T o) {
     }
 }
 
-/// qt_metacast por nome sobre o QObject subjacente. Retorna o ponteiro do QObject se `n`
-/// bate a própria classe (ou uma base), null caso contrário — o mesmo contrato de
-/// qobject_cast. Existe pra provar que o metaobject não mente sobre o objeto (critics r8 #2).
+/// qt_metacast by name on the underlying QObject. Returns the QObject pointer if `n`
+/// matches its own class (or a base), null otherwise — the same contract as
+/// qobject_cast. Exists to prove the metaobject doesn't lie about the object (critics r8 #2).
 void* metaCast(T)(T o, string n) {
     return qtd_metacast(qobjOf(o), (n ~ "\0").ptr);
 }
 
-/// metaObject()->className() do QObject subjacente (pra testar identidade de tipo).
+/// metaObject()->className() of the underlying QObject (to test type identity).
 string mocClassName(T)(T o) {
     import core.stdc.string : strlen;
     auto p = qtd_moc_classname(qobjOf(o));
     return p is null ? null : cast(string) p[0 .. strlen(p)].idup;
 }
 
-// ---- CTFE: mapeamento tipo D -> assinatura C++ ------------------------------
+// ---- CTFE: D type -> C++ signature mapping ----------------------------------
 template cppSig(T) {
          static if (is(T == int))    enum cppSig = "int";
     else static if (is(T == bool))   enum cppSig = "bool";
@@ -194,7 +203,7 @@ template cppSig(T) {
     else static if (is(T == float))  enum cppSig = "float";
     else static if (is(T == uint))   enum cppSig = "uint";
     else static if (is(T == string)) enum cppSig = "QString";
-    else static assert(0, "qtmoc: tipo de sinal/slot ainda não suportado: " ~ T.stringof);
+    else static assert(0, "qtmoc: signal/slot type not yet supported: " ~ T.stringof);
 }
 string sigString(string name, Args...)() {
     string s = name ~ "(";
@@ -202,7 +211,7 @@ string sigString(string name, Args...)() {
     return s ~ ")";
 }
 
-// nomes dos sinais (campos Signal!...) e slots (@Slot), na ordem de allMembers.
+// names of signals (Signal!... fields) and slots (@Slot), in allMembers order.
 template signalMembers(T) {
     template isSig(string m) {
         static if (is(typeof(__traits(getMember, T, m)) == Signal!A, A...)) enum isSig = true;
@@ -225,10 +234,10 @@ string[] mocFilter(T, alias pred)() {
     return r;
 }
 
-// assinaturas ("nome(tipos)") de sinais/slots.
+// signatures ("name(types)") of signals/slots.
 string[] signalSigs(T)() {
     string[] r;
-    static foreach (m; signalMembers!T) {{   // {{ }} => escopo por iteração (A...)
+    static foreach (m; signalMembers!T) {{   // {{ }} => per-iteration scope (A...)
         static if (is(typeof(__traits(getMember, T, m)) == Signal!A, A...))
             r ~= sigString!(m, A);
     }}
@@ -241,7 +250,7 @@ string[] slotSigs(T)() {
     return r;
 }
 
-// campos marcados com @Property.
+// fields marked with @Property.
 template propMembers(T) {
     template isProp(string m) {
         static if (is(typeof(__traits(getMember, T, m)) == function)) enum isProp = false;
@@ -254,13 +263,13 @@ string[] propTypes(T)() {
     static foreach (m; propMembers!T) r ~= cppSig!(typeof(__traits(getMember, T, m)));
     return r;
 }
-// nome do sinal de notify de uma @Property (tolera @Property sem parênteses).
+// name of the notify signal of a @Property (tolerates @Property without parentheses).
 template propNote(alias sym) {
     private alias U = getUDAs!(sym, Property);
-    static if (is(U[0])) enum propNote = "";          // @Property (tipo) -> sem notify
+    static if (is(U[0])) enum propNote = "";          // @Property (type) -> no notify
     else                 enum propNote = U[0].notify;  // @Property()/@Property("x")
 }
-// índice (na ordem de signalMembers) do sinal de notify de cada propriedade, ou -1.
+// index (in signalMembers order) of each property's notify signal, or -1.
 int[] propNotify(T)() {
     int[] r;
     static foreach (m; propMembers!T) {{
@@ -272,25 +281,25 @@ int[] propNotify(T)() {
     return r;
 }
 
-// ---- contrato de meta-métodos (critics r8 #4) -------------------------------
-// O metaobject não pode aceitar uma declaração cuja semântica ele não honra:
-//   * um @Slot Qt retorna void. Um método que retorna valor é um INVOKABLE — o
-//     runtime não marshala o retorno (ele era descartado em silêncio, e
-//     QMetaObject::invokeMethod com Q_RETURN_ARG respondia false). Rejeite.
-//   * uma @Property("notifySig") cujo NOTIFY não nomeia um Signal desta classe
-//     resolvia pra índice -1 em silêncio (nenhuma notificação jamais dispara).
-//     E se nomeia um Signal, a assinatura precisa casar com o que callProp emite
-//     (0 args, ou 1 arg do tipo da propriedade) — senão o slot receptor lê lixo.
-// Tudo em compile time, com mensagem apontando a correção. É uma função (escopo de
-// statement) instanciada por uma chamada no topo de cada caminho de registro — a
-// instanciação dispara os static asserts; em runtime é um no-op (otimizado).
+// ---- meta-method contract (critics r8 #4) -----------------------------------
+// The metaobject cannot accept a declaration whose semantics it does not honor:
+//   * a Qt @Slot returns void. A method that returns a value is an INVOKABLE — the
+//     runtime does not marshal the return (it was silently discarded, and
+//     QMetaObject::invokeMethod with Q_RETURN_ARG returned false). Reject it.
+//   * a @Property("notifySig") whose NOTIFY does not name a Signal of this class
+//     silently resolved to index -1 (no notification ever fires).
+//     And if it names a Signal, the signature must match what callProp emits
+//     (0 args, or 1 arg of the property's type) — otherwise the receiving slot reads garbage.
+// All at compile time, with a message pointing to the fix. It is a function (statement
+// scope) instantiated by a call at the top of each registration path — the
+// instantiation fires the static asserts; at runtime it is a no-op (optimized away).
 void validateMeta(T)() {
     import std.traits : ReturnType;
     static foreach (m; slotMembers!T)
         static assert(is(ReturnType!(__traits(getMember, T, m)) == void),
-            "qtmoc: @Slot " ~ T.stringof ~ "." ~ m ~ " deve retornar void. " ~
-            "Um método que retorna valor é um invokable, não um slot, e o runtime " ~
-            "descartaria o retorno — emita o resultado por um Signal.");
+            "qtmoc: @Slot " ~ T.stringof ~ "." ~ m ~ " must return void. " ~
+            "A method that returns a value is an invokable, not a slot, and the runtime " ~
+            "would discard the return — emit the result through a Signal instead.");
     static foreach (m; propMembers!T) {{
         enum note = propNote!(__traits(getMember, T, m));
         static if (note.length) {
@@ -301,21 +310,21 @@ void validateMeta(T)() {
                 return f;
             }();
             static assert(found,
-                "qtmoc: @Property " ~ T.stringof ~ "." ~ m ~ " tem NOTIFY \"" ~ note ~
-                "\" que não é um Signal desta classe.");
+                "qtmoc: @Property " ~ T.stringof ~ "." ~ m ~ " has NOTIFY \"" ~ note ~
+                "\" which is not a Signal of this class.");
             static foreach (s; signalMembers!T)
                 static if (s == note)
                     static if (is(typeof(__traits(getMember, T, s)) == Signal!A, A...))
                         static assert(A.length == 0 || (A.length == 1 && is(A[0] == PT)),
-                            "qtmoc: NOTIFY \"" ~ note ~ "\" de " ~ T.stringof ~ "." ~ m ~
-                            " deve ser parameterless ou receber um " ~ PT.stringof ~
-                            " (callProp emite o novo valor como único argumento).");
+                            "qtmoc: NOTIFY \"" ~ note ~ "\" of " ~ T.stringof ~ "." ~ m ~
+                            " must be parameterless or take a single " ~ PT.stringof ~
+                            " (callProp emits the new value as the sole argument).");
         }
     }}
 }
 
-// lê/escreve a propriedade `m` de `o` pelo slot do valor a[0]. No write, se o
-// valor muda e há sinal de notify, emite-o (pra bindings/QML verem a mudança).
+// reads/writes property `m` of `o` via the value slot a[0]. On write, if the
+// value changes and there is a notify signal, emits it (so bindings/QML see the change).
 void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) {
     alias X = typeof(__traits(getMember, T, m));
     if (write) {
@@ -342,7 +351,7 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
     }
 }
 
-// invoca o slot `m` de `o` lendo os args do array C (args[0] é retorno).
+// invokes slot `m` of `o` reading the args from the C array (args[0] is the return).
 void callSlot(T, string m)(T o, void** args) {
     alias P = Parameters!(__traits(getMember, T, m));
     P vals;
@@ -354,19 +363,19 @@ void callSlot(T, string m)(T o, void** args) {
 }
 
 // ---- factory ----------------------------------------------------------------
-/// Cria uma instância de um @QObject D, constrói seu meta-objeto em runtime,
-/// liga os campos Signal e registra o despacho de slots.
+/// Creates an instance of a D @QObject, builds its meta-object at runtime,
+/// binds the Signal fields and registers the slot dispatch.
 T newQObject(T, Args...)(Args ctorArgs) {
     static assert(hasUDA!(T, QObject),
         "qtmoc: " ~ T.stringof ~ " precisa da UDA @QObject");
-    validateMeta!T();   // @Slot void + NOTIFY existente/compatível (compile time)
+    validateMeta!T();   // @Slot void + existing/compatible NOTIFY (compile time)
     T o = new T(ctorArgs);
     enum sigs  = signalSigs!T;
     enum slts  = slotSigs!T;
     enum pnames = propMembers!T;
     enum ptypes = propTypes!T;
     enum pnotif = propNotify!T;
-    // arrays de C-strings (assinaturas com \0 -> .ptr é seguro em C); +1 evita [0]
+    // arrays of C-strings (signatures with \0 -> .ptr is safe in C); +1 avoids [0]
     const(char)*[sigs.length + 1] sigp;
     const(char)*[slts.length + 1] sltp;
     const(char)*[pnames.length + 1] pnp;
@@ -386,9 +395,9 @@ T newQObject(T, Args...)(Args ctorArgs) {
     return o;
 }
 
-// Liga os campos Signal ao (qobj, índice) e registra o despacho de slots/props de `o`.
-// Compartilhado por newQObject (qobj vem de qtd_moc_new) e pela factory de QML
-// (qobj = o QtdMocObject que o engine alocou).
+// Binds the Signal fields to (qobj, index) and registers the slot/prop dispatch of `o`.
+// Shared by newQObject (qobj comes from qtd_moc_new) and by the QML factory
+// (qobj = the QtdMocObject the engine allocated).
 private void wireQObject(T)(T o, void* qobj) {
     enum pnotif = propNotify!T;
     int si = 0;
@@ -412,47 +421,47 @@ private void wireQObject(T)(T o, void* qobj) {
 }
 
 // ---- QML type registration --------------------------------------------------
-// Registra um @QObject D como elemento QML: `import <uri> <maj>.<min>; <T> { ... }`.
-// O engine instancia o carrier C++ (QtdMocObject) e chama de volta o `create` (C++),
-// que por sua vez chama a factory D abaixo pra criar+ligar o T que respalda o objeto.
-// Todas as instâncias D compartilham o mesmo typeId C++ (QtdMocObject*), distintas
-// pelo QMetaObject de runtime — comprovado por probe que N tipos coexistem.
+// Registers a D @QObject as a QML element: `import <uri> <maj>.<min>; <T> { ... }`.
+// The engine instantiates the C++ carrier (QtdMocObject) and calls back into `create` (C++),
+// which in turn calls the D factory below to create+bind the T that backs the object.
+// All D instances share the same C++ typeId (QtdMocObject*), distinguished
+// by the runtime QMetaObject — proven by a probe where N types coexist.
 private __gshared void* delegate(void* qobj) nothrow[void*] _qmlFactories;   // key = QtdQmlType* (C++)
 
-// Callbacks C ÚNICOS (não por-T -> sem colisão de símbolo extern(C)); despacham
-// pela QtdQmlType* que o C++ passa de volta como `self`.
+// SINGLE C callbacks (not per-T -> no extern(C) symbol collision); they dispatch
+// via the QtdQmlType* that C++ passes back as `self`.
 private extern (C) void* __qmlMake(void* self, void* qobj) nothrow {
     if (auto f = self in _qmlFactories) return (*f)(qobj);
     return null;
 }
 private extern (C) void __qmlDestroy(void* self, void* dobj) nothrow {
-    _reg.remove(dobj);   // solta o T do registro -> o GC pode recolhê-lo
+    _reg.remove(dobj);   // drops the T from the registry -> the GC can collect it
 }
 
-// publicKey ("uri/name maj.min", o que o engine QML enxerga) -> identidade D do tipo registrado.
-// A identidade é T.mangleof (nome mangled totalmente-qualificado): dois @QObject D homônimos
-// (mesmo T.stringof, módulos diferentes) têm mangleof DISTINTO. Assim o mesmo (T, uri, nome,
-// versão) é no-op idempotente, mas dois tipos DIFERENTES na mesma chave pública são um conflito
-// observável — não um "já registrado" silencioso (critics r8 #3).
+// publicKey ("uri/name maj.min", what the QML engine sees) -> D identity of the registered type.
+// The identity is T.mangleof (fully-qualified mangled name): two homonymous D @QObjects
+// (same T.stringof, different modules) have a DISTINCT mangleof. So the same (T, uri, name,
+// version) is an idempotent no-op, but two DIFFERENT types under the same public key are an
+// observable conflict — not a silent "already registered" (critics r8 #3).
 private __gshared string[string] _qmlRegistered;
 
-/// Registra o tipo `T` (@QObject D) como elemento QML instanciável. Chame antes de carregar o
-/// .qml. Contrato de erro (critics r7 #2): **THROWS** se o registro falhar no backend (pool Qt5
-/// esgotado ou `qmlregister` recusado) — a falha C++ NÃO vira sucesso silencioso. Registrar o
-/// MESMO (T, uri, nome, versão) de novo é idempotente (não consome outro slot do pool Qt5).
+/// Registers the type `T` (D @QObject) as an instantiable QML element. Call before loading the
+/// .qml. Error contract (critics r7 #2): **THROWS** if registration fails in the backend (Qt5 pool
+/// exhausted or `qmlregister` refused) — the C++ failure does NOT become a silent success. Registering the
+/// SAME (T, uri, name, version) again is idempotent (does not consume another Qt5 pool slot).
 void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
     static assert(hasUDA!(T, QObject),
         "qtmoc: " ~ T.stringof ~ " precisa da UDA @QObject");
     static assert(__traits(compiles, new T()),
         "qtmoc: " ~ T.stringof ~ " precisa de construtor sem argumentos (o QML instancia sem args)");
-    validateMeta!T();   // @Slot void + NOTIFY existente/compatível (compile time)
+    validateMeta!T();   // @Slot void + existing/compatible NOTIFY (compile time)
     import std.conv : to;
-    enum typeId = T.mangleof;   // identidade D inequívoca (homônimos diferem no mangle)
+    enum typeId = T.mangleof;   // unambiguous D identity (homonyms differ in the mangle)
     auto pubKey = uri ~ "/" ~ qmlName ~ " " ~ vmaj.to!string ~ "." ~ vmin.to!string;
     if (auto prev = pubKey in _qmlRegistered) {
-        if (*prev == typeId) return;   // MESMO tipo, mesma versão -> no-op (não reconsome pool Qt5)
-        throw new Exception("qmlRegisterType conflict: " ~ pubKey ~ " já está registrado para outro "
-            ~ "tipo D (" ~ *prev ~ " != " ~ typeId ~ "). Use um nome/URI/versão distinto.");
+        if (*prev == typeId) return;   // SAME type, same version -> no-op (doesn't re-consume the Qt5 pool)
+        throw new Exception("qmlRegisterType conflict: " ~ pubKey ~ " is already registered to a "
+            ~ "different D type (" ~ *prev ~ " != " ~ typeId ~ "). Use a distinct name/URI/version.");
     }
     enum sigs = signalSigs!T;
     enum slts = slotSigs!T;
@@ -478,7 +487,7 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
     if (key is null)   // backend refused (Qt5 pool exhausted / qmlregister failed) -> OBSERVABLE
         throw new Exception("qmlRegisterType failed for " ~ T.stringof ~ " as " ~ pubKey
             ~ " (backend returned null; see stderr)");
-    // factory por-T: o engine chama isto (via __qmlMake) por instância criada no QML.
+    // per-T factory: the engine calls this (via __qmlMake) per instance created in QML.
     _qmlFactories[key] = (void* qobj) nothrow {
         try {
             T o = new T();
@@ -556,13 +565,13 @@ string qmlTypesModule(string[] components) {
     return s;
 }
 
-// ---- widget subclass + moc (merge trampolim + meta-objeto) ------------------
-// (helpers públicos: o mixin abaixo é instanciado no módulo do usuário e resolve
-//  nesse escopo, então precisa enxergar os helpers/internos do qtmoc.)
-/// UDA opcional/documentativa: marca um método como override de um virtual da base.
+// ---- widget subclass + moc (merge trampoline + meta-object) -----------------
+// (public helpers: the mixin below is instantiated in the user's module and resolves
+//  in that scope, so it needs to see qtmoc's helpers/internals.)
+/// Optional/documentary UDA: marks a method as an override of a base virtual.
 struct Override {}
 
-string itoa(int n) {   // CTFE simples
+string itoa(int n) {   // simple CTFE
     if (n == 0) return "0";
     string s; bool neg = n < 0; if (neg) n = -n;
     while (n) { s = cast(char)('0' + n % 10) ~ s; n /= 10; }
@@ -572,8 +581,8 @@ template __qtdIsFn(T, string m) {
     static if (is(typeof(__traits(getMember, T, m)) == function)) enum __qtdIsFn = true;
     else enum __qtdIsFn = false;
 }
-// gera o trampolim extern(C) que adapta o virtual do C++ ao método D `vn`. Nome
-// único por classe (__ov_<Classe>_<idx>) pra não colidir na linkagem C.
+// generates the extern(C) trampoline that adapts the C++ virtual to the D method `vn`. A
+// unique name per class (__ov_<Class>_<idx>) so it doesn't collide in C linkage.
 string __ovTramp(T, string vn, size_t idx)() {
     import std.traits : ReturnType, Parameters;
     alias R = ReturnType!(__traits(getMember, T, vn));
@@ -596,22 +605,22 @@ string __ovTramp(T, string vn, size_t idx)() {
             ~ R.stringof ~ ".init; } }\n";
 }
 
-/// Mixin pra uma classe Qt subclassada em D que TAMBÉM é @QObject: sobrescreve
-/// virtuais (métodos com nome de virtual da base, ex. paintEvent) E tem
-/// sinais/slots/props próprios.
+/// Mixin for a Qt class subclassed in D that is ALSO @QObject: it overrides
+/// virtuals (methods named after a base virtual, e.g. paintEvent) AND has
+/// its own signals/slots/props.
 mixin template QtdWidget(Base) {
     void* _qobj;
     private alias _Self = typeof(this);
     final void* __qtdObj() { return _qobj; }
-    private enum string[] __vn = mixin("__" ~ Base.stringof ~ "_vnames");  // virtuais da base (qtvirt)
+    private enum string[] __vn = mixin("__" ~ Base.stringof ~ "_vnames");  // base virtuals (qtvirt)
 
-    // trampolines extern(C) pros virtuais que a classe sobrescreve (nome bate).
+    // extern(C) trampolines for the virtuals the class overrides (name matches).
     static foreach (i, vn; __vn)
         static if (__traits(hasMember, _Self, vn) && __qtdIsFn!(_Self, vn))
             mixin(__ovTramp!(_Self, vn, i));
 
     this() {
-        // 1. cria o trampolim de subclasse, plugando os cbs sobrescritos (resto null)
+        // 1. create the subclass trampoline, plugging in the overridden cbs (the rest null)
         enum __callArgs = () {
             string a;
             static foreach (i, vn; __vn)
@@ -623,7 +632,7 @@ mixin template QtdWidget(Base) {
         // WRAPPER mode: adopt the C++ trampoline as our _cpp + pin (C++ holds a raw dself).
         static if (__traits(hasMember, _Self, "_adopt")) this._adopt(_qobj);
 
-        // 2. anexa o meta-objeto runtime (sinais/slots/props próprios)
+        // 2. attach the runtime meta-object (own signals/slots/props)
         enum sigs = signalSigs!_Self; enum slts = slotSigs!_Self;
         enum pnames = propMembers!_Self; enum ptypes = propTypes!_Self; enum pnotif = propNotify!_Self;
         const(char)*[sigs.length + 1] sigp; const(char)*[slts.length + 1] sltp;
@@ -638,7 +647,7 @@ mixin template QtdWidget(Base) {
             pnp.ptr, ptp.ptr, pnt.ptr, cast(int) pnames.length,
             cast(void*) this, &__mocGlobalDispatch, &__mocGlobalProp);
 
-        // 3. liga os sinais + registra o despacho de slots/props (como newQObject)
+        // 3. bind the signals + register the slot/prop dispatch (like newQObject)
         int __si = 0;
         static foreach (m; signalMembers!_Self) { __traits(getMember, this, m)._bind(_qobj, __si); __si++; }
         auto __self = this;
@@ -656,25 +665,25 @@ mixin template QtdWidget(Base) {
     }
 }
 
-// ---- propriedades (acesso por nome via QVariant) ----------------------------
-/// Lê uma propriedade int por nome (custom @Property ou built-in).
+// ---- properties (access by name via QVariant) -------------------------------
+/// Reads an int property by name (custom @Property or built-in).
 int propInt(T)(T o, string name) { return qtd_prop_get_int(qobjOf(o), (name ~ "\0").ptr); }
-/// Escreve uma propriedade int por nome (dispara o notify, se houver).
+/// Writes an int property by name (fires the notify, if any).
 void setProp(T)(T o, string name, int v) { qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v); }
-/// Lê uma propriedade QString por nome como string D.
+/// Reads a QString property by name as a D string.
 string propStr(T)(T o, string name) {
     auto qs = qtd_prop_get_qs(qobjOf(o), (name ~ "\0").ptr);
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
 }
-/// Escreve uma propriedade QString por nome (dispara o notify, se houver).
+/// Writes a QString property by name (fires the notify, if any).
 void setProp(T)(T o, string name, string v) {
     qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length);
 }
 
-// ---- conexão ----------------------------------------------------------------
-/// Conecta sinal->slot por assinatura ("valueChanged(int)"). Simétrico: cada
-/// ponta pode ser um @QObject D ou um QObject built-in cru (void*), em qualquer
-/// combinação — ambos têm meta-objeto.
+// ---- connection -------------------------------------------------------------
+/// Connects signal->slot by signature ("valueChanged(int)"). Symmetric: each
+/// end can be a D @QObject or a raw built-in QObject (void*), in any
+/// combination — both have a meta-object.
 void connectMeta(A, B)(A sender, string sig, B receiver, string slot) {
     qtd_connect_meta(qobjOf(sender), (sig ~ "\0").ptr,
                      qobjOf(receiver), (slot ~ "\0").ptr);
