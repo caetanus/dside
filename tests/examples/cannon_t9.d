@@ -1,7 +1,7 @@
-// Q_PROPERTY no meta-objeto runtime: um @QObject D expõe @Property int value com
-// sinal de notify. Escrever a propriedade (via QVariant/setProperty) seta o campo D
-// E emite o notify, que aqui está conectado ao slot REAL display(int) de um QLCDNumber.
-// É a base pra property bindings / QML / QDataWidgetMapper sobre objetos D.
+// Q_PROPERTY in the runtime meta-object: a D @QObject exposes @Property int value with
+// a notify signal. Writing the property (via QVariant/setProperty) sets the D field
+// AND emits the notify, which here is connected to the REAL display(int) slot of a QLCDNumber.
+// This is the basis for property bindings / QML / QDataWidgetMapper over D objects.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlcdnumber;
 import qt.widgets.qvboxlayout, qt.widgets.qtimer;
 import qtmoc;
@@ -25,10 +25,10 @@ void main() {
     auto dial = newQObject!Dial();
     connectMeta(dial, "valueChanged(int)", cast(void*) lcd, "display(int)");  // notify -> Qt slot
 
-    dial.setProp("value", 88);                  // WriteProperty -> campo D + emite valueChanged
-    assert(dial.value == 88, "propriedade não setou o campo D");
-    assert(dial.propInt("value") == 88, "ReadProperty não leu o campo D");
-    assert(lcd.intValue() == 88, "notify da propriedade não chegou ao slot do LCD");
+    dial.setProp("value", 88);                  // WriteProperty -> D field + emits valueChanged
+    assert(dial.value == 88, "property did not set the D field");
+    assert(dial.propInt("value") == 88, "ReadProperty did not read the D field");
+    assert(lcd.intValue() == 88, "property notify did not reach the LCD slot");
 
     auto t = QTimer_new();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);

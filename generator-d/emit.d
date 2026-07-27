@@ -134,7 +134,7 @@ void main(string[] args) {
         ~ ".\n// Do NOT edit — regenerate via generator-d.";
     bool cxxAbi = ("abi" in spec.object) !is null && spec["abi"].str == "cxx";
     bool[string] cxxGen, cxxRef;   // proper class names: fully-emitted vs referenced
-    bool qt5 = spec["qt_version"].str.startsWith("5");   // value-type ABI difere Qt5<->Qt6
+    bool qt5 = spec["qt_version"].str.startsWith("5");   // value-type ABI differs between Qt5 and Qt6
     QT5 = qt5;   // tryQList needs it to distinguish Qt5 QVector (QArrayData) from QList (QListData)
     WRAPPER = ("wrapper" in spec.object) !is null && spec["wrapper"].type == JSONType.true_;   // GC wrapper mode
     EXCEPTIONS = ("exceptions" in spec.object) !is null && spec["exceptions"].type == JSONType.true_;   // C++->D exc
@@ -232,8 +232,8 @@ void main(string[] args) {
         }
     }
     if (cxxAbi) {
-        // Verifica os inlines traduzidos de TODAS as classes num único ldc2 (em vez
-        // de um por classe — era o gargalo da geração); conserta só os que falham.
+        // Verify the translated inlines of ALL classes in a single ldc2 (instead of
+        // one per class — that was the generation bottleneck); fix only the ones that fail.
         verifyInlinesBatched(outDir, dpkg);
         if (freeFns.length) {   // namespace/global free functions -> one functions.d module
             string[] fimps;
@@ -297,7 +297,7 @@ void main(string[] args) {
             cxxGen["qtmoc"] = true;
         }
         if (TRAMPS.length) writefln("cxx: %d subclass trampoline(s) -> qtvirt.d", TRAMPS.length);
-        if ("qtmoc" in cxxGen) writeln("cxx: moc runtime -> qtmoc.d (@QObject/Signal/@Slot, meta-objeto em runtime)");
+        if ("qtmoc" in cxxGen) writeln("cxx: moc runtime -> qtmoc.d (@QObject/Signal/@Slot, runtime meta-object)");
         int stubs;
         foreach (r; cxxRef.byKey)
             if (r !in cxxGen) {

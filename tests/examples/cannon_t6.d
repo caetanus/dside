@@ -1,7 +1,7 @@
-// moc/CTFE: um QObject DEFINIDO EM D emite seu PRÓPRIO sinal, conectado ao slot
-// REAL display(int) de um QLCDNumber built-in. É o pulo do gato do t6 do PySide
-// (LCDRange emite valueChanged) sem moc: o meta-objeto do Thermostat é construído
-// em runtime (QMetaObjectBuilder) e connectMeta liga custom-signal -> Qt-slot.
+// moc/CTFE: a QObject DEFINED IN D emits its OWN signal, connected to the REAL
+// display(int) slot of a built-in QLCDNumber. This is the key trick of PySide's t6
+// (LCDRange emits valueChanged) without moc: the Thermostat meta-object is built
+// at runtime (QMetaObjectBuilder) and connectMeta wires custom-signal -> Qt-slot.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlcdnumber;
 import qt.widgets.qvboxlayout, qt.widgets.qtimer;
 import qtmoc;
@@ -12,7 +12,7 @@ pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(QAppli
     Signal!int temperatureChanged;
     private int _t;
     @Slot void setTemperature(int t) {
-        if (t != _t) { _t = t; temperatureChanged.emit(t); }   // emite o custom signal
+        if (t != _t) { _t = t; temperatureChanged.emit(t); }   // emit the custom signal
     }
 }
 
@@ -27,12 +27,12 @@ void main() {
     layout.addWidget(lcd);
     widget.show();
 
-    auto thermo = newQObject!Thermostat();     // constrói o meta-objeto em runtime
-    // custom signal (D) -> slot built-in (Qt): o receiver é o QObject cru do lcd.
+    auto thermo = newQObject!Thermostat();     // build the meta-object at runtime
+    // custom signal (D) -> built-in slot (Qt): the receiver is the raw QObject of the lcd.
     connectMeta(thermo, "temperatureChanged(int)", cast(void*) lcd, "display(int)");
 
-    thermo.setTemperature(42);                  // dispara temperatureChanged(42) -> lcd.display(42)
-    assert(lcd.intValue() == 42, "custom signal -> Qt slot não atualizou o LCD");
+    thermo.setTemperature(42);                  // fires temperatureChanged(42) -> lcd.display(42)
+    assert(lcd.intValue() == 42, "custom signal -> Qt slot did not update the LCD");
 
     auto t = QTimer_new();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);

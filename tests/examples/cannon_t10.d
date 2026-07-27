@@ -1,8 +1,8 @@
-// @Property string no meta-objeto runtime — o teste FOCADO que faltava (CRITICS #8).
-// Um @QObject D expõe @Property string com notify. Escrever via setProperty e LER via
-// property() passam pelo qt_metacall (WriteProperty/ReadProperty -> callProp), isolando
-// o caminho de LEITURA de string (qtd_qs_set) — a lacuna que só era exercitada de
-// through por sinal/slot. Sem QApplication: property read/write não precisa de event loop.
+// @Property string in the runtime meta-object — the FOCUSED test that was missing (CRITICS #8).
+// A D @QObject exposes @Property string with notify. Writing via setProperty and READING via
+// property() both go through qt_metacall (WriteProperty/ReadProperty -> callProp), isolating
+// the string READ path (qtd_qs_set) — the gap that was only exercised indirectly via
+// signal/slot. No QApplication: property read/write needs no event loop.
 import qtmoc;
 import cxxrt, std.stdio;
 
@@ -14,16 +14,16 @@ import cxxrt, std.stdio;
 void main() {
     auto m = newQObject!Model();
 
-    // ReadProperty do valor inicial: o metacall lê o campo D e o converte pra QString
-    // (o caminho qtd_qs_set). Antes do fix isso era um TODO e devolvia lixo/vazio.
-    assert(m.propStr("text") == "initial", "ReadProperty inicial falhou");
+    // ReadProperty of the initial value: the metacall reads the D field and converts it to QString
+    // (the qtd_qs_set path). Before the fix this was a TODO and returned garbage/empty.
+    assert(m.propStr("text") == "initial", "initial ReadProperty failed");
 
-    // WriteProperty: setProperty -> campo D + notify. UTF-8 non-ASCII pra pegar bug de len.
+    // WriteProperty: setProperty -> D field + notify. Non-ASCII UTF-8 to catch a len bug.
     m.setProp("text", "olá çãé 42");
-    assert(m.text == "olá çãé 42", "WriteProperty não setou o campo D");
+    assert(m.text == "olá çãé 42", "WriteProperty did not set the D field");
 
-    // ReadProperty de novo: o valor novo tem que voltar pelo metacall.
-    assert(m.propStr("text") == "olá çãé 42", "ReadProperty após write falhou");
+    // ReadProperty again: the new value must come back through the metacall.
+    assert(m.propStr("text") == "olá çãé 42", "ReadProperty after write failed");
 
     writeln("cannon/t10 OK: @Property string read/write via qt_metacall round-trips (", m.propStr("text"), ")");
 }

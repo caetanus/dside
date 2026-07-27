@@ -128,9 +128,9 @@ string[] emitQListReturn(CXCursor c, string mn, string qtid, string kw, string c
     return [raw, idiom];
 }
 
-// The per-T QList struct module: layout + hand-rolled release. Exposto por uma
-// interface agnóstica (`length`/`at(i)`) pra o método idiomático não depender do
-// layout físico, que difere entre Qt5 e Qt6.
+// The per-T QList struct module: layout + hand-rolled release. Exposed through an
+// abstract interface (`length`/`at(i)`) so the idiomatic method doesn't depend on
+// the physical layout, which differs between Qt5 and Qt6.
 string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bool qt5 = false) {
     auto elemImp = e.imp.length ? format("import %s.%s;\n", dpkg, modBase(e.imp)) : "";
     if (qt5 && e.isVector) {
@@ -159,10 +159,10 @@ string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bo
     }
     if (qt5) {
         // Qt5 QList<T> = { QListData::Data* d } (8 bytes). Data: ref@0, alloc@4,
-        // begin@8, end@12, void* array[]@16. Elementos <= sizeof(void*) e movable/
-        // prim (todos os que suportamos) ficam INLINE no slot. Free: release por
-        // elemento (QString/QByteArray) + QListData::dispose (símbolo exportado que
-        // roda ::free no bloco). size = end - begin.
+        // begin@8, end@12, void* array[]@16. Elements <= sizeof(void*) and movable/
+        // prim (all the ones we support) sit INLINE in the slot. Free: per-element
+        // release (QString/QByteArray) + QListData::dispose (an exported symbol that
+        // runs ::free on the block). size = end - begin.
         auto rel = e.release
             ? "            foreach (_i; _b .. _e) (cast(" ~ e.layoutTy ~ "*) &_a[_i]).__release();\n"
             : "";
@@ -173,17 +173,17 @@ string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bo
             ~ "    private int _end()   const { return *cast(const(int)*)(cast(const(char)*) d + 12); }\n"
             ~ "    private void** _arr() const { return cast(void**)(cast(char*) d + 16); }\n"
             ~ "    @property long length() const { return d is null ? 0 : _end() - _begin(); }\n"
-            ~ "    %s at(size_t i) { return *cast(%s*) &_arr()[_begin() + i]; }   // inline no slot\n"
+            ~ "    %s at(size_t i) { return *cast(%s*) &_arr()[_begin() + i]; }   // inline in the slot\n"
             ~ "    ~this() {\n        if (d is null) return;\n        auto _r = cast(shared(int)*) d;\n"
-            ~ "        if (*cast(int*) d < 0) { d = null; return; }   // sentinela estático: leitura simples (shared_null é .rodata; atomicLoad seq falharia)\n"
+            ~ "        if (*cast(int*) d < 0) { d = null; return; }   // static sentinel: plain read (shared_null is .rodata; an atomicLoad seq would fault)\n"
             ~ "        if (atomicOp!\"-=\"(*_r, 1) == 0) {\n"
             ~ "            auto _b = _begin(); auto _e = _end(); auto _a = _arr();\n%s"
             ~ "            __qld_dispose(d);\n        }\n        d = null;\n    }\n}\n"
             ~ "private pragma(mangle, \"_ZN9QListData7disposeEPNS_4DataE\") extern (C++) void __qld_dispose(void*);\n",
             dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, rel);
     }
-    // Qt6 QList<T> = QArrayDataPointer { void* d; T* ptr; long size } — elementos
-    // contíguos em ptr; release por elemento + QArrayData::deallocate.
+    // Qt6 QList<T> = QArrayDataPointer { void* d; T* ptr; long size } — elements
+    // contiguous in ptr; per-element release + QArrayData::deallocate.
     auto rel = e.release
         ? format("            foreach (i; 0 .. size) ptr[i].__release();\n")
         : "";
@@ -723,13 +723,13 @@ bool isValueRecord(CXType t) {
     return true;
 }
 
-// Não-trivialmente-copiável: cópia bit-a-bit é ERRADA (SSO self-pointer de
-// std::string, refcount de CoW, recursos possuídos). Preciso — NÃO uso isPOD
-// puro porque um value type com ctor de usuário mas membros escalares (Point:
-// double x,y; copy/dtor `= default`) é não-POD e MESMO ASSIM trivialmente copiável;
-// marcá-lo mudaria a ABI de retorno-por-valor e quebraria. Critério: (a) copy-ctor
-// ou dtor providos-pelo-usuário (não `= default`, não `= delete`) — CoW à la QPen; ou
-// (b) um campo record embutido POR VALOR que seja ele mesmo não-trivial — std::string.
+// Non-trivially-copyable: a bitwise copy is WRONG (std::string's SSO self-pointer,
+// a CoW refcount, owned resources). Precise — I do NOT use plain isPOD because a
+// value type with a user ctor but scalar members (Point: double x,y; copy/dtor
+// `= default`) is non-POD and YET trivially copyable; marking it would change the
+// return-by-value ABI and break it. Criterion: (a) a user-provided copy-ctor or
+// dtor (not `= default`, not `= delete`) — CoW à la QPen; or (b) a record field
+// embedded BY VALUE that is itself non-trivial — std::string.
 // Surgical trigger: a value type that embeds a STANDARD-LIBRARY type by value
 // (std::string, std::vector, std::list, ...). Those need a REAL deep copy — bitwise
 // breaks (std::string SSO self-pointer; std::vector owning pointer). This is the only
@@ -926,9 +926,9 @@ bool containerReturn(CXType t, out string helper, out string idiom, out string r
 // PySide-style `string` overload for a method with `const QString&` params
 // (`w.setText("hi")`): converts each to a scoped QString and calls the raw. ""
 // if the method has no such param. `pds` are the raw D param types in order.
-// Como strOverload, mas gera um CONSTRUTOR de struct `this(string...)` que delega
-// ao ctor cru — pro value type ser construído idiomaticamente: X("foo") em vez de
-// X_new("foo"). (só QString/QByteArray/QAnyStringView; container ctor é raro.)
+// Like strOverload, but generates a struct CONSTRUCTOR `this(string...)` that
+// delegates to the raw ctor — so the value type is built idiomatically: X("foo")
+// instead of X_new("foo"). (only QString/QByteArray/QAnyStringView; a container ctor is rare.)
 string ctorStrOv(string[] pds, ref bool[string] seen) {
     if (!pds.any!(p => p == "ref const(QString)" || p == "ref const(QByteArray)"
         || p == "QAnyStringView")) return "";
@@ -989,9 +989,9 @@ string underlyingPrim(CXType t, int depth = 0) {
     if (depth > 3) return null;
     auto ck = clang_getCanonicalType(t);
     // wrapper templated on its value type: Qt6 QCheckedInt<int, ...> -> int (the
-    // first template arg is the stored value). SÓ se for layout-compatível (mesmo
-    // sizeof) — senão std::basic_string<char> viraria `char` (é templado em char,
-    // mas tem 32 bytes: ponteiro+size+cap). Aí o struct ficaria com tamanho errado.
+    // first template arg is the stored value). ONLY if it's layout-compatible (same
+    // sizeof) — otherwise std::basic_string<char> would become `char` (it's templated
+    // on char, but is 32 bytes: pointer+size+cap). Then the struct would have the wrong size.
     if (clang_Type_getNumTemplateArguments(ck) >= 1) {
         auto ta = clang_Type_getTemplateArgumentAsType(ck, 0);
         if (clang_Type_getSizeOf(ck) == clang_Type_getSizeOf(ta))
@@ -1037,7 +1037,7 @@ bool compileOk(string name, string[] fields, string[] methods) {
     auto tmp = buildPath(tempDir, "qtd_vfy_" ~ name ~ ".d");
     write(tmp, code);
     scope (exit) remove(tmp);
-    return execute(["dmd", "-o-", tmp]).status == 0;   // dmd: só type-check, startup rápido (vs ldc2/LLVM)
+    return execute(["dmd", "-o-", tmp]).status == 0;   // dmd: type-check only, fast startup (vs ldc2/LLVM)
 }
 
 // Keep only the translated inlines that actually compile. Fast path: try them all
@@ -1050,15 +1050,15 @@ string[] keepInlines(string name, string[] fields, string[] inlines) {
     return kept;
 }
 
-// Verificação de inlines: compilar um dmd por classe (keepInlines) era o gargalo
-// (~200+ spawns => ~50s). Agora é híbrido, em duas fases:
-//  1) libdparse IN-PROCESS (sem spawn): parseia cada inline; os que não parseiam
-//     (vazamento de C++: `::`, `template<>`, casts C++...) são a maioria e caem
-//     aqui de graça. µs por inline.
-//  2) 1 único `dmd -o-` nos SOBREVIVENTES: pega os erros SEMÂNTICOS (tipo, símbolo)
-//     que o parser não vê. Como a fase 1 já tirou os erros de sintaxe, o dmd não
-//     entra em recuperação/cascata, então 1 passada com atribuição por (arquivo,
-//     linha) basta — cada struct é um arquivo bN.d próprio.
+// Inline verification: compiling one dmd per class (keepInlines) was the bottleneck
+// (~200+ spawns => ~50s). Now it's hybrid, in two phases:
+//  1) libdparse IN-PROCESS (no spawn): parse each inline; the ones that don't parse
+//     (C++ leakage: `::`, `template<>`, C++ casts...) are the majority and drop out
+//     here for free. µs per inline.
+//  2) a single `dmd -o-` over the SURVIVORS: catches the SEMANTIC errors (type, symbol)
+//     the parser doesn't see. Since phase 1 already removed the syntax errors, dmd
+//     doesn't go into recovery/cascade, so one pass with per-(file, line) attribution
+//     is enough — each struct is its own bN.d file.
 struct InlineJob {
     string name; string[] fields; string[] inlines;
     // Parallel to `inlines` (index-aligned): a trampoline fallback for each inline method.
@@ -1070,7 +1070,7 @@ struct InlineJob {
 }
 __gshared InlineJob[] INLINE_JOBS;
 
-// Parse-check in-process via libdparse (só sintaxe). true = parseia limpo.
+// Parse-check in-process via libdparse (syntax only). true = parses clean.
 private bool inlineParses(string inline) {
     import dparse.lexer : getTokensForParser, LexerConfig, StringCache;
     import dparse.parser : parseModule, MessageDelegate;
@@ -1081,7 +1081,7 @@ private bool inlineParses(string inline) {
     auto toks = getTokensForParser(cast(ubyte[]) code, cfg, cache);
     RollbackAllocator rba;
     uint errs;
-    MessageDelegate noop = (string fn, size_t l, size_t c, string m, bool e){};   // silencia mensagens
+    MessageDelegate noop = (string fn, size_t l, size_t c, string m, bool e){};   // silence messages
     parseModule(toks, "c.d", &rba, noop, &errs);
     return errs == 0;
 }
@@ -1093,16 +1093,16 @@ void verifyInlinesBatched(string outDir, string dpkg) {
     import std.conv : to;
     if (!INLINE_JOBS.length) return;
 
-    // FASE 1 — libdparse: mantém só os inlines que parseiam (in-process, sem spawn).
+    // PHASE 1 — libdparse: keep only the inlines that parse (in-process, no spawn).
     string[][] cur; cur.length = INLINE_JOBS.length;
     bool[size_t] touched;
     foreach (ji, j; INLINE_JOBS)
         foreach (m; j.inlines) { if (inlineParses(m)) cur[ji] ~= m; else touched[ji] = true; }
 
-    // FASE 2 — dmd nos sobreviventes: remove erros SEMÂNTICOS. Itera porque remover
-    // um método pode quebrar outro que o chamava (cascata semântica: `last` chama
-    // `verify`; se `verify` cai, `last` vira "undefined verify"). A fase 1 já tirou
-    // os erros de sintaxe, então converge em 1-2 passadas.
+    // PHASE 2 — dmd over the survivors: remove SEMANTIC errors. Iterates because removing
+    // one method can break another that called it (semantic cascade: `last` calls
+    // `verify`; if `verify` drops, `last` becomes "undefined verify"). Phase 1 already
+    // removed the syntax errors, so it converges in 1-2 passes.
     // Unique per PROCESS: reggae runs several gend processes in parallel, so a shared
     // temp dir would race (one process's rmdirRecurse deletes another's b*.d).
     auto dir = buildPath(tempDir, "qtd_vfy_" ~ thisProcessID.to!string);
@@ -1125,7 +1125,7 @@ void verifyInlinesBatched(string outDir, string dpkg) {
         }
         if (!files.length) break;
         auto r = execute(["dmd", "-o-", "-verrors=0"] ~ files);
-        if (r.status == 0) break;                        // tudo compila -> pronto
+        if (r.status == 0) break;                        // everything compiles -> done
         bool[size_t][size_t] drop;
         foreach (mt; r.output.matchAll(regex(`b(\d+)\.d\((\d+)`))) {
             auto ji = mt[1].to!size_t, ln = mt[2].to!int;
@@ -1140,9 +1140,9 @@ void verifyInlinesBatched(string outDir, string dpkg) {
         }
     }
 
-    // re-escreve só os módulos que perderam inlines. Um inline dropado cujo D-body referencia
-    // membros privados (ex. QSizePolicy::bits.horStretch) NÃO é perdido: vira um trampolim
-    // qtd_m_ C++ (forwarder no struct + decl a nível de módulo + MethodShim -> ctorCpp emite o C++).
+    // rewrite only the modules that lost inlines. A dropped inline whose D-body references
+    // private members (e.g. QSizePolicy::bits.horStretch) is NOT lost: it becomes a qtd_m_
+    // C++ trampoline (forwarder in the struct + module-level decl + MethodShim -> ctorCpp emits the C++).
     foreach (ji; touched.byKey) {
         auto j = INLINE_JOBS[ji];
         bool[string] kept; foreach (m; cur[ji]) kept[m] = true;
@@ -1474,20 +1474,20 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 }
             } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
         }
-        // Verificação de inlines adiada p/ um lote único no fim (verifyInlinesBatched)
-        // — compilar um ldc2 por classe aqui era o gargalo da geração.
+        // Inline verification deferred to a single batch at the end (verifyInlinesBatched)
+        // — compiling one ldc2 per class here was the generation bottleneck.
         if (inlineDefs.length)
             INLINE_JOBS ~= InlineJob(name, fields.dup, inlineDefs.dup, inFwd.dup, inDecl.dup, inShim.dup);
         // Value-type ctor factories: a value type with a non-trivial (out-of-line)
         // ctor (QFont/QPen/QIcon...) can't be built by a field literal. Emit a
         // `<Name>_new(...)` that constructs in place via the mangled ctor.
         string[] ctorFactories;     // free-functions <Name>_new (compat + no-arg)
-        string[] ctorMethods;       // construtores this(args) DENTRO do struct (idiomático)
-        bool[string] seenCtorSig;   // dedup: distintos ctors C++ podem colapsar na
-        int vci;                    // mesma assinatura D (ex.: QPaintDevice* vs const*)
-        // Um struct D com QUALQUER construtor perde o struct-literal posicional. Se os
-        // inlines do próprio value type o constroem por literal (ex. QTime(msecs) seta
-        // o campo), NÃO emitimos this() — manteria o literal quebrado. Aí fica só _new.
+        string[] ctorMethods;       // this(args) constructors INSIDE the struct (idiomatic)
+        bool[string] seenCtorSig;   // dedup: distinct C++ ctors can collapse into the
+        int vci;                    // same D signature (e.g. QPaintDevice* vs const*)
+        // A D struct with ANY constructor loses the positional struct-literal. If the
+        // value type's own inlines build it by literal (e.g. QTime(msecs) sets the
+        // field), we do NOT emit this() — it would keep the literal broken. Then only _new remains.
         bool selfLiteral = inlineDefs.any!(d => d.canFind(name ~ "("));
         foreach (c; children(cur)) {
             if (!isPublic(c) || c.kind != CXCursor_Constructor) continue;
@@ -1798,8 +1798,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     foreach (c; children(cur))
         if (c.kind == CXCursor_CXXMethod) {
             auto nm = clang_getCursorSpelling(c).str;
-            allNameCount[nm]++;                          // &Class::nm é ambíguo se nm colide
-            if (isSignal(c)) sigNameCount[nm]++;         // com QUALQUER outro método (ex.: QProcess::error)
+            allNameCount[nm]++;                          // &Class::nm is ambiguous if nm collides
+            if (isSignal(c)) sigNameCount[nm]++;         // with ANY other method (e.g. QProcess::error)
         }
     CXCursor[] ctors;
     foreach (c; children(cur)) {
@@ -2070,7 +2070,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     // Abstract classes (an unoverridden pure virtual) can't be instantiated — their
     // complete-object ctor (C1) isn't even emitted by C++ — so skip the _new factory.
     bool abstractCls = clang_CXXRecord_isAbstract(cur) != 0;
-    bool[string] seenCtorSig;   // dedup: ctors C++ distintos que colapsam na mesma assinatura D
+    bool[string] seenCtorSig;   // dedup: distinct C++ ctors that collapse into the same D signature
     if (!valueType && !abstractCls) foreach (c; ctors) {
         if (clang_CXXMethod_isDeleted(c)) continue;   // `= delete` ctor -> not constructible
         // Inline/`= default` ctor -> no symbol. The out-of-line shim (gap 1) does a
@@ -2108,7 +2108,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 callArgs ~= format("a%d", i);
             }
             if (viaShim && (!okParams || nestedInaccessible(cur))) continue;   // still a gap
-            auto sigKey = pdtypes.join(",");   // mesma assinatura D -> redefinição; fica só a 1ª
+            auto sigKey = pdtypes.join(",");   // same D signature -> redefinition; keep only the 1st
             if (sigKey in seenCtorSig) continue;
             seenCtorSig[sigKey] = true;
             auto ctorFn = format("__ctor_%s_%d", name, ci);
@@ -2173,12 +2173,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // polymorphic: opaque padding so operator-new allocates the exact C++ size
         long pad = sz - (baseName.length ? baseSz : 8);   // 8 = the vptr on the root
         if (pad > 0) body_ ~= format("    ubyte[%d] __pad;", pad);
-        // root gets its vptr via a declared dtor. EXTERN(D) + corpo vazio: (a) só-
-        // declaração `~this();` referencia o dtor C++ externo, nem sempre exportado
-        // (QAbstractUndoItem inline no Qt5 -> undefined); (b) `~this(){}` extern(C++)
-        // DEFINE o símbolo do dtor C++ e colide com uma lib estática que também o
-        // define (libsample.a). extern(D) mangla em D: não referencia nem define o
-        // símbolo C++. Objetos polimórficos são donos do C++ (nunca destruídos por D).
+        // root gets its vptr via a declared dtor. EXTERN(D) + empty body: (a) a decl-
+        // only `~this();` references the external C++ dtor, which isn't always exported
+        // (QAbstractUndoItem is inline in Qt5 -> undefined); (b) `~this(){}` extern(C++)
+        // DEFINES the C++ dtor symbol and clashes with a static lib that also defines
+        // it (libsample.a). extern(D) mangles in D: it neither references nor defines the
+        // C++ symbol. Polymorphic objects are owned by C++ (never destroyed by D).
         if (!baseName.length) body_ ~= "    extern(D) ~this() {}";
 
     }
@@ -2312,10 +2312,10 @@ string emitEnumModule(CXCursor decl, string dpkg, string manifest) {
 // refcounted data by hand (atomic deref + the exported QArrayData::deallocate).
 // Non-copyable so it can only move / pass by ref (no double free).
 string qstringRuntime(string manifest, string dpkg, bool qt5 = false) {
-    // Qt5: QString é { QStringData* d } (ponteiro único); os dados ficam em
-    // (char*)d + d->offset, com ref(int)@0, size(int)@4, offset(qptrdiff)@16.
-    // Qt6: QArrayDataPointer { void* d; wchar* ptr; long size }. Ctor QString(
-    // const QChar*, int/qsizetype) e deallocate diferem no mangling (i/x, mm/xx).
+    // Qt5: QString is { QStringData* d } (a single pointer); the data lives at
+    // (char*)d + d->offset, with ref(int)@0, size(int)@4, offset(qptrdiff)@16.
+    // Qt6: QArrayDataPointer { void* d; wchar* ptr; long size }. The QString(
+    // const QChar*, int/qsizetype) ctor and deallocate differ in mangling (i/x, mm/xx).
     if (qt5) return manifest ~ "\nmodule " ~ dpkg ~ ".qstring;\n" ~ q{
 import std.utf : toUTF16;
 import std.conv : to;
@@ -2330,12 +2330,12 @@ extern (C++) struct QString {
     this(this) {                                           // copy = share + refcount++ (Qt CoW)
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinel: plain read (shared/static in .rodata)
     }
     extern (D) void __release() {
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d < 0) { d = null; return; }   // persistent/shared null (.rodata): leitura simples
+        if (*cast(int*) d < 0) { d = null; return; }   // persistent/shared null (.rodata): plain read
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 2, 8);
         d = null;
     }
@@ -2378,12 +2378,12 @@ extern (C++) struct QString {
     this(this) {                                           // copy = share + refcount++ (Qt CoW)
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinel: plain read (shared/static in .rodata)
     }
     extern (D) void __release() {
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d < 0) { d = null; return; }   // persistent/shared null (.rodata): leitura simples
+        if (*cast(int*) d < 0) { d = null; return; }   // persistent/shared null (.rodata): plain read
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 2, 8);
         d = null;
     }
@@ -2412,8 +2412,8 @@ QString qstr(string s) {
 // from a D string via QByteArray(const char*,len); read the bytes directly;
 // release the refcounted data by hand (dtor is inline).
 string qbytearrayRuntime(string manifest, string dpkg, bool qt5 = false) {
-    // Qt5: QByteArray é { Data* d } (ponteiro único); bytes em (char*)d + d->offset,
-    // size(int)@4. Qt6: { d, ptr, size }. Ctor/deallocate diferem no mangling.
+    // Qt5: QByteArray is { Data* d } (a single pointer); bytes at (char*)d + d->offset,
+    // size(int)@4. Qt6: { d, ptr, size }. Ctor/deallocate differ in mangling.
     if (qt5) return manifest ~ "\nmodule " ~ dpkg ~ ".qbytearray;\n" ~ q{
 import core.atomic : atomicOp;
 
@@ -2424,7 +2424,7 @@ extern (C++) struct QByteArray {
     this(this) {                                                    // copy = share + refcount++
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinel: plain read (shared/static in .rodata)
     }
     private const(char)* __data() const { return cast(const(char)*) d + *cast(const(long)*)(cast(const(char)*) d + 16); }
     private int __size() const { return d is null ? 0 : *cast(const(int)*)(cast(const(char)*) d + 4); }
@@ -2432,7 +2432,7 @@ extern (C++) struct QByteArray {
     extern (D) void __release() {
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d < 0) { d = null; return; }   // sentinela estático (.rodata): leitura simples
+        if (*cast(int*) d < 0) { d = null; return; }   // static sentinel (.rodata): plain read
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 1, 8);   // char: objSize=1
         d = null;
     }
@@ -2463,13 +2463,13 @@ extern (C++) struct QByteArray {
     this(this) {                                                    // copy = share + refcount++
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinela: leitura simples (shared/static em .rodata)
+        if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinel: plain read (shared/static in .rodata)
     }
     extern (D) ubyte[] toBytes() const { return (ptr is null || size == 0) ? null : (cast(ubyte*) ptr)[0 .. size].dup; }
     extern (D) void __release() {
         if (d is null) return;
         auto refp = cast(shared(int)*) d;
-        if (*cast(int*) d < 0) { d = null; return; }   // sentinela estático (.rodata): leitura simples
+        if (*cast(int*) d < 0) { d = null; return; }   // static sentinel (.rodata): plain read
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 1, 8);   // char: objSize=1
         d = null;
     }
@@ -2796,10 +2796,10 @@ string virtCpp(string manifest, string includeLine) {
             methods ~= format("    %s %s(%s)%s override { %s }\n",
                 v.cppRet, v.name, v.overrideParams, cst, fwd);
         }
-        // moc anexável: o trampolim delega metaObject/qt_metacall aos helpers
-        // genéricos (qtdmoc.cpp) — assim uma subclasse D pode ser @QObject (ter
-        // sinais/slots/props próprios) ALÉM de sobrescrever virtuais. Se nada for
-        // anexado (qtd_moc_meta==null), cai no comportamento da base.
+        // Attachable moc: the trampoline delegates metaObject/qt_metacall to the
+        // generic helpers (qtdmoc.cpp) — so a D subclass can be @QObject (have its
+        // own signals/slots/props) IN ADDITION to overriding virtuals. If nothing is
+        // attached (qtd_moc_meta==null), it falls back to the base behavior.
         auto moc = format(
             "    const QMetaObject* metaObject() const override {\n"
             ~ "        auto m = qtd_moc_meta((void*)this); return m ? static_cast<const QMetaObject*>(m) : %s::metaObject(); }\n"
@@ -2816,7 +2816,7 @@ string virtCpp(string manifest, string includeLine) {
             // the D _reg), closing the QtdWidget lifetime the same way ~QtdMocObject closes newQObject.
             ~ "    ~Qtd_%s() { qtd_moc_detach((void*)this, d); }\n%s};\n"
             ~ "extern \"C\" void* qtd_sub_%s(void* dobj%s) { return new Qtd_%s(dobj%s); }\n"
-            // liga um meta-objeto runtime ao trampolim já criado (Base::staticMetaObject como super).
+            // binds a runtime meta-object to the already-created trampoline (Base::staticMetaObject as super).
             ~ "extern \"C\" void qtd_sub_%s_attach(void* self, const char* cn,\n"
             ~ "    const char** sigs, int nsig, const char** slotSigs, int nslot,\n"
             ~ "    const char** propN, const char** propT, const int* propNotify, int nprop,\n"
@@ -2826,7 +2826,7 @@ string virtCpp(string manifest, string includeLine) {
             t.dClass, t.cppClass, fields, moc, t.dClass, ctorPs, ctorInit, t.dClass, methods,
             t.dClass, subPs, t.dClass, subAs, t.dClass, t.cppClass);
     }
-    // declara os helpers genéricos do moc (em qtdmoc.cpp / lib qtmoc) usados acima.
+    // declares the generic moc helpers (in qtdmoc.cpp / lib qtmoc) used above.
     auto mocDecl =
         "extern \"C\" {\n"
         ~ "typedef void (*QtdSlotCb)(void*, int, void**);\n"
@@ -2837,8 +2837,8 @@ string virtCpp(string manifest, string includeLine) {
         ~ "void qtd_moc_attach(void*, const char*, const void*, const char**, int, const char**, int,\n"
         ~ "    const char**, const char**, const int*, int, void*, QtdSlotCb, QtdPropCb);\n"
         ~ "void qtd_moc_detach(void*, void*);\n}\n";
-    // força um paintEvent síncrono num QWidget (render headless / teste): grab()
-    // renderiza (repaint()/processEvents() sem-arg são inline, sem símbolo).
+    // force a synchronous paintEvent on a QWidget (headless render / test): grab()
+    // renders (repaint()/processEvents() with no args are inline, no symbol).
     auto forcePaint = "#include <QWidget>\n#include <QPixmap>\nextern \"C\" void qtd_force_paint(void* w) {\n"
         ~ "    auto* wd = static_cast<QWidget*>(w); wd->resize(20, 20); wd->grab(); }\n";
     return manifest ~ "\n" ~ includeLine ~ mocDecl ~ "namespace {\n" ~ body ~ "}\n" ~ forcePaint;
@@ -2865,8 +2865,8 @@ string virtD(string manifest, string dpkg) {
             foreach (im; v.imports) impSet[im] = true;   // class / enum / value modules referenced
         }
         decls ~= format("    void* qtd_sub_%s(void*, %s);\n", t.dClass, declPs.join(", "));
-        // decl do attach (liga o meta-objeto runtime ao trampolim) + nomes dos
-        // virtuais em ordem (índice = posição do cb), pro mixin mapear override->cb.
+        // attach decl (binds the runtime meta-object to the trampoline) + the virtual
+        // names in order (index = cb position), so the mixin maps override->cb.
         decls ~= format("    void qtd_sub_%s_attach(void*, const(char)*, const(char)**, int, const(char)**, int,"
             ~ " const(char)**, const(char)**, const(int)*, int, void*, __QtdSlotCb, __QtdPropCb);\n", t.dClass);
         facts ~= format("%s %s_subclass(void* ctx, %s) {\n    return cast(%s) qtd_sub_%s(ctx, %s);\n}\n",

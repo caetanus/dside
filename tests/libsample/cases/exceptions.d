@@ -3,8 +3,8 @@ import sample.exceptiontest;
 import std.stdio;
 void main() {
     auto e = make!ExceptionTest();
-    // caminho SEM throw (false) -> retorna 1. (throw C++ atravessando pro D é gap
-    //  separado — ABIs de exceção diferentes; não testado aqui.)
+    // no-throw path (false) -> returns 1. (a C++ throw crossing into D is a
+    //  separate gap — different exception ABIs; not tested here.)
     assert(e.intThrowStdException(false) == 1, "exception no-throw path");
     writeln("exceptions OK");
 }

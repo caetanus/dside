@@ -79,7 +79,7 @@ void main() {
     assert(enumInEnumOut(InValue.OneIn) == OutValue.OneOut);
     assert(enumInEnumOut(InValue.TwoIn) == OutValue.TwoOut);
 
-    // --- value type with a std::string member (m_str = ubyte[32], não `char`!) --
+    // --- value type with a std::string member (m_str = ubyte[32], not `char`!) --
     {
         auto s = make!Str("hello\0".ptr);        // ctor const char*
         assert(s.cstring().fromStringz == "hello", "Str.cstring() round-trip (m_str=ubyte[32])");
@@ -89,24 +89,24 @@ void main() {
     }
     // --- value type: public int fields + struct-literal + inline accessors ------
     {
-        auto r = Rect(1, 2, 3, 4);               // literal posicional (ctor é inline)
+        auto r = Rect(1, 2, 3, 4);               // positional literal (ctor is inline)
         assert(r.left() == 1 && r.top() == 2 && r.right() == 3 && r.bottom() == 4, "Rect accessors");
         assert(r.m_left == 1 && r.m_bottom == 4, "Rect public fields");
         r.m_right = 30;
         assert(r.right() == 30, "Rect field mutation via inline accessor");
     }
-    // --- mais operators de value type (opBinary!"/", reverse operator) ----------
+    // --- more value-type operators (opBinary!"/", reverse operator) ----------
     {
         auto p = Point(10.0, 20.0);
         auto q = p / 2;                          // opBinary!"/"(int)
         assert(q.x() == 5.0 && q.y() == 10.0, "Point / int");
     }
-    // (nota: Overload não é construível — ctor `= default` é inline, sem símbolo;
-    //  a resolução de overload já é coberta por Derived.overloaded acima.)
+    // (note: Overload is not constructible — the `= default` ctor is inline, no symbol;
+    //  overload resolution is already covered by Derived.overloaded above.)
     // --- object identity + parent/child + Str-typed methods ---------------------
     {
         auto o = ObjectType_new();
-        auto rootn = make!Str("root\0".ptr);      // const& param exige lvalue (D não liga rvalue a ref)
+        auto rootn = make!Str("root\0".ptr);      // const& param requires an lvalue (D does not bind an rvalue to ref)
         o.setObjectName(rootn);
         assert(o.objectName().cstring().fromStringz == "root", "objectName round-trip (Str)");
         auto ch = o.createChild(o);

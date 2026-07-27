@@ -1,6 +1,6 @@
-// moc/CTFE com args QString: um @QObject D emite textChanged(QString), conectado
-// ao slot REAL setText(QString) de um QLabel built-in. Prova o marshaling de
-// QString (UTF-8) atravessando custom-signal D -> Qt-slot pelo meta-objeto runtime.
+// moc/CTFE with QString args: a D @QObject emits textChanged(QString), connected
+// to the REAL setText(QString) slot of a built-in QLabel. Proves QString (UTF-8)
+// marshaling crossing a custom-signal D -> Qt-slot via the runtime meta-object.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlabel;
 import qt.widgets.qvboxlayout, qt.widgets.qtimer, qt.widgets.qstring;
 import qtmoc;
@@ -11,7 +11,7 @@ pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(QAppli
     Signal!string textChanged;
     private string _t;
     @Slot void setText(string s) {
-        if (s != _t) { _t = s; textChanged.emit(s); }   // emite o custom signal QString
+        if (s != _t) { _t = s; textChanged.emit(s); }   // emit the QString custom signal
     }
 }
 
@@ -31,7 +31,7 @@ void main() {
     connectMeta(ed, "textChanged(QString)", cast(void*) label, "setText(QString)");
 
     ed.setText("olá çãé 42");                    // textChanged("olá çãé 42") -> label.setText
-    assert(label.text().toString() == "olá çãé 42", "QString custom-signal -> Qt-slot falhou");
+    assert(label.text().toString() == "olá çãé 42", "QString custom-signal -> Qt-slot failed");
 
     auto t = QTimer_new();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);

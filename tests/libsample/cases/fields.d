@@ -1,7 +1,7 @@
 import sample.modelindex, sample.oddbool, sample.intwrapper;
 import std.stdio;
 void main() {
-    // value types com campo público -> struct-literal + acessores inline + static
+    // value types with a public field -> struct-literal + inline accessors + static
     auto mi = ModelIndex(5);
     assert(mi.value() == 5 && mi.m_value == 5, "ModelIndex field/accessor");
     mi.setValue(9); assert(mi.value() == 9, "ModelIndex.setValue inline");

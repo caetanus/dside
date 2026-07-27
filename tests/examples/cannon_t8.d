@@ -1,7 +1,7 @@
-// PySide cannon t8: o widget custom LCDRange (QSlider + QLCDNumber) que re-emite
-// seu PRÓPRIO valueChanged(int). Sem trampolim de subclasse: LCDRange é uma classe
-// D @QObject (pro seu sinal) que COMPÕE um QWidget root com os filhos. Prova a
-// cadeia: slider built-in.valueChanged -> slot D -> re-emit custom -> outro slot D.
+// PySide cannon t8: the custom LCDRange widget (QSlider + QLCDNumber) that re-emits
+// its OWN valueChanged(int). No subclass trampoline: LCDRange is a D @QObject class
+// (for its signal) that COMPOSES a root QWidget with the children. Proves the chain:
+// built-in slider.valueChanged -> D slot -> re-emit custom -> another D slot.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlcdnumber, qt.widgets.qslider;
 import qt.widgets.qvboxlayout, qt.widgets.orientation, qt.widgets.qtimer;
 import qtmoc;
@@ -20,7 +20,7 @@ pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(QAppli
         lay.addWidget(lcd); lay.addWidget(slider);
     }
     @Slot void onSlider(int v) { lcd.display(v); valueChanged.emit(v); }  // slider -> lcd + re-emit
-    @Slot void setValue(int v) { slider.setValue(v); }                    // API pública (dispara onSlider)
+    @Slot void setValue(int v) { slider.setValue(v); }                    // public API (fires onSlider)
     int value() { return slider.value(); }
 }
 
@@ -35,7 +35,7 @@ void main() {
     __qapp_ctor(app, argc, argv.ptr, 0);
 
     auto r = newQObject!LCDRange();
-    // wiring interno (depois de newQObject: o meta-objeto do LCDRange já existe)
+    // internal wiring (after newQObject: the LCDRange meta-object already exists)
     connectMeta(cast(void*) r.slider, "valueChanged(int)", r, "onSlider(int)");
     r.root.show();
 
@@ -43,12 +43,12 @@ void main() {
     connectMeta(r, "valueChanged(int)", sink, "onValue(int)");   // custom D -> custom D
 
     r.setValue(37);   // -> slider.setValue -> slider.valueChanged -> onSlider -> lcd.display + valueChanged.emit -> sink
-    assert(r.lcd.intValue() == 37, "slider built-in -> slot D não atualizou o LCD");
-    assert(r.value() == 37, "value() não reflete o slider");
-    assert(sink.last == 37, "re-emit do custom valueChanged não chegou ao sink");
+    assert(r.lcd.intValue() == 37, "built-in slider -> D slot did not update the LCD");
+    assert(r.value() == 37, "value() does not reflect the slider");
+    assert(sink.last == 37, "re-emit of the custom valueChanged did not reach the sink");
 
     auto t = QTimer_new();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
-    writefln("cannon/t8 OK: LCDRange composto — slider(built-in) -> onSlider(D) -> re-emit -> sink(D)=%d", sink.last);
+    writefln("cannon/t8 OK: LCDRange composed — slider(built-in) -> onSlider(D) -> re-emit -> sink(D)=%d", sink.last);
 }
