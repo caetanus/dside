@@ -8,7 +8,10 @@ are Qt6-only). This document is the contract: what is tested, on what config, an
 is a known gap. There is a **CI scaffold** (`.github/workflows/ci.yml`, master +
 codegen-tools) that provisions Qt5/Qt6 + the pyside-setup libsample corpus and runs
 the matrix; the version-independent gates are mandatory, the manifest gates advisory
-(baselines are Qt 6.11, distro-CI Qt differs). **HONEST: it is not yet proven green on
+(baselines are Qt 6.11, distro-CI Qt differs). The manifest gates are **optional** reggae
+top-level targets — reachable by name but excluded from the default `./build`, so the full
+matrix never fails on baseline drift; CI runs them in a separate continue-on-error step.
+**HONEST: it is not yet proven green on
 a real runner** — treat the local machine (Qt 5.15 + 6.11) as the current source of
 truth until CI goes green.
 

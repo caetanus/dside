@@ -111,8 +111,12 @@ Build reggaeBuild() {
 
     // --- coverage manifest gate: regenerate a binding and diff its per-symbol manifest against a
     //     checked-in baseline, failing on regression (disappeared/worsened/new-drop symbol).
-    all ~= manifestGateTargets(root, [ex, qml], ["qtwidgets", "qml"],
-                               ["qtwidgets.manifest.tsv", "qml.manifest.tsv"]);
+    //     These are OPTIONAL top-level targets (critics r8 #1): the default `./build` full matrix
+    //     must NOT run them, because their baselines are pinned to Qt 6.11 and a runner on a
+    //     different Qt minor would measure SDK drift, not a generator regression. They stay
+    //     reachable by name (`./build manifest-gate-qtwidgets`) so CI can run them ADVISORY.
+    auto manifestGates = manifestGateTargets(root, [ex, qml], ["qtwidgets", "qml"],
+                                             ["qtwidgets.manifest.tsv", "qml.manifest.tsv"]);
 
     // --- expected-fails registry consumer: validate schema/kind and that every `risk` probe names
     //     a real build target (so the inventory is enforcement, not just prose).
@@ -134,7 +138,12 @@ Build reggaeBuild() {
     // --- shiboken libsample corner cases (skipped if the pyside-setup clone is absent) ---
     all ~= libsampleTargets(root, buildNormalizedPath(root, "..", "pyside-setup"));
 
-    return Build(all);
+    // Mandatory targets are built by the default `./build`; the manifest gates are OPTIONAL —
+    // in the graph (reachable by name) but excluded from defaultTargets() so the full matrix on a
+    // mismatched Qt minor doesn't fail on baseline drift (critics r8 #1).
+    import std.range : chain;
+    return Build(chain(all.map!(t => createTopLevelTarget(t)),
+                       manifestGates.map!(t => optional(t))));
 }
 
 // Differential oracle harness: our uic (uiForm) must build a tree identical to
