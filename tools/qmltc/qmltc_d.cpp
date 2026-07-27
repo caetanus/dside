@@ -511,7 +511,8 @@ struct ObjNode {
     std::vector<std::pair<std::string, std::string>> scalars;   // custom @Property (name, dtype)
     std::vector<std::pair<std::string, std::string>> baseProps; // base C++ Q_PROPERTYs set (name, dtype)
     std::vector<std::string> notified;                          // props that carry a NOTIFY signal
-    std::vector<std::pair<std::string, ObjNode>> kids;          // (field name, child)
+    std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
+    std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
 };
 
 // Compile one QML object (its initializer) into a D @QObject class `cls`, appending the class text
@@ -598,6 +599,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<Prop> props;
     std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
+    std::vector<UiObjectDefinition *> defaultKids;                               // bare `Type { }` children
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
@@ -638,6 +640,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
             continue;
         }
+        // A bare `Type { ... }` is a default-property child (e.g. an Item inside an Item).
+        if (auto *od = cast<UiObjectDefinition *>(m->member)) { defaultKids.push_back(od); continue; }
         // A declared `signal name(type arg, ...)` -> a runtime `Signal!(dtypes) name;`.
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Signal) {
             std::string sn = qs(pub->name.toString());
@@ -707,6 +711,27 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             for (auto &n : kid.notified) childNotified[kid.id + "." + n] = true;
         }
         node.kids.push_back({cb.first, kid});
+    }
+
+    // Default-property children: a bare `Type { }`. The child type is mapped to a bound Qt type
+    // (Item -> QQuickItem) and compiled as a nested subclass in its own field, built in __qmltcWire.
+    // For the differential we don't need to reparent (the D dump reads the field directly; the
+    // oracle reads childItems()[i]) — only the declaration order must match.
+    for (size_t di = 0; di < defaultKids.size(); ++di) {
+        auto *od = defaultKids[di];
+        std::string childType = od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : "";
+        auto cbt = boundTypeFor(childType);
+        if (cbt.first.empty() && childType != "QtObject") {
+            std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
+                         inPath, childType.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        std::string field = "_dc" + std::to_string(di);
+        std::string childCls = cls + "_dc" + std::to_string(di);
+        ObjNode kid = compileObject(od->initializer, childCls, classes, partial, inPath, cbt.first);
+        childFields += "    " + childCls + " " + field + ";\n";
+        childWire += "        " + field + " = " + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n";
+        node.defaultKids.push_back({field, kid});
     }
 
     // Resolve `property alias <name>: <target>`. A SELF target (`<id>.<prop>` or bare `<prop>`)
@@ -922,6 +947,11 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         out.push_back({lab + s.first, rd, s.second});
     }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
+    // Default (unnamed) children: the D field is accessed directly, but the label uses `@<i>` so the
+    // oracle resolves it via childItems()[i] (declaration order == child list order).
+    for (size_t i = 0; i < n.defaultKids.size(); ++i)
+        collectDump(n.defaultKids[i].second, acc + n.defaultKids[i].first + ".",
+                    lab + "@" + std::to_string(i) + ".", out);
 }
 
 int main(int argc, char **argv) {
@@ -1002,6 +1032,7 @@ int main(int argc, char **argv) {
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
         for (auto &l : lines) {   // dynamic mutation of any int/string prop (via meta, dotted path)
             if (l.dtype != "string" && l.dtype != "int") continue;
+            if (l.label.find('@') != std::string::npos) continue;   // default-child mutation not supported
             auto dot = l.label.rfind('.');   // the PROPERTY PATH (not the read access) -> the setProp target
             std::string obj = (dot == std::string::npos) ? "o" : "o." + l.label.substr(0, dot);
             std::string prop = (dot == std::string::npos) ? l.label : l.label.substr(dot + 1);

@@ -60,9 +60,19 @@ int main(int argc, char **argv) {
         muts.push_back(QString::fromUtf8(argv[i]));
     }
     // Walk a dotted path to the object holding the leaf property; returns null if a hop is missing.
+    // A `@N` segment is the Nth default child (QObject child, declaration order).
     auto walk = [](QObject *root, const QStringList &parts) -> QObject * {
         QObject *cur = root;
-        for (int j = 0; j < parts.size() - 1 && cur; ++j) cur = cur->property(parts[j].toUtf8().constData()).value<QObject *>();
+        for (int j = 0; j < parts.size() - 1 && cur; ++j) {
+            const QString &p = parts[j];
+            if (p.startsWith('@')) {
+                int idx = p.mid(1).toInt();
+                auto ch = cur->children();
+                cur = (idx >= 0 && idx < ch.size()) ? ch[idx] : nullptr;
+            } else {
+                cur = cur->property(p.toUtf8().constData()).value<QObject *>();
+            }
+        }
         return cur;
     };
     for (auto &a : muts) {
