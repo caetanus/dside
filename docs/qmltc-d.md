@@ -56,8 +56,11 @@ through an `id`), which is exactly the guard we want.
   `@Slot __rc_<name>` recompute, and connections set in `__qmltcWire`. The runtime hook is one line
   in `qtmoc.wireQObject`: `static if (__traits(hasMember, T, "__qmltcWire")) o.__qmltcWire();` —
   inert for every hand-written `@QObject`.
-- **Signal handlers**: `on<Prop>Changed: <assignment>` becomes an `@Slot` connected to the source
-  property's change signal (single-assignment bodies).
+- **Signal handlers**: `on<Prop>Changed: <stmt>` becomes an `@Slot` connected to the source
+  property's change signal; the body may be a single statement or a brace block.
+- **`Component.onCompleted`**: its body runs at construction (tail of `__qmltcWire`).
+- **`function`s**: a no-arg `void` QML function becomes a D method; bodies are assignments and calls
+  to other functions/setters. (Typed params and return values need the type-inference layer below.)
 
 Fixtures (`tests/qmltc/corpus/`): Scalars, Mixed, HelloWorld, Computed, Logic, Bools, Handler,
 Ided, Nested, Aliased, Exprs, ChildAlias — 12 files, each static + dynamic on both compilers.
@@ -77,8 +80,12 @@ and the file exits `3` (PARTIAL), never a wrong emission.
 
 ## Tracked gaps (honest TODO)
 
-- JS **functions/methods** (`function f() { ... }`), **declared signals** (`signal foo(int)`),
-  **`Component`**, **enums** — the main remaining pure-QtQml blockers.
+- **Typed / return-valued functions** used in bindings (`property int d: times2(x)`). This needs a
+  real type-inference layer: QML/JS numbers are all `double`, coerced to the property type on
+  assignment, and function params are untyped — so a correct port must infer types and insert
+  coercion casts (the job Qt's `QtQmlCompiler` does). No-arg void functions already work.
+- **Declared signals** (`signal foo(int)`), **`Component {}`**, **enums** — remaining pure-QtQml
+  blockers.
 - Brace-block (multi-statement) handler bodies; **child-target alias reactivity**; **dynamic
   mutation of child properties** (the dump/oracle mutate only root scalars today).
 - More expression coverage: general member access, string methods, more `Math.*`, `Math.floor/ceil`.
