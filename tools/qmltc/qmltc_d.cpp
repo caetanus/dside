@@ -41,6 +41,10 @@ static std::map<std::string, std::string> g_funcRet;
 // (transitive dependency). Scoped per object.
 static std::map<std::string, std::vector<std::string>> g_funcReads;
 
+// The D return type of the function currently being compiled, so a `return <expr>` in a
+// multi-statement body formats its expression for that type. Empty outside a return-typed function.
+static std::string g_returnType;
+
 // QML accesses an enum member via the TYPE name and flattens members into the type scope
 // (`TypeName.Green`), while D keeps them under the enum. g_enumMember maps a member name to its D
 // enum name, and g_className is the current type name, so `TypeName.Green` -> `Color.Green` (int).
@@ -373,6 +377,25 @@ static bool compileStmtList(StatementList *list, const std::map<std::string, std
 static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptype, std::string &body) {
     // A brace block `{ a = ...; b = ...; }` -> each statement in order.
     if (auto *blk = cast<Block *>(st)) return compileStmtList(blk->statements, ptype, body);
+    // `var c = <expr>` -> a D local (`auto c = ...`). Type inferred for correct numeric formatting.
+    if (auto *vs = cast<VariableStatement *>(st)) {
+        for (auto *d = vs->declarations; d; d = d->next) {
+            auto *pe = d->declaration;
+            if (!pe || pe->bindingIdentifier.isEmpty() || !pe->initializer) return false;
+            std::string ty = inferType(pe->initializer, ptype), init;
+            if (!compileExpr(pe->initializer, QString::fromStdString(ty), init)) return false;
+            body += "        auto " + qs(pe->bindingIdentifier.toString()) + " = " + init + ";\n";
+        }
+        return true;
+    }
+    // `return <expr>` -> D return, formatted for the enclosing function's return type.
+    if (auto *ret = cast<ReturnStatement *>(st)) {
+        if (!ret->expression) { body += "        return;\n"; return true; }
+        std::string r;
+        if (!compileExpr(ret->expression, QString::fromStdString(g_returnType), r)) return false;
+        body += "        return " + r + ";\n";
+        return true;
+    }
     // `if (cond) <then> [else <else>]` -> D if/else (braces around each branch).
     if (auto *iff = cast<IfStatement *>(st)) {
         std::string cond, thenB;
@@ -397,9 +420,9 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         else if (auto *p = cast<PreDecrementExpression *>(es->expression)) { inner = p->expression; op = "--"; }
         else if (auto *p = cast<PostDecrementExpression *>(es->expression)) { inner = p->base; op = "--"; }
         if (inner) {
-            auto *id = cast<IdentifierExpression *>(inner);
-            if (!id) return false;
-            body += "        " + qs(id->name.toString()) + op + ";\n";
+            std::string lv;   // the lvalue: an identifier or a self member (`foo.count` -> count)
+            if (!compileExpr(inner, "", lv)) return false;
+            body += "        " + lv + op + ";\n";
             return true;
         }
     }
@@ -448,6 +471,13 @@ static bool compileStmtList(StatementList *list, const std::map<std::string, std
     for (auto *s = list; s; s = s->next)
         if (!compileStmt(s->statement, ptype, body)) return false;   // s->statement is a Node*
     return true;
+}
+
+// The first top-level `return <expr>` in a function body (for return-type inference), or null.
+static ExpressionNode *findReturnExpr(StatementList *body) {
+    for (auto *s = body; s; s = s->next)
+        if (auto *r = cast<ReturnStatement *>(s->statement)) return r->expression;
+    return nullptr;
 }
 
 // The emitted shape of an object: its scalar properties (name+type) and its child objects
@@ -512,17 +542,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *se = cast<UiSourceElement *>(m->member))
                 if (auto *fn = se->sourceElement->asFunctionDefinition())
-                    if (fn->body && !fn->body->next)   // single-statement `return <expr>` body
-                        if (auto *ret = cast<ReturnStatement *>(fn->body->statement)) {
-                            auto pt = pt0;
-                            for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;   // params in scope
-                            g_funcRet[qs(fn->name.toString())] = inferType(ret->expression, pt);
-                            if (!fn->formals) {   // no-arg: record which properties it reads (for reactive bindings)
-                                std::vector<std::string> reads;
-                                collectIds(ret->expression, reads);
-                                for (auto &r : reads) if (pt0.count(r)) g_funcReads[qs(fn->name.toString())].push_back(r);
-                            }
+                    if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
+                        auto pt = pt0;
+                        for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;   // params in scope
+                        g_funcRet[qs(fn->name.toString())] = inferType(rexpr, pt);
+                        if (!fn->formals) {   // no-arg: record which properties it reads (for reactive bindings)
+                            std::vector<std::string> reads;
+                            collectIds(rexpr, reads);
+                            for (auto &r : reads) if (pt0.count(r)) g_funcReads[qs(fn->name.toString())].push_back(r);
                         }
+                    }
     }
 
     std::vector<Prop> props;
@@ -740,15 +769,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string sig;   // "double n, string s"
             auto ptWithParams = ptype;
             for (auto &pp : params) { sig += (sig.empty() ? "" : ", ") + pp.second + " " + pp.first; ptWithParams[pp.first] = pp.second; }
-            // Single `return <expr>` -> typed method (return type inferred into g_funcRet).
-            if (fn->body && !fn->body->next) {
-                if (auto *ret = cast<ReturnStatement *>(fn->body->statement)) {
-                    std::string rt = g_funcRet.count(name) ? g_funcRet[name] : "", rexpr;
-                    if (!rt.empty() && compileExpr(ret->expression, QString::fromStdString(rt), rexpr)) {
-                        // params must be visible while compiling the return expr's numeric formatting
-                        methods += "    " + rt + " " + name + "(" + sig + ") { return " + rexpr + "; }\n";
-                        continue;
-                    }
+            // A body with a `return` -> a typed method (return type inferred into g_funcRet); the
+            // WHOLE body is compiled with g_returnType set, so multi-statement bodies (locals,
+            // increments, then `return ...`) work, not just a single return.
+            if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
+                std::string rt = g_funcRet.count(name) ? g_funcRet[name] : inferType(rexpr, ptWithParams);
+                if (!rt.empty()) {
+                    auto savedRT = g_returnType;
+                    g_returnType = rt;
+                    std::string fbody;
+                    bool ok = compileStmtList(fn->body, ptWithParams, fbody);
+                    g_returnType = savedRT;
+                    if (ok) { methods += "    " + rt + " " + name + "(" + sig + ") {\n" + fbody + "    }\n"; continue; }
                 }
             }
             // Void body (assignments / calls). Parameters allowed but only over property/param refs.
