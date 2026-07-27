@@ -216,7 +216,16 @@ struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string
 // RHS). Returns false on anything else (calls, control flow, ...) -> the handler is reported and
 // skipped, never mis-emitted. `body` accumulates D statements (already indented).
 static bool compileStmt(Statement *st, const std::map<std::string, std::string> &ptype, std::string &body) {
-    // A single assignment `prop = <expr>`. Brace blocks of several statements are a later step.
+    // A brace block `{ a = ...; b = ...; }` -> each assignment in order. `statement` is a Node*
+    // (FunctionDeclaration doesn't inherit Statement); the list is linear in the finished AST.
+    if (auto *blk = cast<Block *>(st)) {
+        for (auto *s = blk->statements; s; s = s->next) {
+            auto *inner = cast<ExpressionStatement *>(s->statement);
+            if (!inner || !compileStmt(inner, ptype, body)) return false;
+        }
+        return true;
+    }
+    // A single assignment `prop = <expr>`.
     auto *es = cast<ExpressionStatement *>(st);
     if (!es) return false;
     auto *bin = cast<BinaryExpression *>(es->expression);
