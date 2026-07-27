@@ -508,6 +508,27 @@ static ExpressionNode *findReturnExpr(StatementList *body) {
 
 // The emitted shape of an object: its scalar properties (name+type) and its child objects
 // (field name + subtree). Used to generate the differential dump with dotted paths (`kid.y`).
+// Resolve a QML type name to a sibling `<dir>/<TypeName>.qml` (a local, .qml-defined type) and parse
+// it, returning its root object definition — the engine auto-imports same-directory .qml types and
+// we mirror that. Engine/Parser are leaked (process-lifetime) so the returned AST stays valid for
+// the rest of compilation.
+static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath) {
+    QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
+    QString path = dir + "/" + QString::fromStdString(typeName) + ".qml";
+    if (!QFileInfo::exists(path)) return nullptr;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return nullptr;
+    QString code = QString::fromUtf8(f.readAll());
+    auto *engine = new Engine();
+    auto *lexer = new Lexer(engine);
+    lexer->setCode(code, 1, /*qmlMode*/ true);
+    auto *parser = new Parser(engine);
+    if (!parser->parse()) return nullptr;
+    auto *program = cast<UiProgram *>(parser->ast());
+    if (!program || !program->members || !program->members->member) return nullptr;
+    return cast<UiObjectDefinition *>(program->members->member);
+}
+
 struct ObjNode {
     std::string id;                                             // this object's QML `id:` (if any)
     std::vector<std::pair<std::string, std::string>> scalars;   // custom @Property (name, dtype)
@@ -723,16 +744,33 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         auto *od = defaultKids[di];
         std::string childType = od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : "";
         auto cbt = boundTypeFor(childType);
+        UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
+        std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
         if (cbt.first.empty() && childType != "QtObject") {
-            std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
-                         inPath, childType.c_str(), cls.c_str());
-            ++partial; continue;
+            // A local `.qml`-defined type (HelloWorld { }): compile ITS OWN root as this child's
+            // class, taking the local definition's base (QtObject -> fresh @QObject, Item -> bound).
+            UiObjectDefinition *lt = loadLocalType(childType, inPath);
+            if (!lt) {
+                std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
+                             inPath, childType.c_str(), cls.c_str());
+                ++partial; continue;
+            }
+            std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
+            childBase = boundTypeFor(ltRoot).first;
+            childInit = lt->initializer;
+            // Use-site members (`HelloWorld { property string text: ... }`) extend the local type;
+            // merging them is a later step, so a non-empty use site is not yet fully compiled.
+            if (od->initializer && od->initializer->members) {
+                std::fprintf(stderr, "qmltc-d: %s: use-site members on local type '%s' in %s not yet supported — skipped (later phase)\n",
+                             inPath, childType.c_str(), cls.c_str());
+                ++partial; continue;
+            }
         }
         std::string field = "_dc" + std::to_string(di);
         std::string childCls = cls + "_dc" + std::to_string(di);
-        ObjNode kid = compileObject(od->initializer, childCls, classes, partial, inPath, cbt.first);
+        ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase);
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += "        " + field + " = " + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n";
+        childWire += "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n";
         node.defaultKids.push_back({field, kid});
     }
 
