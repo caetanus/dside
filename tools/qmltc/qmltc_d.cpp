@@ -3,11 +3,12 @@
 // backend emits a D @QObject class that uses the qtmoc runtime, so instantiating the generated
 // type reproduces the QML object WITHOUT the QML engine interpreting the document at runtime.
 //
-// PHASE 1 (this brick): the root object's `property <type>: <literal>` members become
-// `@Property <dtype> <name> = <literal>;`. Non-literal bindings, signal handlers, methods,
-// child objects and ids are NOT yet handled — each is reported on stderr and skipped, and the
-// file is flagged PARTIAL (exit 3) so nothing is silently dropped. Later phases add bindings
-// (connect notify + re-eval), a JS-expr->D subset, signal handlers, ids/aliases/children.
+// Supported so far (root object only): `property <type>: <literal>` -> @Property field;
+// `property <type>: <expr>` bindings (identifiers, literals, unary -/!, parens, + - * / %,
+// comparisons, ternary, && ||) evaluated live (NOTIFY + recompute slot + connect); and
+// `on<Prop>Changed: <assignment(s)>` signal handlers. Everything else — child objects, ids,
+// aliases, methods, calls/member-access in expressions — is reported on stderr and skipped, and
+// the file is flagged PARTIAL (exit 3) so nothing is silently dropped.
 #include <QtQml/private/qqmljsengine_p.h>
 #include <QtQml/private/qqmljslexer_p.h>
 #include <QtQml/private/qqmljsparser_p.h>
@@ -19,11 +20,20 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <map>
+#include <cctype>
 
 using namespace QQmlJS;
 using namespace QQmlJS::AST;
 
 static std::string qs(const QString &s) { return s.toStdString(); }
+
+// dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
+static std::string qname(UiQualifiedId *id) {
+    std::string s;
+    for (auto *p = id; p; p = p->next) { if (!s.empty()) s += '.'; s += qs(p->name.toString()); }
+    return s;
+}
 
 // QML declared type -> D type. Only the scalar literal types Phase 1 emits; anything else
 // returns "" so the caller reports it as unsupported rather than guessing.
@@ -158,6 +168,27 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
 
 struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string> deps; };
 
+// Compile a signal-handler body (a JS statement) to D. Supports a single assignment
+// `prop = <expr>` or a brace block of them; the LHS must be a known property (its type drives the
+// RHS). Returns false on anything else (calls, control flow, ...) -> the handler is reported and
+// skipped, never mis-emitted. `body` accumulates D statements (already indented).
+static bool compileStmt(Statement *st, const std::map<std::string, std::string> &ptype, std::string &body) {
+    // A single assignment `prop = <expr>`. Brace blocks of several statements are a later step.
+    auto *es = cast<ExpressionStatement *>(st);
+    if (!es) return false;
+    auto *bin = cast<BinaryExpression *>(es->expression);
+    if (!bin || bin->op != QSOperator::Assign) return false;
+    auto *lhs = cast<IdentifierExpression *>(bin->left);
+    if (!lhs) return false;
+    std::string name = qs(lhs->name.toString());
+    auto it = ptype.find(name);
+    if (it == ptype.end()) return false;
+    std::string rhs;
+    if (!compileExpr(bin->right, QString::fromStdString(it->second), rhs)) return false;
+    body += "        " + name + " = " + rhs + ";\n";
+    return true;
+}
+
 int main(int argc, char **argv) {
     // --dump: also emit a `main` that instantiates the type and prints each scalar property as
     // `name\tvalue` (sorted), so the generated D can be diffed against the QQmlComponent oracle
@@ -194,8 +225,21 @@ int main(int argc, char **argv) {
 
     int partial = 0;   // count of things we saw but can't emit yet -> exit 3 (PARTIAL), never silent.
     std::vector<Prop> props;
+    std::vector<std::pair<std::string, Statement *>> rawHandlers;   // (signal name, handler body)
     for (auto *m = root->initializer ? root->initializer->members : nullptr; m; m = m->next) {
         auto *pub = cast<UiPublicMember *>(m->member);
+        // A property-change handler `on<Prop>Changed: <stmt>` is a UiScriptBinding whose id begins
+        // with `on` + an uppercase letter. Signal = lowercase-first of the rest (onCountChanged ->
+        // countChanged). Collect it; compile after the property types are known.
+        if (auto *sb = cast<UiScriptBinding *>(m->member)) {
+            std::string hid = qname(sb->qualifiedId);
+            if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) {
+                std::string sig = hid.substr(2);
+                sig[0] = (char)std::tolower((unsigned char)sig[0]);
+                rawHandlers.push_back({sig, sb->statement});
+                continue;
+            }
+        }
         if (pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
             const char *dt = dtypeOf(qmlType);
@@ -226,6 +270,28 @@ int main(int argc, char **argv) {
     std::vector<std::string> needsNotify;
     for (auto &p : props) propNames.push_back(p.name);
     auto isProp = [&](const std::string &n){ return std::find(propNames.begin(), propNames.end(), n) != propNames.end(); };
+
+    // Signal handlers: compile each body (property types now known) and require the source
+    // property's change signal, connected in __qmltcWire. Only `on<Prop>Changed` over a known
+    // property is handled; anything else is reported and skipped.
+    std::map<std::string, std::string> ptype;
+    for (auto &p : props) ptype[p.name] = p.dtype;
+    std::string handlerSlots, handlerWire;
+    for (auto &h : rawHandlers) {
+        std::string notifyProp, hbody;
+        if (h.first.size() > 7 && h.first.compare(h.first.size() - 7, 7, "Changed") == 0)
+            notifyProp = h.first.substr(0, h.first.size() - 7);
+        if (notifyProp.empty() || !isProp(notifyProp) || !compileStmt(h.second, ptype, hbody)) {
+            std::fprintf(stderr, "qmltc-d: %s: signal handler 'on%c%s' not yet supported — skipped (phase>4)\n",
+                         inPath, std::toupper((unsigned char)h.first[0]), h.first.c_str() + 1);
+            ++partial; continue;
+        }
+        if (std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
+            needsNotify.push_back(notifyProp);
+        handlerSlots += "    @Slot void __h_" + h.first + "() {\n" + hbody + "    }\n";
+        handlerWire += "        connectMeta(this, \"" + h.first + "()\", this, \"__h_" + h.first + "()\");\n";
+    }
+
     for (auto &p : props) {
         if (p.bound && std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
             needsNotify.push_back(p.name);
@@ -254,21 +320,24 @@ int main(int argc, char **argv) {
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
         }
     }
-    if (anyBound) {
-        // Compute initial values in declaration order, then wire each binding to its dependencies'
-        // change signals so a later write re-evaluates it (a real, live QML binding).
+    if (anyBound || !handlerWire.empty()) {
+        // Compute binding initials in declaration order, then wire each binding to its
+        // dependencies' change signals so a later write re-evaluates it (a live QML binding), and
+        // connect each signal handler to its source property's change signal.
         wire = "    void __qmltcWire() {\n";
         for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
         for (auto &p : props) if (p.bound)
             for (auto &d : p.deps) if (isProp(d))
                 wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+        wire += handlerWire;
         wire += "    }\n";
     }
 
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
     std::printf("import qtmoc;\n\n");
-    std::printf("@QObject class %s {\n%s%s%s}\n", qPrintable(cls), body.c_str(), recompute.c_str(), wire.c_str());
+    std::printf("@QObject class %s {\n%s%s%s%s}\n", qPrintable(cls),
+                body.c_str(), recompute.c_str(), handlerSlots.c_str(), wire.c_str());
 
     if (dump) {
         // A checker main: optionally apply `name=value` mutations (via the meta-object, so a write
