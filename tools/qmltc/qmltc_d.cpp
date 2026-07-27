@@ -129,6 +129,18 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (fn == "max" && args.size() == 2) { out = "(" + args[0] + " > " + args[1] + " ? " + args[0] + " : " + args[1] + ")"; return true; }
             if (fn == "min" && args.size() == 2) { out = "(" + args[0] + " < " + args[1] + " ? " + args[0] + " : " + args[1] + ")"; return true; }
             if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
+            return false;
+        }
+        // plain call `name(args)` -> a method of this class (a QML `function`).
+        if (auto *fnId = cast<IdentifierExpression *>(call->base)) {
+            std::string joined;
+            for (auto *a = call->arguments; a; a = a->next) {
+                std::string s;
+                if (!compileExpr(a->expression, dtype, s)) return false;
+                joined += (joined.empty() ? "" : ", ") + s;
+            }
+            out = qs(fnId->name.toString()) + "(" + joined + ")";
+            return true;
         }
         return false;
     }
@@ -215,29 +227,41 @@ struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string
 // `prop = <expr>` or a brace block of them; the LHS must be a known property (its type drives the
 // RHS). Returns false on anything else (calls, control flow, ...) -> the handler is reported and
 // skipped, never mis-emitted. `body` accumulates D statements (already indented).
+static bool compileStmtList(StatementList *list, const std::map<std::string, std::string> &ptype, std::string &body);
+
 static bool compileStmt(Statement *st, const std::map<std::string, std::string> &ptype, std::string &body) {
-    // A brace block `{ a = ...; b = ...; }` -> each assignment in order. `statement` is a Node*
-    // (FunctionDeclaration doesn't inherit Statement); the list is linear in the finished AST.
-    if (auto *blk = cast<Block *>(st)) {
-        for (auto *s = blk->statements; s; s = s->next) {
-            auto *inner = cast<ExpressionStatement *>(s->statement);
-            if (!inner || !compileStmt(inner, ptype, body)) return false;
-        }
-        return true;
-    }
-    // A single assignment `prop = <expr>`.
+    // A brace block `{ a = ...; b = ...; }` -> each statement in order.
+    if (auto *blk = cast<Block *>(st)) return compileStmtList(blk->statements, ptype, body);
     auto *es = cast<ExpressionStatement *>(st);
     if (!es) return false;
-    auto *bin = cast<BinaryExpression *>(es->expression);
-    if (!bin || bin->op != QSOperator::Assign) return false;
-    auto *lhs = cast<IdentifierExpression *>(bin->left);
-    if (!lhs) return false;
-    std::string name = qs(lhs->name.toString());
-    auto it = ptype.find(name);
-    if (it == ptype.end()) return false;
-    std::string rhs;
-    if (!compileExpr(bin->right, QString::fromStdString(it->second), rhs)) return false;
-    body += "        " + name + " = " + rhs + ";\n";
+    // Assignment `prop = <expr>`.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign) {
+        auto *lhs = cast<IdentifierExpression *>(bin->left);
+        if (!lhs) return false;
+        std::string name = qs(lhs->name.toString());
+        auto it = ptype.find(name);
+        if (it == ptype.end()) return false;
+        std::string rhs;
+        if (!compileExpr(bin->right, QString::fromStdString(it->second), rhs)) return false;
+        body += "        " + name + " = " + rhs + ";\n";
+        return true;
+    }
+    // Bare call statement `foo()` (calling a QML function of this class).
+    if (cast<CallExpression *>(es->expression)) {
+        std::string c;
+        if (compileExpr(es->expression, "", c)) { body += "        " + c + ";\n"; return true; }
+    }
+    return false;
+}
+
+// Compile a StatementList (a function body or block). `statement` is a Node* (FunctionDeclaration
+// doesn't inherit Statement); the list is linear in the finished AST. Only statements compileStmt
+// understands (assignment / bare call) are allowed — anything else fails and the caller reports it.
+static bool compileStmtList(StatementList *list, const std::map<std::string, std::string> &ptype, std::string &body) {
+    for (auto *s = list; s; s = s->next) {
+        auto *inner = cast<ExpressionStatement *>(s->statement);
+        if (!inner || !compileStmt(inner, ptype, body)) return false;
+    }
     return true;
 }
 
@@ -269,6 +293,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
+    std::vector<FunctionExpression *> functions;                                  // QML `function`s
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
@@ -281,6 +306,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 rawHandlers.push_back({sig, sb->statement});
                 continue;
             }
+        }
+        // A QML `function name(...) { ... }` is a UiSourceElement wrapping a function definition.
+        if (auto *se = cast<UiSourceElement *>(m->member)) {
+            if (auto *fn = se->sourceElement->asFunctionDefinition()) { functions.push_back(fn); continue; }
         }
         // `field: Type { ... }` re-binding an existing property to a child object.
         if (auto *ob = cast<UiObjectBinding *>(m->member)) {
@@ -412,6 +441,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ++partial; onCompletedBody.clear();
     }
 
+    // QML `function`s -> D methods. No-arg void methods whose body is assignments / calls (over
+    // property refs and this object's other functions). Typed params and return values are later.
+    std::string methods;
+    for (auto *fn : functions) {
+        std::string fbody;
+        if (fn->formals || !compileStmtList(fn->body, ptype, fbody)) {
+            std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s not yet supported (params/body) — skipped (later phase)\n",
+                         inPath, qs(fn->name.toString()).c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        methods += "    void " + qs(fn->name.toString()) + "() {\n" + fbody + "    }\n";
+    }
+
     for (auto &p : props) {
         if (p.bound && std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
             needsNotify.push_back(p.name);
@@ -455,7 +497,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire += "    }\n";
     }
 
-    classes += "@QObject class " + cls + " {\n" + body + childFields + recompute + handlerSlots + wire + "}\n";
+    classes += "@QObject class " + cls + " {\n" + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
     return node;
 }
