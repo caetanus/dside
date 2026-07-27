@@ -272,6 +272,48 @@ int[] propNotify(T)() {
     return r;
 }
 
+// ---- contrato de meta-métodos (critics r8 #4) -------------------------------
+// O metaobject não pode aceitar uma declaração cuja semântica ele não honra:
+//   * um @Slot Qt retorna void. Um método que retorna valor é um INVOKABLE — o
+//     runtime não marshala o retorno (ele era descartado em silêncio, e
+//     QMetaObject::invokeMethod com Q_RETURN_ARG respondia false). Rejeite.
+//   * uma @Property("notifySig") cujo NOTIFY não nomeia um Signal desta classe
+//     resolvia pra índice -1 em silêncio (nenhuma notificação jamais dispara).
+//     E se nomeia um Signal, a assinatura precisa casar com o que callProp emite
+//     (0 args, ou 1 arg do tipo da propriedade) — senão o slot receptor lê lixo.
+// Tudo em compile time, com mensagem apontando a correção. É uma função (escopo de
+// statement) instanciada por uma chamada no topo de cada caminho de registro — a
+// instanciação dispara os static asserts; em runtime é um no-op (otimizado).
+void validateMeta(T)() {
+    import std.traits : ReturnType;
+    static foreach (m; slotMembers!T)
+        static assert(is(ReturnType!(__traits(getMember, T, m)) == void),
+            "qtmoc: @Slot " ~ T.stringof ~ "." ~ m ~ " deve retornar void. " ~
+            "Um método que retorna valor é um invokable, não um slot, e o runtime " ~
+            "descartaria o retorno — emita o resultado por um Signal.");
+    static foreach (m; propMembers!T) {{
+        enum note = propNote!(__traits(getMember, T, m));
+        static if (note.length) {
+            alias PT = typeof(__traits(getMember, T, m));
+            enum bool found = () {
+                bool f = false;
+                static foreach (s; signalMembers!T) if (s == note) f = true;
+                return f;
+            }();
+            static assert(found,
+                "qtmoc: @Property " ~ T.stringof ~ "." ~ m ~ " tem NOTIFY \"" ~ note ~
+                "\" que não é um Signal desta classe.");
+            static foreach (s; signalMembers!T)
+                static if (s == note)
+                    static if (is(typeof(__traits(getMember, T, s)) == Signal!A, A...))
+                        static assert(A.length == 0 || (A.length == 1 && is(A[0] == PT)),
+                            "qtmoc: NOTIFY \"" ~ note ~ "\" de " ~ T.stringof ~ "." ~ m ~
+                            " deve ser parameterless ou receber um " ~ PT.stringof ~
+                            " (callProp emite o novo valor como único argumento).");
+        }
+    }}
+}
+
 // lê/escreve a propriedade `m` de `o` pelo slot do valor a[0]. No write, se o
 // valor muda e há sinal de notify, emite-o (pra bindings/QML verem a mudança).
 void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) {
@@ -317,6 +359,7 @@ void callSlot(T, string m)(T o, void** args) {
 T newQObject(T, Args...)(Args ctorArgs) {
     static assert(hasUDA!(T, QObject),
         "qtmoc: " ~ T.stringof ~ " precisa da UDA @QObject");
+    validateMeta!T();   // @Slot void + NOTIFY existente/compatível (compile time)
     T o = new T(ctorArgs);
     enum sigs  = signalSigs!T;
     enum slts  = slotSigs!T;
@@ -386,7 +429,12 @@ private extern (C) void __qmlDestroy(void* self, void* dobj) nothrow {
     _reg.remove(dobj);   // solta o T do registro -> o GC pode recolhê-lo
 }
 
-private __gshared bool[string] _qmlRegistered;   // "T|uri|name|maj.min" -> already registered
+// publicKey ("uri/name maj.min", o que o engine QML enxerga) -> identidade D do tipo registrado.
+// A identidade é T.mangleof (nome mangled totalmente-qualificado): dois @QObject D homônimos
+// (mesmo T.stringof, módulos diferentes) têm mangleof DISTINTO. Assim o mesmo (T, uri, nome,
+// versão) é no-op idempotente, mas dois tipos DIFERENTES na mesma chave pública são um conflito
+// observável — não um "já registrado" silencioso (critics r8 #3).
+private __gshared string[string] _qmlRegistered;
 
 /// Registra o tipo `T` (@QObject D) como elemento QML instanciável. Chame antes de carregar o
 /// .qml. Contrato de erro (critics r7 #2): **THROWS** se o registro falhar no backend (pool Qt5
@@ -397,9 +445,15 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
         "qtmoc: " ~ T.stringof ~ " precisa da UDA @QObject");
     static assert(__traits(compiles, new T()),
         "qtmoc: " ~ T.stringof ~ " precisa de construtor sem argumentos (o QML instancia sem args)");
+    validateMeta!T();   // @Slot void + NOTIFY existente/compatível (compile time)
     import std.conv : to;
-    auto regKey = T.stringof ~ "|" ~ uri ~ "|" ~ qmlName ~ "|" ~ vmaj.to!string ~ "." ~ vmin.to!string;
-    if (regKey in _qmlRegistered) return;   // idempotent: don't re-register / re-consume a pool slot
+    enum typeId = T.mangleof;   // identidade D inequívoca (homônimos diferem no mangle)
+    auto pubKey = uri ~ "/" ~ qmlName ~ " " ~ vmaj.to!string ~ "." ~ vmin.to!string;
+    if (auto prev = pubKey in _qmlRegistered) {
+        if (*prev == typeId) return;   // MESMO tipo, mesma versão -> no-op (não reconsome pool Qt5)
+        throw new Exception("qmlRegisterType conflict: " ~ pubKey ~ " já está registrado para outro "
+            ~ "tipo D (" ~ *prev ~ " != " ~ typeId ~ "). Use um nome/URI/versão distinto.");
+    }
     enum sigs = signalSigs!T;
     enum slts = slotSigs!T;
     enum pnames = propMembers!T;
@@ -422,8 +476,8 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
         pnp.ptr, ptp.ptr, pnt.ptr, cast(int) pnames.length,
         &__qmlMake, &__qmlDestroy, &__mocGlobalDispatch, &__mocGlobalProp);
     if (key is null)   // backend refused (Qt5 pool exhausted / qmlregister failed) -> OBSERVABLE
-        throw new Exception("qmlRegisterType failed for " ~ T.stringof ~ " as " ~ uri ~ "/" ~ qmlName
-            ~ " " ~ regKey ~ " (backend returned null; see stderr)");
+        throw new Exception("qmlRegisterType failed for " ~ T.stringof ~ " as " ~ pubKey
+            ~ " (backend returned null; see stderr)");
     // factory por-T: o engine chama isto (via __qmlMake) por instância criada no QML.
     _qmlFactories[key] = (void* qobj) nothrow {
         try {
@@ -432,7 +486,7 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
             return cast(void*) o;
         } catch (Exception e) { qtdOnCallbackError(e); return null; }
     };
-    _qmlRegistered[regKey] = true;
+    _qmlRegistered[pubKey] = typeId;
 }
 
 // ---- .qmltypes emission (type description for tooling) ----------------------

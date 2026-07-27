@@ -91,8 +91,10 @@ Build reggaeBuild() {
             all ~= qtdTest("qmlreg" ~ tag ~ "-" ~ dc, t("qml", "register_test.d"), b, dc, qmlExtra); // qmlRegisterType
             all ~= qtdTest("qmltwo" ~ tag ~ "-" ~ dc, t("qml", "register_two_test.d"), b, dc, qmlExtra); // 2 distinct types
             all ~= qtdTest("homonym" ~ tag ~ "-" ~ dc, t("qml", "homonym_test.d"), b, dc, homoExtra); // 2 same-named types
+            all ~= qtdTest("homocollide" ~ tag ~ "-" ~ dc, t("qml", "homonym_collision_test.d"), b, dc, homoExtra); // same key -> conflict
             all ~= qtdTest("moclife" ~ tag ~ "-" ~ dc, t("qml", "moclife_test.d"), b, dc);           // side-table cleanup
             all ~= qtdTest("metacast" ~ tag ~ "-" ~ dc, t("qml", "metacast_test.d"), b, dc);         // qt_metacast identity
+            all ~= qtdTest("metacontract" ~ tag ~ "-" ~ dc, t("qml", "metacontract_test.d"), b, dc); // @Slot/NOTIFY compile-time rules
         }
         all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
     }
