@@ -85,7 +85,14 @@ struct QtdMocObject : QObject {
         // entry (nor let a reused pointer alias a stale one). g_mocDestroy clears the D _reg.
         qtd_moc_teardown(this, dobj);
     }
-    const QMetaObject* metaObject() const override { return mo; }
+    // A DYNAMIC meta-object installed on us wins — that is what QObject::metaObject() itself does.
+    // QML installs a QQmlVMEMetaObject whenever a .qml declares members on an instance
+    // (`property int doubled: value * 2`); it chains OUR `mo` as its parent. Returning `mo`
+    // unconditionally made those QML-declared members invisible: they were never created, and
+    // reading one gave an empty QVariant instead of its bound value.
+    const QMetaObject* metaObject() const override {
+        return d_ptr->metaObject ? d_ptr->dynamicMetaObject() : mo;
+    }
     // A Qt moc first matches the class's OWN name (returns this), THEN delegates to base.
     // The old body skipped step 1 -> qt_metacast("Dup") on a runtime `Dup` returned null even
     // though metaObject()->className() is "Dup" (critics r8 #2). qobject_cast/interfaces/name

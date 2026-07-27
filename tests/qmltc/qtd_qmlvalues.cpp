@@ -36,7 +36,10 @@ static std::string fmt(const QVariant &v) {
     }
 }
 
-int main(int argc, char **argv) {
+// The oracle body is a callable ENTRY POINT, not `main`, so a D driver can register the app's
+// D-defined QML types (qmlRegisterType!T) and THEN hand over to exactly this code — the same
+// walk/format/dump the C++-only oracle has been running. `main` below keeps the plain C++ use.
+extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: %s <file.qml>\n", argv[0]); return 2; }
     QGuiApplication app(argc, argv);
     QQmlEngine engine;
@@ -82,6 +85,14 @@ int main(int argc, char **argv) {
         if (QObject *cur = walk(obj, parts)) cur->setProperty(parts.last().toUtf8().constData(), QVariant(a.mid(eq + 1)));
     }
 
+    // QTD_QMLVALUES_DEBUG=1 -> describe the meta-object chain the engine actually built. Answers
+    // "did QML install a QQmlVMEMetaObject for the members this .qml declares, and on which class?"
+    if (qEnvironmentVariableIsSet("QTD_QMLVALUES_DEBUG"))
+        for (const QMetaObject *m = obj->metaObject(); m; m = m->superClass())
+            std::fprintf(stderr, "[dbg] %s: properties [%d,%d)%s\n", m->className(),
+                         m->propertyOffset(), m->propertyCount(),
+                         m == obj->metaObject() ? "  <- metaObject()" : "");
+
     std::vector<std::string> lines;
     if (!propsFile.empty()) {
         std::ifstream f(propsFile);
@@ -99,6 +110,12 @@ int main(int argc, char **argv) {
     for (const auto &l : lines) std::printf("%s\n", l.c_str());
     return 0;
 }
+
+// Plain C++ oracle (no app types to register). Compiled out when a D driver supplies its own
+// main and links this file for qtd_qmlvalues_main alone.
+#ifndef QTD_QMLVALUES_NO_MAIN
+int main(int argc, char **argv) { return qtd_qmlvalues_main(argc, argv); }
+#endif
 
 void dumpObj(QObject *obj, const std::string &prefix, std::vector<std::string> &lines) {
     // QML-declared properties live at [propertyOffset, propertyCount) — above everything the C++

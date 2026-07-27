@@ -117,13 +117,77 @@ type through its **meta-object**; the language that produced it is irrelevant �
   description of a D type, validated by Qt's own reader (`qmltypes-check-*`).
 
 What actually blocks those files is **QML registration semantics qmltc-d does not implement yet** —
-grouped properties, attached properties, singletons, `required`, deferred and extension types — plus
-the fact that qmltc-d has no app-type registry input: it resolves names through `qmlmap.tsv` (3
-columns, generated from a Qt module's `plugins.qmltypes`) and knows only bound-Qt / QtObject /
-local-`.qml` roots. That is a feature backlog, not a ceiling.
+grouped properties, attached properties, singletons, `required`, deferred and extension types. That
+is a feature backlog, not a ceiling.
+
+### Compiling a .qml against a D-defined type (DONE)
+
+The app-type registry gap is closed, and it is a THIRD backend alongside fresh-`@QObject` and
+bound-Qt-subclass — targets `qmltcd-<Name>-<dc>` over `tests/qmltc/dtypes/`, green on ldc2 and dmd:
+
+```qml
+import AppTypes 1.0            // apptypes.d: @QObject class Backend { @Property("valueChanged") int value; … }
+Backend {
+    value: 21
+    label: "hi"
+    property int doubled: value * 2
+}
+```
+```d
+@QObject class DBasic : Backend {                  // plain D inheritance — no trampoline, no mixin
+    @Property("doubledChanged") int doubled;
+    Signal!() doubledChanged;
+    @Slot void __rc_doubled() { auto _v = (value * 2); if (doubled != _v) { doubled = _v; doubledChanged.emit(); } }
+    void __qmltcWire() {
+        value = 21;                                // an inherited @Property is a REAL FIELD
+        label = "hi";
+        __rc_doubled();
+        connectMeta(this, "valueChanged()", this, "__rc_doubled()");   // notify name from the registry
+    }
+}
+```
+
+Three things make this work, none of them a special case:
+
+- **The registry is the type's own `.qmltypes`**, emitted from the D type by CTFE
+  (`qmlTypeComponent!T`) and validated by Qt's own reader. It is itself a QML document, so qmltc-d
+  parses it with the SAME QQmlJS frontend it already uses — no new format, no new parser.
+  `--dtypes <registry> <d-module>`; the module is a build input (the format has no field for it).
+  A base property's notify signal comes from the registry, so the `<prop>Changed` spelling is
+  never assumed.
+- **The oracle is still the real QML engine.** `qtd_qmlvalues_d.d` registers the D types with
+  `qmlRegisterType` and hands over to `qtd_qmlvalues_main` — the same walk/format/dump the C++
+  oracle always ran. Only the type's implementation language changed.
+- **One list of types drives both sides** (`AppQmlTypes` in `apptypes.d`), so the registry cannot
+  drift from what is registered.
+
+The D case is strictly *simpler* than the bound-Qt one: no generated C++ trampoline, no
+`mixin QtdWidget!Base`, and no meta round-trip for base properties — `__traits(allMembers)` already
+flattens inherited `@Property`/`Signal`/`@Slot` into the subclass meta-object. The `<Name>.set`
+sidecars mutate both sides and re-diff, proving bindings stay live *through the base type's own
+notify signal*.
+
+Two real runtime bugs surfaced and were fixed here — see "Bugs this found" below.
 
 Nothing here is silently dropped: any member or binding qmltc-d can't compile is reported on stderr
 and the file exits `3` (PARTIAL), never a wrong emission.
+
+## Bugs this found
+
+Building the D-type differential exposed two defects that no existing test could reach:
+
+- **A `.qml` declaring `property` on a D-registered type lost it, silently.**
+  `QtdMocObject::metaObject()` returned the CTFE meta-object unconditionally, so the
+  `QQmlVMEMetaObject` the engine installs for QML-declared members was ignored: the property was
+  never created and reading it gave an empty `QVariant`. It now returns the dynamic meta-object
+  when one is installed — which is exactly what `QObject::metaObject()` itself does. The existing
+  `qmlreg`/`qmltwo` tests never declared members on the instance, so this was invisible.
+- **JS `+` string concatenation emitted uncompilable D.** `label + "-" + value` became
+  `label ~ "-" ~ value`; QML converts the non-string side, D's `~` does not. compileExpr now
+  coerces a non-string operand with `to!string`, using the in-scope type map.
+
+Diagnostic: `QTD_QMLVALUES_DEBUG=1` makes the oracle print the meta-object chain the engine built
+(class, property range, which one `metaObject()` returns) — that is what located the first bug.
 
 ## Tracked gaps (honest TODO)
 

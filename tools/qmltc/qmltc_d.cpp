@@ -80,6 +80,105 @@ static std::pair<std::string, std::string> boundTypeFor(const std::string &qmlTy
     return it != g_qmlMap.end() ? it->second : std::pair<std::string, std::string>{"", ""};
 }
 
+// dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
+static std::string qname(UiQualifiedId *id) {
+    std::string s;
+    for (auto *p = id; p; p = p->next) { if (!s.empty()) s += '.'; s += qs(p->name.toString()); }
+    return s;
+}
+
+// ---- app-defined D QML types ------------------------------------------------------------------
+// A QML type does not have to come from C++: `@QObject` + qmlRegisterType!T exports a D class as a
+// QML element, and the engine sees a meta-object either way. So qmltc-d can compile a .qml rooted
+// in a D type — and that case is SIMPLER than the bound-Qt one: plain D inheritance, no C++
+// trampoline, no `mixin QtdWidget!Base`, and an inherited @Property is a real D field (direct
+// read/write, no meta round-trip).
+//
+// The registry is the type's own `.qmltypes` — Qt's format, emitted from the D type by CTFE
+// (qmlTypeComponent!T) and validated by Qt's own reader. It is itself a QML document, so it is
+// parsed with the SAME QQmlJS frontend this tool already uses; no new format, no new parser.
+struct DType {
+    std::string dClass;                                   // the D class name
+    std::map<std::string, std::string> propType;          // property -> D type (int/string/double/bool)
+    std::map<std::string, std::string> propNotify;        // property -> its notify signal
+};
+static std::map<std::string, DType> g_dTypes;             // QML element name -> D type
+static std::string g_dModule;                             // D module that declares them
+
+// C++ type spellings as they appear in a .qmltypes -> the D type qmltc-d compiles against.
+static const char *dtypeOfCxx(const std::string &t) {
+    if (t == "int") return "int";
+    if (t == "QString") return "string";
+    if (t == "double" || t == "float" || t == "qreal") return "double";
+    if (t == "bool") return "bool";
+    return "";
+}
+
+// `Property { name: "x"; type: "int"; notify: "xChanged" }` -> the string bound to `key`.
+static std::string qmltypesField(UiObjectInitializer *init, const char *key) {
+    for (auto *m = init ? init->members : nullptr; m; m = m->next)
+        if (auto *sb = cast<UiScriptBinding *>(m->member))
+            if (qname(sb->qualifiedId) == key)
+                if (auto *es = cast<ExpressionStatement *>(sb->statement))
+                    if (auto *sl = cast<StringLiteral *>(es->expression))
+                        return qs(sl->value.toString());
+    return "";
+}
+
+// Parse a `.qmltypes` registry: Module { Component { name; exports: ["Uri/Name 1.0"]; Property {…} } }.
+// The QML element name comes from `exports` (what a .qml actually writes); `name` is the class.
+static bool loadDTypes(const char *path, const char *dModule) {
+    QFile f(QString::fromUtf8(path));
+    if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", path); return false; }
+    auto *engine = new Engine();                       // leaked: the AST must outlive this call
+    auto *lexer = new Lexer(engine);
+    lexer->setCode(QString::fromUtf8(f.readAll()), 1, /*qmlMode*/ true);
+    auto *parser = new Parser(engine);
+    if (!parser->parse()) { std::fprintf(stderr, "qmltc-d: %s is not a parseable .qmltypes\n", path); return false; }
+    auto *program = cast<UiProgram *>(parser->ast());
+    auto *mod = program && program->members ? cast<UiObjectDefinition *>(program->members->member) : nullptr;
+    if (!mod) { std::fprintf(stderr, "qmltc-d: %s has no Module block\n", path); return false; }
+    g_dModule = dModule;
+    for (auto *m = mod->initializer ? mod->initializer->members : nullptr; m; m = m->next) {
+        auto *comp = cast<UiObjectDefinition *>(m->member);
+        if (!comp || qname(comp->qualifiedTypeNameId) != "Component") continue;
+        DType dt;
+        dt.dClass = qmltypesField(comp->initializer, "name");
+        std::string qmlName = dt.dClass;               // fallback if `exports` is absent
+        for (auto *c = comp->initializer ? comp->initializer->members : nullptr; c; c = c->next) {
+            // exports: ["AppTypes/Backend 1.0"] -> the element name a .qml writes is `Backend`.
+            if (auto *sb = cast<UiScriptBinding *>(c->member); sb && qname(sb->qualifiedId) == "exports") {
+                if (auto *es = cast<ExpressionStatement *>(sb->statement))
+                    if (auto *arr = cast<ArrayPattern *>(es->expression))
+                        if (arr->elements && arr->elements->element)
+                            if (auto *sl = cast<StringLiteral *>(arr->elements->element->initializer)) {
+                                std::string e = qs(sl->value.toString());
+                                auto slash = e.find('/'), space = e.find(' ');
+                                if (slash != std::string::npos)
+                                    qmlName = e.substr(slash + 1, (space == std::string::npos ? e.size() : space) - slash - 1);
+                            }
+                continue;
+            }
+            auto *sub = cast<UiObjectDefinition *>(c->member);
+            if (!sub || qname(sub->qualifiedTypeNameId) != "Property") continue;
+            std::string pn = qmltypesField(sub->initializer, "name");
+            const char *pd = dtypeOfCxx(qmltypesField(sub->initializer, "type"));
+            if (pn.empty() || !pd[0]) continue;        // a property type we don't compile against
+            dt.propType[pn] = pd;
+            std::string note = qmltypesField(sub->initializer, "notify");
+            if (!note.empty()) dt.propNotify[pn] = note;
+        }
+        if (!dt.dClass.empty()) g_dTypes[qmlName] = dt;
+    }
+    return true;
+}
+
+// Empty dClass = not an app-defined D type.
+static const DType *dTypeFor(const std::string &qmlType) {
+    auto it = g_dTypes.find(qmlType);
+    return it != g_dTypes.end() ? &it->second : nullptr;
+}
+
 // QML accesses an enum member via the TYPE name and flattens members into the type scope
 // (`TypeName.Green`), while D keeps them under the enum. g_enumMember maps a member name to its D
 // enum name, and g_className is the current type name, so `TypeName.Green` -> `Color.Green` (int).
@@ -89,6 +188,17 @@ static std::string g_className;
 // Base C++ properties this object sets/reads (name -> dtype). A reference to one in an expression
 // reads it through the meta-object (propInt/propStr(this, name)), as it has no D field.
 static std::map<std::string, std::string> g_baseProps;
+
+// True when the base is an app-defined D type rather than a bound C++ one. Then a base property
+// is a real D field on the superclass: read and written DIRECTLY by name, with no meta-object
+// round-trip. (The value DUMP still goes through the meta-object — that is deliberate: it is the
+// same observation path the engine-side oracle uses.)
+static bool g_baseIsD;
+
+// D type of each in-scope name (declared property, base property, function param, local). Lets
+// compileExpr decide COERCIONS — notably JS `+` string concatenation, where QML converts the
+// non-string side and D's `~` does not. Maintained alongside g_scope.
+static std::map<std::string, std::string> g_propType;
 
 // Every bare name that RESOLVES in the generated D class: declared properties, base C++
 // properties, `function` names, declared signals, plus (pushed while a body compiles) the
@@ -117,13 +227,6 @@ static std::map<std::string, std::vector<std::pair<std::string, std::string>>> g
 static std::string cppTypeOf(const std::string &dtype) {
     if (dtype == "string") return "QString";
     return dtype;   // int/double/bool map through unchanged
-}
-
-// dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
-static std::string qname(UiQualifiedId *id) {
-    std::string s;
-    for (auto *p = id; p; p = p->next) { if (!s.empty()) s += '.'; s += qs(p->name.toString()); }
-    return s;
 }
 
 // QML declared type -> D type. Only the scalar literal types Phase 1 emits; anything else
@@ -182,6 +285,8 @@ static bool literalOf(Statement *st, const QString &dtype, std::string &out) {
 // `dtype` is the target D type, used to pick the operator and format numeric literals. Returns
 // false on anything outside this subset (calls, member access, comparisons, ...) -> the caller
 // falls back to PARTIAL, so an uncompilable binding is reported and skipped, never mis-emitted.
+static std::string inferType(ExpressionNode *e, const std::map<std::string, std::string> &ptype);
+
 static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &out) {
     if (!e) return false;
     if (auto *nested = cast<NestedExpression *>(e)) {
@@ -192,6 +297,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
     if (auto *id = cast<IdentifierExpression *>(e)) {
         std::string n = qs(id->name.toString());
         auto bp = g_baseProps.find(n);   // a base C++ property -> read via meta (no D field)
+        if (bp != g_baseProps.end() && g_baseIsD) { out = n; return true; }   // D base: a real field
         if (bp != g_baseProps.end()) {
             const char *rd = bp->second == "string" ? "propStr(this, \"" : bp->second == "double" ? "propDouble(this, \""
                            : bp->second == "bool" ? "propBool(this, \"" : "propInt(this, \"";
@@ -310,6 +416,18 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         QString sub = logical ? QString("bool") : (cmp ? QString("") : dtype);
         std::string l, r;
         if (!compileExpr(bin->left, sub, l) || !compileExpr(bin->right, sub, r)) return false;
+        if (op == "~") {
+            // JS `+` CONCATENATES when either side is a string, converting the other one
+            // (`"n=" + 5` -> "n=5"). D's `~` has no such coercion, so convert explicitly. A
+            // side whose type we can't infer is left alone — it is either already a string or a
+            // visible compile error, never a silently wrong value.
+            auto coerce = [](ExpressionNode *x, std::string &side) {
+                std::string ty = inferType(x, g_propType);
+                if (!ty.empty() && ty != "string") side = "to!string(" + side + ")";
+            };
+            coerce(bin->left, l);
+            coerce(bin->right, r);
+        }
         out = "(" + l + " " + op + " " + r + ")"; return true;
     }
     return false;
@@ -599,7 +717,7 @@ struct ObjNode {
 // in __qmltcWire, so the whole tree materialises without the QML engine. Returns the ObjNode.
 static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              std::string &classes, int &partial, const char *inPath,
-                             const std::string &boundBase = "") {
+                             const std::string &boundBase = "", const DType *dBase = nullptr) {
     std::string savedId = g_selfId;
     g_selfId = "";
     for (auto *m = init ? init->members : nullptr; m; m = m->next)   // pre-scan this object's id
@@ -620,13 +738,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedSignalParams = g_signalParams;
     auto savedBaseProps = g_baseProps;
     auto savedScope = g_scope;
+    auto savedPropType = g_propType;
     g_scope.clear();
+    g_propType.clear();
     g_funcRet.clear();
     g_funcReads.clear();
     g_enumMember.clear();
     g_signals.clear();
     g_signalParams.clear();
     g_baseProps.clear();
+    auto savedBaseIsD = g_baseIsD;
+    g_baseIsD = dBase != nullptr;
+    // An app-defined D base contributes its properties WITH THEIR DECLARED TYPES, straight from
+    // the registry — better than the literal-inference fallback used for a bound C++ base, and it
+    // also puts properties the .qml only READS (never assigns) in scope.
+    if (dBase) for (auto &p : dBase->propType) g_baseProps[p.first] = p.second;
     g_className = cls;
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *en = cast<UiEnumDeclaration *>(m->member))
@@ -658,7 +784,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) continue;
                 if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
                     std::string ty = inferType(es->expression, pt0);
-                    if (ty == "int" || ty == "string" || ty == "double" || ty == "bool") g_baseProps[hid] = ty;
+                    if (!g_baseProps.count(hid)                       // a declared type already won
+                            && (ty == "int" || ty == "string" || ty == "double" || ty == "bool"))
+                        g_baseProps[hid] = ty;
                 }
             }
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
@@ -686,6 +814,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         for (auto &bp : g_baseProps) g_scope.insert(bp.first);
         for (auto &sg : g_signals) g_scope.insert(sg);
+        g_propType = pt0;
+        for (auto &bp : g_baseProps) g_propType[bp.first] = bp.second;
     }
 
     std::vector<Prop> props;
@@ -1012,7 +1142,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported — skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
             ++partial; continue;
         }
-        baseWire += "        setProp(this, \"" + ba.first + "\", " + val + ");\n";
+        // A D base's property is an inherited FIELD -> assign it; a bound C++ base's is a
+        // Q_PROPERTY reachable only through the meta-object.
+        baseWire += g_baseIsD ? ("        " + ba.first + " = " + val + ";\n")
+                              : ("        setProp(this, \"" + ba.first + "\", " + val + ");\n");
         node.baseProps.push_back({ba.first, ty});
     }
 
@@ -1099,8 +1232,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire += baseWire;    // set base C++ properties
         for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
         for (auto &p : props) if (p.bound)
-            for (auto &d : p.deps) if (isProp(d))
-                wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+            for (auto &d : p.deps) {
+                if (isProp(d)) {   // a property of THIS object: qmltc-d named its notify <p>Changed
+                    wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+                    continue;
+                }
+                // A property of a D BASE: its notify signal is whatever the type declared, which
+                // the registry records — don't assume the <prop>Changed spelling.
+                if (!dBase) continue;
+                auto n = dBase->propNotify.find(d);
+                if (n != dBase->propNotify.end())
+                    wire += "        connectMeta(this, \"" + n->second + "()\", this, \"__rc_" + p.name + "()\");\n";
+            }
         wire += crossConnects;   // live child-alias connects (cross-object)
         wire += handlerWire;
         wire += onCompletedBody;   // Component.onCompleted, last
@@ -1110,7 +1253,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A non-QtObject root becomes a D subclass of the bound Qt type via the (generic) QtdWidget
     // mixin; the trampoline + attach come from the binding, base props are set in __qmltcWire.
     std::string mixinLine = boundBase.empty() ? "" : ("    mixin QtdWidget!" + boundBase + ";\n");
-    classes += "@QObject class " + cls + " {\n" + mixinLine + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
+    // A bound C++ base is reached through the generated trampoline (the mixin); a D base is just
+    // a D superclass — `@QObject class Foo : Backend`. qtmoc's __traits(allMembers) already flattens
+    // inherited @Property/Signal/@Slot into the subclass meta-object.
+    std::string ext = dBase ? (" : " + dBase->dClass) : "";
+    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
@@ -1119,7 +1266,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_signals = savedSignals;
     g_signalParams = savedSignalParams;
     g_baseProps = savedBaseProps;
+    g_baseIsD = savedBaseIsD;
     g_scope = savedScope;
+    g_propType = savedPropType;
     return node;
 }
 
@@ -1153,6 +1302,10 @@ int main(int argc, char **argv) {
         if (std::strcmp(argv[i], "--dump") == 0) dump = true;
         else if (std::strcmp(argv[i], "--labels") == 0) labels = true;   // print the dump labels (for the oracle --props)
         else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) loadQmlMap(argv[++i]);   // QML-name->class table
+        // --dtypes <registry.qmltypes> <d-module>: app-defined QML types written in D. The registry
+        // is the CTFE .qmltypes of those types; the module is where the D classes live (the
+        // .qmltypes format has no field for it, so it is a build input, like a header path).
+        else if (std::strcmp(argv[i], "--dtypes") == 0 && i + 2 < argc) { const char *rf = argv[i + 1]; loadDTypes(rf, argv[i + 2]); i += 2; }
         else pos.push_back(argv[i]);
     }
     if (pos.empty()) { std::fprintf(stderr, "usage: %s [--dump] <file.qml> [ClassName]\n", argv[0]); return 2; }
@@ -1209,18 +1362,26 @@ int main(int argc, char **argv) {
         g_extraImports += "import " + pkg + ".qtvirt;\n";
     }
 
+    // An app-defined type written in D: `@QObject` + qmlRegisterType. The generated class simply
+    // DERIVES from it — no trampoline, no mixin, inherited properties are real fields.
+    const DType *rootD = nullptr;
+    if (bt.first.empty() && rootResolvedPath.empty()) {
+        rootD = dTypeFor(rootType);
+        if (rootD) g_extraImports += "import " + g_dModule + ";\n";
+    }
+
     int partial = 0;
-    // An unmapped root that is neither QtObject nor a resolved local `.qml` type is an APP-DEFINED
-    // C++ type (e.g. TypeWithProperties from a C++ module) — we can't bind it. Treating it as a
-    // fresh @QObject would silently emit values the engine doesn't have, so flag PARTIAL.
-    if (bt.first.empty() && rootType != "QtObject" && rootResolvedPath.empty()) {
+    // An unmapped root that is neither QtObject, a resolved local `.qml` type, nor a registered
+    // D type is an app-defined type we have no registry for. Treating it as a fresh @QObject would
+    // silently emit values the engine doesn't have, so flag PARTIAL.
+    if (bt.first.empty() && rootType != "QtObject" && rootResolvedPath.empty() && !rootD) {
         std::fprintf(stderr, "qmltc-d: %s: root type '%s' is not a bound Qt type, QtObject, or local .qml type — skipped (later phase)\n",
                      inPath, rootType.c_str());
         ++partial;
     }
     std::string classes;
     if (!rootResolvedPath.empty()) g_resolving.insert(rootResolvedPath);
-    ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first);
+    ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first, rootD);
     if (!rootResolvedPath.empty()) g_resolving.erase(rootResolvedPath);
 
     // --labels: print the sorted dump labels (property paths) for the oracle's --props mode.
@@ -1234,7 +1395,8 @@ int main(int argc, char **argv) {
 
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
-    std::printf("import qtmoc;\n%s\n%s", g_extraImports.c_str(), classes.c_str());
+    std::printf("import qtmoc;\nimport std.conv : to;   // JS `+` string concatenation coerces\n%s\n%s",
+                g_extraImports.c_str(), classes.c_str());
     // A bound visual root needs a QGuiApplication before setting a property that lays out text.
     if (!bt.first.empty()) std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
 

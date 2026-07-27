@@ -105,6 +105,7 @@ Build reggaeBuild() {
     all ~= qmlAotTargets(root, qml);   // qmlcachegen (Qt6 unit/loader format); Qt5 AOT is a follow-up
     all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes (Qt-agnostic), validated by Qt's reader
     all ~= qmltcTargets(root, qml, buildPath(root, "tests", "qmltc", "corpus"), "");   // qmltc-d: .qml -> D vs oracle
+    all ~= qmltcDTypeTargets(root, qml);   // .qml rooted in an APP-DEFINED type written in D
     // (b) QtQuick: a bound-type root (Item -> QQuickItem) compiled to a D subclass, diffed vs the engine.
     if (execute(["pkg-config", "--exists", "Qt6Quick"]).status == 0) {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
@@ -314,6 +315,28 @@ Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
     return ts;
 }
 
+// The qmltc-d binary, built ONCE per binding: both the corpus differential and the
+// D-app-type differential depend on it, and two Targets writing the same output would be a
+// duplicated (racing) build node.
+private Target[string] _qmltcTools;
+Target qmltcTool(string root, QtdBinding bind) {
+    if (auto p = bind.bdir in _qmltcTools) return *p;
+    auto toolCpp = buildPath(root, "tools", "qmltc", "qmltc_d.cpp");
+    // qmltc-d frontend needs the QQmlJS PRIVATE headers (QtQml + QtCore private subdirs).
+    auto toolFlags = pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 "
+        ~ (modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")
+           ~ modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")).join(" ");
+    auto toolLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Core"]).output.strip;
+    // Shared by every qmltc differential target -> guard it (see `guarded`): a concurrent
+    // re-schedule of this one node otherwise links over a binary another target is executing.
+    auto toolBin = buildPath(bind.bdir, "qmltc-d");
+    auto t = Target(toolBin, guarded(toolBin ~ ".lock",
+        "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " -o " ~ toolBin ~ " " ~ toolLibs, toolBin, [toolCpp]),
+        [Target(toolCpp)]);
+    _qmltcTools[bind.bdir] = t;
+    return t;
+}
+
 // qmltc-d: compile each tests/qmltc/corpus/*.qml to D and DIFF the generated object's property
 // values against the REAL QML engine (QQmlComponent) — the corpus-check-style differential for
 // the QML->D compiler. Two C++ programs: qmltc-d itself (frontend = Qt's private QQmlJS parser,
@@ -326,29 +349,25 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
     auto here = buildPath(root, "tests", "qmltc");
     if (!exists(corpusDir)) return [];
-    auto toolCpp = buildPath(root, "tools", "qmltc", "qmltc_d.cpp");
     auto oracleCpp = buildPath(here, "qtd_qmlvalues.cpp");
-
-    // qmltc-d frontend needs the QQmlJS PRIVATE headers (QtQml + QtCore private subdirs).
-    auto toolFlags = pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 "
-        ~ (modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")
-           ~ modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")).join(" ");
-    auto toolLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Core"]).output.strip;
+    auto tool = qmltcTool(root, bind);
     auto toolBin = buildPath(bind.bdir, "qmltc-d");
-    auto tool = Target(toolBin, "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " -o $out " ~ toolLibs, [Target(toolCpp)]);
 
     // oracle uses only the PUBLIC QML API (QQmlComponent) + Gui (QGuiApplication); loads QtQuick at runtime.
     auto oracleFlags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
     auto oracleLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip;
     auto oracleBin = buildPath(bind.bdir, "qmlvalues");
-    auto oracle = Target(oracleBin, "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o $out " ~ oracleLibs, [Target(oracleCpp)]);
+    auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
+        "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o " ~ oracleBin ~ " " ~ oracleLibs,
+        oracleBin, [oracleCpp]), [Target(oracleCpp)]);
 
     // A bound visual root (Text) touches the font DB on property-set and fatals without a
     // QGuiApplication; this helper .o (linked into every check, DCE-dropped where unreferenced)
     // provides qtd_qmltc_init_gui_app() the generated main calls for such roots.
     auto appCpp = buildPath(here, "qtd_qmltc_app.cpp");
     auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
-    auto appHelper = Target(appObj, "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o $out", [Target(appCpp)]);
+    auto appHelper = Target(appObj, guarded(appObj ~ ".lock",
+        "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o " ~ appObj, appObj, [appCpp]), [Target(appCpp)]);
 
     Target[] ts;
     auto corpus = dirEntries(corpusDir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
@@ -461,3 +480,91 @@ Target[] holderTests(string root) {
 }
 
 mixin BuildgenMain;
+
+// qmltc-d against APP-DEFINED QML TYPES WRITTEN IN D. QML resolves a type through its
+// meta-object, so the language that produced it is irrelevant — a `@QObject` D class exported by
+// qmlRegisterType is a QML element exactly as a C++ Q_OBJECT/QML_ELEMENT type is. Both sides of
+// the differential are driven from ONE list of D types (tests/qmltc/dtypes/apptypes.d):
+//
+//   ORACLE   = the REAL QML engine. qtd_qmlvalues_d.d registers the D types, then hands over to
+//              qtd_qmlvalues.cpp's qtd_qmlvalues_main — the same walk/format/dump the C++ oracle
+//              has always used, so the comparison protocol is unchanged.
+//   COMPILED = qmltc-d reads the types' CTFE `.qmltypes` (Qt's own registry format, itself a QML
+//              document, so it is parsed with the same QQmlJS frontend) and emits a D class that
+//              plainly DERIVES from the D type — no C++ trampoline, no mixin: an inherited
+//              @Property is a real field.
+//
+// Equal dumps prove the compiled-to-D object reproduces what the engine builds. A `<Name>.set`
+// sidecar additionally mutates both and re-diffs, which is what proves the bindings stayed LIVE
+// through the base type's own notify signal.
+Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
+    if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
+    auto here = buildPath(root, "tests", "qmltc");
+    auto dir = buildPath(here, "dtypes");
+    if (!exists(dir)) return [];
+    auto appD = buildPath(dir, "apptypes.d");
+    auto tool = qmltcTool(root, bind);
+    auto toolBin = buildPath(bind.bdir, "qmltc-d");
+
+    // The oracle's engine half, compiled without its `main` so the D driver can supply one.
+    auto oracleCpp = buildPath(here, "qtd_qmlvalues.cpp");
+    auto oracleObj = buildPath(bind.bdir, "qmlvalues_lib.o");
+    auto oracleLib = Target(oracleObj,
+        "clang++ " ~ pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 "
+        ~ "-DQTD_QMLVALUES_NO_MAIN -c " ~ oracleCpp ~ " -o $out", [Target(oracleCpp)]);
+
+    Target[] ts;
+    auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
+    corpus.sort();
+    foreach (dc; DCS) {
+        auto dcLibs = pkgLibs(bind.mods) ~ " -L-lstdc++";
+        auto dcLink = " -I" ~ bind.genDir ~ " -I" ~ dir
+            ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
+            ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ dcLibs;
+
+        // 1) the type REGISTRY: a D driver writes the CTFE .qmltypes of the app's types.
+        auto genBin = buildPath(bind.bdir, "dtypes-gen-" ~ dc);
+        auto gen = Target(genBin, dc ~ " -of=$out " ~ buildPath(dir, "qmltypes_gen.d") ~ " " ~ appD ~ dcLink,
+            [Target(buildPath(dir, "qmltypes_gen.d")), Target(appD), qtdBindLib(bind, dc), bind.shims]);
+        auto typesFile = buildPath(bind.bdir, "AppTypes-" ~ dc ~ ".qmltypes");
+        auto types = Target(typesFile, "$in $out", [gen]);
+
+        // 2) the ORACLE: D main (registers the types) + the C++ engine half.
+        auto oracleBin = buildPath(bind.bdir, "qmlvalues-d-" ~ dc);
+        auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
+            dc ~ " -of=" ~ oracleBin ~ " " ~ buildPath(here, "qtd_qmlvalues_d.d") ~ " " ~ appD ~ " " ~ oracleObj ~ dcLink,
+            oracleBin, [appD]),
+            [Target(buildPath(here, "qtd_qmlvalues_d.d")), Target(appD), oracleLib, qtdBindLib(bind, dc), bind.shims]);
+
+        foreach (qmlFile; corpus) {
+            auto name = baseName(qmlFile).stripExtension;
+            auto dtypesArg = " --dtypes " ~ typesFile ~ " apptypes";
+            // 3) compile the .qml to D against the registry, and link it with the app's types.
+            auto genD = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ ".d");
+            auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > $out",
+                [tool, Target(qmlFile), types]);
+            auto appBin = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ "_check");
+            auto app = Target(appBin, dc ~ " -of=$out " ~ genD ~ " " ~ appD ~ dcLink,
+                [gd, Target(appD), qtdBindLib(bind, dc), bind.shims]);
+            // 4) run both over the SAME .qml and diff (same --labels/--props protocol as the corpus).
+            auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
+            auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > " ~ props ~ " 2>/dev/null; ";
+            ts ~= Target.phony("qmltcd-" ~ name ~ "-" ~ dc,
+                "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
+                ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
+            // 5) LIVE-binding differential: mutate both, re-diff. A binding that lost its
+            //    connection to the BASE type's notify signal diverges here.
+            auto setFile = buildPath(dir, name ~ ".set");
+            if (exists(setFile)) {
+                auto setArgs = readText(setFile).strip;
+                ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc,
+                    "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
+                    ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set'",
+                    [app, oracle, tool]);
+            }
+        }
+    }
+    return ts;
+}
