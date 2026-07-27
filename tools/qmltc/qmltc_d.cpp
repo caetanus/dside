@@ -758,12 +758,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
             childBase = boundTypeFor(ltRoot).first;
             childInit = lt->initializer;
-            // Use-site members (`HelloWorld { property string text: ... }`) extend the local type;
-            // merging them is a later step, so a non-empty use site is not yet fully compiled.
+            // Use-site members (`HelloWorld { property string text: ... }`) EXTEND the local type:
+            // append the use-site member list onto the local definition's, so the merged class carries
+            // both. lt is a fresh per-use parse (not shared), so splicing its list in place is safe;
+            // both ASTs are leaked, so the cross-pool `next` link stays valid.
             if (od->initializer && od->initializer->members) {
-                std::fprintf(stderr, "qmltc-d: %s: use-site members on local type '%s' in %s not yet supported — skipped (later phase)\n",
-                             inPath, childType.c_str(), cls.c_str());
-                ++partial; continue;
+                if (!childInit) childInit = od->initializer;
+                else if (!childInit->members) childInit->members = od->initializer->members;
+                else {
+                    auto *tail = childInit->members;
+                    while (tail->next) tail = tail->next;
+                    tail->next = od->initializer->members;
+                }
             }
         }
         std::string field = "_dc" + std::to_string(di);
