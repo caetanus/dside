@@ -403,17 +403,35 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
             return true;
         }
     }
-    // Assignment `prop = <expr>`.
-    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign) {
-        auto *lhs = cast<IdentifierExpression *>(bin->left);
-        if (!lhs) return false;
-        std::string name = qs(lhs->name.toString());
-        auto it = ptype.find(name);
-        if (it == ptype.end()) return false;
-        std::string rhs;
-        if (!compileExpr(bin->right, QString::fromStdString(it->second), rhs)) return false;
-        body += "        " + name + " = " + rhs + ";\n";
-        return true;
+    // `console.log(...)` / console.warn/etc. -> no-op (no observable effect on property state).
+    if (auto *call = cast<CallExpression *>(es->expression))
+        if (auto *fm = cast<FieldMemberExpression *>(call->base))
+            if (auto *recv = cast<IdentifierExpression *>(fm->base))
+                if (qs(recv->name.toString()) == "console") return true;
+    // Assignment `prop = <expr>` and compound assignment `prop += <expr>` (etc.).
+    if (auto *bin = cast<BinaryExpression *>(es->expression)) {
+        const char *aop = nullptr;
+        switch (bin->op) {
+        case QSOperator::Assign:      aop = "="; break;
+        case QSOperator::InplaceAdd:  aop = "+="; break;   // QML string += is concat; D uses ~=
+        case QSOperator::InplaceSub:  aop = "-="; break;
+        case QSOperator::InplaceMul:  aop = "*="; break;
+        case QSOperator::InplaceDiv:  aop = "/="; break;
+        default: break;
+        }
+        if (aop) {
+            auto *lhs = cast<IdentifierExpression *>(bin->left);
+            if (!lhs) return false;
+            std::string name = qs(lhs->name.toString());
+            auto it = ptype.find(name);
+            if (it == ptype.end()) return false;
+            std::string op = aop;
+            if (op == "+=" && it->second == "string") op = "~=";   // string concat-assign
+            std::string rhs;
+            if (!compileExpr(bin->right, QString::fromStdString(it->second), rhs)) return false;
+            body += "        " + name + " " + op + " " + rhs + ";\n";
+            return true;
+        }
     }
     // Bare call statement `foo()` (calling a QML function of this class).
     if (cast<CallExpression *>(es->expression)) {
