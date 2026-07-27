@@ -79,11 +79,11 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
   backend** compiles these as D subclasses of the bound Qt type (`Item`→`QQuickItem`,
   `Rectangle`→`QQuickRectangle`, `Text`→`QQuickText`; the latter two are private-API, discovered via
   additive private-header scanning), with base props (int/string/real incl. `QColor`), custom
-  reactive bindings, default children, and **cross-file local `.qml` types** (a `Foo {}` that
-  resolves to a sibling `Foo.qml`, as both root and child, with use-site member merging + override
-  dedup). **7 / 66 are diff-GREEN vs the engine on ldc2+dmd**, and the tool's own compile-clean count
-  EQUALS this build+diff green count — every file qmltc-d reports FULL genuinely diffs green, no
-  silent-wrong emissions. Cross-file local types are essential to several (`ComponentWithAlias3`,
+  reactive bindings, default children, base props of type int/string/**real** (`opacity: 0.5`), and
+  **cross-file local `.qml` types** (a `Foo {}` that resolves to a sibling `Foo.qml`, as both root
+  and child, with use-site member merging + override dedup). **8 / 66 are diff-GREEN vs the engine on
+  ldc2+dmd**, and the tool's own compile-clean count EQUALS this build+diff green count — every file
+  qmltc-d reports FULL genuinely diffs green, no silent-wrong emissions. Cross-file local types are essential to several (`ComponentWithAlias3`,
   `myMatryoshkaItems`, `myCheckBox`, `MyBaseItem`, `LocallyImported`). The remaining ceiling is
   structural: the corpus is fundamentally about compiling QML against **app-defined C++ types**,
   which a generic backend can't bind. Each further delta (`QtObject`-typed object props, custom
