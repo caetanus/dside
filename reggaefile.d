@@ -95,6 +95,7 @@ Build reggaeBuild() {
             all ~= qtdTest("moclife" ~ tag ~ "-" ~ dc, t("qml", "moclife_test.d"), b, dc);           // side-table cleanup
             all ~= qtdTest("metacast" ~ tag ~ "-" ~ dc, t("qml", "metacast_test.d"), b, dc);         // qt_metacast identity
             all ~= qtdTest("metacontract" ~ tag ~ "-" ~ dc, t("qml", "metacontract_test.d"), b, dc); // @Slot/NOTIFY compile-time rules
+            all ~= qtdTest("boom" ~ tag ~ "-" ~ dc, t("qml", "boom_test.d"), b, dc, qmlExtra);       // factory throw -> observable failure
         }
         all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
     }

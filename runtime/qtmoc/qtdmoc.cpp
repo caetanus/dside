@@ -72,10 +72,11 @@ struct QtdMocObject : QObject {
         if (id < 0) return id;
         if (c == QMetaObject::InvokeMetaMethod) {
             if (id < nsig) QMetaObject::activate(this, mo, id, a);   // relay do sinal
-            else slotcb(dobj, id - nsig, a);                          // slot -> D
+            else if (dobj) slotcb(dobj, id - nsig, a);               // slot -> D (guard: failed QML
+                                                                     // instance has no backing obj, r8 #5)
             id -= (nsig + nslot);
         } else if (c == QMetaObject::ReadProperty || c == QMetaObject::WriteProperty) {
-            if (propcb && id < nprop)                                 // prop <-> D
+            if (propcb && dobj && id < nprop)                        // prop <-> D (dobj-guarded)
                 propcb(dobj, id, c == QMetaObject::WriteProperty, a);
             id -= nprop;
         }
@@ -302,6 +303,19 @@ static void qtd_qml_construct(void* mem, QtdQmlType* t) {
     o->qmlUserdata = t;
     g_moAttach[o] = MocInfo{o->mo, nullptr, t->slotcb, t->propcb, t->nsig, t->nslot, t->nprop};
     void* dobj = t->makeInstance(t, o);   // D: new T, bind signals to `o`, register dispatch
+    if (!dobj) {
+        // The D constructor threw (the factory caught it, recorded it via qtdOnCallbackError, and
+        // returned null). Qt's QML create() has no failure channel, so we can't unwind the
+        // placement-new — but we MUST NOT hand back a carrier with a null backing object and a
+        // stale side-table entry (critics r8 #5). Complete the cleanup: drop the half-attached
+        // g_moAttach entry, leave dobj==null (qt_metacall is guarded to no-op on it), and emit a
+        // visible error. The element degrades to an inert QObject; its bindings do nothing instead
+        // of dispatching into null. qmlUserdata stays set so ~QtdMocObject takes the QML teardown.
+        g_moAttach.erase(o);
+        qWarning("qtd: QML instantiation of '%s' failed (D constructor threw); the element has no "
+                 "backing object — its properties/slots are inert", t->mo->className());
+        return;
+    }
     o->dobj = dobj;
     g_moAttach[o].dobj = dobj;
 }
