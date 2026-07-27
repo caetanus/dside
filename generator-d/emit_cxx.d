@@ -378,7 +378,14 @@ void collectVirtuals(CXCursor cls, ref CXCursor[] result, ref bool[string] seen)
     foreach (c; children(cls))
         if (c.kind == CXCursor_CXXMethod && clang_CXXMethod_isVirtual(c)) {
             auto key = clang_getCursorSpelling(c).str ~ "(" ~ clang_getTypeSpelling(clang_getCursorType(c)).str ~ ")";
-            if (key !in seen) { seen[key] = true; result ~= c; }
+            if (key in seen) continue;
+            seen[key] = true;
+            // A PRIVATE virtual is overridable but not CALLABLE: the trampoline's default branch
+            // is a qualified `Base::f()`, and that name lookup is access-checked in Base (e.g.
+            // QQuickImageBase::requestFinished, QQuickTableView::minXExtent). Mark it seen so an
+            // accessible base declaration isn't picked in its place — the derived class hid it.
+            if (clang_getCXXAccessSpecifier(c) == CX_CXXPrivate) continue;
+            result ~= c;
         }
     foreach (b; baseDecls(cls)) {
         auto bd = clang_getCursorDefinition(b);
@@ -485,6 +492,12 @@ bool nestedInClass(CXType t) {
 // module (QMetaObject::Connection -> qt.<pkg>.qmetaobject_connection). Demand-driven like
 // PENDING_BASES. Only VALUE records (non-polymorphic) that are publicly accessible qualify.
 __gshared CXCursor[string] PENDING_NESTED;   // D name -> nested-class definition cursor
+
+// Classes referenced ONLY as the scope of a nested enum (QQmlDelegateModel::DelegateModelAccess
+// on a QQuickItemView signature). If such a class ends up an opaque stub — it is not a discovered
+// target, or its header isn't in scope — the stub must still carry its nested enums, else the D
+// reference `Parent.Enum` doesn't resolve. Keyed by D class name -> the class definition cursor.
+__gshared CXCursor[string] PENDING_ENUMSCOPE;
 
 // Outer::Inner -> "Outer_Inner" (namespaces dropped): a unique, collision-safe D name that,
 // unlike lastNs, keeps QJsonObject::iterator and QJsonArray::iterator distinct.
@@ -637,6 +650,9 @@ string mapCxxType(CXType t, ref string imp) {
         // the same enclosing scope, e.g. QThread::setPriority(QThread::Priority)).
         if (parent.kind == CXCursor_ClassDecl || parent.kind == CXCursor_StructDecl) {
             auto pn = clang_getCursorSpelling(parent).str;
+            auto pdef = clang_getCursorDefinition(parent);
+            if (pdef.kind == CXCursor_ClassDecl || pdef.kind == CXCursor_StructDecl)
+                PENDING_ENUMSCOPE[pn] = pdef;   // stub must still carry the enum (see decl)
             imp = pn; return pn ~ "." ~ en;
         }
         ENUMS[en] = decl; imp = en; return en;    // namespace/global -> own module
@@ -1414,6 +1430,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     }
                     string[] ps, fps, cppPs, anames;   // ps: D-body params (real names); fps: forwarder params (a0..)
                     bool fbOk = !isOp && !retD.startsWith("ref ");   // ref returns: keep D-body-only (no trampoline)
+                    // A fn-ptr RETURN is equally unspellable in the shim: `void (*)(int) f(void*)`
+                    // is invalid C++ (the name must sit INSIDE the parens). Keep it D-body-only.
+                    if (clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str.canFind("(*"))
+                        fbOk = false;
                     foreach (i; 0 .. na) {
                         auto a = clang_Cursor_getArgument(c, i);
                         string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);

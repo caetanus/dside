@@ -90,6 +90,23 @@ static std::string g_className;
 // reads it through the meta-object (propInt/propStr(this, name)), as it has no D field.
 static std::map<std::string, std::string> g_baseProps;
 
+// Every bare name that RESOLVES in the generated D class: declared properties, base C++
+// properties, `function` names, declared signals, plus (pushed while a body compiles) the
+// enclosing function's params and `var` locals. An identifier outside it is something QML
+// resolves and we do NOT — a Repeater delegate's `index`, a context property, an attached
+// property — and emitting it as a bare name would produce D that does not compile. So an
+// out-of-scope identifier is a compile FAILURE (-> PARTIAL), never a silent wrong emission.
+// Scoped per object, saved/restored across compileObject recursion like the other maps.
+static std::set<std::string> g_scope;
+
+// Widens g_scope for the duration of one body compile (a function's params, a handler's signal
+// args, `var` locals declared inside), then restores the object-level scope.
+struct ScopeGuard {
+    std::set<std::string> saved;
+    ScopeGuard() : saved(g_scope) {}
+    ~ScopeGuard() { g_scope = saved; }
+};
+
 // Declared QML signals of this object, so a call `ping()` emits (`ping.emit()`) and a handler
 // `onPing` connects to it. g_signalParams holds each signal's (paramName, dtype) list, for typed
 // signals and their handler slots. Scoped per object.
@@ -180,6 +197,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                            : bp->second == "bool" ? "propBool(this, \"" : "propInt(this, \"";
             out = rd + n + "\")"; return true;
         }
+        if (!g_scope.count(n)) return false;   // not a name the generated class defines -> PARTIAL
         out = n; return true;
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
@@ -438,6 +456,7 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
             std::string ty = inferType(pe->initializer, ptype), init;
             if (!compileExpr(pe->initializer, QString::fromStdString(ty), init)) return false;
             body += "        auto " + qs(pe->bindingIdentifier.toString()) + " = " + init + ";\n";
+            g_scope.insert(qs(pe->bindingIdentifier.toString()));   // in scope for the rest of the body
         }
         return true;
     }
@@ -600,6 +619,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedSignals = g_signals;
     auto savedSignalParams = g_signalParams;
     auto savedBaseProps = g_baseProps;
+    auto savedScope = g_scope;
+    g_scope.clear();
     g_funcRet.clear();
     g_funcReads.clear();
     g_enumMember.clear();
@@ -653,6 +674,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             for (auto &r : reads) if (pt0.count(r)) g_funcReads[qs(fn->name.toString())].push_back(r);
                         }
                     }
+        // The object's bare-name scope (see g_scope): every declared property (even one whose
+        // type we can't map — the name still exists in QML), every base Q_PROPERTY we set, every
+        // `function`, and every declared signal.
+        for (auto *m = init ? init->members : nullptr; m; m = m->next) {
+            if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property)
+                g_scope.insert(qs(pub->name.toString()));
+            if (auto *se = cast<UiSourceElement *>(m->member))
+                if (auto *fn = se->sourceElement->asFunctionDefinition())
+                    g_scope.insert(qs(fn->name.toString()));
+        }
+        for (auto &bp : g_baseProps) g_scope.insert(bp.first);
+        for (auto &sg : g_signals) g_scope.insert(sg);
     }
 
     std::vector<Prop> props;
@@ -928,7 +961,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 fnBody = fe->body;
                 for (auto *f = fe->formals; f; f = f->next) if (f->element) fnParams.push_back(qs(f->element->bindingIdentifier.toString()));
             }
-        bool bodyOk = fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(h.second, ptype, hbody);
+        bool bodyOk;
+        {
+            ScopeGuard sg;   // the signal's arguments are named in the body (formals override)
+            if (auto sp0 = g_signalParams.find(h.first); sp0 != g_signalParams.end()) {
+                int i = 0;
+                for (auto &pp : sp0->second) {
+                    g_scope.insert(i < (int)fnParams.size() ? fnParams[i] : pp.first);
+                    ++i;
+                }
+            }
+            bodyOk = fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(h.second, ptype, hbody);
+        }
         if ((!isCustom && (notifyProp.empty() || !isProp(notifyProp))) || !bodyOk) {
             std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
             ++partial; continue;
@@ -984,7 +1028,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             auto params = funcParams(fn, pt0);
             std::string sig;   // "double n, string s"
             auto ptWithParams = ptype;
-            for (auto &pp : params) { sig += (sig.empty() ? "" : ", ") + pp.second + " " + pp.first; ptWithParams[pp.first] = pp.second; }
+            ScopeGuard sg;   // params (and any `var` locals) are in scope for this body only
+            for (auto &pp : params) { sig += (sig.empty() ? "" : ", ") + pp.second + " " + pp.first; ptWithParams[pp.first] = pp.second; g_scope.insert(pp.first); }
             // A body with a `return` -> a typed method (return type inferred into g_funcRet); the
             // WHOLE body is compiled with g_returnType set, so multi-statement bodies (locals,
             // increments, then `return ...`) work, not just a single return.
@@ -1074,6 +1119,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_signals = savedSignals;
     g_signalParams = savedSignalParams;
     g_baseProps = savedBaseProps;
+    g_scope = savedScope;
     return node;
 }
 

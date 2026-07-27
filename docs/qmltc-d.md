@@ -88,7 +88,9 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
   guarantee — the tool's own compile-clean count EQUALS this build+diff green count: every file
   qmltc-d reports FULL genuinely diffs green, no silent-wrong emissions. (Guards added to keep this
   true: an unmapped app-C++ root, a `Type on prop` value source, a custom `default property` with
-  bare children, and a value-returning function with an unresolved return type all flag PARTIAL.) Cross-file local types are essential to several (`ComponentWithAlias3`,
+  bare children, a value-returning function with an unresolved return type, and an **identifier
+  that resolves to nothing the generated class defines** — a `Repeater` delegate's `index`, a
+  context or attached property — all flag PARTIAL.) Cross-file local types are essential to several (`ComponentWithAlias3`,
   `myMatryoshkaItems`, `myCheckBox`, `MyBaseItem`, `LocallyImported`). The remaining ceiling is
   structural: the corpus is fundamentally about compiling QML against **app-defined C++ types**,
   which a generic backend can't bind. Each further delta (`QtObject`-typed object props, custom
@@ -135,8 +137,22 @@ and the file exits `3` (PARTIAL), never a wrong emission.
 - **Wider type discovery.** The bound-type vocabulary is DATA, not code: the generator
   auto-subclasses every discovered class deriving from `QQuickItem` that is instantiable AND exported,
   and emits `qmlmap.tsv` (QML-name → C++-class) from the module's `plugins.qmltypes`; qmltc-d reads
-  it. Adding a type is purely a discovery input (its header), never code. Only ~6 types flow through
-  today because the cross-module private-header web (e.g. `ListView` pulls `QtQmlModels`) bounds what
-  the spec currently `#include`s — widening it is adding headers + include paths, not per-type code.
+  it. Adding a type is purely a discovery input (its header), never code — proven by widening
+  `spec_cxx_quick.json` from 5 to 27 private element headers (+ `QtQmlModels`): **6 → 29 mapped QML
+  types** (`Column`/`Row`/`Grid`/`Flow`, `Repeater`, `ListView`/`GridView`/`TableView`/`TreeView`,
+  `Image`/`BorderImage`/`AnimatedImage`, `Loader`, `Flickable`, `PathView`, `PinchArea`,
+  `DropArea`, …) with zero per-type code. The fixture `QColumn.qml` covers one end-to-end.
+  Two SCOPE RULES make that widening safe (a private element header transitively drags in the
+  non-public guts of other modules):
+  1. a type declared under `.../private/` or `.../qpa/` is bound only if **that header is
+     explicitly listed** in the spec — otherwise QtGui's `qevent_p.h` / `qpa/qplatformwindow.h`
+     and QtQml's `qqmltypeloader_p.h` get bound and emit C++ that cannot compile (protected
+     ctors, incomplete forward-declared members, fn-ptr accessors, no nameable include);
+  2. even in a listed header, only an **exported** (`Q_*_EXPORT`) type is bound — the
+     attached-property helpers (`QQuickPositionerAttached`, `QQuickPathViewAttached`,
+     `QQuickDropAreaDrag`) are hidden, so their ctors/signals/`staticMetaObject` are not in the
+     `.so`. ldc2's `--gc-sections` hides the dead references; dmd's whole-program link does not.
+
+  Widening further is still just headers + include paths.
 - **Animations** (`justAnimation`): the engine runs the animation and the final value differs from
   the static binding — either read the animation's `to`/`from` or accept these as out of static scope.

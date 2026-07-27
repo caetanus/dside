@@ -110,21 +110,40 @@ void main(string[] args) {
     if (discMod.length || headers.length) {
         DiscCtx ctx;
         clang_visitChildren(tuCursor, &discVisit, &ctx);
-        targets = ctx.classes;
         freeFns = ctx.functions;
-        foreach (cur; targets) {
+        int droppedPriv;
+        foreach (cur; ctx.classes) {
             // The type's own declaring header (needed for private types the umbrella misses).
             CXFile f; uint ln, col, off;
             clang_getFileLocation(clang_getCursorLocation(cur), &f, &ln, &col, &off);
             string decl = f ? clang_getFileName(f).str : "";
-            // A discover_module umbrella (<QtQuick>) reaches only PUBLIC types; a type declared in a
-            // .../private/ header is NOT visible through it, so it must include its own header.
-            if (discMod.length && decl.canFind("/private/")) includes ~= decl;
+            // A discover_module umbrella (<QtQuick>) reaches only PUBLIC types; a type declared in
+            // one of Qt's two NON-public header dirs (.../private/, .../qpa/) is NOT visible
+            // through it, so it must include its own header.
+            if (discMod.length && (decl.canFind("/private/") || decl.canFind("/qpa/"))) {
+                // ...but ONLY when that header is EXPLICITLY listed. A private element header
+                // (qquickpositioners_p.h) transitively drags in the non-public guts of OTHER
+                // modules (QtGui's qevent_p.h and qpa/qplatformwindow.h, QtQml's
+                // qqmltypeloader_p.h), whose types are internal implementation detail: protected
+                // ctors, incomplete forward-declared members, fn-ptr accessors, and no include
+                // the aggregated shim can name. Binding them emits C++ that cannot compile.
+                // The spec's `headers` list IS the scope: list a header to bind its types.
+                if (!headers.any!(h => decl.endsWith(h))) { droppedPriv++; continue; }
+                // Even in a LISTED private header, only an EXPORTED type is bindable: a
+                // non-Q_*_EXPORT class there (the attached-property helpers —
+                // QQuickPositionerAttached, QQuickPathViewAttached, QQuickDropAreaDrag) is
+                // Hidden, so its ctors/signals/staticMetaObject are not in the .so. ldc2's
+                // --gc-sections drops the dead references; dmd's whole-program link does not.
+                if (clang_getCursorVisibility(cur) != 3) { droppedPriv++; continue; }
+                includes ~= decl;
+            }
             else if (discMod.length) includes ~= discMod;
             else includes ~= decl;   // headers-mode: your own class -> the header it's defined in
+            targets ~= cur;
         }
-        writefln("discovered %d classes%s", targets.length,
-                 discMod.length ? " in <" ~ discMod ~ ">" : " in your headers");
+        writefln("discovered %d classes%s%s", targets.length,
+                 discMod.length ? " in <" ~ discMod ~ ">" : " in your headers",
+                 droppedPriv ? format(" (%d unlisted-private skipped)", droppedPriv) : "");
         // subclass_derived: auto-subclass EVERY discovered class transitively deriving from a listed
         // base (e.g. all QQuickItem-derived visual types). A wrapper generator must not carry a
         // hand-maintained per-type subclass list — whatever is discovered under the base is wrapped.
@@ -280,7 +299,7 @@ void main(string[] args) {
         // Signal/slot bridge — one functor-connect shim per parameterless signal.
         // The umbrella <QtQuick> reaches only public types; private types (QQuickGradient etc.) the
         // aggregated shims reference need their own header appended.
-        auto privInc = includes.dup.sort.uniq.filter!(i => i.canFind("/private/"))
+        auto privInc = includes.dup.sort.uniq.filter!(i => i.canFind("/private/") || i.canFind("/qpa/"))
             .map!(i => format("#include \"%s\"\n", i)).join;
         auto sigInc = discMod.length ? (format("#include <%s>\n", discMod) ~ privInc)
             : includes.sort.uniq.map!(i => (i.canFind('/') || i.endsWith(".h"))
@@ -328,7 +347,11 @@ void main(string[] args) {
                         ~ "    this(void* c) @nogc nothrow { super(c, false); }\n"   // opaque handle: dispose-only
                         ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(p)); }\n}\n",
                         manifest, dpkg, modBase(r), r, r, r, r)
-                    : format("%s\nmodule %s.%s;\nextern (C++) class %s {}\n", manifest, dpkg, modBase(r), r);
+                    : format("%s\nmodule %s.%s;\nextern (C++) class %s {%s}\n", manifest, dpkg, modBase(r), r,
+                        // A class referenced for its NESTED ENUM still needs those enums in the
+                        // stub — `QQmlDelegateModel.DelegateModelAccess` must resolve even though
+                        // the class itself is out of scope (its private header isn't listed).
+                        (r in PENDING_ENUMSCOPE) ? "\n" ~ nestedEnumLines(PENDING_ENUMSCOPE[r]).join("\n") ~ "\n" : "");
                 std.file.write(buildPath(dsub, modBase(r) ~ ".d"), stub);
                 stubs++;
             }

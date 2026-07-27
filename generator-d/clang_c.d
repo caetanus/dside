@@ -42,7 +42,7 @@ enum : int {
 }
 
 // Access specifiers
-enum : int { CX_CXXInvalidAccessSpecifier = 0, CX_CXXPublic = 1 }
+enum : int { CX_CXXInvalidAccessSpecifier = 0, CX_CXXPublic = 1, CX_CXXProtected = 2, CX_CXXPrivate = 3 }
 
 // --- functions -------------------------------------------------------------
 CXIndex clang_createIndex(int excludeDeclarationsFromPCH, int displayDiagnostics);

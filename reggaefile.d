@@ -107,7 +107,7 @@ Build reggaeBuild() {
     all ~= qmltcTargets(root, qml, buildPath(root, "tests", "qmltc", "corpus"), "");   // qmltc-d: .qml -> D vs oracle
     // (b) QtQuick: a bound-type root (Item -> QQuickItem) compiled to a D subclass, diffed vs the engine.
     if (execute(["pkg-config", "--exists", "Qt6Quick"]).status == 0) {
-        auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6Qml", "Qt6Gui"]);
+        auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
     }
     if (haveQt5())
