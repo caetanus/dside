@@ -343,6 +343,13 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     auto oracleBin = buildPath(bind.bdir, "qmlvalues");
     auto oracle = Target(oracleBin, "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o $out " ~ oracleLibs, [Target(oracleCpp)]);
 
+    // A bound visual root (Text) touches the font DB on property-set and fatals without a
+    // QGuiApplication; this helper .o (linked into every check, DCE-dropped where unreferenced)
+    // provides qtd_qmltc_init_gui_app() the generated main calls for such roots.
+    auto appCpp = buildPath(here, "qtd_qmltc_app.cpp");
+    auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
+    auto appHelper = Target(appObj, "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o $out", [Target(appCpp)]);
+
     Target[] ts;
     auto corpus = dirEntries(corpusDir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
     corpus.sort();
@@ -355,10 +362,10 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
                 [tool, Target(qmlFile)]);
             // 2) link the generated D against the binding (same shape as qtdApp).
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
-            auto link = dc ~ " -of=$out " ~ genD ~ " -I" ~ bind.genDir
+            auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ " -L-lstdc++";
-            auto app = Target(appBin, link, [gen, qtdBindLib(bind, dc), bind.shims]);
+            auto app = Target(appBin, link, [gen, appHelper, qtdBindLib(bind, dc), bind.shims]);
             // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
             //    The oracle dumps the EXACT property paths qmltc-d emits (`--labels` -> a .props
             //    file, `--props` to the oracle), so base C++ properties the .qml set are compared too.

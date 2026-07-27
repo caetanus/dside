@@ -86,10 +86,12 @@ void main(string[] args) {
     if (auto s = "subclass" in spec.object)   // classes to subclass from D (trampolines)
         foreach (x; s.array) SUBCLASS[x.str] = true;
 
+    // discover_module and headers COMBINE: a module (e.g. <QtQuick>) plus extra headers (e.g. the
+    // private element headers that declare QQuickRectangle/QQuickText) are all scanned together.
     string src;
-    if (headers.length) src = headers.map!(h => format("#include \"%s\"", h)).join("\n") ~ "\n";
-    else if (discMod.length) src = format("#include <%s>\n", discMod);
-    else src = spec["classes"].array.map!(c => format("#include <%s>", c["include"].str)).join("\n") ~ "\n";
+    if (discMod.length) src = format("#include <%s>\n", discMod);
+    if (headers.length) src ~= headers.map!(h => format("#include <%s>", h)).join("\n") ~ "\n";
+    if (!src.length) src = spec["classes"].array.map!(c => format("#include <%s>", c["include"].str)).join("\n") ~ "\n";
 
     CXUnsavedFile uf;
     uf.Filename = "_gen.cpp".toStringz;
@@ -111,12 +113,15 @@ void main(string[] args) {
         targets = ctx.classes;
         freeFns = ctx.functions;
         foreach (cur; targets) {
-            if (discMod.length) includes ~= discMod;
-            else {   // your own class -> the header it's defined in
-                CXFile f; uint ln, col, off;
-                clang_getFileLocation(clang_getCursorLocation(cur), &f, &ln, &col, &off);
-                includes ~= f ? clang_getFileName(f).str : "";
-            }
+            // The type's own declaring header (needed for private types the umbrella misses).
+            CXFile f; uint ln, col, off;
+            clang_getFileLocation(clang_getCursorLocation(cur), &f, &ln, &col, &off);
+            string decl = f ? clang_getFileName(f).str : "";
+            // A discover_module umbrella (<QtQuick>) reaches only PUBLIC types; a type declared in a
+            // .../private/ header is NOT visible through it, so it must include its own header.
+            if (discMod.length && decl.canFind("/private/")) includes ~= decl;
+            else if (discMod.length) includes ~= discMod;
+            else includes ~= decl;   // headers-mode: your own class -> the header it's defined in
         }
         writefln("discovered %d classes%s", targets.length,
                  discMod.length ? " in <" ~ discMod ~ ">" : " in your headers");
@@ -262,7 +267,11 @@ void main(string[] args) {
         std.file.write(buildPath(dsub, "qtcontainers.d"), containersD(manifest, dpkg));
         if (COMBOS.length) cxxGen["qtcontainers"] = true;
         // Signal/slot bridge — one functor-connect shim per parameterless signal.
-        auto sigInc = discMod.length ? format("#include <%s>\n", discMod)
+        // The umbrella <QtQuick> reaches only public types; private types (QQuickGradient etc.) the
+        // aggregated shims reference need their own header appended.
+        auto privInc = includes.dup.sort.uniq.filter!(i => i.canFind("/private/"))
+            .map!(i => format("#include \"%s\"\n", i)).join;
+        auto sigInc = discMod.length ? (format("#include <%s>\n", discMod) ~ privInc)
             : includes.sort.uniq.map!(i => (i.canFind('/') || i.endsWith(".h"))
                 ? format("#include \"%s\"\n", i) : format("#include <%s>\n", i)).join;
         std.file.write(buildPath(outDir, "qtsignals.cpp"), signalsCpp(manifest, sigInc));

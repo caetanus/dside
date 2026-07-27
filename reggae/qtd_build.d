@@ -101,6 +101,10 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // guards) in its own linker section, so the final link's --gc-sections drops the ones an
     // app doesn't call. Without this, libshims.a is one .o -> pulling any shim pulls ALL.
     auto cxx = cflags ~ " -std=c++17 -fPIC -O2 -ffunction-sections -fdata-sections";
+    // Extra include paths from the spec: private-header subdirs a private-API binding needs so the
+    // aggregated shims (qtdctor/qtvirt/...) that reference private types (QQuickGradient etc.) compile.
+    if (auto ip = "include_paths" in j.object)
+        foreach (p; ip.array) cxx ~= " -I" ~ p.str;
     // qtdmoc.cpp needs the Qt private headers; the QML registration block is compiled in only
     // when this binding actually links Qt6Qml (else it would reference QQmlPrivate with no lib).
     auto priv = mocPrivateFlags(cflags).join(" ")
