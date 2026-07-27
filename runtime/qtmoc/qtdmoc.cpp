@@ -59,7 +59,14 @@ struct QtdMocObject : QObject {
         qtd_moc_teardown(this, dobj);
     }
     const QMetaObject* metaObject() const override { return mo; }
-    void* qt_metacast(const char* n) override { return QObject::qt_metacast(n); }
+    // A Qt moc first matches the class's OWN name (returns this), THEN delegates to base.
+    // The old body skipped step 1 -> qt_metacast("Dup") on a runtime `Dup` returned null even
+    // though metaObject()->className() is "Dup" (critics r8 #2). qobject_cast/interfaces/name
+    // discovery all depend on this. mocClassName() is a strcmp-normalized className.
+    void* qt_metacast(const char* n) override {
+        if (n && mo && std::strcmp(n, mo->className()) == 0) return this;
+        return QObject::qt_metacast(n);
+    }
     int qt_metacall(QMetaObject::Call c, int id, void** a) override {
         id = QObject::qt_metacall(c, id, a);
         if (id < 0) return id;
@@ -144,6 +151,22 @@ void qtd_moc_attach(void* self, const char* cn, const void* super,
 const void* qtd_moc_meta(void* self) {
     auto it = g_moAttach.find(self);
     return it != g_moAttach.end() ? it->second.mo : nullptr;
+}
+// pro qt_metacast() do trampolim: bate o className do metaobject anexado antes de delegar
+// à base. Sem isso, qt_metacast("Sub") sobre um QtdWidget!Sub retornava null mesmo com
+// metaObject()->className()=="Sub" (critics r8 #2), quebrando qobject_cast e descoberta de tipo.
+bool qtd_moc_classmatch(void* self, const char* n) {
+    if (!n) return false;
+    auto it = g_moAttach.find(self);
+    return it != g_moAttach.end() && it->second.mo &&
+           std::strcmp(n, it->second.mo->className()) == 0;
+}
+// Sondas de identidade (pro teste r8 #2): qt_metacast por nome e o className do metaobject.
+extern "C" void* qtd_metacast(void* qobj, const char* n) {
+    return qobj ? static_cast<QObject*>(qobj)->qt_metacast(n) : nullptr;
+}
+extern "C" const char* qtd_moc_classname(void* qobj) {
+    return qobj ? static_cast<QObject*>(qobj)->metaObject()->className() : nullptr;
 }
 // pro override qt_metacall() do trampolim (chamado DEPOIS de Base::qt_metacall).
 int qtd_moc_metacall(void* self, int c, int id, void** a) {

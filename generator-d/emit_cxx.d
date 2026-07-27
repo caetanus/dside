@@ -2803,7 +2803,9 @@ string virtCpp(string manifest, string includeLine) {
         auto moc = format(
             "    const QMetaObject* metaObject() const override {\n"
             ~ "        auto m = qtd_moc_meta((void*)this); return m ? static_cast<const QMetaObject*>(m) : %s::metaObject(); }\n"
-            ~ "    void* qt_metacast(const char* n) override { return %s::qt_metacast(n); }\n"
+            ~ "    void* qt_metacast(const char* n) override {\n"
+            ~ "        if (qtd_moc_classmatch((void*)this, n)) return this;\n"
+            ~ "        return %s::qt_metacast(n); }\n"
             ~ "    int qt_metacall(QMetaObject::Call c, int id, void** a) override {\n"
             ~ "        id = %s::qt_metacall(c, id, a); if (id < 0) return id;\n"
             ~ "        return qtd_moc_metacall((void*)this, (int)c, id, a); }\n",
@@ -2830,6 +2832,7 @@ string virtCpp(string manifest, string includeLine) {
         ~ "typedef void (*QtdSlotCb)(void*, int, void**);\n"
         ~ "typedef void (*QtdPropCb)(void*, int, int, void**);\n"
         ~ "const void* qtd_moc_meta(void*);\n"
+        ~ "bool qtd_moc_classmatch(void*, const char*);\n"
         ~ "int qtd_moc_metacall(void*, int, int, void**);\n"
         ~ "void qtd_moc_attach(void*, const char*, const void*, const char**, int, const char**, int,\n"
         ~ "    const char**, const char**, const int*, int, void*, QtdSlotCb, QtdPropCb);\n"

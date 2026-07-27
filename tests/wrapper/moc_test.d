@@ -21,5 +21,14 @@ void main() {
     assert(cf.lastAngle == 30, "own signal -> slot");
     qtd_force_paint(cf.__qtdObj());
     assert(cf.paints > 0, "paintEvent override");
+
+    // critics r8 #2, SECOND carrier: the QtdWidget trampoline announces className "CannonField"
+    // (its attached runtime metaobject). qt_metacast must honor its OWN name before delegating to
+    // QWidget — the generated trampoline now checks qtd_moc_classmatch first.
+    void* qw = cf.__qtdObj();
+    assert(qtd_metacast(qw, "CannonField\0".ptr) is qw, "trampoline qt_metacast(self-name) must be this");
+    assert(qtd_metacast(qw, "QWidget\0".ptr) !is null, "trampoline must still cast to base QWidget");
+    assert(qtd_metacast(qw, "Bogus\0".ptr) is null, "trampoline unknown cast must be null");
+
     writefln("cannon_widget OK: setAngle->angleChanged->onAngle=%d, paintEvent=%d", cf.lastAngle, cf.paints);
 }

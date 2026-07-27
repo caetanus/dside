@@ -1,5 +1,300 @@
 # CRITICS.md
 
+## Rodada 8: os gates aprenderam a falhar; o metaobjeto ainda mente
+
+Nesta rodada eu não reli apenas a resolução. Revisei os commits desde a rodada 7,
+o grafo completo, CI, manifests, linter, report, runtime holder/moc/QML, geração do
+metaobjeto e os testes novos. Depois construí probes fora da suíte para perguntar ao
+Qt o que os testes atuais não perguntam.
+
+A régua continua sendo PySide. Isso inclui coerência com o modelo de objetos do Qt,
+introspecção, erro observável, thread affinity e uma CI que execute o contrato que
+descreve.
+
+### Verificação desta rodada
+
+- Preservei a alteração preexistente em `runtime/uic/uiform.d` e o diretório não
+  rastreado `tests/qmltc/`.
+- `./build --list` agora lista **162 targets**, sendo **58** `sample_*`.
+- `./build` passou completo: Qt 5.15 + Qt 6.11, dmd + ldc2, libsample,
+  UIC 60/60, QML, homônimos, AOT, `.qmltypes`, QRC, WebEngine, lupdate e gates.
+- `homonym-*` e `qmltwo-*` passaram nas quatro combinações Qt/compilador.
+- Os três falsos verdes da rodada 7 agora falham corretamente:
+  - chave duplicada no baseline do manifest: **exit 1**;
+  - fate inventado: **exit 1**;
+  - schema errado + ID duplicado no expected-fails: **exit 1**.
+- O report agora classifica corretamente `expected-fails-lint` como `gate / -`
+  e `homonym-ldc2` como `qml / qt6`.
+- Reproduzi três defeitos novos:
+  - `qt_metacast("Dup")` sobre um `newQObject!Dup` retornou **null**;
+  - `@Slot int answer()` compilou, mas `QMetaObject::invokeMethod` com retorno
+    respondeu **false** e não escreveu o resultado;
+  - duas classes D homônimas distintas, registradas no mesmo URI/nome/versão,
+    fizeram a segunda chamada retornar silenciosamente como “idempotente”.
+- `git diff --check` passou.
+
+### O que foi realmente fechado
+
+1. **Os manifest gates agora são fail-closed no conteúdo.** Fate desconhecido,
+   linha malformada e duplicata em qualquer lado falham. O unittest atravessa o
+   parser real. A crítica da rodada 7 foi resolvida.
+
+2. **O expected-fails agora tem um linter honesto e estrito.** Schema, kinds,
+   campos básicos e IDs são validados por regras compiladas no programa. O projeto
+   parou de chamá-lo de runner. Ainda falta o runner, mas já não há propaganda falsa.
+
+3. **O erro de registro backend ficou observável.** `nullptr` agora vira exceção D,
+   a alocação C++ é liberada e o slot Qt5 é revertido. Isso fecha o bug específico
+   de sucesso após recusa do backend.
+
+4. **A chave do cache inclui NOTIFY, e homônimos reais foram testados.** `AlphaDup`
+   e `BetaDup` usam duas classes D chamadas `Dup`, com formas diferentes, e ambas
+   funcionam em Qt5/Qt6 e dmd/ldc2. É uma correção válida, com teste válido.
+
+5. **O report corrigiu as mentiras concretas apontadas.** A arquitetura por padrões
+   de nome continua frágil, mas não vou fingir que as duas classificações reproduzidas
+   na rodada passada permanecem erradas.
+
+6. **O Lippincott por assinatura continua sendo a peça mais sofisticada do projeto.**
+   Nada nesta rodada diminuiu esse julgamento. A tradução de exceções C++ para D,
+   compartilhada por forma ABI e compatível com dead stripping, é trabalho de
+   binding-runtime sério. O contraste atual é incômodo: a fronteira de exceção está
+   mais madura que partes básicas do metaobject protocol.
+
+### Achados críticos
+
+#### 1. A CI chama os manifest gates de advisory, mas `./build` já os torna obrigatórios
+
+O workflow tem um passo posterior:
+
+```yaml
+continue-on-error: true
+run:
+  ./build manifest-gate-qtwidgets
+  ./build manifest-gate-qml
+```
+
+Isso parece tornar os gates advisory. Não torna.
+
+`reggaefile.d` adiciona `manifestGateTargets(...)` ao array `all`, e `Build(all)`
+faz `./build` executar todos eles. O passo anterior da CI, “Build + run the full
+matrix”, chama `./build` sem filtro. Portanto os manifests 6.11 rodam ali de forma
+obrigatória, antes do `continue-on-error`, no runner cujo próprio arquivo diz ter
+outro Qt minor.
+
+Resultado: a correção da CI ainda não alcança o comportamento declarado. Se o
+baseline divergir no Ubuntu, o job morre no full build; o passo advisory nunca
+resgata nada.
+
+Isto precisa ser resolvido no grafo, não no texto do workflow: criar agregadores
+separados (`matrix`, `version-independent-gates`, `manifest-gates`) ou permitir
+exclusão explícita por ambiente. Enquanto `./build` significar tudo, o gate é
+obrigatório.
+
+#### 2. O metaobjeto dinâmico anuncia a classe, mas `qt_metacast` nega que ela exista
+
+`QtdMocObject::metaObject()` devolve o `QMetaObject` construído para a classe D. Seu
+`qt_metacast`, porém, faz apenas:
+
+```cpp
+return QObject::qt_metacast(n);
+```
+
+O trampoline de `QtdWidget` repete o erro, delegando diretamente para
+`Base::qt_metacast(n)`.
+
+Um moc gerado pelo Qt primeiro compara `n` com o nome da própria classe e devolve
+`this`; só depois delega à base. O runtime atual pula essa etapa. Meu probe criou
+`newQObject!homonym_a.Dup()` e chamou `qt_metacast("Dup")`: recebeu **null**, apesar
+de `metaObject()->className()` ser `Dup`.
+
+Isso quebra a coerência do QObject protocol e afeta `qobject_cast`, interfaces,
+descoberta por nome e código Qt que usa metacast. Sinais e properties verdes não
+compensam um metaobjeto que não reconhece seu próprio tipo.
+
+### Achados altos
+
+#### 3. A idempotência de `qmlRegisterType` colapsa tipos D diferentes
+
+A chave é:
+
+```d
+T.stringof ~ "|" ~ uri ~ "|" ~ qmlName ~ "|" ~ version
+```
+
+`T.stringof` não é identidade de tipo. As duas classes dos módulos `homonym_a` e
+`homonym_b` têm o mesmo `T.stringof == "Dup"`. O teste novo não encontra esse bug
+porque usa nomes QML diferentes, `AlphaDup` e `BetaDup`.
+
+Meu probe registrou:
+
+```d
+qmlRegisterType!(homonym_a.Dup)("Collision", 1, 0, "Dup");
+qmlRegisterType!(homonym_b.Dup)("Collision", 1, 0, "Dup");
+```
+
+A segunda chamada foi silenciosamente aceita como repetição idempotente; não chegou
+ao backend e não informou conflito. Uma classe diferente foi confundida com a
+primeira.
+
+Idempotência deve guardar identidade real de `T` e o handle/type id retornado. Para
+uma mesma chave pública com outro tipo, a API deve rejeitar conflito explicitamente.
+Concatenar strings sem estrutura também não é uma base adequada para identidade.
+
+#### 4. `@Slot` aceita retorno que o metaobjeto descarta
+
+`slotSigs` gera apenas `nome(parâmetros)`. `QMetaObjectBuilder::addSlot` recebe essa
+assinatura sem return type. `callSlot` invoca o método D e descarta qualquer retorno.
+Não há `static assert` exigindo `void`.
+
+O probe:
+
+```d
+@QObject class Returner {
+    @Slot int answer() { return 42; }
+}
+```
+
+compilou normalmente. Uma chamada Qt com `Q_RETURN_ARG(int, result)` falhou:
+`invoke=0`, `result=-1`.
+
+Há duas soluções honestas: implementar return marshaling via `args[0]` e registrar
+o tipo de retorno, ou rejeitar todo `@Slot` não-void em compile time. Aceitar e
+degradar silenciosamente é a pior opção.
+
+O mesmo rigor falta em properties: um nome NOTIFY inexistente vira índice `-1` e
+remove silenciosamente a notificação. A assinatura do sinal NOTIFY também não é
+validada contra a property.
+
+#### 5. Falha da factory QML ainda produz carrier sem backend
+
+O contrato novo cobre falha de **registro**. Não cobre falha de **instanciação**.
+Se `new T()` ou `wireQObject` lança, a factory registra o callback error e retorna
+`null`. `qtd_qml_construct` já executou placement-new do `QtdMocObject`, inseriu
+`g_moAttach` e termina com `dobj == null`.
+
+O engine recebe um QObject cuja metadata existe, mas cujo dispatch D não existe.
+Não há mecanismo que converta isso em erro de criação QML, destrua imediatamente o
+carrier ou impeça uso posterior. A prioridade da rodada 7 mencionava explicitamente
+falha de factory; a resolução fechou apenas o backend de registro.
+
+#### 6. Os side-tables do runtime são data races fora da thread principal
+
+O runtime mantém estado global mutável sem sincronização:
+
+- C++: `g_moCache` e `g_moAttach`, ambos `std::unordered_map`;
+- D: `_reg`, `_qmlFactories` e `_qmlRegistered`, todos associative arrays
+  `__gshared`;
+- holder: `_pinned` e o mapa C++ de wrappers.
+
+`holder.d` pelo menos declara “Single-threaded by design”. `qtmoc` não impõe nem
+documenta essa restrição. QObject não significa exclusivamente GUI: objetos podem
+ser criados, destruídos e receber queued calls em worker threads. Duas construções
+ou destruições concorrentes mutam esses maps sem proteção, comportamento indefinido
+em C++ e race no runtime D.
+
+Para maturidade PySide, “Qt main thread” não pode ser uma suposição global do binding.
+Widgets exigem GUI thread; QObject, QThread, networking, timers e workers não. Ou o
+runtime ganha locking/ownership por thread, ou a limitação precisa ser explícita e
+enforced.
+
+### Achados médios
+
+#### 7. O corpus “pinado” da CI tem fallback não pinado e uma asserção fraca
+
+O workflow tenta clonar `6.8.0`, mas em qualquer falha executa:
+
+```sh
+git clone --depth 1 https://code.qt.io/pyside/pyside-setup.git ...
+```
+
+Isso baixa o HEAD do servidor. A descrição “PINNED revision” fica falsa justamente
+no fallback. Falha de rede/tag deveria falhar o job; não selecionar outra API.
+
+Depois a CI exige apenas `n > 0` para `sample_*`. Um corpus parcial com um único
+target passa a conformance. O contrato local conhecido é 58 targets; a CI deveria
+exigir a contagem esperada e alguns IDs canários, ou derivar um manifest pinado dos
+casos.
+
+Ainda não existe evidência de uma execução real do workflow. O scaffold melhorou,
+mas “CI presente” e “CI comprovadamente verde” continuam estados diferentes.
+
+#### 8. O report continua sendo uma segunda execução falível, não um relatório da primeira
+
+Depois de `./build`, a CI chama `test-report.sh`, que executa os 162 targets de novo.
+O exit code é ignorado com `|| true`. Assim:
+
+- o artifact pode divergir do resultado que decidiu o job;
+- um teste stateful/flaky pode passar numa execução e falhar na outra;
+- a duração da pipeline quase dobra;
+- arquivos não rastreados continuam ausentes do dirty state;
+- targets omitidos por capability não aparecem como skip.
+
+As classificações concretas foram corrigidas. A arquitetura ainda precisa coletar
+eventos/resultados da execução de record.
+
+#### 9. O grafo libsample continua escondendo DAG ruim com locks
+
+A matriz completa voltou a anunciar `libsample.a`, `gen.stamp`,
+`libbinding_{dmd,ldc2}.a` e `libshims.a` muitas vezes. O cache de `qtdBindLib`
+resolveu bindings normais, mas o subgrafo libsample ainda cria instâncias repetidas
+dos mesmos produtores para os 58 consumidores.
+
+`flock` mantém o build funcional e merece crédito como contenção. Ainda custa
+scheduling, processos e diagnóstico. A CI duplicada pelo report amplia o custo.
+
+#### 10. A documentação ainda contém universais contraditórios
+
+`docs/test-suite.md` começa corretamente dizendo que muitos targets são
+single-config, mas a seção Matrix afirma “every target, both” para os compiladores.
+Gates e lupdate continuam singletons. A tabela moc ainda lista `cannon_t1..t9`,
+omitindo `t10` e `t11`.
+
+O QRC também permanece no mesmo estado: um fixture ASCII e nenhum oracle contra
+`rcc`. Isso está assumido como follow-up e não merece ser reembalado como descoberta,
+mas continua incompatível com uma alegação de substituto geral de `rcc`.
+
+### Prioridade brutal da rodada 8
+
+1. **Corrigir `qt_metacast` nos dois carriers.** Comparar o className/interface
+   local antes de delegar à base; testar metacast positivo, base e tipo inexistente.
+2. **Separar os agregadores da CI.** O full matrix do runner não pode executar
+   manifests 6.11 antes do passo advisory.
+3. **Dar identidade real ao registro QML.** Tipo D inequívoco + chave pública
+   estruturada; repetição idêntica é no-op, colisão diferente é erro.
+4. **Definir o contrato de métodos meta.** Implementar retorno de slot ou rejeitá-lo;
+   validar NOTIFY existente e assinatura compatível em compile time.
+5. **Tratar falha de factory QML como falha de criação, com cleanup completo.**
+6. **Definir a política de threading do runtime.** Locks/propriedade por thread e
+   testes com worker QObjects; não estender a restrição de QWidget a todo QObject.
+7. **Fazer a CI realmente reprodutível.** Sem fallback para HEAD, contagem/canários
+   do corpus e primeiro run comprovado.
+8. **Transformar o report em output da execução de record.**
+9. **Deduplicar os produtores do subgrafo libsample.**
+10. **Continuar o trabalho estrutural assumido:** runner de expected-fails, baselines
+    por Qt minor, QRC diferencial, IR, typesystem completo, wrapper-default e
+    Windows/SEH para o Lippincott.
+
+### Veredito da rodada 8
+
+Esta rodada confirma uma melhora importante: quando pressionados com fixtures
+corrompidas, os gates agora falham. O projeto também respondeu corretamente à crítica
+de homônimos no cache e não esconde mais que expected-fails é apenas lint. Isso é
+maturidade crescente, não teatro.
+
+O problema deslocou-se para o protocolo fundamental. O objeto diz ter metaobject
+`Dup`, mas nega `qt_metacast("Dup")`; um slot promete `int`, mas só existe como
+`void`; uma classe D diferente pode ser descartada como registro repetido. Esses não
+são recursos ausentes. São contratos aceitos com semântica errada.
+
+O núcleo de geração, o corpus PySide e o Lippincott já justificam levar o projeto a
+sério. A distância para PySide agora aparece menos em quantidade bruta e mais nos
+invariantes que runtimes maduros não podem violar: identidade, metacast, threading,
+falha de construção e CI reprodutível.
+
+Resumo brutal: os gates pararam de mentir sobre entrada ruim. Agora façam o
+metaobjeto parar de mentir sobre o objeto que ele representa.
+
 ## Rodada 7: o código local amadureceu; a promessa institucional ainda não
 
 Recomecei pelo estado atual, sem aceitar a resolução da rodada 6 como prova. Li os

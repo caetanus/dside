@@ -33,6 +33,8 @@ extern (C) nothrow {
                       MakeCb, DestroyCb, SlotCb, PropCb);
     void  qtd_moc_activate(void*, int, void**);
     void* qtd_connect_meta(void*, const(char)*, void*, const(char)*);
+    void* qtd_metacast(void*, const(char)*);   // QObject::qt_metacast(n) sobre um qobj — pro teste de identidade
+    const(char)* qtd_moc_classname(void*);     // metaObject()->className() do qobj
     // marshaling de QString (implementado em qtdmoc.cpp, que linka QtCore)
     void* qtd_str_to_qs(const(char)*, int);
     void  qtd_qs_free(void*);
@@ -168,6 +170,20 @@ void* qobjOf(T)(T o) {
         if (auto p = cast(void*) o in _reg) return p.qobj;
         return null;
     }
+}
+
+/// qt_metacast por nome sobre o QObject subjacente. Retorna o ponteiro do QObject se `n`
+/// bate a própria classe (ou uma base), null caso contrário — o mesmo contrato de
+/// qobject_cast. Existe pra provar que o metaobject não mente sobre o objeto (critics r8 #2).
+void* metaCast(T)(T o, string n) {
+    return qtd_metacast(qobjOf(o), (n ~ "\0").ptr);
+}
+
+/// metaObject()->className() do QObject subjacente (pra testar identidade de tipo).
+string mocClassName(T)(T o) {
+    import core.stdc.string : strlen;
+    auto p = qtd_moc_classname(qobjOf(o));
+    return p is null ? null : cast(string) p[0 .. strlen(p)].idup;
 }
 
 // ---- CTFE: mapeamento tipo D -> assinatura C++ ------------------------------

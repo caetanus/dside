@@ -330,8 +330,13 @@ private void genProps(ref Gen g, Node w, string var, bool isRoot) {
                 string th = v.attr("theme");
                 if (th.length > 2 && splitOn(th, "::").length >= 2)
                     ex = "QIcon.fromTheme(QIcon.ThemeIcon." ~ splitOn(th, "::")[$ - 1] ~ ")";
-                else
-                    ex = "QIcon.fromTheme(qstr(\"" ~ esc(th) ~ "\"))";
+                else {
+                    // fromTheme(const QString&) takes a ref -> needs an lvalue (qstr is an rvalue).
+                    need(g, "QString");
+                    g.setup ~= "        { auto _n = qstr(\"" ~ esc(th) ~ "\"); auto _ic = QIcon.fromTheme(_n); "
+                        ~ var ~ ".set" ~ cap(name) ~ "(_ic); }\n";
+                    continue;
+                }
             } else {
                 auto no = v.child("normaloff");
                 if (no.ok && no.text.length) ex = "QIcon(\"" ~ esc(no.text) ~ "\")";
