@@ -32,6 +32,10 @@ static std::string qs(const QString &s) { return s.toStdString(); }
 // resolves to the property `x`. Set once in main before any expression is compiled.
 static std::string g_selfId;
 
+// Return types of this object's no-arg functions (name -> "int"/"double"/"string"/"bool"), so a
+// call `f()` in a binding can be coerced to the target property's type. Scoped per object.
+static std::map<std::string, std::string> g_funcRet;
+
 // dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
 static std::string qname(UiQualifiedId *id) {
     std::string s;
@@ -139,7 +143,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 if (!compileExpr(a->expression, dtype, s)) return false;
                 joined += (joined.empty() ? "" : ", ") + s;
             }
-            out = qs(fnId->name.toString()) + "(" + joined + ")";
+            std::string nm = qs(fnId->name.toString());
+            out = nm + "(" + joined + ")";
+            // Coerce a double-returning function into an int target (QML coerces on assignment;
+            // D has no implicit double->int). g_funcRet holds this object's function return types.
+            auto it = g_funcRet.find(nm);
+            if (it != g_funcRet.end() && it->second == "double" && dtype == "int") out = "cast(int)(" + out + ")";
             return true;
         }
         return false;
@@ -227,6 +236,56 @@ struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string
 // `prop = <expr>` or a brace block of them; the LHS must be a known property (its type drives the
 // RHS). Returns false on anything else (calls, control flow, ...) -> the handler is reported and
 // skipped, never mis-emitted. `body` accumulates D statements (already indented).
+// Bottom-up type of an expression: "int" | "double" | "string" | "bool" | "" (unknown). Mirrors
+// compileExpr's node coverage. Numbers follow JS/QML: division is always double, an integral
+// literal is int and a fractional literal double, `+` with any string operand is string. Used to
+// give a QML `function`'s no-arg return a D type and to coerce it at a call site.
+static std::string inferType(ExpressionNode *e, const std::map<std::string, std::string> &ptype) {
+    if (!e) return "";
+    if (auto *n = cast<NestedExpression *>(e)) return inferType(n->expression, ptype);
+    if (auto *id = cast<IdentifierExpression *>(e)) { auto it = ptype.find(qs(id->name.toString())); return it != ptype.end() ? it->second : ""; }
+    if (auto *fm = cast<FieldMemberExpression *>(e)) {
+        auto *base = cast<IdentifierExpression *>(fm->base);
+        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { auto it = ptype.find(qs(fm->name.toString())); return it != ptype.end() ? it->second : ""; }
+        if (qs(fm->name.toString()) == "length") return "int";
+        return "";
+    }
+    if (cast<StringLiteral *>(e)) return "string";
+    if (auto *num = cast<NumericLiteral *>(e)) return (num->value == (long long)num->value) ? "int" : "double";
+    if (cast<TrueLiteral *>(e) || cast<FalseLiteral *>(e)) return "bool";
+    if (auto *u = cast<UnaryMinusExpression *>(e)) return inferType(u->expression, ptype);
+    if (cast<NotExpression *>(e)) return "bool";
+    if (auto *c = cast<ConditionalExpression *>(e)) { auto t = inferType(c->ok, ptype); return t.empty() ? inferType(c->ko, ptype) : t; }
+    if (auto *b = cast<BinaryExpression *>(e)) {
+        switch (b->op) {
+        case QSOperator::Lt: case QSOperator::Gt: case QSOperator::Le: case QSOperator::Ge:
+        case QSOperator::Equal: case QSOperator::NotEqual: case QSOperator::StrictEqual:
+        case QSOperator::StrictNotEqual: case QSOperator::And: case QSOperator::Or: return "bool";
+        case QSOperator::Div: return "double";
+        case QSOperator::Add: {
+            auto l = inferType(b->left, ptype), r = inferType(b->right, ptype);
+            if (l == "string" || r == "string") return "string";
+            return (l == "double" || r == "double") ? "double" : "int";
+        }
+        default: {   // Sub, Mul, Mod
+            auto l = inferType(b->left, ptype), r = inferType(b->right, ptype);
+            return (l == "double" || r == "double") ? "double" : "int";
+        }
+        }
+    }
+    if (auto *call = cast<CallExpression *>(e)) {
+        auto *fm = cast<FieldMemberExpression *>(call->base);
+        auto *recv = fm ? cast<IdentifierExpression *>(fm->base) : nullptr;
+        if (recv && qs(recv->name.toString()) == "Math") {
+            std::string fn = qs(fm->name.toString());
+            if ((fn == "max" || fn == "min" || fn == "abs") && call->arguments) return inferType(call->arguments->expression, ptype);
+            return "double";
+        }
+        if (auto *fnId = cast<IdentifierExpression *>(call->base)) { auto it = g_funcRet.find(qs(fnId->name.toString())); return it != g_funcRet.end() ? it->second : ""; }
+    }
+    return "";
+}
+
 static bool compileStmtList(StatementList *list, const std::map<std::string, std::string> &ptype, std::string &body);
 
 static bool compileStmt(Statement *st, const std::map<std::string, std::string> &ptype, std::string &body) {
@@ -288,6 +347,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (auto *es = cast<ExpressionStatement *>(sb->statement))
                     if (auto *idn = cast<IdentifierExpression *>(es->expression))
                         g_selfId = qs(idn->name.toString());
+
+    // Pre-scan declared property types and no-arg function return types, so a binding compiled in
+    // the main loop below can resolve/coerce a call `f()` to its return type. (Declared types are
+    // enough here — the binding VALUES aren't needed to type a return expression.)
+    auto savedFuncRet = g_funcRet;
+    g_funcRet.clear();
+    {
+        std::map<std::string, std::string> pt0;
+        for (auto *m = init ? init->members : nullptr; m; m = m->next)
+            if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property)
+                if (pub->memberType) { const char *dt = dtypeOf(pub->memberType->name.toString()); if (dt[0]) pt0[qs(pub->name.toString())] = dt; }
+        for (auto *m = init ? init->members : nullptr; m; m = m->next)
+            if (auto *se = cast<UiSourceElement *>(m->member))
+                if (auto *fn = se->sourceElement->asFunctionDefinition())
+                    if (!fn->formals && fn->body && !fn->body->next)   // no-arg, single-statement body
+                        if (auto *ret = cast<ReturnStatement *>(fn->body->statement))
+                            g_funcRet[qs(fn->name.toString())] = inferType(ret->expression, pt0);
+    }
 
     std::vector<Prop> props;
     std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
@@ -441,17 +518,32 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ++partial; onCompletedBody.clear();
     }
 
-    // QML `function`s -> D methods. No-arg void methods whose body is assignments / calls (over
-    // property refs and this object's other functions). Typed params and return values are later.
+    // QML `function`s -> D methods (no-arg). A `return <expr>` body becomes a typed method whose
+    // return type was inferred into g_funcRet; other bodies become void methods (assignments/calls).
+    // Typed PARAMETERS are still a later step.
     std::string methods;
     for (auto *fn : functions) {
-        std::string fbody;
-        if (fn->formals || !compileStmtList(fn->body, ptype, fbody)) {
-            std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s not yet supported (params/body) — skipped (later phase)\n",
-                         inPath, qs(fn->name.toString()).c_str(), cls.c_str());
+        std::string name = qs(fn->name.toString());
+        if (fn->formals) {
+            std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has parameters — not yet supported (later phase)\n", inPath, name.c_str(), cls.c_str());
             ++partial; continue;
         }
-        methods += "    void " + qs(fn->name.toString()) + "() {\n" + fbody + "    }\n";
+        // Single `return <expr>` -> typed method.
+        if (fn->body && !fn->body->next) {
+            if (auto *ret = cast<ReturnStatement *>(fn->body->statement)) {
+                std::string rt = g_funcRet.count(name) ? g_funcRet[name] : "", rexpr;
+                if (!rt.empty() && compileExpr(ret->expression, QString::fromStdString(rt), rexpr)) {
+                    methods += "    " + rt + " " + name + "() { return " + rexpr + "; }\n";
+                    continue;
+                }
+            }
+        }
+        std::string fbody;
+        if (!compileStmtList(fn->body, ptype, fbody)) {
+            std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        methods += "    void " + name + "() {\n" + fbody + "    }\n";
     }
 
     for (auto &p : props) {
@@ -499,6 +591,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 
     classes += "@QObject class " + cls + " {\n" + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
+    g_funcRet = savedFuncRet;
     return node;
 }
 
