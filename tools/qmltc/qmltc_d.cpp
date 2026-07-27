@@ -484,7 +484,8 @@ static ExpressionNode *findReturnExpr(StatementList *body) {
 // (field name + subtree). Used to generate the differential dump with dotted paths (`kid.y`).
 struct ObjNode {
     std::string id;                                             // this object's QML `id:` (if any)
-    std::vector<std::pair<std::string, std::string>> scalars;   // (name, dtype)
+    std::vector<std::pair<std::string, std::string>> scalars;   // custom @Property (name, dtype)
+    std::vector<std::pair<std::string, std::string>> baseProps; // base C++ Q_PROPERTYs set (name, dtype)
     std::vector<std::string> notified;                          // props that carry a NOTIFY signal
     std::vector<std::pair<std::string, ObjNode>> kids;          // (field name, child)
 };
@@ -559,6 +560,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
+    std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
     std::string enumDecls, signalDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
@@ -572,6 +574,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 rawHandlers.push_back({sig, sb->statement});
                 continue;
             }
+            // A plain `<name>: <expr>` that isn't an id/handler assigns a base C++ Q_PROPERTY.
+            if (hid.find('.') == std::string::npos)
+                if (auto *es = cast<ExpressionStatement *>(sb->statement)) { rawBaseAssigns.push_back({hid, es->expression}); continue; }
         }
         // A QML `enum Name { A, B = 5, C }` -> a D enum (int members).
         if (auto *en = cast<UiEnumDeclaration *>(m->member)) {
@@ -756,6 +761,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ++partial; onCompletedBody.clear();
     }
 
+    // Base C++ property assignments (`objectName: "hi"`) -> set through the meta-object in
+    // __qmltcWire, and record for the dump (read back through the meta-object). int/string only.
+    std::string baseWire;
+    for (auto &ba : rawBaseAssigns) {
+        std::string ty = inferType(ba.second, ptype), val;
+        if ((ty != "int" && ty != "string") || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
+            std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported — skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        baseWire += "        setProp(this, \"" + ba.first + "\", " + val + ");\n";
+        node.baseProps.push_back({ba.first, ty});
+    }
+
     // QML `function`s -> D methods (no-arg). A `return <expr>` body becomes a typed method whose
     // return type was inferred into g_funcRet; other bodies become void methods (assignments/calls).
     // Typed PARAMETERS are still a later step.
@@ -823,9 +841,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
 
     std::string wire;
-    if (anyBound || !handlerWire.empty() || !childWire.empty() || !onCompletedBody.empty()) {
+    if (anyBound || !handlerWire.empty() || !childWire.empty() || !onCompletedBody.empty() || !baseWire.empty()) {
         wire = "    void __qmltcWire() {\n";
         wire += childWire;   // build children first
+        wire += baseWire;    // set base C++ properties
         for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
         for (auto &p : props) if (p.bound)
             for (auto &d : p.deps) if (isProp(d))
@@ -852,6 +871,12 @@ struct DumpLine { std::string label, access, dtype; };
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
                         std::vector<DumpLine> &out) {
     for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first, s.second});
+    // Base C++ properties have no D field — read them through the meta-object (prop<Int|Str>).
+    for (auto &s : n.baseProps) {
+        std::string rd = (s.second == "string") ? "propStr(" + acc.substr(0, acc.size() - 1) + ", \"" + s.first + "\")"
+                                                 : "propInt(" + acc.substr(0, acc.size() - 1) + ", \"" + s.first + "\")";
+        out.push_back({lab + s.first, rd, s.second});
+    }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
 }
 
@@ -916,10 +941,11 @@ int main(int argc, char **argv) {
         std::printf("    foreach (a; args[1 .. $]) {\n");
         std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
-        for (auto &l : lines) {   // dynamic mutation of any int/string prop (dotted path -> o.kid.y)
+        for (auto &l : lines) {   // dynamic mutation of any int/string prop (via meta, dotted path)
             if (l.dtype != "string" && l.dtype != "int") continue;
-            auto dot = l.access.rfind('.');
-            std::string obj = l.access.substr(0, dot), prop = l.access.substr(dot + 1);
+            auto dot = l.label.rfind('.');   // the PROPERTY PATH (not the read access) -> the setProp target
+            std::string obj = (dot == std::string::npos) ? "o" : "o." + l.label.substr(0, dot);
+            std::string prop = (dot == std::string::npos) ? l.label : l.label.substr(dot + 1);
             std::string val = (l.dtype == "int") ? "v.to!int" : "v";
             std::printf("        if (k == \"%s\") setProp(%s, \"%s\", %s);\n", l.label.c_str(), obj.c_str(), prop.c_str(), val.c_str());
         }
