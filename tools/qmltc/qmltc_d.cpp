@@ -47,9 +47,15 @@ static std::string dstr(const QString &v) {
 }
 static std::string dnum(double v, bool isInt, bool neg) {
     char buf[64];
-    if (isInt) std::snprintf(buf, sizeof buf, "%s%lld", neg ? "-" : "", (long long)v);
-    else       std::snprintf(buf, sizeof buf, "%s%g",   neg ? "-" : "", v);
-    return buf;
+    if (isInt) { std::snprintf(buf, sizeof buf, "%s%lld", neg ? "-" : "", (long long)v); return buf; }
+    std::snprintf(buf, sizeof buf, "%s%g", neg ? "-" : "", v);
+    std::string s = buf;
+    // A double literal MUST keep a decimal point, else D reads it as an int and `13 / 2` becomes
+    // integer division (6) instead of QML/JS number division (6.5). %g drops a trailing ".0".
+    if (s.find('.') == std::string::npos && s.find('e') == std::string::npos
+        && s.find("inf") == std::string::npos && s.find("nan") == std::string::npos)
+        s += ".0";
+    return s;
 }
 
 // If `st` is a pure LITERAL (no identifiers), render it as a D literal into `out`. Only these can
@@ -92,17 +98,37 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (!compileExpr(u->expression, dtype, inner)) return false;
         out = "(-" + inner + ")"; return true;
     }
+    if (auto *cond = cast<ConditionalExpression *>(e)) {
+        // ternary `c ? a : b`. The branches carry the target type; the condition is boolean.
+        std::string c, a, b;
+        if (!compileExpr(cond->expression, "bool", c)) return false;
+        if (!compileExpr(cond->ok, dtype, a) || !compileExpr(cond->ko, dtype, b)) return false;
+        out = "(" + c + " ? " + a + " : " + b + ")"; return true;
+    }
     if (auto *bin = cast<BinaryExpression *>(e)) {
+        // Comparisons yield bool and their operands are NOT the target type; compile them with a
+        // neutral hint so numeric-literal formatting isn't skewed by a string/bool target.
+        bool cmp = false;
         std::string op;
         switch (bin->op) {
         case QSOperator::Add: op = (dtype == "string") ? "~" : "+"; break;
         case QSOperator::Sub: if (dtype == "string") return false; op = "-"; break;
         case QSOperator::Mul: if (dtype == "string") return false; op = "*"; break;
         case QSOperator::Div: if (dtype == "string") return false; op = "/"; break;
-        default: return false;   // comparisons, logical, bitwise, ... -> later
+        case QSOperator::Mod: if (dtype == "string") return false; op = "%"; break;
+        case QSOperator::Lt: op = "<";  cmp = true; break;
+        case QSOperator::Gt: op = ">";  cmp = true; break;
+        case QSOperator::Le: op = "<="; cmp = true; break;
+        case QSOperator::Ge: op = ">="; cmp = true; break;
+        case QSOperator::Equal:
+        case QSOperator::StrictEqual:    op = "==";  cmp = true; break;
+        case QSOperator::NotEqual:
+        case QSOperator::StrictNotEqual: op = "!=";  cmp = true; break;
+        default: return false;   // logical/bitwise/in/instanceof -> later
         }
+        QString sub = cmp ? QString("") : dtype;   // "" -> dnum uses %g; fine for the operands here
         std::string l, r;
-        if (!compileExpr(bin->left, dtype, l) || !compileExpr(bin->right, dtype, r)) return false;
+        if (!compileExpr(bin->left, sub, l) || !compileExpr(bin->right, sub, r)) return false;
         out = "(" + l + " " + op + " " + r + ")"; return true;
     }
     return false;
