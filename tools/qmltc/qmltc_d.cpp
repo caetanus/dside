@@ -637,6 +637,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
     std::string enumDecls, signalDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
+    bool hasCustomDefaultProp = false;                                           // a `default property` declared
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
             std::string hid = qname(sb->qualifiedId);
@@ -697,6 +698,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
             std::string name = qs(pub->name.toString());
+            // A custom `default property` (typically `list<QtObject>`) redirects bare children into
+            // that list rather than the object's QObject children; whether that breaks our `@N` =
+            // children()[N] dump model depends on there being bare children, which we only know after
+            // the scan — record it and decide below.
+            if (pub->isDefaultMember()) hasCustomDefaultProp = true;
             // `property alias <name>: <target>` — collect; resolved to a bound property (with the
             // target's type) once all property types are known.
             if (qmlType == "alias") {
@@ -735,6 +741,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     ObjNode node;
     node.id = g_selfId;   // still this object's id here (the loop doesn't touch g_selfId)
     std::string childFields, childWire, crossConnects;
+    // A use-site binding OVERRIDES a same-named binding from a merged local definition (QML
+    // property-override semantics): keep only the LAST binding per property name (use-site members
+    // were spliced on AFTER the local definition's), else we'd emit two `cls_<name>` classes.
+    {
+        std::vector<std::pair<std::string, UiObjectInitializer *>> dedup;
+        for (auto it = childBindings.rbegin(); it != childBindings.rend(); ++it) {
+            bool seen = false;
+            for (auto &d : dedup) if (d.first == it->first) { seen = true; break; }
+            if (!seen) dedup.push_back(*it);
+        }
+        std::reverse(dedup.begin(), dedup.end());
+        childBindings.swap(dedup);
+    }
+
     // A child target `<childId>.<prop>` for an alias -> (dtype, D access `<field>.<prop>`, notified?).
     std::map<std::string, std::string> childType, childAccess;
     std::map<std::string, bool> childNotified;
@@ -751,6 +771,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             for (auto &n : kid.notified) childNotified[kid.id + "." + n] = true;
         }
         node.kids.push_back({cb.first, kid});
+    }
+
+    // A custom `default property` redirects bare children into that list, not the object's QObject
+    // children — so `@N` = children()[N] no longer holds. Only a problem when there ARE bare
+    // children; flag PARTIAL for each rather than emit a wrong dump.
+    if (hasCustomDefaultProp && !defaultKids.empty()) {
+        std::fprintf(stderr, "qmltc-d: %s: bare children under a custom default property in %s not yet supported — skipped (later phase)\n",
+                     inPath, cls.c_str());
+        partial += (int)defaultKids.size();
+        defaultKids.clear();
     }
 
     // Default-property children: a bare `Type { }`. The child type is mapped to a bound Qt type
