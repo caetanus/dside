@@ -28,6 +28,10 @@ using namespace QQmlJS::AST;
 
 static std::string qs(const QString &s) { return s.toStdString(); }
 
+// The root object's `id:` (e.g. `id: root`), so a self-reference `root.x` in an expression
+// resolves to the property `x`. Set once in main before any expression is compiled.
+static std::string g_selfId;
+
 // dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
 static std::string qname(UiQualifiedId *id) {
     std::string s;
@@ -99,6 +103,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         out = "(" + inner + ")"; return true;
     }
     if (auto *id = cast<IdentifierExpression *>(e)) { out = qs(id->name.toString()); return true; }
+    if (auto *fm = cast<FieldMemberExpression *>(e)) {
+        // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
+        auto *base = cast<IdentifierExpression *>(fm->base);
+        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { out = qs(fm->name.toString()); return true; }
+        return false;
+    }
     if (auto *str = cast<StringLiteral *>(e)) { out = dstr(str->value.toString()); return true; }
     if (auto *num = cast<NumericLiteral *>(e)) { out = dnum(num->value, dtype == "int", false); return true; }
     if (cast<TrueLiteral *>(e))  { out = "true";  return true; }
@@ -158,6 +168,11 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (!e) return;
     if (auto *nested = cast<NestedExpression *>(e)) { collectIds(nested->expression, ids); return; }
     if (auto *id = cast<IdentifierExpression *>(e)) { ids.push_back(qs(id->name.toString())); return; }
+    if (auto *fm = cast<FieldMemberExpression *>(e)) {
+        auto *base = cast<IdentifierExpression *>(fm->base);
+        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) ids.push_back(qs(fm->name.toString()));
+        return;
+    }
     if (auto *u = cast<UnaryMinusExpression *>(e)) { collectIds(u->expression, ids); return; }
     if (auto *n = cast<NotExpression *>(e)) { collectIds(n->expression, ids); return; }
     if (auto *c = cast<ConditionalExpression *>(e)) {
@@ -223,6 +238,15 @@ int main(int argc, char **argv) {
     auto *root = cast<UiObjectDefinition *>(program->members->member);
     if (!root) { std::fprintf(stderr, "qmltc-d: %s: root is not a plain object definition (unsupported)\n", inPath); return 3; }
 
+    // Pre-scan for the root `id:` so self references (`<id>.<prop>`) resolve while compiling
+    // bindings/handlers below (QML allows an expression to reference the id before its line).
+    for (auto *m = root->initializer ? root->initializer->members : nullptr; m; m = m->next)
+        if (auto *sb = cast<UiScriptBinding *>(m->member))
+            if (qname(sb->qualifiedId) == "id")
+                if (auto *es = cast<ExpressionStatement *>(sb->statement))
+                    if (auto *idn = cast<IdentifierExpression *>(es->expression))
+                        g_selfId = qs(idn->name.toString());
+
     int partial = 0;   // count of things we saw but can't emit yet -> exit 3 (PARTIAL), never silent.
     std::vector<Prop> props;
     std::vector<std::pair<std::string, Statement *>> rawHandlers;   // (signal name, handler body)
@@ -233,6 +257,7 @@ int main(int argc, char **argv) {
         // countChanged). Collect it; compile after the property types are known.
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
             std::string hid = qname(sb->qualifiedId);
+            if (hid == "id") continue;   // captured in the pre-scan above
             if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) {
                 std::string sig = hid.substr(2);
                 sig[0] = (char)std::tolower((unsigned char)sig[0]);
