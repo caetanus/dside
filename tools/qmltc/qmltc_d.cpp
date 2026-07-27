@@ -229,6 +229,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<Prop> props;
     std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
+    std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
             std::string hid = qname(sb->qualifiedId);
@@ -247,8 +248,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
-            const char *dt = dtypeOf(qmlType);
             std::string name = qs(pub->name.toString());
+            // `property alias <name>: <target>` — collect; resolved to a bound property (with the
+            // target's type) once all property types are known.
+            if (qmlType == "alias") {
+                if (auto *aes = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr)
+                    aliases.push_back({name, aes->expression});
+                else { std::fprintf(stderr, "qmltc-d: %s: alias '%s' has no target — skipped\n", inPath, name.c_str()); ++partial; }
+                continue;
+            }
+            const char *dt = dtypeOf(qmlType);
             std::string expr;
             auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
@@ -271,6 +280,30 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         std::fprintf(stderr, "qmltc-d: %s: a member of %s is not yet handled — skipped (later phase)\n", inPath, cls.c_str());
         ++partial;
+    }
+
+    // Resolve `property alias <name>: <self-prop>` to a bound property of the target's type. Only
+    // self targets (`<id>.<prop>` or a bare `<prop>` of this object) are handled; child-object
+    // targets (`kid.y`) need the child's prop to carry a NOTIFY and are a later step.
+    {
+        std::map<std::string, std::string> t;
+        for (auto &p : props) t[p.name] = p.dtype;
+        for (auto &al : aliases) {
+            std::string ref;
+            if (auto *fm = cast<FieldMemberExpression *>(al.second)) {
+                if (auto *base = cast<IdentifierExpression *>(fm->base))
+                    if (!g_selfId.empty() && qs(base->name.toString()) == g_selfId) ref = qs(fm->name.toString());
+            } else if (auto *id = cast<IdentifierExpression *>(al.second)) {
+                ref = qs(id->name.toString());
+            }
+            std::string expr;
+            if (ref.empty() || !t.count(ref) || !compileExpr(al.second, QString::fromStdString(t[ref]), expr)) {
+                std::fprintf(stderr, "qmltc-d: %s: alias '%s' target is not a self property — skipped (later phase)\n", inPath, al.first.c_str());
+                ++partial; continue;
+            }
+            std::vector<std::string> ids; collectIds(al.second, ids);
+            props.push_back({al.first, t[ref], expr, true, ids});
+        }
     }
 
     std::vector<std::string> propNames, needsNotify;
