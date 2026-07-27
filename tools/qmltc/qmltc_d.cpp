@@ -141,6 +141,23 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
     return false;
 }
 
+// Collect every identifier referenced in an expression (mirrors compileExpr's node coverage).
+// Intersected with the declared property names, this is a binding's dependency set — the
+// properties whose change must trigger a re-evaluation (live binding).
+static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
+    if (!e) return;
+    if (auto *nested = cast<NestedExpression *>(e)) { collectIds(nested->expression, ids); return; }
+    if (auto *id = cast<IdentifierExpression *>(e)) { ids.push_back(qs(id->name.toString())); return; }
+    if (auto *u = cast<UnaryMinusExpression *>(e)) { collectIds(u->expression, ids); return; }
+    if (auto *n = cast<NotExpression *>(e)) { collectIds(n->expression, ids); return; }
+    if (auto *c = cast<ConditionalExpression *>(e)) {
+        collectIds(c->expression, ids); collectIds(c->ok, ids); collectIds(c->ko, ids); return;
+    }
+    if (auto *b = cast<BinaryExpression *>(e)) { collectIds(b->left, ids); collectIds(b->right, ids); return; }
+}
+
+struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string> deps; };
+
 int main(int argc, char **argv) {
     // --dump: also emit a `main` that instantiates the type and prints each scalar property as
     // `name\tvalue` (sorted), so the generated D can be diffed against the QQmlComponent oracle
@@ -176,59 +193,106 @@ int main(int argc, char **argv) {
     if (!root) { std::fprintf(stderr, "qmltc-d: %s: root is not a plain object definition (unsupported)\n", inPath); return 3; }
 
     int partial = 0;   // count of things we saw but can't emit yet -> exit 3 (PARTIAL), never silent.
-    std::string body;         // @Property field declarations
-    std::string ctorBody;     // binding assignments, evaluated in declaration order in this()
-    std::vector<std::string> propNames;   // for the --dump checker (sorted before emit)
+    std::vector<Prop> props;
     for (auto *m = root->initializer ? root->initializer->members : nullptr; m; m = m->next) {
-        auto *mem = m->member;
-        auto *pub = cast<UiPublicMember *>(mem);
+        auto *pub = cast<UiPublicMember *>(m->member);
         if (pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
             const char *dt = dtypeOf(qmlType);
             std::string name = qs(pub->name.toString());
             std::string expr;
+            auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
             if (dt[0] && pub->statement && literalOf(pub->statement, qmlType, expr)) {
-                // Pure literal -> D field initializer (Phase 1).
-                body += "    @Property " + std::string(dt) + " " + name + " = " + expr + ";\n";
-                propNames.push_back(name);
-            } else if (dt[0] && pub->statement && cast<ExpressionStatement *>(pub->statement)
-                       && compileExpr(cast<ExpressionStatement *>(pub->statement)->expression, qmlType, expr)) {
-                // Binding over prop refs/operators -> a field + a ctor assignment evaluated in order
-                // (Phase 2). NOTE: this computes the binding's INITIAL value; live re-evaluation on a
-                // dependency change (connect NOTIFY -> recompute) is the tracked next step.
-                body += "    @Property " + std::string(dt) + " " + name + ";\n";
-                ctorBody += "        " + name + " = " + expr + ";\n";
-                propNames.push_back(name);
+                props.push_back({name, dt, expr, /*bound*/false, {}});
+            } else if (dt[0] && es && compileExpr(es->expression, qmlType, expr)) {
+                std::vector<std::string> ids;
+                collectIds(es->expression, ids);
+                props.push_back({name, dt, expr, /*bound*/true, ids});
             } else {
-                std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — not yet emitted (phase>2)\n",
+                std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — not yet emitted (phase>3)\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
                 ++partial;
             }
             continue;
         }
-        // Everything else (signals, methods, object/script bindings, child objects) is a later phase.
-        std::fprintf(stderr, "qmltc-d: %s: a non-property member is not yet handled (phase>2)\n", inPath);
+        std::fprintf(stderr, "qmltc-d: %s: a non-property member is not yet handled (phase>3)\n", inPath);
         ++partial;
     }
 
+    // A property needs a NOTIFY signal iff it is bound (to notify its own dependents) OR it is a
+    // dependency of some binding (so that binding can connect and re-evaluate on its change). Props
+    // that are neither stay a plain @Property — literal-only classes are byte-identical to Phase 1.
+    std::vector<std::string> propNames;
+    std::vector<std::string> needsNotify;
+    for (auto &p : props) propNames.push_back(p.name);
+    auto isProp = [&](const std::string &n){ return std::find(propNames.begin(), propNames.end(), n) != propNames.end(); };
+    for (auto &p : props) {
+        if (p.bound && std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
+            needsNotify.push_back(p.name);
+        for (auto &d : p.deps)
+            if (isProp(d) && std::find(needsNotify.begin(), needsNotify.end(), d) == needsNotify.end())
+                needsNotify.push_back(d);
+    }
+    auto notified = [&](const std::string &n){ return std::find(needsNotify.begin(), needsNotify.end(), n) != needsNotify.end(); };
+
     // Emit the D module. The generated type is a qtmoc @QObject; construct it with newQObject!T.
+    std::string body, recompute, wire;
+    bool anyBound = false;
+    for (auto &p : props) {
+        std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
+        if (p.bound) {
+            body += "    " + notifyUda + p.dtype + " " + p.name + ";\n";
+            if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
+            // recompute slot: re-evaluate, and if the value changed, store it and notify dependents.
+            recompute += "    @Slot void __rc_" + p.name + "() {\n"
+                       + "        auto _v = " + p.expr + ";\n"
+                       + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
+                       + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
+            anyBound = true;
+        } else {
+            body += "    " + notifyUda + p.dtype + " " + p.name + " = " + p.expr + ";\n";
+            if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
+        }
+    }
+    if (anyBound) {
+        // Compute initial values in declaration order, then wire each binding to its dependencies'
+        // change signals so a later write re-evaluates it (a real, live QML binding).
+        wire = "    void __qmltcWire() {\n";
+        for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
+        for (auto &p : props) if (p.bound)
+            for (auto &d : p.deps) if (isProp(d))
+                wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+        wire += "    }\n";
+    }
+
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
     std::printf("import qtmoc;\n\n");
-    std::printf("@QObject class %s {\n%s", qPrintable(cls), body.c_str());
-    if (!ctorBody.empty())   // field initializers run first, so bindings can read literal props.
-        std::printf("    this() {\n%s    }\n", ctorBody.c_str());
-    std::printf("}\n");
+    std::printf("@QObject class %s {\n%s%s%s}\n", qPrintable(cls), body.c_str(), recompute.c_str(), wire.c_str());
 
     if (dump) {
-        // A checker main: instantiate and print each scalar property as `name\tvalue`, SORTED by
-        // name (stable diff). The C++ oracle prints the same lines for the same document; equal
-        // output proves the generated D reproduces the QML values (Phase 1 differential).
-        std::sort(propNames.begin(), propNames.end());
-        std::printf("\nvoid main() {\n    import std.stdio : writefln;\n");
+        // A checker main: optionally apply `name=value` mutations (via the meta-object, so a write
+        // fires the NOTIFY and any live binding re-evaluates), then print each property as
+        // `name\tvalue`, SORTED by name (stable diff). The C++ oracle does the same over the same
+        // document; equal output proves the generated D matches the engine — statically (no args)
+        // AND dynamically (with a mutation, exercising live bindings).
+        std::vector<Prop> sorted = props;
+        std::sort(sorted.begin(), sorted.end(), [](const Prop &a, const Prop &b){ return a.name < b.name; });
+        std::printf("\nvoid main(string[] args) {\n");
+        std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n");
         std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
-        for (const auto &n : propNames)
-            std::printf("    writefln(\"%s\\t%%s\", o.%s);\n", n.c_str(), n.c_str());
+        std::printf("    foreach (a; args[1 .. $]) {\n");
+        std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
+        std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
+        for (auto &p : sorted) {   // meta writes only for the types qtmoc has setters for
+            if (p.dtype == "string")
+                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v);\n", p.name.c_str(), p.name.c_str());
+            else if (p.dtype == "int")
+                std::printf("        if (k == \"%s\") setProp(o, \"%s\", v.to!int);\n", p.name.c_str(), p.name.c_str());
+        }
+        std::printf("    }\n");
+        for (auto &p : sorted)
+            std::printf("    writefln(\"%s\\t%%s\", o.%s);\n", p.name.c_str(), p.name.c_str());
         std::printf("}\n");
     }
     return partial ? 3 : 0;

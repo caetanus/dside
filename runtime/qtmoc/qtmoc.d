@@ -418,6 +418,11 @@ private void wireQObject(T)(T o, void* qobj) {
         } catch (Exception e) { qtdOnCallbackError(e); }
     };
     _reg[cast(void*) o] = MocReg(qobj, disp, prop);
+    // Post-wire hook: signals are now bound and the meta-object exists, so a generated type can
+    // connect its binding dependencies and compute initial values here (it CANNOT in its own
+    // ctor, which runs before wiring). qmltc-d emits `__qmltcWire`; a no-op for every hand-written
+    // @QObject (none declare it), so this is inert for the existing suite.
+    static if (__traits(hasMember, T, "__qmltcWire")) o.__qmltcWire();
 }
 
 // ---- QML type registration --------------------------------------------------

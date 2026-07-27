@@ -9,7 +9,7 @@
 // AND dmd (parity); Qt5 and Qt6 where applicable. See reggae/qtd_build.d.
 import reggae;
 import qtd_build;
-import std.file : getcwd, exists, dirEntries, SpanMode;
+import std.file : getcwd, exists, dirEntries, SpanMode, readText;
 import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
 import std.array : array, replace, join;
 import std.algorithm : map, filter, sort;
@@ -362,6 +362,17 @@ Target[] qmltcTargets(string root, QtdBinding qml) {
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " > " ~ b
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
             ts ~= Target.phony("qmltc-" ~ name ~ "-" ~ dc, cmd, [app, oracle]);
+            // 4) LIVE-BINDING differential: if a `<Name>.set` sidecar lists `name=value` mutations,
+            //    apply them to BOTH the generated D and the engine, and diff the post-mutation dumps.
+            //    A binding that isn't reactive would diverge here (dependent wouldn't update).
+            auto setFile = buildPath(corpusDir, name ~ ".set");
+            if (exists(setFile)) {
+                auto setArgs = readText(setFile).strip;
+                auto cmd2 = "sh -c 'QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " > " ~ b ~ ".set"
+                    ~ " && diff " ~ a ~ ".set " ~ b ~ ".set'";
+                ts ~= Target.phony("qmltc-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle]);
+            }
         }
     }
     return ts;

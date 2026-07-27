@@ -42,6 +42,16 @@ int main(int argc, char **argv) {
     QObject *obj = comp.create();
     if (!obj) { std::fprintf(stderr, "qmlvalues: create() failed for %s\n", argv[1]); return 1; }
 
+    // Optional `name=value` mutations (argv[2..]): write via setProperty so the engine's own
+    // bindings re-evaluate, matching what the generated D does through the meta-object. The value
+    // is passed as a string QVariant; Qt coerces it to the property's declared type.
+    for (int i = 2; i < argc; ++i) {
+        QString a = QString::fromUtf8(argv[i]);
+        int eq = a.indexOf('=');
+        if (eq < 0) continue;
+        obj->setProperty(a.left(eq).toUtf8().constData(), QVariant(a.mid(eq + 1)));
+    }
+
     // QML-declared properties live at [propertyOffset, propertyCount) — i.e. above everything the
     // C++ base (QObject/QtObject) contributes. That's exactly the set qmltc-d emits.
     const QMetaObject *mo = obj->metaObject();
