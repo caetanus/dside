@@ -1048,6 +1048,24 @@ int main(int argc, char **argv) {
     // SUBCLASS of it (via the QtdWidget mixin); QtObject/unmapped stays a fresh @QObject.
     std::string rootType = root->qualifiedTypeNameId ? qname(root->qualifiedTypeNameId) : "";
     auto bt = boundTypeFor(rootType);
+    UiObjectInitializer *rootInit = root->initializer;
+    if (bt.first.empty() && rootType != "QtObject") {
+        // A local `.qml`-defined ROOT type (e.g. `LocallyImported { ... }`): take the local
+        // definition's base and MERGE this file's use-site members onto the local definition's.
+        if (UiObjectDefinition *lt = loadLocalType(rootType, inPath)) {
+            std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
+            bt = boundTypeFor(ltRoot);
+            rootInit = lt->initializer ? lt->initializer : root->initializer;
+            if (lt->initializer && root->initializer && root->initializer->members) {
+                if (!lt->initializer->members) lt->initializer->members = root->initializer->members;
+                else {
+                    auto *tail = lt->initializer->members;
+                    while (tail->next) tail = tail->next;
+                    tail->next = root->initializer->members;
+                }
+            }
+        }
+    }
     if (!bt.first.empty()) {
         g_extraImports += "import " + bt.second + ";\n";
         // the QtdWidget mixin needs the binding's `qtvirt` module (subclass factory / attach /
@@ -1058,7 +1076,7 @@ int main(int argc, char **argv) {
 
     int partial = 0;
     std::string classes;
-    ObjNode rootNode = compileObject(root->initializer, qs(cls), classes, partial, inPath, bt.first);
+    ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first);
 
     // --labels: print the sorted dump labels (property paths) for the oracle's --props mode.
     if (labels) {
