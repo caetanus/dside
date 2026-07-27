@@ -388,6 +388,21 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
     }
     auto *es = cast<ExpressionStatement *>(st);
     if (!es) return false;
+    // `x++` / `++x` / `x--` / `--x` on a property -> the same in D.
+    {
+        ExpressionNode *inner = nullptr;
+        const char *op = nullptr;
+        if (auto *p = cast<PreIncrementExpression *>(es->expression)) { inner = p->expression; op = "++"; }
+        else if (auto *p = cast<PostIncrementExpression *>(es->expression)) { inner = p->base; op = "++"; }
+        else if (auto *p = cast<PreDecrementExpression *>(es->expression)) { inner = p->expression; op = "--"; }
+        else if (auto *p = cast<PostDecrementExpression *>(es->expression)) { inner = p->base; op = "--"; }
+        if (inner) {
+            auto *id = cast<IdentifierExpression *>(inner);
+            if (!id) return false;
+            body += "        " + qs(id->name.toString()) + op + ";\n";
+            return true;
+        }
+    }
     // Assignment `prop = <expr>`.
     if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign) {
         auto *lhs = cast<IdentifierExpression *>(bin->left);
