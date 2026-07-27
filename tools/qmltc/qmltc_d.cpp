@@ -669,6 +669,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         // `field: Type { ... }` re-binding an existing property to a child object.
         if (auto *ob = cast<UiObjectBinding *>(m->member)) {
+            // `Type on <prop> { ... }` (hasOnToken) is a PROPERTY-VALUE SOURCE (NumberAnimation on
+            // width, Behavior on x, ...), NOT a child object bound to <prop>. We don't model these,
+            // so flag PARTIAL — treating it as a `<prop>: Type{}` child would emit a wrong dump.
+            if (ob->hasOnToken) {
+                std::fprintf(stderr, "qmltc-d: %s: '%s on %s' value source in %s not yet supported — skipped (later phase)\n",
+                             inPath, qname(ob->qualifiedTypeNameId).c_str(), qname(ob->qualifiedId).c_str(), cls.c_str());
+                ++partial; continue;
+            }
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
             continue;
         }
