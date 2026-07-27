@@ -349,9 +349,24 @@ static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpre
 
 static bool compileStmtList(StatementList *list, const std::map<std::string, std::string> &ptype, std::string &body);
 
-static bool compileStmt(Statement *st, const std::map<std::string, std::string> &ptype, std::string &body) {
+// `st` is a Node* (a StatementList element is a Node*, since FunctionDeclaration doesn't inherit
+// Statement) — the specific statement kinds are recovered by cast<> below.
+static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptype, std::string &body) {
     // A brace block `{ a = ...; b = ...; }` -> each statement in order.
     if (auto *blk = cast<Block *>(st)) return compileStmtList(blk->statements, ptype, body);
+    // `if (cond) <then> [else <else>]` -> D if/else (braces around each branch).
+    if (auto *iff = cast<IfStatement *>(st)) {
+        std::string cond, thenB;
+        if (!compileExpr(iff->expression, "bool", cond) || !compileStmt(iff->ok, ptype, thenB)) return false;
+        body += "        if (" + cond + ") {\n" + thenB + "        }";
+        if (iff->ko) {
+            std::string elseB;
+            if (!compileStmt(iff->ko, ptype, elseB)) return false;
+            body += " else {\n" + elseB + "        }";
+        }
+        body += "\n";
+        return true;
+    }
     auto *es = cast<ExpressionStatement *>(st);
     if (!es) return false;
     // Assignment `prop = <expr>`.
@@ -378,10 +393,8 @@ static bool compileStmt(Statement *st, const std::map<std::string, std::string> 
 // doesn't inherit Statement); the list is linear in the finished AST. Only statements compileStmt
 // understands (assignment / bare call) are allowed — anything else fails and the caller reports it.
 static bool compileStmtList(StatementList *list, const std::map<std::string, std::string> &ptype, std::string &body) {
-    for (auto *s = list; s; s = s->next) {
-        auto *inner = cast<ExpressionStatement *>(s->statement);
-        if (!inner || !compileStmt(inner, ptype, body)) return false;
-    }
+    for (auto *s = list; s; s = s->next)
+        if (!compileStmt(s->statement, ptype, body)) return false;   // s->statement is a Node*
     return true;
 }
 
