@@ -295,6 +295,69 @@ falha de construção e CI reprodutível.
 Resumo brutal: os gates pararam de mentir sobre entrada ruim. Agora façam o
 metaobjeto parar de mentir sobre o objeto que ele representa.
 
+## Resolução da rodada 8 (commits 4b76ba0..c611a95)
+
+O protocolo de QObject foi corrigido nos pontos onde o metaobjeto mentia, e os
+achados de CI/infra viraram estado explícito. Cada correção tem um teste que
+falha sem o fix, verificado em ldc2+dmd e (onde aplica) Qt5+Qt6.
+
+- **#2 (crítico) — `qt_metacast` honra a própria classe.** Os dois carriers
+  (`QtdMocObject` e o trampolim `Qtd_<Base>`) delegavam direto à base, pulando o
+  passo do moc que casa o nome próprio. Agora `QtdMocObject::qt_metacast` compara
+  `mo->className()` e o trampolim usa `qtd_moc_classmatch` (lê o mo anexado).
+  `metacast_test` + asserts em `moc_test` provam: nome próprio → `this`, base
+  real → não-null, nome alheio → null.
+- **#1 (crítico) — agregadores de CI separados.** As manifest gates viraram
+  targets `optional()` do reggae: no grafo (alcançáveis por nome, exibidas como
+  `(optional)` em `--list`) mas fora de `defaultTargets()`. O `./build` padrão não
+  as roda mais; a CI as roda num passo advisory. `expected-fails-lint`/
+  `lupdate-check` seguem mandatórios.
+- **#3 (alto) — identidade real no registro QML.** A chave de idempotência usava
+  `T.stringof` (colidia entre homônimos). Agora usa `T.mangleof` (identidade D
+  inequívoca) mapeado de uma chave pública estruturada: mesmo tipo re-registrado é
+  no-op; tipo DIFERENTE na mesma chave pública lança conflito. `homonym_collision_test`.
+- **#4 (alto) — contrato de meta-métodos em compile time.** `@Slot` não-void é
+  rejeitado (retorno seria descartado; um método com retorno é invokable, não
+  slot); NOTIFY que não nomeia um Signal, ou com assinatura incompatível com o que
+  `callProp` emite, também. `validateMeta!T` roda em `newQObject`/`qmlRegisterType`;
+  `metacontract_test` prova as rejeições e que as formas válidas ainda compilam.
+- **#5 (alto) — falha de factory QML é erro observável.** Quando o construtor D
+  lança, a factory devolve null; o carrier não fica mais com `dobj==null` e entrada
+  stale em `g_moAttach`. Limpa o side-table, emite `qWarning`, degrada a um QObject
+  inerte (dispatch guardado contra `dobj` null). `boom_test` confirma: falha
+  registrada (`qtdCallbackErrors`) e processo sobrevive.
+- **#6 (alto) — threading explícito e enforced.** O runtime é single-threaded por
+  design; agora a primeira mutação fixa uma owner thread e qualquer mutação de
+  outra thread aborta (`qtd_thread_guard`) em vez de corromper mapa. Política
+  documentada no topo de `qtmoc.d`; `qtd_moc_owner_check` + `metathread_test`
+  provam a detecção sem disparar o abort. Tabelas por-thread/locking para QObjects
+  worker seguem como follow-up estrutural.
+- **#7 (médio) — CI reprodutível.** Removido o fallback que clonava HEAD do
+  pyside-setup (falha de tag agora falha o job). A conformance exige a contagem do
+  contrato (>=58 sample_*) e IDs canário, não `n>0`.
+- **#8 (médio) — o report É a execução de record.** `test-report.sh` roda cada
+  target uma vez, grava status/tempo/log e SAI não-zero em falha; a CI passou a
+  gate nele em vez de re-executar a matriz e descartar o resultado. Dirty inclui
+  não-rastreados; skips por capability aparecem como `skip`; targets `optional`
+  são excluídos do record (corrige de quebra um bug latente do sufixo `(optional)`).
+- **#10 (médio) — docs sem universais contraditórios.** "every target, both" virou
+  "most targets, both" nomeando as exceções (gates/lupdate singleton, qmlaot/
+  qmltypes Qt6-only); a tabela moc lista `t1..t11`.
+
+**Toda a base foi passada para inglês** (comentários de runtime/generator/reggae/
+testes; só este `CRITICS.md` fica em português por ser o documento da crítica).
+
+**Follow-ups assumidos (não fingidos como resolvidos):**
+- **#9** — o subgrafo libsample ainda anuncia produtores repetidos; o `flock` +
+  checagem de `newerThan` mantém correto, mas a dedup real do DAG (como
+  `qtdBindLib` faz pros bindings normais) segue pendente. Não mexi agora pra não
+  arriscar um build que funciona.
+- **#8 (arquitetural)** — coletar eventos da execução de record via reggae, em vez
+  do re-spawn por-target do script.
+- CI ainda **não** comprovada verde num runner real; baselines por Qt-minor;
+  oracle diferencial de QRC vs `rcc`; runner de expected-fails; IR/typesystem;
+  wrapper-default; Windows/SEH; qmltc-d (design travado no plano).
+
 ## Rodada 7: o código local amadureceu; a promessa institucional ainda não
 
 Recomecei pelo estado atual, sem aceitar a resolução da rodada 6 como prova. Li os
