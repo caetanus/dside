@@ -78,11 +78,12 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
 - **66 / 108 import `QtQuick`** — visual types (`Item`, `Rectangle`, …). These are **out of scope**:
   they need `QQuickItem`-derived base classes and visual property semantics the QtObject/QtQml
   runtime does not bind. qmltc-d targets the **QtQml (non-visual) subset**.
-- **42 / 108 are pure QtQml.** Of these, qmltc-d currently compiles **14 fully** (10 → 12 → 14 as
-  functions, enums and signals landed); the rest hit a long tail of distinct features — param'd
-  signals, `Component`/`Connections`/`Timer`, control flow inside functions (`if`/`for`), and
-  grouped properties — no single one of which flips a file on its own (each remaining file needs
-  several).
+- **42 / 108 are pure QtQml.** Of these, qmltc-d compiles **17 fully** (10 → 17 as functions, enums,
+  signals, `++`/`--`, `+=`, `if`/`else`, `console.log` and function-expression handlers landed). But
+  **~17 of the 42 are rooted in a custom C++ type** (`QmlGroupPropertyTestType`, …) — Qt's qmltc
+  corpus is fundamentally about compiling QML against app-defined C++ types, which a fresh-`@QObject`
+  backend can't do. The QtObject-rooted files left each need a distinct niche (`Qt.binding`,
+  cross-object member access, `= undefined`, external JS imports, `QtObject`-typed signal params).
 
 Nothing here is silently dropped: any member or binding qmltc-d can't compile is reported on stderr
 and the file exits `3` (PARTIAL), never a wrong emission.
