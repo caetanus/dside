@@ -78,11 +78,15 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
 - **66 / 108 import `QtQuick`** — visual types (`Item`, `Rectangle`, `Text`, …). The **bound-type
   backend** compiles these as D subclasses of the bound Qt type (`Item`→`QQuickItem`,
   `Rectangle`→`QQuickRectangle`, `Text`→`QQuickText`; the latter two are private-API, discovered via
-  additive private-header scanning), with base props (int/string incl. `QColor`), custom reactive
-  bindings, and default children — **8 / 66 compile fully**, green vs the engine on ldc2+dmd. The
-  ceiling is structural: the corpus is fundamentally about compiling QML against **app-defined C++
-  types** and **local `.qml` types used as children** (cross-file), which a generic backend can't
-  bind. Each further standard-type map (`TextEdit`, `Repeater`, real/bool base props) unlocks ~1 file.
+  additive private-header scanning), with base props (int/string/real incl. `QColor`), custom
+  reactive bindings, default children, and **cross-file local `.qml` types** (a `Foo {}` that
+  resolves to a sibling `Foo.qml`, as both root and child, with use-site member merging). **8 / 66
+  are diff-GREEN vs the engine on ldc2+dmd** (measured by building and diffing, not just compiling
+  clean); cross-file local types are essential to several (`ComponentWithAlias3`, `myMatryoshkaItems`,
+  `myCheckBox`, `MyBaseItem`, `LocallyImported`). The remaining ceiling is structural: the corpus is
+  fundamentally about compiling QML against **app-defined C++ types**, which a generic backend can't
+  bind. Each further delta (`QtObject`-typed props, `list<>` props, animations, more type maps)
+  unlocks ~1 file.
 - **42 / 108 are pure QtQml.** Of these, qmltc-d compiles **17 fully** (10 → 17 as functions, enums,
   signals, `++`/`--`, `+=`, `if`/`else`, `console.log` and function-expression handlers landed). But
   **~17 of the 42 are rooted in a custom C++ type** (`QmlGroupPropertyTestType`, …) — Qt's qmltc
@@ -110,9 +114,10 @@ and the file exits `3` (PARTIAL), never a wrong emission.
   mutation of child properties** (the dump/oracle mutate only root scalars today).
 - More expression coverage: general member access, string methods, more `Math.*`, `Math.floor/ceil`.
 - Non-scalar property types: `color`, `vector2d/3d/4d`, `url`, `size`, `rect`, `quaternion`.
-- **Cross-file / local-type compilation** — the biggest remaining lever: compile a file's local
-  `.qml`-defined child types (`HelloWorld`, `ComponentWithAlias`) as their own D subclasses. This is
-  what most remaining QtQuick-corpus files need, and it's Qt's "compile a whole QML module" model —
-  a larger direction, not a small delta.
+- **Cross-file / local-type compilation** — DONE (roots + children + use-site member merge,
+  cycle-guarded against self-referential files). Remaining cross-file work: nested `Component {}`,
+  `QtObject`-typed object properties (`property QtObject o: QtObject {}`), `list<QtObject>`.
 - **More QtQuick type maps** (`TextEdit`, `TextInput`, `MouseArea`, `Repeater`, `ListView`) and
-  **non-int/string base props** (real, bool, url) — each a mechanical delta unlocking ~1 corpus file.
+  **bool/url base props** — each a mechanical delta unlocking ~1 corpus file.
+- **Animations** (`justAnimation`): the engine runs the animation and the final value differs from
+  the static binding — either read the animation's `to`/`from` or accept these as out of static scope.
