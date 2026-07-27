@@ -91,16 +91,36 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
   bare children, a value-returning function with an unresolved return type, and an **identifier
   that resolves to nothing the generated class defines** — a `Repeater` delegate's `index`, a
   context or attached property — all flag PARTIAL.) Cross-file local types are essential to several (`ComponentWithAlias3`,
-  `myMatryoshkaItems`, `myCheckBox`, `MyBaseItem`, `LocallyImported`). The remaining ceiling is
-  structural: the corpus is fundamentally about compiling QML against **app-defined C++ types**,
-  which a generic backend can't bind. Each further delta (`QtObject`-typed object props, custom
-  `default property list<>` semantics, animations/value-sources, more type maps) unlocks ~1 file.
+  `myMatryoshkaItems`, `myCheckBox`, `MyBaseItem`, `LocallyImported`). Each further delta
+  (`QtObject`-typed object props, custom `default property list<>` semantics, animations/value-sources,
+  more type maps) unlocks ~1 file.
 - **42 / 108 are pure QtQml.** Of these, qmltc-d compiles **17 fully** (10 → 17 as functions, enums,
-  signals, `++`/`--`, `+=`, `if`/`else`, `console.log` and function-expression handlers landed). But
-  **~17 of the 42 are rooted in a custom C++ type** (`QmlGroupPropertyTestType`, …) — Qt's qmltc
-  corpus is fundamentally about compiling QML against app-defined C++ types, which a fresh-`@QObject`
-  backend can't do. The QtObject-rooted files left each need a distinct niche (`Qt.binding`,
-  cross-object member access, `= undefined`, external JS imports, `QtObject`-typed signal params).
+  signals, `++`/`--`, `+=`, `if`/`else`, `console.log` and function-expression handlers landed).
+  **~17 of the 42 are rooted in an app-defined type** (`QmlGroupPropertyTestType`, …). The QtObject-rooted
+  files left each need a distinct niche (`Qt.binding`, cross-object member access, `= undefined`,
+  external JS imports, `QtObject`-typed signal params).
+
+### App-defined types are NOT a language boundary
+
+An earlier version of this document called the app-defined-type files a *structural* ceiling — "the
+corpus is about C++ types, which a generic backend can't bind". **That was wrong.** QML resolves a
+type through its **meta-object**; the language that produced it is irrelevant — C++, D, Python
+(PySide), JS all register the same way. Concretely, this repo already has BOTH ways in:
+
+- **Bind the app's C++ headers.** That is the generator's primary use case, not an exception:
+  `generator/spec_userlib.json` is headers-mode (`headers` + `source_filter`) over an arbitrary
+  user header. Pointing a spec at the corpus's own `QmltcTests/cpptypes/*.h` (21 `QML_ELEMENT`
+  types across 13 headers) is a spec, not new machinery.
+- **Write the type in D.** `@QObject` + `@Property` + `Signal!` + `@Slot` builds a runtime
+  meta-object (`QMetaObjectBuilder`, CTFE) and `qmlRegisterType!T` registers it — covered by the
+  `qmlreg`/`qmltwo`/`homonym` targets. `qmlTypeComponent!T` (qtmoc.d) even emits the `.qmltypes`
+  description of a D type, validated by Qt's own reader (`qmltypes-check-*`).
+
+What actually blocks those files is **QML registration semantics qmltc-d does not implement yet** —
+grouped properties, attached properties, singletons, `required`, deferred and extension types — plus
+the fact that qmltc-d has no app-type registry input: it resolves names through `qmlmap.tsv` (3
+columns, generated from a Qt module's `plugins.qmltypes`) and knows only bound-Qt / QtObject /
+local-`.qml` roots. That is a feature backlog, not a ceiling.
 
 Nothing here is silently dropped: any member or binding qmltc-d can't compile is reported on stderr
 and the file exits `3` (PARTIAL), never a wrong emission.
