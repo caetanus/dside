@@ -104,7 +104,12 @@ Build reggaeBuild() {
     qmlSuite(qml, "");
     all ~= qmlAotTargets(root, qml);   // qmlcachegen (Qt6 unit/loader format); Qt5 AOT is a follow-up
     all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes (Qt-agnostic), validated by Qt's reader
-    all ~= qmltcTargets(root, qml);   // qmltc-d: .qml -> D, diffed against the QQmlComponent oracle
+    all ~= qmltcTargets(root, qml, buildPath(root, "tests", "qmltc", "corpus"), "");   // qmltc-d: .qml -> D vs oracle
+    // (b) QtQuick: a bound-type root (Item -> QQuickItem) compiled to a D subclass, diffed vs the engine.
+    if (execute(["pkg-config", "--exists", "Qt6Quick"]).status == 0) {
+        auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6Qml", "Qt6Gui"]);
+        all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
+    }
     if (haveQt5())
         qmlSuite(qtdBinding(root, "spec_cxx_qml_qt5.json", ["Qt5Qml", "Qt5Gui"]), "-qt5");
 
@@ -317,10 +322,9 @@ Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
 // generate <Name>.d, link it against the qml binding, run it and the oracle, diff. All artifact
 // paths are absolute (under the qml binding's bdir) so reggae keeps them where we reference them.
 // PHASE 1 corpus is literal-scalar roots; bindings/children come in later phases.
-Target[] qmltcTargets(string root, QtdBinding qml) {
+Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag) {
     if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
     auto here = buildPath(root, "tests", "qmltc");
-    auto corpusDir = buildPath(here, "corpus");
     if (!exists(corpusDir)) return [];
     auto toolCpp = buildPath(root, "tools", "qmltc", "qmltc_d.cpp");
     auto oracleCpp = buildPath(here, "qtd_qmlvalues.cpp");
@@ -330,13 +334,13 @@ Target[] qmltcTargets(string root, QtdBinding qml) {
         ~ (modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")
            ~ modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")).join(" ");
     auto toolLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Core"]).output.strip;
-    auto toolBin = buildPath(qml.bdir, "qmltc-d");
+    auto toolBin = buildPath(bind.bdir, "qmltc-d");
     auto tool = Target(toolBin, "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " -o $out " ~ toolLibs, [Target(toolCpp)]);
 
-    // oracle uses only the PUBLIC QML API (QQmlComponent) + Gui (QGuiApplication).
+    // oracle uses only the PUBLIC QML API (QQmlComponent) + Gui (QGuiApplication); loads QtQuick at runtime.
     auto oracleFlags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
     auto oracleLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip;
-    auto oracleBin = buildPath(qml.bdir, "qmlvalues");
+    auto oracleBin = buildPath(bind.bdir, "qmlvalues");
     auto oracle = Target(oracleBin, "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o $out " ~ oracleLibs, [Target(oracleCpp)]);
 
     Target[] ts;
@@ -346,15 +350,15 @@ Target[] qmltcTargets(string root, QtdBinding qml) {
         auto name = baseName(qmlFile).stripExtension;
         foreach (dc; DCS) {
             // 1) qmltc-d --dump <qml> <Name> -> generated D (class + a value-dumping main).
-            auto genD = buildPath(qml.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".d");
+            auto genD = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".d");
             auto gen = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ " > $out",
                 [tool, Target(qmlFile)]);
-            // 2) link the generated D against the qml binding (same shape as qtdApp).
-            auto appBin = buildPath(qml.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
-            auto link = dc ~ " -of=$out " ~ genD ~ " -I" ~ qml.genDir
-                ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(qml.bdir, "libbinding_" ~ dc ~ ".a")
-                ~ " -L=" ~ buildPath(qml.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(qml.mods) ~ " -L-lstdc++";
-            auto app = Target(appBin, link, [gen, qtdBindLib(qml, dc), qml.shims]);
+            // 2) link the generated D against the binding (same shape as qtdApp).
+            auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
+            auto link = dc ~ " -of=$out " ~ genD ~ " -I" ~ bind.genDir
+                ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
+                ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ " -L-lstdc++";
+            auto app = Target(appBin, link, [gen, qtdBindLib(bind, dc), bind.shims]);
             // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
             //    The oracle dumps the EXACT property paths qmltc-d emits (`--labels` -> a .props
             //    file, `--props` to the oracle), so base C++ properties the .qml set are compared too.
@@ -365,7 +369,7 @@ Target[] qmltcTargets(string root, QtdBinding qml) {
             auto cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
-            ts ~= Target.phony("qmltc-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
+            ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
             // 4) LIVE-BINDING differential: if a `<Name>.set` sidecar lists `name=value` mutations,
             //    apply them to BOTH the generated D and the engine, and diff the post-mutation dumps.
             //    A binding that isn't reactive would diverge here (dependent wouldn't update).
@@ -375,7 +379,7 @@ Target[] qmltcTargets(string root, QtdBinding qml) {
                 auto cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
                     ~ " && diff " ~ a ~ ".set " ~ b ~ ".set'";
-                ts ~= Target.phony("qmltc-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle, tool]);
+                ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle, tool]);
             }
         }
     }

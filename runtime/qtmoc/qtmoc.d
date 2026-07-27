@@ -667,6 +667,9 @@ mixin template QtdWidget(Base) {
             } catch (Exception e) { qtdOnCallbackError(e); }
         };
         _reg[cast(void*) this] = MocReg(_qobj, __disp, __prp);
+        // Post-wire hook (same as free wireQObject): a qmltc-d-generated subclass connects its
+        // bindings and sets base properties here, after the trampoline + meta-object exist.
+        static if (__traits(hasMember, _Self, "__qmltcWire")) this.__qmltcWire();
     }
 }
 

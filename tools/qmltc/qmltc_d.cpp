@@ -45,11 +45,25 @@ static std::map<std::string, std::vector<std::string>> g_funcReads;
 // multi-statement body formats its expression for that type. Empty outside a return-typed function.
 static std::string g_returnType;
 
+// Extra `import` lines the generated module needs (e.g. a bound base type's module). Accumulated.
+static std::string g_extraImports;
+
+// QML type name -> (bound D type, its import module), for a non-QtObject root that qmltc-d compiles
+// as a D subclass of the bound Qt type. Empty D type = not a mapped bound type.
+static std::pair<std::string, std::string> boundTypeFor(const std::string &qmlType) {
+    if (qmlType == "Item") return {"QQuickItem", "qt.quick.qquickitem"};
+    return {"", ""};
+}
+
 // QML accesses an enum member via the TYPE name and flattens members into the type scope
 // (`TypeName.Green`), while D keeps them under the enum. g_enumMember maps a member name to its D
 // enum name, and g_className is the current type name, so `TypeName.Green` -> `Color.Green` (int).
 static std::map<std::string, std::string> g_enumMember;
 static std::string g_className;
+
+// Base C++ properties this object sets/reads (name -> dtype). A reference to one in an expression
+// reads it through the meta-object (propInt/propStr(this, name)), as it has no D field.
+static std::map<std::string, std::string> g_baseProps;
 
 // Declared QML signals of this object, so a call `ping()` emits (`ping.emit()`) and a handler
 // `onPing` connects to it. g_signalParams holds each signal's (paramName, dtype) list, for typed
@@ -133,7 +147,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (!compileExpr(nested->expression, dtype, inner)) return false;
         out = "(" + inner + ")"; return true;
     }
-    if (auto *id = cast<IdentifierExpression *>(e)) { out = qs(id->name.toString()); return true; }
+    if (auto *id = cast<IdentifierExpression *>(e)) {
+        std::string n = qs(id->name.toString());
+        auto bp = g_baseProps.find(n);   // a base C++ property -> read via meta (no D field)
+        if (bp != g_baseProps.end()) { out = (bp->second == "string" ? "propStr(this, \"" : "propInt(this, \"") + n + "\")"; return true; }
+        out = n; return true;
+    }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
         auto *base = cast<IdentifierExpression *>(fm->base);
@@ -294,7 +313,12 @@ struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string
 static std::string inferType(ExpressionNode *e, const std::map<std::string, std::string> &ptype) {
     if (!e) return "";
     if (auto *n = cast<NestedExpression *>(e)) return inferType(n->expression, ptype);
-    if (auto *id = cast<IdentifierExpression *>(e)) { auto it = ptype.find(qs(id->name.toString())); return it != ptype.end() ? it->second : ""; }
+    if (auto *id = cast<IdentifierExpression *>(e)) {
+        std::string n = qs(id->name.toString());
+        auto it = ptype.find(n); if (it != ptype.end()) return it->second;
+        auto bp = g_baseProps.find(n); if (bp != g_baseProps.end()) return bp->second;
+        return "";
+    }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { auto it = ptype.find(qs(fm->name.toString())); return it != ptype.end() ? it->second : ""; }
@@ -495,7 +519,8 @@ struct ObjNode {
 // (a UiObjectBinding) becomes a nested @QObject `cls_field` held in a plain field and constructed
 // in __qmltcWire, so the whole tree materialises without the QML engine. Returns the ObjNode.
 static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
-                             std::string &classes, int &partial, const char *inPath) {
+                             std::string &classes, int &partial, const char *inPath,
+                             const std::string &boundBase = "") {
     std::string savedId = g_selfId;
     g_selfId = "";
     for (auto *m = init ? init->members : nullptr; m; m = m->next)   // pre-scan this object's id
@@ -514,11 +539,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedClassName = g_className;
     auto savedSignals = g_signals;
     auto savedSignalParams = g_signalParams;
+    auto savedBaseProps = g_baseProps;
     g_funcRet.clear();
     g_funcReads.clear();
     g_enumMember.clear();
     g_signals.clear();
     g_signalParams.clear();
+    g_baseProps.clear();
     g_className = cls;
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *en = cast<UiEnumDeclaration *>(m->member))
@@ -540,6 +567,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property)
                 if (pub->memberType) { const char *dt = dtypeOf(pub->memberType->name.toString()); if (dt[0]) pt0[qs(pub->name.toString())] = dt; }
+        // Base C++ properties: a plain `<name>: <expr>` whose name isn't a declared property (nor an
+        // id/handler) sets a base Q_PROPERTY; record name -> value type so references resolve to a
+        // meta read. Only meaningful for a bound-type root, but harmless otherwise.
+        for (auto *m = init ? init->members : nullptr; m; m = m->next)
+            if (auto *sb = cast<UiScriptBinding *>(m->member)) {
+                std::string hid = qname(sb->qualifiedId);
+                if (hid == "id" || hid == "Component.onCompleted" || hid.find('.') != std::string::npos || pt0.count(hid)) continue;
+                if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) continue;
+                if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+                    std::string ty = inferType(es->expression, pt0);
+                    if (ty == "int" || ty == "string") g_baseProps[hid] = ty;
+                }
+            }
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *se = cast<UiSourceElement *>(m->member))
                 if (auto *fn = se->sourceElement->asFunctionDefinition())
@@ -855,7 +895,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire += "    }\n";
     }
 
-    classes += "@QObject class " + cls + " {\n" + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
+    // A non-QtObject root becomes a D subclass of the bound Qt type via the (generic) QtdWidget
+    // mixin; the trampoline + attach come from the binding, base props are set in __qmltcWire.
+    std::string mixinLine = boundBase.empty() ? "" : ("    mixin QtdWidget!" + boundBase + ";\n");
+    classes += "@QObject class " + cls + " {\n" + mixinLine + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
@@ -863,6 +906,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_className = savedClassName;
     g_signals = savedSignals;
     g_signalParams = savedSignalParams;
+    g_baseProps = savedBaseProps;
     return node;
 }
 
@@ -914,9 +958,21 @@ int main(int argc, char **argv) {
     auto *root = cast<UiObjectDefinition *>(program->members->member);
     if (!root) { std::fprintf(stderr, "qmltc-d: %s: root is not a plain object definition (unsupported)\n", inPath); return 3; }
 
+    // Map the root's QML type: a bound Qt type (e.g. Item -> QQuickItem) makes qmltc-d emit a D
+    // SUBCLASS of it (via the QtdWidget mixin); QtObject/unmapped stays a fresh @QObject.
+    std::string rootType = root->qualifiedTypeNameId ? qname(root->qualifiedTypeNameId) : "";
+    auto bt = boundTypeFor(rootType);
+    if (!bt.first.empty()) {
+        g_extraImports += "import " + bt.second + ";\n";
+        // the QtdWidget mixin needs the binding's `qtvirt` module (subclass factory / attach /
+        // __<Base>_vnames), which lives at <package>.qtvirt.
+        std::string pkg = bt.second.substr(0, bt.second.rfind('.'));
+        g_extraImports += "import " + pkg + ".qtvirt;\n";
+    }
+
     int partial = 0;
     std::string classes;
-    ObjNode rootNode = compileObject(root->initializer, qs(cls), classes, partial, inPath);
+    ObjNode rootNode = compileObject(root->initializer, qs(cls), classes, partial, inPath, bt.first);
 
     // --labels: print the sorted dump labels (property paths) for the oracle's --props mode.
     if (labels) {
@@ -929,7 +985,7 @@ int main(int argc, char **argv) {
 
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
-    std::printf("import qtmoc;\n\n%s", classes.c_str());
+    std::printf("import qtmoc;\n%s\n%s", g_extraImports.c_str(), classes.c_str());
 
     if (dump) {
         std::vector<DumpLine> lines;
@@ -937,7 +993,10 @@ int main(int argc, char **argv) {
         std::sort(lines.begin(), lines.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });
         std::printf("\nvoid main(string[] args) {\n");
         std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n");
-        std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
+        // A bound-type subclass is constructed with `new` (the mixin ctor builds the trampoline);
+        // a fresh @QObject uses newQObject!T.
+        if (!bt.first.empty()) std::printf("    auto o = new %s();\n", qPrintable(cls));
+        else                   std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
         std::printf("    foreach (a; args[1 .. $]) {\n");
         std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");

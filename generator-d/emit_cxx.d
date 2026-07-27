@@ -425,6 +425,12 @@ bool trampVirt(CXCursor m, string cppClass, out TrampVirt tv) {
             string ip; auto ed = mapCxxType(at, ip);
             pass ~= format("a%d", i); cbc ~= "int"; cbd ~= ed; if (ip.length) tv.imports ~= ip;
         } else if (ak.kind == CXType_Pointer && isRecord(clang_getPointeeType(ak))) {  // class pointer
+            // Skip a virtual whose pointee is a NESTED type (a record inside a class, e.g.
+            // QQuickItem::UpdatePaintNodeData): its spelling is unqualified in the header (breaks the
+            // free C++ trampoline) and it has no top-level bound D module. We don't override these.
+            auto pdecl = clang_getTypeDeclaration(clang_getCanonicalType(clang_getPointeeType(ak)));
+            auto pk = clang_getCursorSemanticParent(pdecl).kind;
+            if (pk == CXCursor_ClassDecl || pk == CXCursor_StructDecl) return false;
             auto dn = lastNs(canon(clang_getPointeeType(ak)));
             pass ~= format("a%d", i); cbc ~= cpp; cbd ~= dn; tv.imports ~= dn;
         } else if (ak.kind == CXType_LValueReference && isRecord(clang_getPointeeType(ak))
@@ -2838,9 +2844,11 @@ string virtCpp(string manifest, string includeLine) {
         ~ "    const char**, const char**, const int*, int, void*, QtdSlotCb, QtdPropCb);\n"
         ~ "void qtd_moc_detach(void*, void*);\n}\n";
     // force a synchronous paintEvent on a QWidget (headless render / test): grab()
-    // renders (repaint()/processEvents() with no args are inline, no symbol).
-    auto forcePaint = "#include <QWidget>\n#include <QPixmap>\nextern \"C\" void qtd_force_paint(void* w) {\n"
-        ~ "    auto* wd = static_cast<QWidget*>(w); wd->resize(20, 20); wd->grab(); }\n";
+    // renders (repaint()/processEvents() with no args are inline, no symbol). Only compiled when
+    // QtWidgets is on the include path — a non-widgets binding (e.g. QtQuick) has no <QWidget>.
+    auto forcePaint = "#if __has_include(<QWidget>)\n#include <QWidget>\n#include <QPixmap>\n"
+        ~ "extern \"C\" void qtd_force_paint(void* w) {\n"
+        ~ "    auto* wd = static_cast<QWidget*>(w); wd->resize(20, 20); wd->grab(); }\n#endif\n";
     return manifest ~ "\n" ~ includeLine ~ mocDecl ~ "namespace {\n" ~ body ~ "}\n" ~ forcePaint;
 }
 
