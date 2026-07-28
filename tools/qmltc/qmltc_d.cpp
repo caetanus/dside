@@ -2171,7 +2171,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childFields += "    " + childCls + " " + cb.field + ";\n";
         childWire += "        " + cb.field + " = "
                    + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
-                   + "        setQtParent(" + cb.field + ", this);\n";
+                   + "        setQtParent(" + cb.field + ", this);\n"
+                   + "        classBegin(" + cb.field + ");\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
@@ -2274,7 +2275,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (!childResolvedPath.empty()) g_resolving.erase(childResolvedPath);
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
-                   + "        setQtParent(" + field + ", this);\n";
+                   + "        setQtParent(" + field + ", this);\n"
+                   + "        classBegin(" + field + ");\n";
         // A BARE child with an id is just as addressable as one bound to a property:
         // `property alias source: dps.source` where dps is a default child is the dominant shape
         // in real QML (241 of the alias skips measured against Qt's own .qml). Registering its
@@ -2817,6 +2819,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::string wire;
     if (anyBound || !handlerWire.empty() || !childWire.empty() || !onCompletedBody.empty() || !baseWire.empty()) {
         wire = "    void __qmltcWire() {\n";
+        // classBegin() BEFORE any property is assigned, which is the order the engine uses: a
+        // type implementing QQmlParserStatus may need to know it is being built from a document
+        // (rather than constructed directly) before it sees its first assignment.
+        wire += "        classBegin(this);\n";
         wire += childWire;   // build children first
         wire += baseWire;    // set base C++ properties
         // Connect EVERYTHING before the initial binding pass. Two reasons:

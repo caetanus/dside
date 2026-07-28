@@ -710,3 +710,34 @@ carrying four half-finished generator changes for +1 document out of 944.
 
 The honest conclusion: the remaining distance is `alias` support and the Controls/Templates
 module, not more QtQuick element types.
+
+
+## Vocabulary is not the bottleneck — measured three ways
+
+Three separate attempts to move "4 complete out of 944" by binding more types:
+
+| vocabulary | types | complete |
+|---|---|---|
+| QtQuick only | 40 | 4 |
+| QtQuick + 84 more QtQuick types | 124 | 5 |
+| QtQuick.Templates only (Controls) | 23 | 2 |
+| ONE binding, QtQuick + Templates | 63 | 4 |
+
+The Controls-only row is the instructive one: it scores WORSE, because a real document mixes
+modules (Item from QtQuick, Button from Templates) and each binding is a closed D universe with
+its own copy of QQuickItem. Two qmlmaps cannot simply be combined — the types would not relate.
+So the vocabulary a document needs must live in ONE binding, which the merged row tests: 63 types
+covering both modules still gives 4.
+
+Causes with that full vocabulary (first 400 documents):
+
+| count | cause |
+|---|---|
+| 356 | property with an unsupported binding/type |
+| 244 | `alias` whose target is unsupported |
+| 214 | root type still not bound (Quick3D, WebEngine, Effects, local .qml types) |
+| 57  | unsupported default child |
+
+What this says: the remaining distance is SEMANTIC — expression forms and alias targets the
+compiler does not handle — plus documents rooted in modules nobody has bound. Adding element
+types to a module already covered does not move it, and that is now measured rather than assumed.
