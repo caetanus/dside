@@ -182,6 +182,26 @@ Target qtdBindLib(QtdBinding b, string dc) {
 // `extra` is appended to the compile line (additional source modules / flags, e.g. a
 // CTFE helper module + its `-I` and a `-J=` string-import path). Use `-J=path` (not
 // `-J path`): dmd requires the `=` form, ldc2 accepts it too.
+// Everything `extra` actually feeds the compiler: the .d sources listed on the command line and
+// the files reachable through each -J=<dir> string-import root. These are real inputs, and
+// leaving them out meant editing runtime/qrc/qrc.d, runtime/uic/uiform.d or any string-imported
+// .ui/.qrc/.qml left the previous binary in place — the test then re-reported a stale verdict as
+// if it were fresh. Measured: after reverting a deliberate one-byte bug in qrc.d, the ldc2 qrc
+// test still ran the buggy binary and still failed.
+private Target[] extraInputs(string extra) {
+    Target[] ts;
+    foreach (tok; extra.split(" ")) {
+        if (tok.endsWith(".d") && exists(tok)) { ts ~= Target(tok); continue; }
+        if (!tok.startsWith("-J")) continue;
+        auto dir = tok[2 .. $];
+        if (dir.startsWith("=")) dir = dir[1 .. $];
+        if (!exists(dir) || !isDir(dir)) continue;
+        foreach (e; dirEntries(dir, SpanMode.depth))
+            if (e.isFile) ts ~= Target(e.name);
+    }
+    return ts;
+}
+
 Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string extra = "") {
     auto lib = qtdBindLib(b, dc);
     auto libPath = buildPath(b.bdir, "libbinding_" ~ dc ~ ".a");
@@ -192,7 +212,7 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
     auto link = dc ~ " -of=$out " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
         ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
         ~ " -L--end-group " ~ pkgLibs(b.mods);
-    return Target(binName, link, [Target(appMain), lib, b.shims]);
+    return Target(binName, link, [Target(appMain), lib, b.shims] ~ extraInputs(extra));
 }
 
 // A test target: build the app, then run it headless. Building the phony runs the test.
