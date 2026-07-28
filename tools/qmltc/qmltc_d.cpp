@@ -427,6 +427,11 @@ static const char *dtypeOf(const QString &qmlType);   // defined below; used by 
 struct ChildRef {
     std::string field;
     std::map<std::string, std::string> propType;
+    // Members contributed by the child's BOUND type rather than by its .qml declarations. They are
+    // not D fields, so a binding reads them through the meta-object; reading them as fields would
+    // compile to `kid.checked`, which does not exist on the generated class.
+    std::map<std::string, std::string> baseProps;
+    std::map<std::string, std::string> baseNotify;   // member -> full notify signature
     // The child's declared signals (name -> parameters) and its no-arg functions, so a parent can
     // connect to `<id>`'s signals and call `<id>.method()`.
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> signalParams;
@@ -450,7 +455,19 @@ static void prescanChildIds(UiObjectInitializer *init) {
         else if (auto *od = cast<UiObjectDefinition *>(pub->binding)) ci = od->initializer;
         if (!ci) continue;
         std::string field = qs(pub->name.toString()), cid;
-        std::map<std::string, std::string> pts;
+        std::map<std::string, std::string> pts, bps, bns;
+        // Seed from the child's bound type (its own properties), then let QML-declared ones win.
+        {
+            std::string ctype;
+            if (auto *ob2 = cast<UiObjectBinding *>(pub->binding); ob2 && ob2->qualifiedTypeNameId)
+                ctype = qname(ob2->qualifiedTypeNameId);
+            else if (auto *od2 = cast<UiObjectDefinition *>(pub->binding); od2 && od2->qualifiedTypeNameId)
+                ctype = qname(od2->qualifiedTypeNameId);
+            if (auto qp = g_qmlProps.find(ctype); qp != g_qmlProps.end())
+                for (auto &pp : qp->second) bps[pp.first] = pp.second;
+            if (auto qn2 = g_qmlNotify.find(ctype); qn2 != g_qmlNotify.end())
+                for (auto &pp : qn2->second) bns[pp.first] = pp.second;
+        }
         std::map<std::string, std::vector<std::pair<std::string, std::string>>> sigs;
         std::set<std::string> meths;
         for (auto *cm = ci->members; cm; cm = cm->next) {
@@ -483,7 +500,7 @@ static void prescanChildIds(UiObjectInitializer *init) {
                 if (auto *fd = cast<FunctionDeclaration *>(se->sourceElement))
                     if (!fd->formals) meths.insert(qs(fd->name.toString()));
         }
-        if (!cid.empty()) g_childIds[cid] = {field, pts, sigs, meths};
+        if (!cid.empty()) g_childIds[cid] = {field, pts, bps, bns, sigs, meths};
     }
 }
 
@@ -760,9 +777,14 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (base) {
             auto ci = g_childIds.find(qs(base->name.toString()));
             if (ci != g_childIds.end()) {
-                auto pt = ci->second.propType.find(qs(fm->name.toString()));
-                if (pt == ci->second.propType.end()) return false;
-                out = ci->second.field + "." + qs(fm->name.toString());
+                std::string mem = qs(fm->name.toString());
+                auto pt = ci->second.propType.find(mem);
+                if (pt != ci->second.propType.end()) { out = ci->second.field + "." + mem; return true; }
+                auto bp = ci->second.baseProps.find(mem);
+                if (bp == ci->second.baseProps.end()) return false;
+                const char *rd = bp->second == "string" ? "propStr(" : bp->second == "double" ? "propDouble("
+                               : bp->second == "bool" ? "propBool(" : "propInt(";
+                out = rd + ci->second.field + ", \"" + mem + "\")";
                 return true;
             }
         }
@@ -2818,8 +2840,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // `<childId>.<prop>` — the notify belongs to the CHILD object, held in a D field.
                 if (auto dot = d.find('.'); dot != std::string::npos && g_childIds.count(d.substr(0, dot))) {
                     auto &cr = g_childIds[d.substr(0, dot)];
-                    wire += "        connectMeta(" + cr.field + ", \"" + d.substr(dot + 1)
-                          + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+                    std::string mem = d.substr(dot + 1);
+                    // A member of the child's BOUND type carries the notify Qt declared for it
+                    // (often with a parameter); one the .qml declared follows <name>Changed.
+                    auto bn = cr.baseNotify.find(mem);
+                    std::string sig = bn != cr.baseNotify.end() && !bn->second.empty()
+                                    ? bn->second : (mem + "Changed()");
+                    wire += "        connectMeta(" + cr.field + ", \"" + sig
+                          + "\", this, \"__rc_" + p.name + "()\");\n";
                     continue;
                 }
                 // `Type.member` — the notify belongs to the ATTACHED object.
