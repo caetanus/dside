@@ -741,3 +741,20 @@ Causes with that full vocabulary (first 400 documents):
 What this says: the remaining distance is SEMANTIC — expression forms and alias targets the
 compiler does not handle — plus documents rooted in modules nobody has bound. Adding element
 types to a module already covered does not move it, and that is now measured rather than assumed.
+
+
+### The largest remaining semantic gap: `color`
+
+Of the 356 unsupported property bindings, the single most common shape is a DECLARED
+`property color c: "white"`. Assigning a base color property already works — `color: "steelblue"`
+on a Rectangle compiles to setProp with a string and Qt converts it, and QColor.qml compares it
+against the engine today. What does not work is declaring one.
+
+Doing it properly means QColor in the meta-object: qtmoc's cppSig maps scalars only, so a
+QColor-typed @Property needs value-type marshalling across the D/C++ boundary. The shortcut —
+holding the normalised name ("#ffff6347") in a string field — was written and reverted: the
+normaliser needs QColor, which lives in QtGui, and qtdmoc.cpp is shared with bindings that do not
+link QtGui (the file documents why an __has_include probe cannot decide this). Putting it behind
+a build define, or normalising through the binding's own QColor in generated code, are both real
+options; neither is a one-liner, and doing it as a string field would leave the meta-object
+claiming QString where the engine says QColor.
