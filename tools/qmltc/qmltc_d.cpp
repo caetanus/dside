@@ -2949,6 +2949,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Only the initial state is applied; changing `state` at runtime (and reverting the
         // previous state's overrides) is the next step and is not compiled yet.
         if (!stateTable.empty()) wire += "        __applyState();\n";
+        // QQmlParserStatus, the way the engine drives it: componentComplete() once the whole tree
+        // is built and every property assigned — CHILDREN FIRST, since a parent's completion may
+        // read what its children settled. A type that does not implement the interface is a no-op.
+        // Without this the objects are constructed but not COMPLETE: QQuickControl computes
+        // hoverEnabled here, and Controls generally do their real initialisation in it.
+        for (auto &k : node.kids) wire += "        componentComplete(" + k.first + ");\n";
+        for (auto &dk : node.defaultKids) wire += "        componentComplete(" + dk.first + ");\n";
+        wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
     }

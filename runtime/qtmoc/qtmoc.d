@@ -46,6 +46,7 @@ extern (C) nothrow {
     bool   qtd_vgroup_get_bool(void*, const(char)*, const(char)*);
     double qtd_vgroup_get_double(void*, const(char)*, const(char)*);
     void*  qtd_vgroup_get_qs(void*, const(char)*, const(char)*);
+    void qtd_parser_status(void*, int);
     int qtd_vgroup_set_int(void*, const(char)*, const(char)*, int);
     int qtd_vgroup_set_bool(void*, const(char)*, const(char)*, bool);
     int qtd_vgroup_set_double(void*, const(char)*, const(char)*, double);
@@ -753,6 +754,12 @@ string propStr(T)(T o, string name) {
 void setProp(T)(T o, string name, string v) {
     qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length);
 }
+
+/// Drives QQmlParserStatus on a bound type: `classBegin()` before its properties are set and
+/// `componentComplete()` once the tree is built, which is what the engine does. A type that does
+/// not implement the interface is left untouched.
+void classBegin(T)(T o) { qtd_parser_status(qobjOf(o), 0); }
+void componentComplete(T)(T o) { qtd_parser_status(qobjOf(o), 1); }
 
 // ---- value-type ("gadget") grouped properties --------------------------------
 // `vt.count` where `vt` is a Q_GADGET-valued property: there is no object to reach, so a read

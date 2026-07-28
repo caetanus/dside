@@ -26,6 +26,7 @@
 #  define QTD_HAVE_QML 1
 #  include <QtQml/qqmlprivate.h>
 #  include <QtQml/qqmllist.h>
+#  include <QtQml/qqmlparserstatus.h>
 #  if QT_VERSION >= 0x060000
 #    include <QtQml/private/qqmlmetatype_p.h>
 #    include <QtQml/qqml.h>
@@ -324,6 +325,28 @@ void* qtd_prop_get_obj(void* o, const char* n) {
     if (!o) return nullptr;
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
+// ---- QQmlParserStatus ---------------------------------------------------------
+// The engine calls classBegin() before setting a component's properties and componentComplete()
+// once the whole tree is built; a type that implements QQmlParserStatus does real initialisation
+// there (QQuickControl computes hoverEnabled in componentComplete). A compiler that only
+// constructs objects and assigns properties produces something that is built but NOT complete,
+// which differs from the engine in ways no individual assignment explains.
+//
+// dynamic_cast because QQmlParserStatus is a secondary base: the interface pointer needs the
+// correct offset, and a type that does not implement it must be left alone rather than called
+// through a wrong vtable.
+extern "C" void qtd_parser_status(void* o, int complete) {
+#ifdef QTD_HAVE_QML
+    if (!o) return;
+    if (auto* ps = dynamic_cast<QQmlParserStatus*>(static_cast<QObject*>(o))) {
+        if (complete) ps->componentComplete();
+        else ps->classBegin();
+    }
+#else
+    (void) o; (void) complete;
+#endif
+}
+
 // ---- value-type ("gadget") grouped properties --------------------------------
 // `Q_PROPERTY(ValueTypeGroup vt ...)` where ValueTypeGroup is a Q_GADGET: `vt.count` in QML does
 // NOT go through an object, because there is no object — the property holds a VALUE. Reading is
