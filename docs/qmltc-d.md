@@ -94,8 +94,9 @@ Measured over the upstream `qmltc` corpus (108 `.qml`):
   `myMatryoshkaItems`, `myCheckBox`, `MyBaseItem`, `LocallyImported`). Each further delta
   (`QtObject`-typed object props, custom `default property list<>` semantics, animations/value-sources,
   more type maps) unlocks ~1 file.
-- **42 / 108 are pure QtQml.** Of these, qmltc-d compiles **17 fully** (10 → 17 as functions, enums,
-  signals, `++`/`--`, `+=`, `if`/`else`, `console.log` and function-expression handlers landed).
+- **42 / 108 are pure QtQml.** Of these, qmltc-d compiles **16 fully** (all 16 build+diff
+  verified — see the scoreboard below) as functions, enums, signals, `++`/`--`, `+=`,
+  `if`/`else`, `console.log` and function-expression handlers landed.
   **~17 of the 42 are rooted in an app-defined type** (`QmlGroupPropertyTestType`, …). The QtObject-rooted
   files left each need a distinct niche (`Qt.binding`, cross-object member access, `= undefined`,
   external JS imports, `QtObject`-typed signal params).
@@ -207,6 +208,19 @@ now fail on a FEATURE instead (`property alias` onto a base property) — the la
 gone for them. The remaining 7 root in types we have not vendored yet (`QmlGroupPropertyTestType`,
 `TypeWithExtension`, …); reaching them is adding headers to the spec, not writing code.
 
+## Corpus scoreboard (every number build+diff VERIFIED)
+
+| corpus half | compile-clean | verified build+diff green |
+|---|---|---|
+| pure-QtQml (42) | 16 | **16** |
+| QtQuick (66) | 7 | **7** |
+| **total (108)** | 23 | **23** |
+
+The second column is the only one that means anything, and it is checked by generating,
+compiling and diffing each file against the engine — not by trusting the tool's own exit code.
+Auditing it is what exposed four defects (see below); before that audit the pure-QtQml half
+claimed 16 and delivered 12.
+
 Nothing here is silently dropped: any member or binding qmltc-d can't compile is reported on stderr
 and the file exits `3` (PARTIAL), never a wrong emission.
 
@@ -226,6 +240,29 @@ Building the D-type differential exposed two defects that no existing test could
 
 Diagnostic: `QTD_QMLVALUES_DEBUG=1` makes the oracle print the meta-object chain the engine built
 (class, property range, which one `metaObject()` returns) — that is what located the first bug.
+
+Auditing the pure-QtQml half of the corpus (build+diff every file the tool called compile-clean,
+instead of trusting its exit code) found four more — the half had never been audited, and claimed
+16 while delivering 12:
+
+- **`"width=" + (a + b)` summed as a concatenation.** The string target propagated into the
+  parenthesised sub-expression, so the inner `+` became `~`: `"10" ~ "10"` -> `width=1010`
+  instead of `width=20`. Each operand of a concatenation is now compiled with ITS OWN inferred
+  type and converted afterwards.
+- **A change handler missed the first change.** Handlers were connected AFTER the initial binding
+  pass, so `property int p: dummy` going 0 -> 42 fired nothing and `onPChanged` never ran.
+  Handlers are now connected first. (A literal-initialised property is assigned in its field
+  initialiser and emits nothing, so this does not make handlers fire on init.)
+- **Untyped formals were assumed numeric.** `function f(x) { stringProp = x }` emitted
+  `void f(double x)`. A formal's type is now inferred from body evidence — assignment to a typed
+  property, or use as a declared signal's argument — before falling back to `double`.
+- **Handler/function parameters were in scope but untyped**, so a concatenation could not coerce
+  them (`stringProp = x + y` with `y:int`). The scope guard now carries types too.
+
+A fifth, from the C++ side: a base property the registry declares with a type we do not compile
+against (`QJSValue`) fell through to literal inference — `jsvalue: true` was emitted as a bool
+`setProp`, printing `false` where the engine printed nothing. The registry is now authoritative:
+a declared-but-unsupported type is PARTIAL, never a guess.
 
 ## Tracked gaps (honest TODO)
 

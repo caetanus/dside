@@ -110,6 +110,11 @@ struct DType {
     // have to be a parameterless `<prop>Changed`: connecting it needs the real signature, and the
     // registry is the only place that has it.
     std::map<std::string, std::string> signalSig;
+    // Properties the registry DECLARES but whose type we do not compile against (QJSValue,
+    // QVariant, a gadget, ...). Knowing the name is not enough: falling back to guessing the type
+    // from the assigned literal produces a WRONG value silently — `jsvalue: true` on a QJSValue
+    // property is not a bool. Assigning or reading one is PARTIAL.
+    std::set<std::string> propUnsupported;
 };
 static std::map<std::string, DType> g_dTypes;             // QML element name -> registered type
 
@@ -189,7 +194,8 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             if (qname(sub->qualifiedTypeNameId) != "Property") continue;
             std::string pn = qmltypesField(sub->initializer, "name");
             const char *pd = dtypeOfCxx(qmltypesField(sub->initializer, "type"));
-            if (pn.empty() || !pd[0]) continue;        // a property type we don't compile against
+            if (pn.empty()) continue;
+            if (!pd[0]) { dt.propUnsupported.insert(pn); continue; }   // declared, but not a type we compile
             dt.propType[pn] = pd;
             std::string note = qmltypesField(sub->initializer, "notify");
             if (!note.empty()) dt.propNotify[pn] = note;
@@ -243,9 +249,12 @@ static std::set<std::string> g_scope;
 // args, `var` locals declared inside), then restores the object-level scope.
 struct ScopeGuard {
     std::set<std::string> saved;
-    ScopeGuard() : saved(g_scope) {}
-    ~ScopeGuard() { g_scope = saved; }
+    std::map<std::string, std::string> savedTypes;
+    ScopeGuard();
+    ~ScopeGuard();
 };
+inline ScopeGuard::ScopeGuard() : saved(g_scope), savedTypes(g_propType) {}
+inline ScopeGuard::~ScopeGuard() { g_scope = saved; g_propType = savedTypes; }
 
 // Declared QML signals of this object, so a call `ping()` emits (`ping.emit()`) and a handler
 // `onPing` connects to it. g_signalParams holds each signal's (paramName, dtype) list, for typed
@@ -445,19 +454,24 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         }
         QString sub = logical ? QString("bool") : (cmp ? QString("") : dtype);
         std::string l, r;
-        if (!compileExpr(bin->left, sub, l) || !compileExpr(bin->right, sub, r)) return false;
         if (op == "~") {
             // JS `+` CONCATENATES when either side is a string, converting the other one
-            // (`"n=" + 5` -> "n=5"). D's `~` has no such coercion, so convert explicitly. A
-            // side whose type we can't infer is left alone — it is either already a string or a
-            // visible compile error, never a silently wrong value.
-            auto coerce = [](ExpressionNode *x, std::string &side) {
+            // (`"n=" + 5` -> "n=5"). Two consequences, and getting either wrong is silent:
+            //  - each side must be compiled with ITS OWN type, not with the string target.
+            //    `"width=" + (a + b)` adds a and b NUMERICALLY and concatenates the result;
+            //    propagating the string hint inward would make that inner `+` a concatenation
+            //    too ("10" ~ "10" -> "1010" instead of 20).
+            //  - D's `~` has no coercion, so a non-string side is converted explicitly.
+            // A side whose type can't be inferred is left as-is: already a string, or a visible
+            // compile error — never a silently wrong value.
+            auto side = [](ExpressionNode *x, std::string &outS) {
                 std::string ty = inferType(x, g_propType);
-                if (!ty.empty() && ty != "string") side = "to!string(" + side + ")";
+                if (!compileExpr(x, QString::fromStdString(ty.empty() ? "string" : ty), outS)) return false;
+                if (!ty.empty() && ty != "string") outS = "to!string(" + outS + ")";
+                return true;
             };
-            coerce(bin->left, l);
-            coerce(bin->right, r);
-        }
+            if (!side(bin->left, l) || !side(bin->right, r)) return false;
+        } else if (!compileExpr(bin->left, sub, l) || !compileExpr(bin->right, sub, r)) return false;
         out = "(" + l + " " + op + " " + r + ")"; return true;
     }
     return false;
@@ -576,7 +590,47 @@ static bool paramIsString(const std::string &p, ExpressionNode *e, const std::ma
     return false;
 }
 
-// (name, D type) for each formal parameter of a no-body-inspected function.
+// Evidence in a function BODY for what a formal's type must be. A QML formal is untyped, and
+// assuming `double` everywhere emits D that does not compile: `function f(x) { stringProp = x }`
+// needs a string, and passing a formal to a declared signal needs that signal's parameter type.
+// Returns "" when the body says nothing.
+static std::string paramTypeFromBody(const std::string &p, Node *n,
+                                     const std::map<std::string, std::string> &pt0) {
+    if (!n) return "";
+    if (auto *blk = cast<Block *>(n)) {
+        for (auto *st = blk->statements; st; st = st->next)
+            if (auto t = paramTypeFromBody(p, st->statement, pt0); !t.empty()) return t;
+        return "";
+    }
+    if (auto *iff = cast<IfStatement *>(n)) {
+        if (auto t = paramTypeFromBody(p, iff->ok, pt0); !t.empty()) return t;
+        return paramTypeFromBody(p, iff->ko, pt0);
+    }
+    auto *es = cast<ExpressionStatement *>(n);
+    if (!es) return "";
+    // `someProperty = p` -> p has that property's declared type.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+        if (auto *rhs = cast<IdentifierExpression *>(bin->right); rhs && qs(rhs->name.toString()) == p)
+            if (auto *lhs = cast<IdentifierExpression *>(bin->left)) {
+                auto it = pt0.find(qs(lhs->name.toString()));
+                if (it != pt0.end()) return it->second;
+            }
+    // `declaredSignal(..., p, ...)` -> p has the signal parameter's declared type.
+    if (auto *call = cast<CallExpression *>(es->expression))
+        if (auto *fnId = cast<IdentifierExpression *>(call->base)) {
+            auto sp = g_signalParams.find(qs(fnId->name.toString()));
+            if (sp != g_signalParams.end()) {
+                int i = 0;
+                for (auto *a = call->arguments; a; a = a->next, ++i)
+                    if (auto *id = cast<IdentifierExpression *>(a->expression);
+                            id && qs(id->name.toString()) == p && i < (int)sp->second.size())
+                        return sp->second[i].second;
+            }
+        }
+    return "";
+}
+
+// (name, D type) for each formal parameter of a function.
 static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpression *fn, const std::map<std::string, std::string> &pt0) {
     ExpressionNode *ret = nullptr;
     if (fn->body && !fn->body->next) if (auto *r = cast<ReturnStatement *>(fn->body->statement)) ret = r->expression;
@@ -584,7 +638,11 @@ static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpre
     for (auto *f = fn->formals; f; f = f->next)
         if (f->element) {
             std::string pn = qs(f->element->bindingIdentifier.toString());
-            ps.push_back({pn, (ret && paramIsString(pn, ret, pt0)) ? "string" : "double"});
+            std::string ty;
+            for (auto *st = fn->body; st && ty.empty(); st = st->next)
+                ty = paramTypeFromBody(pn, st->statement, pt0);   // body evidence wins
+            if (ty.empty()) ty = (ret && paramIsString(pn, ret, pt0)) ? "string" : "double";
+            ps.push_back({pn, ty});
         }
     return ps;
 }
@@ -1127,7 +1185,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (auto sp0 = g_signalParams.find(h.first); sp0 != g_signalParams.end()) {
                 int i = 0;
                 for (auto &pp : sp0->second) {
-                    g_scope.insert(i < (int)fnParams.size() ? fnParams[i] : pp.first);
+                    auto pn = i < (int)fnParams.size() ? fnParams[i] : pp.first;
+                    g_scope.insert(pn);
+                    g_propType[pn] = pp.second;   // typed: `stringProp = x + y` can coerce y
                     ++i;
                 }
             }
@@ -1167,6 +1227,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // __qmltcWire, and record for the dump (read back through the meta-object). int/string only.
     std::string baseWire;
     for (auto &ba : rawBaseAssigns) {
+        // The registry is authoritative: a property it declares with a type we don't compile
+        // against must NOT fall through to literal inference, which would emit a plausible but
+        // wrong value (a QJSValue property assigned `true` is not a bool).
+        if (dBase && dBase->propUnsupported.count(ba.first)) {
+            std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s has an unsupported declared type — skipped (later phase)\n",
+                         inPath, ba.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
         std::string ty = inferType(ba.second, ptype), val;
         if ((ty != "int" && ty != "string" && ty != "double" && ty != "bool") || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
             std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported — skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
@@ -1192,7 +1260,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string sig;   // "double n, string s"
             auto ptWithParams = ptype;
             ScopeGuard sg;   // params (and any `var` locals) are in scope for this body only
-            for (auto &pp : params) { sig += (sig.empty() ? "" : ", ") + pp.second + " " + pp.first; ptWithParams[pp.first] = pp.second; g_scope.insert(pp.first); }
+            for (auto &pp : params) {
+                sig += (sig.empty() ? "" : ", ") + pp.second + " " + pp.first;
+                ptWithParams[pp.first] = pp.second;
+                g_scope.insert(pp.first);
+                g_propType[pp.first] = pp.second;
+            }
             // A body with a `return` -> a typed method (return type inferred into g_funcRet); the
             // WHOLE body is compiled with g_returnType set, so multi-statement bodies (locals,
             // increments, then `return ...`) work, not just a single return.
@@ -1260,6 +1333,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire = "    void __qmltcWire() {\n";
         wire += childWire;   // build children first
         wire += baseWire;    // set base C++ properties
+        // Connect handlers BEFORE the initial binding pass. A bound property's first evaluation
+        // IS a change (`property int p: dummy` goes 0 -> 42) and QML's handler observes it; wiring
+        // the handlers afterwards would miss it. A property initialised from a LITERAL is assigned
+        // in its field initialiser and emits nothing, so this doesn't make handlers fire on init.
+        wire += handlerWire;
         for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
         for (auto &p : props) if (p.bound)
             for (auto &d : p.deps) {
@@ -1280,7 +1358,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 wire += "        connectMeta(this, \"" + sig + "\", this, \"__rc_" + p.name + "()\");\n";
             }
         wire += crossConnects;   // live child-alias connects (cross-object)
-        wire += handlerWire;
         wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
     }
