@@ -42,6 +42,14 @@ extern (C) nothrow {
                       MakeCb, DestroyCb, SlotCb, PropCb);
     void  qtd_moc_activate(void*, int, void**);
     int qtd_connect_meta(void*, const(char)*, void*, const(char)*);
+    int    qtd_vgroup_get_int(void*, const(char)*, const(char)*);
+    bool   qtd_vgroup_get_bool(void*, const(char)*, const(char)*);
+    double qtd_vgroup_get_double(void*, const(char)*, const(char)*);
+    void*  qtd_vgroup_get_qs(void*, const(char)*, const(char)*);
+    int qtd_vgroup_set_int(void*, const(char)*, const(char)*, int);
+    int qtd_vgroup_set_bool(void*, const(char)*, const(char)*, bool);
+    int qtd_vgroup_set_double(void*, const(char)*, const(char)*, double);
+    int qtd_vgroup_set_qs(void*, const(char)*, const(char)*, const(char)*, int);
     void* qtd_metacast(void*, const(char)*);   // QObject::qt_metacast(n) on a qobj — for the identity test
     const(char)* qtd_moc_classname(void*);     // metaObject()->className() of the qobj
     int  qtd_moc_owner_check();                // 1=owner thread, 0=other thread, -1=no owner (r8 #6)
@@ -744,6 +752,37 @@ string propStr(T)(T o, string name) {
 /// Writes a QString property by name (fires the notify, if any).
 void setProp(T)(T o, string name, string v) {
     qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length);
+}
+
+// ---- value-type ("gadget") grouped properties --------------------------------
+// `vt.count` where `vt` is a Q_GADGET-valued property: there is no object to reach, so a read
+// extracts the member from the VALUE and a write is read-modify-write-back. Writing through
+// propObj (the QObject-group path) would dereference null; keeping these separate is what makes
+// that a compile-time choice rather than a crash.
+int vgroupInt(T)(T o, string g, string m) {
+    return qtd_vgroup_get_int(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr);
+}
+double vgroupDouble(T)(T o, string g, string m) {
+    return qtd_vgroup_get_double(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr);
+}
+bool vgroupBool(T)(T o, string g, string m) {
+    return qtd_vgroup_get_bool(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr);
+}
+string vgroupStr(T)(T o, string g, string m) {
+    auto qs = qtd_vgroup_get_qs(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr);
+    auto r = qsToD(qs); qtd_qs_free(qs); return r;
+}
+void setVgroup(T)(T o, string g, string m, int v) {
+    qtd_vgroup_set_int(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v);
+}
+void setVgroup(T)(T o, string g, string m, double v) {
+    qtd_vgroup_set_double(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v);
+}
+void setVgroup(T)(T o, string g, string m, bool v) {
+    qtd_vgroup_set_bool(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v);
+}
+void setVgroup(T)(T o, string g, string m, string v) {
+    qtd_vgroup_set_qs(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v.ptr, cast(int) v.length);
 }
 
 // ---- connection -------------------------------------------------------------

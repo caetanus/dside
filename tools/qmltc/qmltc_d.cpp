@@ -129,6 +129,9 @@ struct DType {
     // members with dotted syntax (`group.count: 42`) — a GROUPED property. Maps property -> the
     // C++ class of the group, so its members can be typed from that class's own registry entry.
     std::map<std::string, std::string> groupClass;
+    // Value-type ("gadget") groups: `Q_PROPERTY(ValueTypeGroup vt ...)` with isPointer false.
+    // name -> the gadget Component's name, whose own Property entries type its members.
+    std::map<std::string, std::string> valueGroupClass;
 };
 static std::map<std::string, DType> g_dTypes;             // QML element name -> registered type
 static std::string g_qmlUri;                             // the module those types are registered under
@@ -232,6 +235,9 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
                 auto raw = qmltypesField(sub->initializer, "type");
                 bool ptr = qmltypesField(sub->initializer, "isPointer") == "true";
                 if (ptr && !raw.empty() && raw != "QObject") { dt.groupClass[pn] = raw; continue; }
+                // NOT a pointer: a value type. Its members are reachable, but only through
+                // read-modify-write on the value — there is no object to write into.
+                if (!ptr && !raw.empty() && raw != "QObject") { dt.valueGroupClass[pn] = raw; continue; }
                 dt.propUnsupported.insert(pn); continue;   // declared, but not a type we compile
             }
             dt.propType[pn] = pd;
@@ -261,6 +267,7 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             for (auto &p : it->second->propReset)  kv.second.propReset.emplace(p.first, p.second);
             for (auto &p : it->second->signalSig)  kv.second.signalSig.emplace(p.first, p.second);
             for (auto &p : it->second->groupClass) kv.second.groupClass.emplace(p.first, p.second);
+            for (auto &p : it->second->valueGroupClass) kv.second.valueGroupClass.emplace(p.first, p.second);
             for (auto &p : it->second->propUnsupported) kv.second.propUnsupported.insert(p);
             proto = it->second->prototype;
         }
@@ -288,6 +295,11 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
     // A candidate group whose class isn't in the registry can't have its members typed, so it is
     // not a group we can compile — demote it to "declared with an unsupported type".
     for (auto &kv : g_dTypes) {
+        for (auto it = kv.second.valueGroupClass.begin(); it != kv.second.valueGroupClass.end();) {
+            if (byClass.count(it->second)) { ++it; continue; }
+            kv.second.propUnsupported.insert(it->first);
+            it = kv.second.valueGroupClass.erase(it);
+        }
         for (auto it = kv.second.groupClass.begin(); it != kv.second.groupClass.end();) {
             if (byClass.count(it->second)) { ++it; continue; }
             kv.second.propUnsupported.insert(it->first);
@@ -331,6 +343,8 @@ static std::map<std::string, std::string> g_baseReset;
 // reachable. Empty unless the base declares object-valued properties.
 struct DType;
 static std::map<std::string, const DType *> g_groups;
+// Value-type groups in scope (see DType::valueGroupClass).
+static std::map<std::string, const DType *> g_vgroups;
 
 // QML types (by element name) whose ATTACHED object this document addresses — `TestType.count`.
 // Maps the element name to the registry entry of its attached class, whose members type the
@@ -616,6 +630,18 @@ static std::string groupNameOf(ExpressionNode *e) {
     return "";
 }
 
+// Same, for a VALUE group. Separate from groupNameOf because the two compile differently.
+static std::string valueGroupNameOf(ExpressionNode *e) {
+    if (auto *id = cast<IdentifierExpression *>(e))
+        return g_vgroups.count(qs(id->name.toString())) ? qs(id->name.toString()) : "";
+    if (auto *fm = cast<FieldMemberExpression *>(e))
+        if (auto *b = cast<IdentifierExpression *>(fm->base);
+                b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                && g_vgroups.count(qs(fm->name.toString())))
+            return qs(fm->name.toString());
+    return "";
+}
+
 // `TestType` or `root.TestType` -> the element name whose attached object is meant.
 static std::string attachedNameOf(ExpressionNode *e) {
     if (auto *id = cast<IdentifierExpression *>(e))
@@ -753,6 +779,20 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 const char *rd = m->second == "string" ? "propStr(" : m->second == "double" ? "propDouble("
                                : m->second == "bool" ? "propBool(" : "propInt(";
                 out = rd + std::string("propObj(this, \"") + qs(base->name.toString()) + "\"), \""
+                    + qs(fm->name.toString()) + "\")";
+                return true;
+            }
+        }
+        // `vgroup.member` -> a member of a VALUE-type group: no object to read through, so the
+        // value is fetched and the member extracted from it.
+        if (base) {
+            auto g = g_vgroups.find(qs(base->name.toString()));
+            if (g != g_vgroups.end()) {
+                auto m = g->second->propType.find(qs(fm->name.toString()));
+                if (m == g->second->propType.end()) return false;
+                const char *rd = m->second == "string" ? "vgroupStr(" : m->second == "double" ? "vgroupDouble("
+                               : m->second == "bool" ? "vgroupBool(" : "vgroupInt(";
+                out = rd + std::string("this, \"") + qs(base->name.toString()) + "\", \""
                     + qs(fm->name.toString()) + "\")";
                 return true;
             }
@@ -1274,6 +1314,19 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                           + mem + "\", " + val + ");\n";
                     return true;
                 }
+                // A VALUE group member: read-modify-write-back, not a write into an object.
+                auto vg = g_vgroups.find(qs(b->name.toString()));
+                if (vg != g_vgroups.end()) {
+                    std::string mem = qs(fm->name.toString());
+                    auto mt = vg->second->propType.find(mem);
+                    std::string val;
+                    if (mt == vg->second->propType.end()
+                            || !compileExpr(bin->right, QString::fromStdString(mt->second), val))
+                        return false;
+                    body += "        setVgroup(this, \"" + qs(b->name.toString()) + "\", \""
+                          + mem + "\", " + val + ");\n";
+                    return true;
+                }
             }
     // `x++` / `++x` / `x--` / `--x` on a property -> the same in D.
     {
@@ -1441,6 +1494,8 @@ struct ObjNode {
     // argument `name()` invokes one on both sides, which is the only way to observe anything a
     // method does — imperative binding installs, resets, counters.
     std::vector<std::string> methods0;
+    // Value-group members this object set (`vt.count`), dumped like grouped ones.
+    std::vector<std::pair<std::string, std::string>> valueGroupProps;
     std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
 };
 
@@ -1510,6 +1565,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     if (dBase) for (auto &g : dBase->groupClass)
         for (auto &kv : g_dTypes)
             if (kv.second.dClass == g.second) { g_groups[g.first] = &kv.second; break; }
+    auto savedVGroups = g_vgroups;
+    g_vgroups.clear();
+    // Same, for VALUE groups. Kept in a separate table from g_groups on purpose: which one a name
+    // is in decides whether a member access compiles to an object write or a read-modify-write,
+    // and treating a value group as an object group crashes (propObj yields null).
+    if (dBase) for (auto &g : dBase->valueGroupClass)
+        for (auto &kv : g_dTypes)
+            if (kv.second.dClass == g.second) { g_vgroups[g.first] = &kv.second; break; }
     auto savedAttached = g_attached;
     g_attached.clear();
     // Any registered type that declares QML_ATTACHED can be addressed as `Type.member` from any
@@ -1682,6 +1745,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
     std::vector<std::pair<std::string, ExpressionNode *>> rawGroupAssigns;        // `group.member: expr`
+    std::vector<std::pair<std::string, ExpressionNode *>> rawValueGroupAssigns;   // `vgroup.member: expr`
     std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
     std::vector<std::pair<std::string, ExpressionNode *>> rawAttachedAssigns;     // `Type.member: expr`
     std::vector<std::pair<std::string, Statement *>> rawAttachedHandlers;         // `Type.on<Sig>: body`
@@ -1732,6 +1796,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
                     if (dot == std::string::npos) { rawBaseAssigns.push_back({hid, es->expression}); continue; }
                     if (g_groups.count(head)) { rawGroupAssigns.push_back({hid, es->expression}); continue; }
+                    // `vgroup.member: <expr>` — same shape, but it must compile to a
+                    // read-modify-write on the VALUE (see rawValueGroupAssigns below).
+                    if (g_vgroups.count(head)) { rawValueGroupAssigns.push_back({hid, es->expression}); continue; }
                 }
             }
         }
@@ -2415,6 +2482,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         node.groupProps.push_back({ga.first, mt->second});
     }
 
+    // A VALUE group's member: setVgroup reads the value, changes the member and writes the whole
+    // value back. Writing through propObj here would dereference null — there is no group object.
+    for (auto &ga : rawValueGroupAssigns) {
+        auto dot = ga.first.find('.');
+        std::string gname = ga.first.substr(0, dot), mem = ga.first.substr(dot + 1);
+        auto &members = g_vgroups[gname]->propType;
+        auto mt = members.find(mem);
+        std::string val;
+        if (mt == members.end() || !compileExpr(ga.second, QString::fromStdString(mt->second), val)) {
+            std::fprintf(stderr, "qmltc-d: %s: value-type group property '%s' in %s not yet supported"
+                         " — skipped (later phase)\n", inPath, ga.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        baseWire += "        setVgroup(this, \"" + gname + "\", \"" + mem + "\", " + val + ");\n";
+        node.valueGroupProps.push_back({ga.first, mt->second});
+    }
+
     // QML `function`s -> D methods (no-arg). A `return <expr>` body becomes a typed method whose
     // return type was inferred into g_funcRet; other bodies become void methods (assignments/calls).
     // Typed PARAMETERS are still a later step.
@@ -2641,6 +2725,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_hasSelector = savedHasSelector;
     g_rebinds = savedRebinds;
     g_childIds = savedChildIds;   // the PARENT's child ids: its wiring still needs them
+    g_vgroups = savedVGroups;
     return node;
 }
 
@@ -2648,7 +2733,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 // `setObj`/`setProp` are the target of a MUTATION, which is not always derivable from the label:
 // a child object path is a D field chain (`o.kid`), a grouped property is reached through the
 // meta-object (`propObj(o, "group")`). Deriving it from the dotted label alone got that wrong.
-struct DumpLine { std::string label, access, dtype, setObj, setProp; };
+// `vgroup` marks a VALUE-group member: mutating it needs setVgroup (read-modify-write), and
+// setProp(o, "vt.count", v) would silently do nothing — setProperty fails on a dotted name.
+struct DumpLine { std::string label, access, dtype, setObj, setProp; bool vgroup = false; };
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
                         std::vector<DumpLine> &out) {
     std::string self = acc.substr(0, acc.size() - 1);
@@ -2679,6 +2766,16 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
                        : (s.second == "bool") ? "propBool(" : "propInt(";
         std::string gobj = "propObj(" + self + ", \"" + gname + "\")";
         out.push_back({lab + s.first, fn + gobj + ", \"" + mem + "\")", s.second, gobj, mem});
+    }
+    // A value group's member: read from the VALUE. The label keeps the QML path, which is what the
+    // oracle walks — the engine resolves `vt.count` through the gadget's own meta-object.
+    for (auto &s : n.valueGroupProps) {
+        auto dot = s.first.find('.');
+        std::string gname = s.first.substr(0, dot), mem = s.first.substr(dot + 1);
+        const char *fn = (s.second == "string") ? "vgroupStr(" : (s.second == "double") ? "vgroupDouble("
+                       : (s.second == "bool") ? "vgroupBool(" : "vgroupInt(";
+        out.push_back({lab + s.first, fn + self + ", \"" + gname + "\", \"" + mem + "\")",
+                       s.second, self + ", \"" + gname + "\"", mem, true});
     }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
     // Group children: read through the D field, but label with the QML path the oracle walks.
@@ -2893,8 +2990,9 @@ int main(int argc, char **argv) {
             if (l.label.find('@') != std::string::npos) continue;   // default-child mutation not supported
             std::string val = (l.dtype == "int") ? "v.to!int" : (l.dtype == "double") ? "v.to!double"
                             : (l.dtype == "bool") ? "v.to!bool" : "v";
-            std::printf("        if (k == \"%s\") setProp(%s, \"%s\", %s);\n",
-                        l.label.c_str(), l.setObj.c_str(), l.setProp.c_str(), val.c_str());
+            std::printf("        if (k == \"%s\") %s(%s, \"%s\", %s);\n",
+                        l.label.c_str(), l.vgroup ? "setVgroup" : "setProp",
+                        l.setObj.c_str(), l.setProp.c_str(), val.c_str());
         }
         std::printf("    }\n");
         for (auto &l : lines)

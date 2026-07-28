@@ -324,6 +324,68 @@ void* qtd_prop_get_obj(void* o, const char* n) {
     if (!o) return nullptr;
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
+// ---- value-type ("gadget") grouped properties --------------------------------
+// `Q_PROPERTY(ValueTypeGroup vt ...)` where ValueTypeGroup is a Q_GADGET: `vt.count` in QML does
+// NOT go through an object, because there is no object — the property holds a VALUE. Reading is
+// read-then-extract, and writing is read-modify-WRITE-BACK: changing a member of the temporary
+// alone would be discarded, which is the difference from a QObject group (a reference, where the
+// member write lands directly). Qt exposes exactly this via QMetaProperty's gadget overloads.
+static const QMetaObject* gadgetMeta(const QVariant& v) {
+    // Qt6 reaches the gadget's meta-object through QMetaType; Qt5 has no QVariant::metaType(),
+    // but QMetaType::metaObjectForType(userType) answers the same question. readOnGadget /
+    // writeOnGadget themselves exist in both.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return v.metaType().metaObject();
+#else
+    return QMetaType::metaObjectForType(v.userType());
+#endif
+}
+static bool gadgetProp(const QVariant& v, const char* member, QMetaProperty& out) {
+    const QMetaObject* mo = gadgetMeta(v);
+    if (!mo) return false;
+    int i = mo->indexOfProperty(member);
+    if (i < 0) return false;
+    out = mo->property(i);
+    return true;
+}
+
+// Reads <obj>.<group>.<member> into a QVariant. Returns an invalid QVariant when anything in the
+// chain is absent, which the typed wrappers below turn into the type's default.
+static QVariant qtd_valuegroup_read(void* o, const char* group, const char* member) {
+    if (!o) return QVariant();
+    QVariant v = static_cast<QObject*>(o)->property(group);
+    QMetaProperty p;
+    if (!v.isValid() || !gadgetProp(v, member, p)) return QVariant();
+    return p.readOnGadget(v.constData());
+}
+
+// Writes <obj>.<group>.<member>, preserving every other member of the value.
+static int qtd_valuegroup_write(void* o, const char* group, const char* member, const QVariant& val) {
+    if (!o) return 0;
+    auto* obj = static_cast<QObject*>(o);
+    QVariant v = obj->property(group);
+    QMetaProperty p;
+    if (!v.isValid() || !gadgetProp(v, member, p)) return 0;
+    if (!p.writeOnGadget(v.data(), val)) return 0;
+    return obj->setProperty(group, v) || true;   // setProperty is false for a non-Q_PROPERTY name
+}
+
+extern "C" {
+int  qtd_vgroup_get_int(void* o, const char* g, const char* m)    { return qtd_valuegroup_read(o, g, m).toInt(); }
+bool qtd_vgroup_get_bool(void* o, const char* g, const char* m)   { return qtd_valuegroup_read(o, g, m).toBool(); }
+double qtd_vgroup_get_double(void* o, const char* g, const char* m){ return qtd_valuegroup_read(o, g, m).toDouble(); }
+// Same string convention as the scalar helpers: hand back a QString the D side frees.
+void* qtd_vgroup_get_qs(void* o, const char* g, const char* m) {
+    return new QString(qtd_valuegroup_read(o, g, m).toString());
+}
+int qtd_vgroup_set_int(void* o, const char* g, const char* m, int v)    { return qtd_valuegroup_write(o, g, m, v); }
+int qtd_vgroup_set_bool(void* o, const char* g, const char* m, bool v)  { return qtd_valuegroup_write(o, g, m, v); }
+int qtd_vgroup_set_double(void* o, const char* g, const char* m, double v){ return qtd_valuegroup_write(o, g, m, v); }
+int qtd_vgroup_set_qs(void* o, const char* g, const char* m, const char* s, int n) {
+    return qtd_valuegroup_write(o, g, m, QString::fromUtf8(s, n));
+}
+}
+
 // Attached-property lookup needs QQmlMetaType::qmlType(QString, QString, QTypeRevision) and
 // qmlAttachedPropertiesObject — QTypeRevision is Qt6-only and Qt5's QQmlMetaType has no
 // (QString, QString, …) overload at all. Qt5 gets the stub; a Qt5 document using an attached

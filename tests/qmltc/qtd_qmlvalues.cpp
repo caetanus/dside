@@ -143,6 +143,29 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
         int eq = a.indexOf('=');
         if (eq < 0) continue;
         QStringList parts = a.left(eq).split('.');
+        // A VALUE-group member has no object to set on: read the value, change the member, write
+        // the value back — the same read-modify-write the compiled side does. Without this the
+        // mutation was silently DROPPED here, so the engine kept the old value while the D side
+        // changed, and the differential blamed the compiler for the harness's gap.
+        if (parts.size() >= 2) {
+            QObject *owner = obj;
+            QStringList head = parts.mid(0, parts.size() - 2);
+            if (!head.isEmpty()) { QStringList h = head; h << head.last(); owner = walk(obj, h); }
+            if (owner) {
+                QByteArray gname = parts[parts.size() - 2].toUtf8();
+                QVariant gv = owner->property(gname.constData());
+                if (gv.isValid() && !gv.metaType().flags().testFlag(QMetaType::PointerToQObject)) {
+                    if (const QMetaObject *gmo = gv.metaType().metaObject()) {
+                        int gi = gmo->indexOfProperty(parts.last().toUtf8().constData());
+                        if (gi >= 0) {
+                            gmo->property(gi).writeOnGadget(gv.data(), QVariant(a.mid(eq + 1)));
+                            owner->setProperty(gname.constData(), gv);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
         if (QObject *cur = walk(obj, parts)) cur->setProperty(parts.last().toUtf8().constData(), QVariant(a.mid(eq + 1)));
     }
 
@@ -192,6 +215,30 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
         while (std::getline(f, label)) {
             if (label.empty()) continue;
             QStringList parts = QString::fromStdString(label).split('.');
+            // A VALUE-type ("gadget") group: `vt.count` has no object behind `vt` — the property
+            // holds a value, and its members live in that value's own meta-object. walk() only
+            // knows how to follow objects, so this is resolved before it is asked.
+            if (parts.size() >= 2) {
+                QObject *owner = obj;
+                QStringList head = parts.mid(0, parts.size() - 2);
+                if (!head.isEmpty()) {
+                    QStringList h = head; h << head.last();   // walk() consumes the leaf
+                    owner = walk(obj, h);
+                }
+                if (owner) {
+                    QVariant gv = owner->property(parts[parts.size() - 2].toUtf8().constData());
+                    if (gv.isValid() && !gv.metaType().flags().testFlag(QMetaType::PointerToQObject)) {
+                        if (const QMetaObject *gmo = gv.metaType().metaObject()) {
+                            int gi = gmo->indexOfProperty(parts.last().toUtf8().constData());
+                            if (gi >= 0) {
+                                lines.push_back(label + "\t"
+                                                + fmt(gmo->property(gi).readOnGadget(gv.constData())));
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
             QObject *cur = walk(obj, parts);
             // A label the engine cannot resolve used to be OMITTED, which makes a mismatch look
             // like agreement whenever the other side also prints nothing — and an unchecked leaf
