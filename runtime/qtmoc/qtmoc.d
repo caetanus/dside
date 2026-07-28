@@ -164,7 +164,16 @@ extern (C) void __mocGlobalProp(void* dobj, int idx, int write, void** args) not
 }
 // Called by the QtdMocObject destructor (C++) -> drops the `_reg` entry, closing the
 // side-table when the object dies (not only on the QML path). Registered once at init.
-extern (C) void __mocGlobalDestroy(void* dobj) nothrow { _reg.remove(dobj); }
+// `destroyed` also fires during process shutdown, from posted deleteLater events, when the D
+// runtime may already be going down — touching the GC then crashes. holder.d guards exactly this
+// case with `_live`; this callback is reached from the same window and needs the same guard.
+private __gshared bool _regLive = true;
+shared static ~this() { _regLive = false; }
+extern (C) void __mocGlobalDestroy(void* dobj) nothrow { if (_regLive) _reg.remove(dobj); }
+
+/// How many D @QObjects are currently registered. A test can assert this returns to its baseline
+/// after a compiled object tree is destroyed — i.e. that nesting does not leak.
+size_t mocRegisteredCount() { return _reg.length; }
 private alias MocDestroyCb = extern (C) void function(void*) nothrow;
 extern (C) void qtd_moc_set_destroy_cb(MocDestroyCb) nothrow;
 shared static this() { qtd_moc_set_destroy_cb(&__mocGlobalDestroy); }
@@ -685,6 +694,10 @@ private extern(C) void* qtd_attached_obj(void*, const(char)*, const(char)*);
 void* attachedObj(T)(T o, string uri, string typeName) {
     return qtd_attached_obj(qobjOf(o), (uri ~ "\0").ptr, (typeName ~ "\0").ptr);
 }
+private extern(C) void qtd_set_parent(void*, void*);
+/// Give `child` a Qt parent, so Qt owns it and destroys it with the parent. That destruction is
+/// what releases the child's registry entry — see the side-table note above.
+void setQtParent(T, U)(T child, U parent) { qtd_set_parent(qobjOf(child), qobjOf(parent)); }
 private extern(C) bool qtd_prop_reset(void*, const(char)*);
 /// Reset a property to its default (QML's `prop: undefined`). Goes through QMetaProperty::reset —
 /// a Q_PROPERTY RESET method is not a slot, so it cannot be invoked by name.

@@ -97,6 +97,7 @@ Build reggaeBuild() {
             all ~= qtdTest("metacontract" ~ tag ~ "-" ~ dc, t("qml", "metacontract_test.d"), b, dc); // @Slot/NOTIFY compile-time rules
             all ~= qtdTest("boom" ~ tag ~ "-" ~ dc, t("qml", "boom_test.d"), b, dc, qmlExtra);       // factory throw -> observable failure
             all ~= qtdTest("metathread" ~ tag ~ "-" ~ dc, t("qml", "metathread_test.d"), b, dc);     // single-thread affinity enforced
+            all ~= qtdTest("reglife" ~ tag ~ "-" ~ dc, t("qml", "reglife_test.d"), b, dc);           // nested tree releases its registry entries
         }
         all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
     }

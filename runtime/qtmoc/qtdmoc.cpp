@@ -359,6 +359,14 @@ bool qtd_prop_reset(void* o, const char* n) {
     int i = obj->metaObject()->indexOfProperty(n);
     return i >= 0 && obj->metaObject()->property(i).reset(obj);
 }
+// Parent a QObject to another — Qt then OWNS the child and destroys it with the parent, which is
+// what closes the side-table entry (~QtdMocObject -> qtd_moc_teardown -> the D registry drops it).
+// A compiled QML document nests objects; without a parent each one would keep its registry entry,
+// and therefore its D object, alive for the life of the process.
+void qtd_set_parent(void* child, void* parent) {
+    if (!child) return;
+    static_cast<QObject*>(child)->setParent(static_cast<QObject*>(parent));
+}
 // Write a QObject* into a property — how a child object built in D is attached to a member of a
 // GROUPED property (`group.object: QtObject { … }`).
 void qtd_prop_set_obj(void* o, const char* n, void* v) {

@@ -1695,7 +1695,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_" + cb.first;
         ObjNode kid = compileObject(cb.second, childCls, classes, partial, inPath);   // restores g_selfId
         childFields += "    " + childCls + " " + cb.first + ";\n";
-        childWire += "        " + cb.first + " = newQObject!" + childCls + "();\n";
+        childWire += "        " + cb.first + " = newQObject!" + childCls + "();\n"
+                   + "        setQtParent(" + cb.first + ", this);\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
@@ -1786,7 +1787,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase);
         if (!childResolvedPath.empty()) g_resolving.erase(childResolvedPath);
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n";
+        childWire += "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
+                   + "        setQtParent(" + field + ", this);\n";
         node.defaultKids.push_back({field, kid});
         node.defaultKidLabel = defaultKidLabel;
         node.defaultKidIsList = defaultKidIsList;
@@ -1999,7 +2001,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_" + gname + "_" + mem;
         ObjNode kid = compileObject(gk.second, childCls, classes, partial, inPath);
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += "        " + field + " = newQObject!" + childCls + "();\n";
+        childWire += "        " + field + " = newQObject!" + childCls + "();\n"
+                   + "        setQtParent(" + field + ", this);\n";
         childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(path);
@@ -2017,7 +2020,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ObjNode kid = compileObject(ae.def->initializer, childCls, classes, partial, inPath, cbt.first);
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += "        " + field + " = " + (cbt.first.empty() ? "newQObject!" + childCls + "()"
-                                                                     : "new " + childCls + "()") + ";\n";
+                                                                     : "new " + childCls + "()") + ";\n"
+                   + "        setQtParent(" + field + ", this);\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(ae.prop + "[" + std::to_string(ae.idx) + "]");
     }
@@ -2031,7 +2035,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_" + tn + "_" + mem;
         ObjNode kid = compileObject(ak.second, childCls, classes, partial, inPath);
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += "        " + field + " = newQObject!" + childCls + "();\n";
+        childWire += "        " + field + " = newQObject!" + childCls + "();\n"
+                   + "        setQtParent(" + field + ", this);\n";
         childWire += "        setPropObj(" + attachedExpr(tn) + ", \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(ak.first);
