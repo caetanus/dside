@@ -607,3 +607,33 @@ a declared-but-unsupported type is PARTIAL, never a guess.
   Widening further is still just headers + include paths.
 - **Animations** (`justAnimation`): the engine runs the animation and the final value differs from
   the static binding — either read the animation's `to`/`from` or accept these as out of static scope.
+
+## QtQuick types bound but not yet instantiable through a property
+
+`spec_cxx_quick.json` names 11 QObject-derived QML types (State, StateGroup,
+PropertyChanges, Transition, SystemPalette, FontMetrics, TextMetrics, IntValidator,
+DoubleValidator, Shortcut, FontLoader), taking qmlmap from 29 to 40 of the 156 types
+QtQuick exports. Being in the map is necessary but NOT sufficient to use one.
+
+A child bound to a property — `property IntValidator iv: IntValidator { top: 99 }` —
+is compiled as a bare @QObject, because that path dropped the child's QML type. The
+generated `setProp(this, "top", 99)` then creates a Qt DYNAMIC property instead of setting
+IntValidator::top.
+
+This is worth spelling out because it produces a FALSE GREEN: a differential comparing
+only properties the .qml assigns sees the same value on both sides (99 == 99) and passes.
+Probing a property the document never sets exposes it — the engine answers
+`iv.locale = pt_BR` (IntValidator's real default) while our object has no such property.
+A test of that shape was written, committed, and then removed for exactly this reason.
+
+Making these usable needs four things, each uncovered by fixing the one before it:
+  1. carry the child's QML type through the property-binding path (done and reverted —
+     it is the first of the four, and alone it only moves the failure);
+  2. a property table for bound types, so a binding can READ a member — qmlmap carries
+     name->class only. A generator pass emitting qmlprops.tsv (property, D type, and the
+     notify's FULL signature, since Qt notifies often carry the value: topChanged(int))
+     was written and reverted with it;
+  3. the trampoline artifacts the QtdWidget mixin expects (`__<Class>_vnames`), which are
+     not emitted for these types;
+  4. for States specifically, a state subsystem: PropertyChanges holds OVERRIDES applied
+     to a target on entry and reverted on exit, not properties of its own.
