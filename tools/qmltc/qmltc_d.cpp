@@ -1971,6 +1971,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Each element is a child object, reached by the engine at its INDEX in that property.
         if (auto *ab = cast<UiArrayBinding *>(m->member)) {
             std::string nm = qname(ab->qualifiedId);
+            // `states: [State {...}, State {...}]` — same data-not-objects treatment as the
+            // single-State form. Without this the list went through the generic array path and
+            // produced labels for the State objects themselves (states[0].data[0].tag), which the
+            // engine has no property for, while the state was never applied.
+            if (nm == "states") {
+                if (!collectStates(m->member, stateTable)) {
+                    std::fprintf(stderr, "qmltc-d: %s: `states` in %s uses a shape not compiled yet "
+                                 "(only State { name; PropertyChanges { target: <this object>; ... } })"
+                                 " — skipped (later phase)\n", inPath, cls.c_str());
+                    ++partial;
+                }
+                continue;
+            }
             int idx = 0;
             for (auto *am = ab->members; am; am = am->next, ++idx) {
                 auto *od = cast<UiObjectDefinition *>(am->member);
@@ -2713,7 +2726,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     node.notified = needsNotify;   // so a parent can tell whether an aliased child prop is live
 
     for (auto &vl : g_valueLists) node.valueLists.push_back({vl.first, vl.second});
-    std::string body, recompute;
+    std::string body, recompute, stateFields, stateMethods;
     bool anyBound = false;
     for (auto &p : props) {
         node.scalars.push_back({p.name, p.dtype});
@@ -2832,21 +2845,32 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string sig = sg != dBase->signalSig.end() ? sg->second : (n->second + "()");
                 wire += "        connectMeta(this, \"" + sig + "\", this, \"__rc_" + p.name + "()\");\n";
             }
-        wire += crossConnects;   // live child-alias connects (cross-object)
-        for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
-        // A state named by `state:` is applied AFTER the declarative bindings have run, which is
-        // the order the engine uses: the state's overrides win over the base values.
-        // Only the initial state is applied; changing `state` at runtime (and reverting the
-        // previous state's overrides) is the next step and is not compiled yet.
+        // Entering a state OVERRIDES properties; leaving it must put the previous values BACK,
+        // which the engine does on exit. The base values are captured when a state is entered
+        // (not at compile time — a binding may have changed them since), so switching states
+        // restores what was there before rather than what the document literally wrote.
         if (!stateTable.empty()) {
-            if (initialState.empty()) {
-                std::fprintf(stderr, "qmltc-d: %s: %s declares states but no initial `state:` — nothing "
-                             "to apply, and switching states at runtime is not compiled yet "
-                             "(later phase)\n", inPath, cls.c_str());
-                ++partial;
+            std::set<std::string> touched;
+            for (auto &st : stateTable) for (auto &ov : st.overrides) touched.insert(ov.prop);
+            std::string saves, restores, applies;
+            for (auto &pn : touched) {
+                std::string ty = isProp(pn) ? ptype[pn] : (g_baseProps.count(pn) ? g_baseProps[pn] : "");
+                if (ty.empty()) continue;
+                stateFields += "    private " + ty + " __save_" + pn + ";\n";
+                std::string rd = isProp(pn) ? pn
+                               : (ty == "string" ? "propStr(this, \"" + pn + "\")"
+                                 : ty == "double" ? "propDouble(this, \"" + pn + "\")"
+                                 : ty == "bool" ? "propBool(this, \"" + pn + "\")"
+                                 : "propInt(this, \"" + pn + "\")");
+                saves += "            __save_" + pn + " = " + rd + ";\n";
+                restores += (isProp(pn)
+                    ? "            " + pn + " = __save_" + pn + ";\n"
+                      + (std::find(needsNotify.begin(), needsNotify.end(), pn) != needsNotify.end()
+                         ? "            " + pn + "Changed.emit();\n" : "")
+                    : "            setProp(this, \"" + pn + "\", __save_" + pn + ");\n");
             }
             for (auto &st : stateTable) {
-                if (st.name != initialState) continue;
+                std::string body2;
                 for (auto &ov : st.overrides) {
                     std::string ty = isProp(ov.prop) ? ptype[ov.prop]
                                    : (g_baseProps.count(ov.prop) ? g_baseProps[ov.prop] : "");
@@ -2858,15 +2882,31 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         ++partial; continue;
                     }
                     if (isProp(ov.prop)) {
-                        wire += "        " + ov.prop + " = " + val + ";\n";
+                        body2 += "            " + ov.prop + " = " + val + ";\n";
                         if (std::find(needsNotify.begin(), needsNotify.end(), ov.prop) != needsNotify.end())
-                            wire += "        " + ov.prop + "Changed.emit();\n";
-                    } else {
-                        wire += "        setProp(this, \"" + ov.prop + "\", " + val + ");\n";
-                    }
+                            body2 += "            " + ov.prop + "Changed.emit();\n";
+                    } else body2 += "            setProp(this, \"" + ov.prop + "\", " + val + ");\n";
                 }
+                applies += "        if (want == \"" + st.name + "\") {\n" + body2 + "        }\n";
             }
+            stateFields += "    private string __activeState;\n";
+            stateMethods += std::string("    @Slot void __applyState() {\n")
+                          + "        auto want = propStr(this, \"state\");\n"
+                          + "        if (want == __activeState) return;\n"
+                          + "        if (__activeState.length) {\n" + restores + "        }\n"
+                          + "        __activeState = want;\n"
+                          + "        if (want.length) {\n" + saves + "        }\n"
+                          + applies;
+            stateMethods += "    }\n";
+            wire += "        connectMeta(this, \"stateChanged(QString)\", this, \"__applyState()\");\n";
         }
+        wire += crossConnects;   // live child-alias connects (cross-object)
+        for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
+        // A state named by `state:` is applied AFTER the declarative bindings have run, which is
+        // the order the engine uses: the state's overrides win over the base values.
+        // Only the initial state is applied; changing `state` at runtime (and reverting the
+        // previous state's overrides) is the next step and is not compiled yet.
+        if (!stateTable.empty()) wire += "        __applyState();\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
     }
@@ -2880,7 +2920,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Only a D base is a real D superclass. A BOUND C++ base is reached through the trampoline
     // mixin instead (the class must not also derive from the extern(C++) declaration).
     std::string ext = (dBase && !dBase->bound) ? (" : " + dBase->dClass) : "";
-    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + valueListDecls + body
+    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods
              + childFields + methods + recompute + handlerSlots + groupHandlerSlots
              + attachedHandlerSlots + wire + "}\n";
     g_selfId = savedId;

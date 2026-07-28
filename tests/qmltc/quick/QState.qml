@@ -8,8 +8,14 @@ Item {
     width: 100
     property int tag: 1
     state: "big"
-    states: State {
-        name: "big"
-        PropertyChanges { target: root; width: 300; tag: 7 }
-    }
+    states: [
+        State {
+            name: "big"
+            PropertyChanges { target: root; width: 300; tag: 7 }
+        },
+        State {
+            name: "wide"
+            PropertyChanges { target: root; width: 900 }
+        }
+    ]
 }

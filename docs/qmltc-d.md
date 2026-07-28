@@ -643,10 +643,20 @@ something the document reads back. `state: "big"` then applies that state's over
 declarative bindings have run, which is the order the engine uses. QState.qml compares a
 QML-declared property (tag) and a base C++ one (width), both matching the engine.
 
-NOT compiled yet, and reported rather than assumed: switching `state` at RUNTIME, which also
-requires reverting the previous state's overrides (the engine restores the base values on exit);
-a `target:` other than the enclosing object; and `states` with no initial `state:` — that last
-one is flagged PARTIAL, since a state table nothing selects would otherwise look applied.
+Switching `state` at RUNTIME works too, reversion included. Entering a state captures the
+current values of every property any state touches and applies the overrides; leaving it puts
+those values back. The capture happens on ENTRY rather than at compile time, because a binding
+may have changed the property since the document was written. `stateChanged(QString)` — note the
+parameter; connecting to `stateChanged()` would throw — drives it.
+
+QState.qml pins the part worth pinning: with two states, switching from "big" to "wide" reverts
+`tag` to its base value (wide does not mention it) while `width` moves to the new one, matching
+the engine on both.
+
+Still refused rather than half-done: a `target:` other than the enclosing object, and a `states`
+table with no initial `state:` (flagged PARTIAL — a table nothing selects would otherwise look
+applied). Transitions/animations between states are not compiled: a State's effect is applied
+instantly, which is what the engine does with no Transition declared.
 
 Original analysis (layers, each uncovered by fixing the one before it):
   1. carry the child's QML type through the property-binding path (done and reverted —
