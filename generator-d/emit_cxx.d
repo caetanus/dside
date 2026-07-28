@@ -1269,7 +1269,8 @@ void collectValueFields(CXCursor decl, ref string[] fields, ref bool[string] see
                 }
             }
             auto p = underlyingPrim(ft);
-            if (p !is null && p != "void" && fsz > 0) fields ~= format("    %s %s;", p, fn);
+            if (p !is null && p != "void" && fsz > 0)
+                fields ~= format("    %s %s%s;", p, fn, paramDefault(c, p));   // keep the C++ DMI
             else if (fsz > 0) fields ~= format("    ubyte[%d] %s;", fsz, fn);
             else fields ~= format("    void* %s;", fn);   // incomplete/opaque -> pointer-width
         }
@@ -2196,7 +2197,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             if (c.kind == CXCursor_FieldDecl) {
                 auto fn = clang_getCursorSpelling(c).str;
                 auto ft = clang_getCursorType(c);
-                if (auto p = underlyingPrim(ft)) body_ ~= format("    %s %s;", p, dname(fn));
+                // A C++ default member initializer (`bool m_null = true;`) is part of the
+                // type's default-constructed state. Dropping it left the D struct's .init
+                // all-zero, so a default-constructed value silently disagreed with C++:
+                // Color().isNull() was true in C++ and false in D.
+                if (auto p = underlyingPrim(ft))
+                    body_ ~= format("    %s %s%s;", p, dname(fn), paramDefault(c, p));
                 else body_ ~= format("    ubyte[%d] %s;", clang_Type_getSizeOf(ft), dname(fn));
             }
     } else {

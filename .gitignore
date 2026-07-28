@@ -25,6 +25,7 @@ generated/
 
 # --- compiled binaries (regenerable) ---
 /generator-d/gend
+/generator-d/gend.lock
 /bootstrap/hello
 compile_commands.json
 /dub.selections.json

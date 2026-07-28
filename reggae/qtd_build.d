@@ -75,6 +75,23 @@ struct QtdBinding {
 
 private string gendPath(string root) { return buildPath(root, "generator-d", "gend"); }
 
+// The generator binary is an INPUT to every gen step, but it was only ever built by hand
+// (`dub build` in generator-d/). Editing emit_cxx.d therefore changed nothing: the build kept
+// running a months-old gend and re-emitted identical bindings, so a generator fix looked like it
+// had no effect. Measured: after teaching the generator to keep C++ default member initializers,
+// the regenerated color.d still said `bool m_null;` until gend was rebuilt by hand.
+// Now it is a real target, rebuilt from its own sources before anything depends on it.
+Target gendTarget(string root) {
+    auto dir = buildPath(root, "generator-d");
+    auto gend = gendPath(root);
+    auto srcs = ["clang_c.d", "gen.d", "emit.d", "emit_cxx.d"].map!(f => buildPath(dir, f)).array;
+    // dub decides itself whether a relink is needed; guarded() keeps concurrent gen steps from
+    // racing into the same dub build, and skips it outright when gend is already newest.
+    auto cmd = guarded(buildPath(dir, "gend.lock"),
+        "cd " ~ dir ~ " && dub build --quiet", gend, srcs);
+    return Target(gend, cmd, srcs.map!(f => Target(f)).array);
+}
+
 // reggae's binary backend can schedule a shared diamond node (many apps -> one binding's
 // gen/shims/lib) more than once concurrently. Two overlapping `rm -rf … && rebuild` on
 // the same output then truncate each other's files. Wrap such a command so it is (a)
@@ -140,7 +157,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
     auto gen = Target(stamp,
         guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, gend] ~ runtimeSrc),
-        [Target(specPath), Target(gend)] ~ runtimeSrc.map!(f => Target(f)).array);
+        [Target(specPath), gendTarget(root)] ~ runtimeSrc.map!(f => Target(f)).array);
 
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
     // headers. Shims are C++ -> identical for ldc2/dmd, so this target is shared.
@@ -271,7 +288,7 @@ Target[] libsampleTargets(string root, string pyside) {
     // 2) generate the "sample" binding.
     auto stamp = buildPath(bdir, "gen.stamp");
     auto genCmd = "rm -rf " ~ gen ~ " && " ~ gend ~ " " ~ specPath ~ " >/dev/null 2>&1 && touch " ~ stamp;
-    auto genT = Target(stamp, guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, gend]), [sampleLib, Target(gend)]);
+    auto genT = Target(stamp, guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, gend]), [sampleLib, gendTarget(root)]);
 
     // 3) shims (.cpp) -> libshims.a.
     auto shimsLib = buildPath(bdir, "libshims.a");
