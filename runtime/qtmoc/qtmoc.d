@@ -234,7 +234,13 @@ template signalMembers(T) {
 }
 template slotMembers(T) {
     template isSlot(string m) {
-        static if (is(typeof(__traits(getMember, T, m)) == function))
+        // Ask the FIRST overload for the UDA: getUDAs on an overload set is deprecated and would
+        // warn on every build of a class that has one. Whether more than one overload is allowed
+        // at all is decided by validateMeta, which rejects it outright.
+        static if (__traits(compiles, __traits(getOverloads, T, m))
+                   && __traits(getOverloads, T, m).length > 0)
+            enum isSlot = hasUDA!(__traits(getOverloads, T, m)[0], Slot);
+        else static if (is(typeof(__traits(getMember, T, m)) == function))
             enum isSlot = hasUDA!(__traits(getMember, T, m), Slot);
         else enum isSlot = false;
     }
@@ -308,6 +314,16 @@ int[] propNotify(T)() {
 // instantiation fires the static asserts; at runtime it is a no-op (optimized away).
 void validateMeta(T)() {
     import std.traits : ReturnType;
+    // The meta-object is keyed by slot NAME: slotSigs emits one signature per name and the
+    // dispatcher indexes that same list, so a second overload of the same name would be built into
+    // neither — it simply would not exist as a slot, and a connect to it would fail at runtime with
+    // no hint why. Reject it at compile time instead of losing it. (Supporting overloads means
+    // keying the meta-object by (name, overload index) throughout — a real change, not a tweak.)
+    static foreach (m; slotMembers!T)
+        static assert(__traits(getOverloads, T, m).length == 1,
+            "qtmoc: @Slot " ~ T.stringof ~ "." ~ m ~ " is overloaded. The meta-object is keyed by " ~
+            "slot name, so only one overload would be registered and connecting to the other would " ~
+            "fail at runtime. Give the slots distinct names.");
     static foreach (m; slotMembers!T)
         static assert(is(ReturnType!(__traits(getMember, T, m)) == void),
             "qtmoc: @Slot " ~ T.stringof ~ "." ~ m ~ " must return void. " ~

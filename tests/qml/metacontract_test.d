@@ -22,6 +22,18 @@ static assert(!__traits(compiles, newQObject!BadNotify()),
 static assert(!__traits(compiles, newQObject!BadNotifySig()),
     "NOTIFY with an incompatible signature must be rejected at compile time");
 
+// Two @Slots sharing a NAME: the meta-object is keyed by slot name, so slotSigs would emit one
+// signature and the dispatcher would index that same list — the second overload would exist in
+// neither, and connecting to it would fail at runtime with no hint why. Found by asking whether
+// the SIGNATURE (which does carry the types) was enough to tell two connections apart: it is not,
+// because the D side cannot express the two slots in the first place. -> must be REJECTED.
+@QObject class BadOverload {
+    Signal!int a; Signal!string b;
+    @Slot void h(int v) {} @Slot void h(string s) {}
+}
+static assert(!__traits(compiles, newQObject!BadOverload()),
+    "overloaded @Slot must be rejected at compile time");
+
 // The honest, valid shapes still compile: void slot, parameterless notify, typed notify.
 @QObject class Good {
     Signal!int ch;
