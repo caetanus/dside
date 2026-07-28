@@ -41,9 +41,10 @@ static std::string fmt(const QVariant &v) {
     case QMetaType::LongLong: return std::to_string(v.toLongLong());
     case QMetaType::Double:
     case QMetaType::Float: {
-        // Match D's default `%s` float text (shortest round-trip). %g is close for the corpus'
-        // simple values; QString::number(d) gives the same shortest form D uses here.
-        return QString::number(v.toDouble()).toStdString();
+        // %.17g on both sides. The two shortest-round-trip renderings disagree on a value sitting
+        // exactly between two 6-digit forms (3.765625 -> D 3.76562, Qt 3.76563), which surfaced as
+        // a value mismatch on a font metric that was in fact identical.
+        return QString::asprintf("%.17g", v.toDouble()).toStdString();
     }
     default:
         // A `list<int>`-style value list has no useful toString (it yields ""), which would have

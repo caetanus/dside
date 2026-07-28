@@ -437,11 +437,39 @@ void main(string[] args) {
     // This is what makes the wrapper's QML type vocabulary DATA — qmltc-d looks types up here instead
     // of carrying a hand-coded name map.
     if (auto qt = "qmltypes" in spec.object) {
-        import std.regex : matchFirst, regex;
+        import std.regex : matchFirst, matchAll, regex;
+        import std.array : join;
         auto reName = regex(`\n {8}name: "([^"]+)"`);
         auto reExp  = regex(`exports: \[([^\]]*)\]`);
         auto reQml  = regex(`"[^"/]+/([A-Za-z0-9_]+) `);
-        string qmap; int rows2;
+        auto rePrototype = regex(`\n {8}prototype: "([A-Za-z0-9_:]+)"`);
+        // One level of nesting: a Signal block contains Parameter blocks, so `[^}]*` would stop at
+        // the first inner `}` and every notify would come out parameterless.
+        auto reSignal = regex(`Signal \{((?:[^{}]|\{[^{}]*\})*)\}`, "s");
+        auto rePropBlock = regex(`Property \{([^}]*)\}`, "s");
+        auto reName2  = regex(`name: "([A-Za-z0-9_]+)"`);
+        auto reType2  = regex(`type: "([A-Za-z0-9_:]+)"`);
+        auto reNotify = regex(`notify: "([A-Za-z0-9_]+)"`);
+        auto reParamT = regex(`Parameter \{[^}]*type: "([A-Za-z0-9_:<> ]+)"`);
+        static string dScalar(string t) {
+            switch (t) {
+                case "int", "qint32", "uint": return "int";
+                case "bool": return "bool";
+                case "double", "float", "qreal": return "double";
+                case "QString", "string": return "string";
+                default: return "";
+            }
+        }
+        static string cxxParam(string t) {
+            switch (t) {
+                case "double", "float", "qreal": return "double";
+                case "string": return "QString";
+                default: return t;
+            }
+        }
+        string[string] protoOf, qmlOf;
+        string[string][string] ownProps, ownNotify;
+        string qmap, qprops; int rows2, rows3;
         foreach (qtj; qt.array) {
             if (!exists(qtj.str)) continue;
             foreach (blk; readText(qtj.str).split("Component {")) {
@@ -453,10 +481,63 @@ void main(string[] args) {
                 auto qn = ex[1].matchFirst(reQml);
                 if (qn.empty) continue;
                 qmap ~= qn[1] ~ "\t" ~ cpp ~ "\t" ~ dpkg ~ "." ~ cpp.toLower ~ "\n"; rows2++;
+                qmlOf[cpp] = qn[1];
+            }
+        }
+        // …and each QML name's scalar PROPERTIES. qmlmap says which class backs a name, which is
+        // enough to CONSTRUCT one but not to read a member off it. A type's own block declares only
+        // what IT adds (IntValidator declares `locale`; top/bottom come from QIntValidator), so the
+        // prototype chain is walked. The notify's FULL signature is recorded too: a Qt notify often
+        // carries the new value (topChanged(int)), and connecting to "topChanged()" fails.
+        foreach (qtj; qt.array) {
+            if (!exists(qtj.str)) continue;
+            foreach (blk; readText(qtj.str).split("Component {")) {
+                auto nm = blk.matchFirst(reName);
+                if (nm.empty) continue;
+                auto pr = blk.matchFirst(rePrototype);
+                if (!pr.empty) protoOf[nm[1]] = pr[1];
+                string[string] sigOf;
+                foreach (sm; blk.matchAll(reSignal)) {
+                    auto sn = sm[1].matchFirst(reName2);
+                    if (sn.empty) continue;
+                    string[] ptypes;
+                    foreach (par; sm[1].matchAll(reParamT)) ptypes ~= cxxParam(par[1]);
+                    sigOf[sn[1]] = sn[1] ~ "(" ~ ptypes.join(",") ~ ")";
+                }
+                foreach (pm; blk.matchAll(rePropBlock)) {
+                    auto pn = pm[1].matchFirst(reName2);
+                    auto pt = pm[1].matchFirst(reType2);
+                    if (pn.empty || pt.empty) continue;
+                    auto pty = dScalar(pt[1]);
+                    if (!pty.length) continue;
+                    ownProps[nm[1]][pn[1]] = pty;
+                    auto nt = pm[1].matchFirst(reNotify);
+                    if (!nt.empty) {
+                        auto sg = nt[1] in sigOf;
+                        ownNotify[nm[1]][pn[1]] = sg ? *sg : (nt[1] ~ "()");
+                    }
+                }
+            }
+        }
+        foreach (cpp, qmlName; qmlOf) {
+            bool[string] emitted;
+            for (string c = cpp; c.length;) {
+                if (auto ps = c in ownProps)
+                    foreach (pn, pty; *ps)
+                        if (pn !in emitted) {
+                            emitted[pn] = true;
+                            string nsig;
+                            if (auto nm2 = c in ownNotify) if (auto x = pn in *nm2) nsig = *x;
+                            qprops ~= qmlName ~ "\t" ~ pn ~ "\t" ~ pty ~ "\t" ~ nsig ~ "\n"; rows3++;
+                        }
+                auto nx = c in protoOf;
+                c = nx ? *nx : "";
             }
         }
         std.file.write(buildPath(outDir, "qmlmap.tsv"), qmap);
-        writefln("qmlmap: %d QML-name -> class rows -> qmlmap.tsv", rows2);
+        std.file.write(buildPath(outDir, "qmlprops.tsv"), qprops);
+        writefln("qmlmap: %d QML-name -> class rows -> qmlmap.tsv (%d property rows -> qmlprops.tsv)",
+                 rows2, rows3);
     }
 
     // coverage.txt: the human summary. The fate breakdown IS the per-symbol manifest — now

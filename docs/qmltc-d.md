@@ -626,7 +626,14 @@ Probing a property the document never sets exposes it — the engine answers
 `iv.locale = pt_BR` (IntValidator's real default) while our object has no such property.
 A test of that shape was written, committed, and then removed for exactly this reason.
 
-Making these usable needs four things, each uncovered by fixing the one before it:
+RESOLVED for the 8 types that have a trampoline (State, StateGroup, StateOperation,
+SystemPalette, FontMetrics, TextMetrics, Shortcut, FontLoader): layers 1 and 2 are in, so a
+child bound to a property is built as its real type and its members are compared. QMetrics.qml
+proves it the way the false green could not — it compares 15 members the document never assigns
+(real font metrics: ascent 14.8438, height 18.6094), which only a genuine QQuickFontMetrics
+produces. IntValidator/DoubleValidator/PropertyChanges/Transition still lack layer 3.
+
+Original analysis (layers, each uncovered by fixing the one before it):
   1. carry the child's QML type through the property-binding path (done and reverted —
      it is the first of the four, and alone it only moves the failure);
   2. a property table for bound types, so a binding can READ a member — qmlmap carries

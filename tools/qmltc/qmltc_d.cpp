@@ -57,6 +57,26 @@ static std::string g_extraImports;
 // only QtObject/local types compile (no bound visual types).
 static std::map<std::string, std::pair<std::string, std::string>> g_qmlMap;
 
+// Scalar properties of each bound QML type, and each one's notify signature, from qmlprops.tsv
+// (written next to qmlmap.tsv by the same generator pass, so the two cannot drift). qmlmap says
+// which class backs a name — enough to CONSTRUCT one; this is what lets a member be read.
+static std::map<std::string, std::map<std::string, std::string>> g_qmlProps, g_qmlNotify;
+
+static void loadQmlProps(const char *path) {
+    std::ifstream f(path);
+    std::string line;
+    while (std::getline(f, line)) {
+        auto t1 = line.find('\t');
+        auto t2 = line.find('\t', t1 + 1);
+        if (t1 == std::string::npos || t2 == std::string::npos) continue;
+        auto t3 = line.find('\t', t2 + 1);
+        std::string qml = line.substr(0, t1), prop = line.substr(t1 + 1, t2 - t1 - 1);
+        if (t3 == std::string::npos) { g_qmlProps[qml][prop] = line.substr(t2 + 1); continue; }
+        g_qmlProps[qml][prop] = line.substr(t2 + 1, t3 - t2 - 1);
+        g_qmlNotify[qml][prop] = line.substr(t3 + 1);
+    }
+}
+
 static void loadQmlMap(const char *path) {
     std::ifstream f(path);
     std::string line;
@@ -1494,6 +1514,11 @@ struct ObjNode {
     // argument `name()` invokes one on both sides, which is the only way to observe anything a
     // method does — imperative binding installs, resets, counters.
     std::vector<std::string> methods0;
+    // Members contributed by this object's BOUND type (not declared in the .qml). Dumped through
+    // the meta-object — they are the only thing that proves the object really IS that type, since
+    // members the document assigns would read back the same from a plain QObject holding dynamic
+    // properties.
+    std::vector<std::pair<std::string, std::string>> boundProps;
     // Value-group members this object set (`vt.count`), dumped like grouped ones.
     std::vector<std::pair<std::string, std::string>> valueGroupProps;
     std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
@@ -1735,7 +1760,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 
     std::vector<Prop> props;
     std::vector<RawHandler> rawHandlers;
-    std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
+    // (field, initializer, QML type). The TYPE used to be dropped here, so a child bound to a
+    // property (`property FontMetrics fm: FontMetrics { ... }`) was compiled as a bare @QObject
+    // instead of its bound type — and `setProp(this, "font", …)` then created a Qt DYNAMIC property
+    // rather than setting the real one. That looks right in a dump whenever both sides happen to
+    // hold the same value, which is how it went unnoticed once already.
+    struct ChildBinding { std::string field; UiObjectInitializer *init; std::string type; };
+    std::vector<ChildBinding> childBindings;     // (field, init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> attachedKidBindings; // ("Type.member", init)
     struct ArrayElem { std::string prop; int idx; UiObjectDefinition *def; };
@@ -1848,7 +1879,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     continue;
                 }
             }
-            childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
+            childBindings.push_back({qname(ob->qualifiedId), ob->initializer,
+                                         ob->qualifiedTypeNameId ? qname(ob->qualifiedTypeNameId) : ""});
             continue;
         }
         // `listProp: [ Type { … }, Type { … } ]` — an array binding fills a `list<>` property.
@@ -1955,9 +1987,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         }
                         continue;
                     }
-                    childBindings.push_back({name, ob->initializer}); continue;
+                    childBindings.push_back({name, ob->initializer,
+                                             ob->qualifiedTypeNameId ? qname(ob->qualifiedTypeNameId) : ""}); continue;
                 }
-                if (auto *od = cast<UiObjectDefinition *>(pub->binding)) { childBindings.push_back({name, od->initializer}); continue; }
+                if (auto *od = cast<UiObjectDefinition *>(pub->binding)) { childBindings.push_back({name, od->initializer,
+                                        od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : ""}); continue; }
             }
             if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
             // The VALUE must compile as the inferred type too, or `property var n: 42` emits a
@@ -1988,10 +2022,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // property-override semantics): keep only the LAST binding per property name (use-site members
     // were spliced on AFTER the local definition's), else we'd emit two `cls_<name>` classes.
     {
-        std::vector<std::pair<std::string, UiObjectInitializer *>> dedup;
+        std::vector<ChildBinding> dedup;
         for (auto it = childBindings.rbegin(); it != childBindings.rend(); ++it) {
             bool seen = false;
-            for (auto &d : dedup) if (d.first == it->first) { seen = true; break; }
+            for (auto &d : dedup) if (d.field == it->field) { seen = true; break; }
             if (!seen) dedup.push_back(*it);
         }
         std::reverse(dedup.begin(), dedup.end());
@@ -2002,19 +2036,31 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::map<std::string, std::string> childType, childAccess;
     std::map<std::string, bool> childNotified;
     for (auto &cb : childBindings) {
-        std::string childCls = cls + "_" + cb.first;
-        ObjNode kid = compileObject(cb.second, childCls, classes, partial, inPath);   // restores g_selfId
-        childFields += "    " + childCls + " " + cb.first + ";\n";
-        childWire += "        " + cb.first + " = newQObject!" + childCls + "();\n"
-                   + "        setQtParent(" + cb.first + ", this);\n";
+        std::string childCls = cls + "_" + cb.field;
+        // Resolve the child's BOUND base, exactly as the default-child path already does, and
+        // import its module (plus the package's qtvirt, which the trampoline mixin needs).
+        auto cbt = boundTypeFor(cb.type);
+        if (!cbt.first.empty() && !cbt.second.empty()) {
+            std::string imp = "import " + cbt.second + ";\n";
+            if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+            std::string vimp = "import " + cbt.second.substr(0, cbt.second.rfind('.')) + ".qtvirt;\n";
+            if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
+        }
+        ObjNode kid = compileObject(cb.init, childCls, classes, partial, inPath, cbt.first);
+        if (auto qp = g_qmlProps.find(cb.type); qp != g_qmlProps.end() && !cbt.first.empty())
+            for (auto &pp : qp->second) kid.boundProps.push_back({pp.first, pp.second});
+        childFields += "    " + childCls + " " + cb.field + ";\n";
+        childWire += "        " + cb.field + " = "
+                   + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
+                   + "        setQtParent(" + cb.field + ", this);\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
-                childAccess[kid.id + "." + s.first] = cb.first + "." + s.first;
+                childAccess[kid.id + "." + s.first] = cb.field + "." + s.first;
             }
             for (auto &n : kid.notified) childNotified[kid.id + "." + n] = true;
         }
-        node.kids.push_back({cb.first, kid});
+        node.kids.push_back({cb.field, kid});
     }
 
     // A custom `default property` redirects bare children into that list, not the object's QObject
@@ -2793,6 +2839,11 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         out.push_back({lab + s.first, fn + self + ", \"" + gname + "\", \"" + mem + "\")",
                        s.second, self + ", \"" + gname + "\"", mem, true});
     }
+    for (auto &s : n.boundProps) {
+        const char *fn = (s.second == "string") ? "propStr(" : (s.second == "double") ? "propDouble("
+                       : (s.second == "bool") ? "propBool(" : "propInt(";
+        out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second, self, s.first});
+    }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
     // Group children: read through the D field, but label with the QML path the oracle walks.
     for (auto &a : n.attachedProps) {
@@ -2824,7 +2875,15 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump") == 0) dump = true;
         else if (std::strcmp(argv[i], "--labels") == 0) labels = true;   // print the dump labels (for the oracle --props)
-        else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) loadQmlMap(argv[++i]);   // QML-name->class table
+        else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) {
+            loadQmlMap(argv[i + 1]);                       // QML-name -> class table
+            // qmlprops.tsv sits beside it and is written by the same pass, so it is never given
+            // separately and the two cannot be mismatched.
+            std::string pp(argv[++i]);
+            auto slash = pp.find_last_of('/');
+            pp = (slash == std::string::npos ? std::string() : pp.substr(0, slash + 1)) + "qmlprops.tsv";
+            loadQmlProps(pp.c_str());
+        }
         // --dtypes <registry.qmltypes> <d-module>: app-defined QML types written in D. The registry
         // is the CTFE .qmltypes of those types; the module is where the D classes live (the
         // .qmltypes format has no field for it, so it is a build input, like a header path).
@@ -3012,7 +3071,12 @@ int main(int argc, char **argv) {
         }
         std::printf("    }\n");
         for (auto &l : lines)
-            std::printf("    writefln(\"%s\\t%%s\", %s);\n", l.label.c_str(), l.access.c_str());
+            // A double is printed with %.17g on BOTH sides: the default shortest forms disagree on
+            // a value that sits exactly between two 6-digit renderings (3.765625 -> D 3.76562,
+            // Qt 3.76563), which is a formatting artefact reported as a value mismatch.
+            std::printf(l.dtype == "double" ? "    writefln(\"%s\\t%%.17g\", %s);\n"
+                                            : "    writefln(\"%s\\t%%s\", %s);\n",
+                        l.label.c_str(), l.access.c_str());
         std::printf("}\n");
     }
     return partial ? 3 : 0;
