@@ -380,6 +380,39 @@ static std::map<std::string, std::string> g_propType;
 // are compared; the list property itself is not yet dumped. name -> D element type.
 static std::map<std::string, std::string> g_valueLists;
 
+// A signal handler, from either of the two spellings QML allows: an inline `onPing: <stmt>` (stmt
+// set), or a `function onPing(n) { ... }` inside a Connections element (fn set). Both end up
+// connected the same way; `sender` is the D expression for the object whose signal is connected,
+// empty meaning `this`.
+struct RawHandler { std::string sig; Statement *stmt; FunctionDeclaration *fn; std::string sender; };
+
+// `Connections { target: X; function onSig(a) { ... } }` is WIRING, not an object to build, so it
+// is desugared into ordinary handlers and reuses the connect machinery. Returns false when the
+// element uses a shape not handled yet (a target other than the enclosing object, or a member that
+// is not an on<Signal> function) — the caller reports that rather than wiring something wrong.
+static bool connectionsHandlers(UiObjectInitializer *init, std::vector<RawHandler> &out) {
+    std::vector<RawHandler> found;
+    for (auto *cm = init ? init->members : nullptr; cm; cm = cm->next) {
+        if (auto *sb = cast<UiScriptBinding *>(cm->member)) {
+            if (qname(sb->qualifiedId) != "target") return false;
+            auto *es = cast<ExpressionStatement *>(sb->statement);
+            auto *idexp = es ? cast<IdentifierExpression *>(es->expression) : nullptr;
+            if (!idexp || g_selfId.empty() || qs(idexp->name.toString()) != g_selfId) return false;
+            continue;
+        }
+        auto *se = cast<UiSourceElement *>(cm->member);
+        auto *fd = se ? cast<FunctionDeclaration *>(se->sourceElement) : nullptr;
+        if (!fd) return false;
+        std::string hn = qs(fd->name.toString());
+        if (hn.size() <= 2 || hn[0] != 'o' || hn[1] != 'n' || !std::isupper((unsigned char)hn[2])) return false;
+        std::string sig = hn.substr(2);
+        sig[0] = (char)std::tolower((unsigned char)sig[0]);
+        found.push_back({sig, nullptr, fd, ""});
+    }
+    for (auto &h : found) out.push_back(h);
+    return true;
+}
+
 // Aliases resolved for use INSIDE expressions: name -> how to read the target from `this`, and
 // the target's own name so a binding through the alias depends on the TARGET (whose reactivity
 // already exists). Only targets reachable without the child objects — self, base, group — are
@@ -1511,7 +1544,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
 
     std::vector<Prop> props;
-    std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
+    std::vector<RawHandler> rawHandlers;
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> attachedKidBindings; // ("Type.member", init)
@@ -1540,7 +1573,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) {
                 std::string sig = hid.substr(2);
                 sig[0] = (char)std::tolower((unsigned char)sig[0]);
-                rawHandlers.push_back({sig, sb->statement});
+                rawHandlers.push_back({sig, sb->statement, nullptr, ""});
                 continue;
             }
             // A plain `<name>: <expr>` that isn't an id/handler assigns a base C++ Q_PROPERTY;
@@ -1703,7 +1736,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
             if (pub->binding) {
-                if (auto *ob = cast<UiObjectBinding *>(pub->binding)) { childBindings.push_back({name, ob->initializer}); continue; }
+                if (auto *ob = cast<UiObjectBinding *>(pub->binding)) {
+                    // `property QtObject c: Connections { ... }` — the only spelling available on a
+                    // QtObject root, which has no default property to hold a bare child.
+                    if (ob->qualifiedTypeNameId && qname(ob->qualifiedTypeNameId) == "Connections") {
+                        if (!connectionsHandlers(ob->initializer, rawHandlers)) {
+                            std::fprintf(stderr, "qmltc-d: %s: Connections '%s' in %s needs `target: <this"
+                                         " object's id>` and `function on<Signal>(...)` members — skipped"
+                                         " (later phase)\n", inPath, name.c_str(), cls.c_str());
+                            ++partial;
+                        }
+                        continue;
+                    }
+                    childBindings.push_back({name, ob->initializer}); continue;
+                }
                 if (auto *od = cast<UiObjectDefinition *>(pub->binding)) { childBindings.push_back({name, od->initializer}); continue; }
             }
             if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
@@ -1795,6 +1841,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
         std::string childType = od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : "";
+        if (childType == "Connections") {
+            if (!connectionsHandlers(od->initializer, rawHandlers)) {
+                std::fprintf(stderr, "qmltc-d: %s: Connections in %s needs `target: <this object's id>` and"
+                             " `function on<Signal>(...)` members — skipped (later phase)\n", inPath, cls.c_str());
+                ++partial;
+            }
+            continue;
+        }
         auto cbt = boundTypeFor(childType);
         UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
@@ -1934,14 +1988,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // `on<Prop>Changed` connects to a property's change signal (mark the prop notified);
         // `on<Signal>` connects to a declared signal directly.
         std::string notifyProp, hbody;
-        bool isCustom = g_signals.count(h.first) > 0;
-        if (!isCustom && h.first.size() > 7 && h.first.compare(h.first.size() - 7, 7, "Changed") == 0)
-            notifyProp = h.first.substr(0, h.first.size() - 7);
-        // A handler body may be a statement, or a function expression `function(a, b) { ... }`
-        // whose formals name the signal's arguments.
+        bool isCustom = g_signals.count(h.sig) > 0;
+        if (!isCustom && h.sig.size() > 7 && h.sig.compare(h.sig.size() - 7, 7, "Changed") == 0)
+            notifyProp = h.sig.substr(0, h.sig.size() - 7);
+        // A handler body may be a statement, a function expression `function(a, b) { ... }` whose
+        // formals name the signal's arguments, or (from Connections) a named function declaration.
         StatementList *fnBody = nullptr;
         std::vector<std::string> fnParams;
-        if (auto *es = cast<ExpressionStatement *>(h.second))
+        if (h.fn) {
+            fnBody = h.fn->body;
+            for (auto *f = h.fn->formals; f; f = f->next)
+                if (f->element) fnParams.push_back(qs(f->element->bindingIdentifier.toString()));
+        } else if (auto *es = cast<ExpressionStatement *>(h.stmt))
             if (auto *fe = es->expression->asFunctionDefinition()) {
                 fnBody = fe->body;
                 for (auto *f = fe->formals; f; f = f->next) if (f->element) fnParams.push_back(qs(f->element->bindingIdentifier.toString()));
@@ -1949,7 +2007,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         bool bodyOk;
         {
             ScopeGuard sg;   // the signal's arguments are named in the body (formals override)
-            if (auto sp0 = g_signalParams.find(h.first); sp0 != g_signalParams.end()) {
+            if (auto sp0 = g_signalParams.find(h.sig); sp0 != g_signalParams.end()) {
                 int i = 0;
                 for (auto &pp : sp0->second) {
                     auto pn = i < (int)fnParams.size() ? fnParams[i] : pp.first;
@@ -1958,7 +2016,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     ++i;
                 }
             }
-            bodyOk = fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(h.second, ptype, hbody);
+            bodyOk = fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(h.stmt, ptype, hbody);
         }
         if ((!isCustom && (notifyProp.empty() || !isProp(notifyProp))) || !bodyOk) {
             std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
@@ -1969,7 +2027,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // A custom signal handler takes the signal's parameters (accessible by name in the body);
         // param NAMES come from the handler function's formals when present, TYPES from the signal.
         std::string dparams, cppsig;
-        auto sp = g_signalParams.find(h.first);
+        auto sp = g_signalParams.find(h.sig);
         if (sp != g_signalParams.end()) {
             int i = 0;
             for (auto &pp : sp->second) {
@@ -1979,8 +2037,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ++i;
             }
         }
-        handlerSlots += "    @Slot void __h_" + h.first + "(" + dparams + ") {\n" + hbody + "    }\n";
-        handlerWire += "        connectMeta(this, \"" + h.first + "(" + cppsig + ")\", this, \"__h_" + h.first + "(" + cppsig + ")\");\n";
+        handlerSlots += "    @Slot void __h_" + h.sig + "(" + dparams + ") {\n" + hbody + "    }\n";
+        // sender defaults to `this`; a Connections element can name another object.
+        std::string sndr = h.sender.empty() ? "this" : h.sender;
+        handlerWire += "        connectMeta(" + sndr + ", \"" + h.sig + "(" + cppsig + ")\", this, \"__h_" + h.sig + "(" + cppsig + ")\");\n";
     }
     // Component.onCompleted runs once at construction — emit its body at the tail of __qmltcWire
     // (after children built, bindings initialised, handlers connected), matching QML's timing.
