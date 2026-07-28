@@ -598,9 +598,18 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     auto here = buildPath(root, "tests", "qmltc");
     auto tool = qmltcTool(root, qmlBind);          // one qmltc-d, shared with the other suites
     auto toolBin = buildPath(qmlBind.bdir, "qmltc-d");
-    auto cflags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
+    // testprivateproperty.h includes <private/qobject_p.h>, so the vendored corpus needs Qt's
+    // private include dirs — for moc, for qmltyperegistrar and for the C++ compile alike.
+    auto privInc = (modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")
+                    ~ modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")).join(" ");
+    auto cflags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 " ~ privInc;
+    // Every vendored header that declares QML_ELEMENT types. Adding a corpus type is adding it
+    // here and to the spec's `headers` — a build input, never per-type code.
     auto headers = ["typewithmanyproperties", "typewithproperties", "typewithsignal",
-                    "typewithspecialproperties"];
+                    "typewithspecialproperties", "testgroupedtype", "typewithnamespace",
+                    "testprivateproperty", "extensiontypes", "singletontype"];
+    auto implCpps = ["typewithproperties", "testgroupedtype", "typewithnamespace",
+                     "testprivateproperty", "extensiontypes", "singletontype"];
 
     // 1) Qt's moc over each vendored header -> moc_<h>.cpp + moc_<h>.cpp.json.
     Target[] mocObjs;
@@ -612,7 +621,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
         jsons ~= j;
         // moc writes the .json as a SIDE EFFECT of -o, so the .cpp is the tracked output.
         auto m = Target(mocCpp, guarded(mocCpp ~ ".lock",
-            moc ~ " " ~ pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " --output-json -o " ~ mocCpp ~ " " ~ hdr,
+            moc ~ " " ~ pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " " ~ privInc ~ " --output-json -o " ~ mocCpp ~ " " ~ hdr,
             mocCpp, [hdr]), [Target(hdr)]);
         mocObjs ~= Target(buildPath(bind.bdir, "moc_" ~ h ~ ".o"),
             "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ mocCpp ~ " -o $out", [m]);
@@ -626,11 +635,15 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
         regCpp, jsons), mocObjs);   // deps on the moc targets: the JSON must exist first
     auto regObj = Target(buildPath(bind.bdir, "qmltyperegistrations.o"),
         "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ regCpp ~ " -o $out", [regT]);
-    auto implObj = Target(buildPath(bind.bdir, "typewithproperties.o"),
-        "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ buildPath(dir, "typewithproperties.cpp") ~ " -o $out",
-        [Target(buildPath(dir, "typewithproperties.cpp"))]);
+    Target[] implObjs;
+    foreach (c; implCpps) {
+        auto src = buildPath(dir, c ~ ".cpp");
+        if (!exists(src)) continue;
+        implObjs ~= Target(buildPath(bind.bdir, c ~ ".o"),
+            "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ src ~ " -o $out", [Target(src)]);
+    }
     auto typesLib = buildPath(bind.bdir, "libcorpustypes.a");
-    auto lib = Target(typesLib, "ar rcs $out $in", mocObjs ~ [regObj, implObj]);
+    auto lib = Target(typesLib, "ar rcs $out $in", mocObjs ~ [regObj] ~ implObjs);
 
     // 3) the ORACLE: the stock C++ oracle linked against the types. --whole-archive is REQUIRED —
     //    the module registration is a static QQmlModuleRegistration nothing references, so a

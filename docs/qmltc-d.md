@@ -197,6 +197,29 @@ the backend differs:
 The binding for those headers is `spec_cxx_corpustypes.json` in **headers-mode**, which is the
 generator's primary use case, not a special mode (`spec_userlib.json` is the same shape).
 
+**Adding a corpus type really is just a header.** Going from 4 vendored headers to 10 (21 bound
+classes, 20 registry entries) took no per-type code — only spec `headers` entries, the matching
+moc list, and Qt's private include dirs (one corpus header includes `<private/qobject_p.h>`). The
+count of pure-QtQml files failing with *"root type is not a bound Qt type"* fell **9 → 2**, and
+one of those two is `badFile.qml`, invalid on purpose.
+
+**And it bought zero new green files — honestly reported.** Binding the TYPE is not the blocker
+any more; the per-type QML *semantics* are. What each now stops on:
+
+| file | blocker |
+|---|---|
+| `groupedProperty`, `PrivateProperty` | grouped-property member syntax |
+| `NamespacedTypes` | a function body form we don't compile |
+| `specialProperties`, `propertyAliasAttributes` | alias onto a base property with **no NOTIFY** (refused, see above) + `undefined`/RESET |
+| `mySignals` | `font`/`QtObject`-typed properties |
+| `QmlTypeWithExtension`, `QmlTypeWithBaseTypeExtension` | `QML_EXTENDED` — refused outright (see below) |
+
+A type whose registry declares a semantic we do not implement is now **refused**, and the refusal
+is INHERITED through the registry's `prototype` chain: `TypeWithBaseTypeExtension` declares no
+extension of its own but derives from one that does, so it would silently lack members the
+engine's object has. Without that rule it reported compile-clean and could not even be
+instantiated by the oracle.
+
 Two things the registry buys that literal inference cannot: the declared **type** of a base
 property, and its real **notify signature**. `TypeWithProperties::d` notifies with
 `dSignal(QString,int)` — connecting it as `dSignal()` matches nothing and leaves the binding

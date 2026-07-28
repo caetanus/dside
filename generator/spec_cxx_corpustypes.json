@@ -8,14 +8,33 @@
     "typewithmanyproperties.h",
     "typewithproperties.h",
     "typewithsignal.h",
-    "typewithspecialproperties.h"
+    "typewithspecialproperties.h",
+    "testgroupedtype.h",
+    "typewithnamespace.h",
+    "testprivateproperty.h",
+    "extensiontypes.h",
+    "hpp.hpp",
+    "singletontype.h"
   ],
   "source_filter": "tests/qmltc/cpptypes",
-  "include_paths": ["../tests/qmltc/cpptypes"],
+  "include_paths": [
+    "../tests/qmltc/cpptypes",
+    "/usr/include/qt6/QtCore/6.11.1",
+    "/usr/include/qt6/QtCore/6.11.1/QtCore",
+    "/usr/include/qt6/QtQml/6.11.1",
+    "/usr/include/qt6/QtQml/6.11.1/QtQml"
+  ],
   "subclass": [
     "TypeWithManyProperties",
     "TypeWithProperties",
     "TypeWithSignal",
-    "TypeWithSpecialProperties"
+    "TypeWithSpecialProperties",
+    "QmlGroupPropertyTestType",
+    "TestTypeGrouped",
+    "TypeWithExtension",
+    "TypeWithBaseTypeExtension",
+    "HppClass",
+    "SingletonType",
+    "TypeWithPrivateProperty"
   ]
 }
