@@ -750,6 +750,16 @@ Of the 356 unsupported property bindings, the single most common shape is a DECL
 on a Rectangle compiles to setProp with a string and Qt converts it, and QColor.qml compares it
 against the engine today. What does not work is declaring one.
 
+RESOLVED at the runtime level, and the fix was smaller than the analysis: the moc is GENERIC.
+A meta-object records a property by its TYPE NAME and Qt resolves that through
+QMetaType::fromName, so no per-type marshalling is needed — cppSig just had to stop refusing
+non-scalars and fall back to the D struct's name, which matches the C++ one for every type the
+generator emits. `@Property QColor` and `@Property QSize` now work (valuetypeprop_test.d).
+What remains is the qmltc-d side: mapping QML's `color` to that type in a compiled document.
+
+The original, wrong analysis is kept below because the shape of the mistake is worth seeing —
+it assumed a per-type mechanism where the framework already had a general one:
+
 Doing it properly means QColor in the meta-object: qtmoc's cppSig maps scalars only, so a
 QColor-typed @Property needs value-type marshalling across the D/C++ boundary. The shortcut —
 holding the normalised name ("#ffff6347") in a string field — was written and reverted: the

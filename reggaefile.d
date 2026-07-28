@@ -113,6 +113,11 @@ Build reggaeBuild() {
     if (execute(["pkg-config", "--exists", "Qt6Quick"]).status == 0) {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
+        // A bound VALUE TYPE as a @Property (QColor, QSize): needs the Quick binding, since that
+        // is where those types live.
+        foreach (dc; DCS)
+            all ~= qtdTest("valuetypeprop-" ~ dc, buildPath(root, "tests", "qml", "valuetypeprop_test.d"),
+                           quick, dc);
     }
     // QtQuick.Templates — the C++ side of QtQuick.Controls, and the vocabulary real QML documents
     // are written against (measured: Controls is what most of Qt's own .qml needs).

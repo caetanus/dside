@@ -226,6 +226,11 @@ template cppSig(T) {
     else static if (is(T == float))  enum cppSig = "float";
     else static if (is(T == uint))   enum cppSig = "uint";
     else static if (is(T == string)) enum cppSig = "QString";
+    // Anything else the binding exposes as a value type: the meta-object records the property by
+    // TYPE NAME and Qt resolves it through QMetaType::fromName, so a bound struct whose D name
+    // matches its C++ one (QColor, QSize, QRectF, …) needs nothing special here. The marshalling
+    // below is a plain copy, which is what a trivially-copyable value type wants.
+    else static if (is(T == struct)) enum cppSig = T.stringof;
     else static assert(0, "qtmoc: signal/slot type not yet supported: " ~ T.stringof);
 }
 string sigString(string name, Args...)() {
