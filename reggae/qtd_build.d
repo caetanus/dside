@@ -115,6 +115,15 @@ Target gendTarget(string root) {
     return Target(gend, cmd, srcs.map!(f => Target(f)).array);
 }
 
+// WHEN A NODE NEEDS THIS (the rule, so the next shared node doesn't slip through): a node needs
+// guarding only if the SAME output can be produced by more than one scheduled command. Two shapes
+// cause that — (a) a diamond, where many consumers depend on one expensive producer, and (b) a
+// Target rebuilt by a factory that several call sites invoke, which yields several distinct
+// Target objects writing the same path. For (b) the fix is to MEMOISE the factory so there is one
+// node (see uidumpObj/qmltcTool in reggaefile.d), not to add a lock. A node with a unique output
+// and one consumer needs neither. Audited: the shared nodes here are gen/shims/lib (guarded),
+// uidump.o and the qmltc tool (memoised); two from-scratch builds completed clean.
+//
 // reggae's binary backend can schedule a shared diamond node (many apps -> one binding's
 // gen/shims/lib) more than once concurrently. Two overlapping `rm -rf … && rebuild` on
 // the same output then truncate each other's files. Wrap such a command so it is (a)
