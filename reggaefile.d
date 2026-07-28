@@ -607,9 +607,11 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     auto cflags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 " ~ privInc;
     // Every vendored header that declares QML_ELEMENT types. Adding a corpus type is adding it
     // here and to the spec's `headers` — a build input, never per-type code.
-    auto headers = ["typewithmanyproperties", "typewithproperties", "typewithsignal",
-                    "typewithspecialproperties", "testgroupedtype", "typewithnamespace",
-                    "testprivateproperty", "extensiontypes", "singletontype"];
+    // Vendored headers that declare QML_ELEMENT types, with their extension: the corpus has a
+    // .hpp among them, and dropping it left its type out of the registry entirely.
+    auto headers = ["typewithmanyproperties.h", "typewithproperties.h", "typewithsignal.h",
+                    "typewithspecialproperties.h", "testgroupedtype.h", "typewithnamespace.h",
+                    "testprivateproperty.h", "extensiontypes.h", "singletontype.h", "hpp.hpp"];
     auto implCpps = ["typewithproperties", "testgroupedtype", "typewithnamespace",
                      "testprivateproperty", "extensiontypes", "singletontype"];
 
@@ -617,15 +619,16 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     Target[] mocObjs;
     string[] jsons;
     foreach (h; headers) {
-        auto hdr = buildPath(dir, h ~ ".h");
-        auto mocCpp = buildPath(bind.bdir, "moc_" ~ h ~ ".cpp");
+        auto hdr = buildPath(dir, h);
+        auto stem = h.stripExtension;
+        auto mocCpp = buildPath(bind.bdir, "moc_" ~ stem ~ ".cpp");
         auto j = mocCpp ~ ".json";
         jsons ~= j;
         // moc writes the .json as a SIDE EFFECT of -o, so the .cpp is the tracked output.
         auto m = Target(mocCpp, guarded(mocCpp ~ ".lock",
             moc ~ " " ~ pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " " ~ privInc ~ " --output-json -o " ~ mocCpp ~ " " ~ hdr,
             mocCpp, [hdr]), [Target(hdr)]);
-        mocObjs ~= Target(buildPath(bind.bdir, "moc_" ~ h ~ ".o"),
+        mocObjs ~= Target(buildPath(bind.bdir, "moc_" ~ stem ~ ".o"),
             "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ mocCpp ~ " -o $out", [m]);
     }
     // 2) qmltyperegistrar over the moc JSON -> the registration .cpp AND the .qmltypes registry.

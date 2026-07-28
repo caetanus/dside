@@ -145,9 +145,15 @@ void main(string[] args) {
             // LISTED in the spec: `decl` is the path libclang resolved, which for a relative
             // include_path is relative to the GENERATOR's cwd and so unusable from the build's.
             // The listed name resolves against the include_path, which every consumer is given.
+            // headers-mode: your own class -> the header it's defined in. If the spec listed that
+            // header by a RELATIVE name, prefer the listed form: `decl` is the path libclang
+            // resolved from the generator's cwd, which the build can't use. An absolute listed
+            // path needs no such substitution — and substituting the umbrella header for a type
+            // actually defined in a sibling header drops that sibling's include entirely.
             else {
                 string inc = decl;
-                foreach (h; headers) if (decl.endsWith(h)) { inc = h; break; }
+                foreach (h; headers)
+                    if (!isAbsolute(h) && decl.endsWith(h)) { inc = h; break; }
                 includes ~= inc;
             }
             targets ~= cur;

@@ -356,7 +356,10 @@ bool isSubclassable(CXCursor node) {
     // Must be EXPORTED (Q_*_EXPORT -> Default visibility under -fvisibility=hidden): a subclass
     // references the base's ctor + staticMetaObject, so those symbols must be linkable. Legacy
     // compat types (QQuickPre64TextEdit) are hidden -> their symbols aren't in the .so -> link error.
-    if (clang_getCursorVisibility(node) != 3) return false;
+    // This test only means something for a type coming from a SHARED LIBRARY. In headers-mode the
+    // sources are the user's own and get compiled into the binary, so an unexported class (an app
+    // type with no export macro at all — the normal case) is perfectly linkable.
+    if (!sourceFilter.length && clang_getCursorVisibility(node) != 3) return false;
     bool anyCtor = false, pubDefault = false;
     foreach (c; children(node))
         if (c.kind == CXCursor_Constructor) {

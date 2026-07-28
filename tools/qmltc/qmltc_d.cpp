@@ -106,6 +106,9 @@ struct DType {
                                                           // object); false: a D class we inherit.
     std::map<std::string, std::string> propType;          // property -> D type (int/string/double/bool)
     std::map<std::string, std::string> propNotify;        // property -> its notify signal
+    // property -> its RESET method. `prop: undefined` in QML means "reset", which is a call, not
+    // a value: without the resetter there is nothing to emit and the assignment must be refused.
+    std::map<std::string, std::string> propReset;
     // Signal name -> its full C++ signature ("dSignal(QString,int)"). A NOTIFY signal does not
     // have to be a parameterless `<prop>Changed`: connecting it needs the real signature, and the
     // registry is the only place that has it.
@@ -217,6 +220,8 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             dt.propType[pn] = pd;
             std::string note = qmltypesField(sub->initializer, "notify");
             if (!note.empty()) dt.propNotify[pn] = note;
+            std::string rst = qmltypesField(sub->initializer, "reset");
+            if (!rst.empty()) dt.propReset[pn] = rst;
         }
         if (dt.dClass.empty()) continue;
         std::string low = dt.dClass;
@@ -235,6 +240,7 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             if (it == byClass.end()) break;
             for (auto &p : it->second->propType)   kv.second.propType.emplace(p.first, p.second);
             for (auto &p : it->second->propNotify) kv.second.propNotify.emplace(p.first, p.second);
+            for (auto &p : it->second->propReset)  kv.second.propReset.emplace(p.first, p.second);
             for (auto &p : it->second->signalSig)  kv.second.signalSig.emplace(p.first, p.second);
             for (auto &p : it->second->groupClass) kv.second.groupClass.emplace(p.first, p.second);
             for (auto &p : it->second->propUnsupported) kv.second.propUnsupported.insert(p);
@@ -294,6 +300,9 @@ static std::map<std::string, std::string> g_baseProps;
 // round-trip. (The value DUMP still goes through the meta-object — that is deliberate: it is the
 // same observation path the engine-side oracle uses.)
 static bool g_baseIsD;
+
+// Base property -> its RESET method, for `prop: undefined`.
+static std::map<std::string, std::string> g_baseReset;
 
 // The base type's GROUPED properties for the object being compiled: group name -> that group
 // class's whole registry entry, so its member types, NOTIFY names and signal signatures are all
@@ -412,6 +421,20 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
 //   - a BASE property with a bound C++ base -> a meta-object read.
 // Anything else resolves to nothing the generated class defines, so it is a compile failure
 // (PARTIAL), never a bare name emitted on faith.
+// `x: undefined` in QML RESETS the property — it calls the RESET method, it does not assign a
+// value. Emits that call for `prop` on `obj`, or returns false when the property has no resetter
+// (in which case assigning undefined is not something we can reproduce).
+static bool isUndefined(ExpressionNode *e) {
+    auto *id = cast<IdentifierExpression *>(e);
+    return id && qs(id->name.toString()) == "undefined";
+}
+static bool resetCall(const std::string &obj, const std::string &prop, std::string &out) {
+    auto r = g_baseReset.find(prop);
+    if (r == g_baseReset.end()) return false;
+    out = "        resetProp(" + obj + ", \"" + prop + "\");\n";
+    return true;
+}
+
 static bool readName(const std::string &n, std::string &out) {
     if (auto a = g_aliasRead.find(n); a != g_aliasRead.end()) { out = a->second; return true; }
     auto bp = g_baseProps.find(n);
@@ -817,6 +840,11 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         if (auto *lhs = cast<IdentifierExpression *>(bin->left)) {
             auto aw = g_aliasWrite.find(qs(lhs->name.toString()));
             if (aw != g_aliasWrite.end()) {
+                if (isUndefined(bin->right)) {   // reset through the alias
+                    std::string call;
+                    if (!resetCall(aw->second.first, aw->second.second, call)) return false;
+                    body += call; return true;
+                }
                 std::string ty = g_propType.count(qs(lhs->name.toString())) ? g_propType[qs(lhs->name.toString())] : "";
                 std::string val;
                 if (ty.empty() || !compileExpr(bin->right, QString::fromStdString(ty), val)) return false;
@@ -1028,6 +1056,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the registry — better than the literal-inference fallback used for a bound C++ base, and it
     // also puts properties the .qml only READS (never assigns) in scope.
     if (dBase) for (auto &p : dBase->propType) g_baseProps[p.first] = p.second;
+    auto savedBaseReset = g_baseReset;
+    g_baseReset.clear();
+    if (dBase) g_baseReset = dBase->propReset;
     auto savedGroups = g_groups;
     g_groups.clear();
     // A grouped property's MEMBERS are typed from the group class's own registry entry.
@@ -1516,6 +1547,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // `aliasName: <expr>` assigns THROUGH the alias — QML aliases are references, so this
         // writes the target rather than declaring anything of our own.
         if (auto aw = g_aliasWrite.find(ba.first); aw != g_aliasWrite.end()) {
+            if (isUndefined(ba.second)) {   // reset THROUGH the alias
+                std::string call;
+                if (!resetCall(aw->second.first, aw->second.second, call)) {
+                    std::fprintf(stderr, "qmltc-d: %s: `%s: undefined` in %s targets a property with no RESET "
+                                 "— skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
+                    ++partial; continue;
+                }
+                baseWire += call; continue;
+            }
             std::string ty = g_propType.count(ba.first) ? g_propType[ba.first] : "", val;
             if (ty.empty() || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
                 std::fprintf(stderr, "qmltc-d: %s: assignment to alias '%s' in %s not yet supported — skipped (later phase)\n",
@@ -1532,6 +1572,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s has an unsupported declared type — skipped (later phase)\n",
                          inPath, ba.first.c_str(), cls.c_str());
             ++partial; continue;
+        }
+        if (isUndefined(ba.second)) {
+            std::string call;
+            if (!resetCall("this", ba.first, call)) {
+                std::fprintf(stderr, "qmltc-d: %s: `%s: undefined` in %s targets a property with no RESET "
+                             "— skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
+                ++partial; continue;
+            }
+            baseWire += call; continue;
         }
         std::string ty = inferType(ba.second, ptype), val;
         if ((ty != "int" && ty != "string" && ty != "double" && ty != "bool") || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
@@ -1763,6 +1812,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_signalParams = savedSignalParams;
     g_baseProps = savedBaseProps;
     g_baseIsD = savedBaseIsD;
+    g_baseReset = savedBaseReset;
     g_groups = savedGroups;
     g_scope = savedScope;
     g_propType = savedPropType;

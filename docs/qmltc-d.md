@@ -328,13 +328,25 @@ child object is a D field chain (`o.kid`), a grouped property is a meta-object h
 (`propObj(o, "group")`), and deriving the mutation target from the dotted label got the latter
 wrong. Each dump line now carries its mutation target explicitly.
 
+### `prop: undefined` is a RESET
+
+In QML `x: undefined` does not assign a value — it calls the property's RESET method. It is
+emitted as `resetProp(obj, "x")`, and that must go through **`QMetaProperty::reset`**: a
+`Q_PROPERTY` RESET method is an ordinary member, not a slot or `Q_INVOKABLE`, so invoking it by
+name finds nothing and silently does nothing. (The first implementation did exactly that and the
+diff caught it — the property kept its assigned value where the engine had `"reset"`.)
+
+A property with no RESET is a PARTIAL, since there is nothing to call. Works through an alias too,
+in both the declarative and the statement form. Fixture `CReset.qml`; `specialProperties.qml` from
+the corpus is green because of it.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 19 | **19** |
+| pure-QtQml (42) | 21 | **21** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 26 | **26** |
+| **total (108)** | 28 | **28** |
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.

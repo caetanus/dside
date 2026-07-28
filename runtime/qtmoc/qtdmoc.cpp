@@ -4,6 +4,7 @@
 // by CTFE). qt_metacall maps: signal indices -> activate; slot indices -> D.
 #include <QObject>
 #include <QString>
+#include <QMetaProperty>
 #include <QCoreApplication>
 #include <QTranslator>
 #include <QtCore/private/qmetaobjectbuilder_p.h>
@@ -314,6 +315,14 @@ void qtd_prop_set_bool(void* o, const char* n, bool v) { static_cast<QObject*>(o
 // ordinary properties on it. Returns null if the property is absent or not an object.
 void* qtd_prop_get_obj(void* o, const char* n) {
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
+}
+// Reset a property to its default — what `prop: undefined` means in QML. It must go through
+// QMetaProperty::reset: the RESET method named by Q_PROPERTY is an ordinary member, not a slot or
+// Q_INVOKABLE, so invoking it BY NAME finds nothing and silently does nothing.
+bool qtd_prop_reset(void* o, const char* n) {
+    auto* obj = static_cast<QObject*>(o);
+    int i = obj->metaObject()->indexOfProperty(n);
+    return i >= 0 && obj->metaObject()->property(i).reset(obj);
 }
 // Write a QObject* into a property — how a child object built in D is attached to a member of a
 // GROUPED property (`group.object: QtObject { … }`).

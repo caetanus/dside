@@ -24,17 +24,7 @@
     "/usr/include/qt6/QtQml/6.11.1",
     "/usr/include/qt6/QtQml/6.11.1/QtQml"
   ],
-  "subclass": [
-    "TypeWithManyProperties",
-    "TypeWithProperties",
-    "TypeWithSignal",
-    "TypeWithSpecialProperties",
-    "QmlGroupPropertyTestType",
-    "TestTypeGrouped",
-    "TypeWithExtension",
-    "TypeWithBaseTypeExtension",
-    "HppClass",
-    "SingletonType",
-    "TypeWithPrivateProperty"
+  "subclass_derived": [
+    "QObject"
   ]
 }
