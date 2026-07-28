@@ -143,9 +143,13 @@ static std::string qmltypesField(UiObjectInitializer *init, const char *key) {
     for (auto *m = init ? init->members : nullptr; m; m = m->next)
         if (auto *sb = cast<UiScriptBinding *>(m->member))
             if (qname(sb->qualifiedId) == key)
-                if (auto *es = cast<ExpressionStatement *>(sb->statement))
-                    if (auto *sl = cast<StringLiteral *>(es->expression))
-                        return qs(sl->value.toString());
+                if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+                    if (auto *sl = cast<StringLiteral *>(es->expression)) return qs(sl->value.toString());
+                    // Not every field is a string: `isPointer: true` is a boolean literal, and it
+                    // is the one that distinguishes a QObject*-valued GROUP from a value type.
+                    if (cast<TrueLiteral *>(es->expression)) return "true";
+                    if (cast<FalseLiteral *>(es->expression)) return "false";
+                }
     return "";
 }
 
@@ -213,8 +217,13 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
                 // (`Q_PROPERTY(TestTypeGrouped *group ...)`), addressed as `group.member` in QML.
                 // Whether that type is really present is settled below, once every Component is
                 // read; anything left over is an unsupported scalar.
+                // A GROUP is a property holding another QOBJECT — `isPointer` is what says so.
+                // A value type (`Q_PROPERTY(ValueTypeGroup vt ...)`) also names another Component,
+                // but there is no object behind it: reaching for one yields null, and writing
+                // through that null is a crash, not a wrong value.
                 auto raw = qmltypesField(sub->initializer, "type");
-                if (!raw.empty() && raw != "QObject") { dt.groupClass[pn] = raw; continue; }
+                bool ptr = qmltypesField(sub->initializer, "isPointer") == "true";
+                if (ptr && !raw.empty() && raw != "QObject") { dt.groupClass[pn] = raw; continue; }
                 dt.propUnsupported.insert(pn); continue;   // declared, but not a type we compile
             }
             dt.propType[pn] = pd;
@@ -290,6 +299,10 @@ static const DType *dTypeFor(const std::string &qmlType) {
 // enum name, and g_className is the current type name, so `TypeName.Green` -> `Color.Green` (int).
 static std::map<std::string, std::string> g_enumMember;
 static std::string g_className;
+
+// The translation CONTEXT QML uses for `qsTr` in this document: the .qml file's base name. Set
+// once in main so a compiled `qsTr` resolves against the same context the engine would.
+static std::string g_trContext;
 
 // Base C++ properties this object sets/reads (name -> dtype). A reference to one in an expression
 // reads it through the meta-object (propInt/propStr(this, name)), as it has no D field.
@@ -421,6 +434,19 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
 //   - a BASE property with a bound C++ base -> a meta-object read.
 // Anything else resolves to nothing the generated class defines, so it is a compile failure
 // (PARTIAL), never a bare name emitted on faith.
+// A member path may be written through the object's own id: `root.group.str` means the same as
+// `group.str`. Returns the group name when `e` is that (or a bare identifier naming a group).
+static std::string groupNameOf(ExpressionNode *e) {
+    if (auto *id = cast<IdentifierExpression *>(e))
+        return g_groups.count(qs(id->name.toString())) ? qs(id->name.toString()) : "";
+    if (auto *fm = cast<FieldMemberExpression *>(e))
+        if (auto *b = cast<IdentifierExpression *>(fm->base);
+                b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                && g_groups.count(qs(fm->name.toString())))
+            return qs(fm->name.toString());
+    return "";
+}
+
 // `x: undefined` in QML RESETS the property — it calls the RESET method, it does not assign a
 // value. Emits that call for `prop` on `obj`, or returns false when the property has no resetter
 // (in which case assigning undefined is not something we can reproduce).
@@ -503,6 +529,20 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (fn == "min" && args.size() == 2) { out = "(" + args[0] + " < " + args[1] + " ? " + args[0] + " : " + args[1] + ")"; return true; }
             if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
             return false;
+        }
+        // `qsTr("…")` — QML's translation call. Its context is the .qml file's base name, which is
+        // what the engine uses, so the compiled form resolves against the same context.
+        // (With no translator covering the string Qt returns the source, exactly as QML does.)
+        if (auto *fnId = cast<IdentifierExpression *>(call->base);
+                fnId && qs(fnId->name.toString()) == "qsTr" && call->arguments) {
+            std::string src;
+            if (!compileExpr(call->arguments->expression, "string", src)) return false;
+            std::string disambig;
+            if (call->arguments->next
+                    && !compileExpr(call->arguments->next->expression, "string", disambig)) return false;
+            out = "translate(\"" + g_trContext + "\", " + src
+                + (disambig.empty() ? "" : ", " + disambig) + ")";
+            return true;
         }
         // plain call `name(args)` -> a method of this class (a QML `function`) or a signal emit.
         if (auto *fnId = cast<IdentifierExpression *>(call->base)) {
@@ -656,6 +696,9 @@ struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string
 // give a QML `function`'s no-arg return a D type and to coerce it at a call site.
 static std::string inferType(ExpressionNode *e, const std::map<std::string, std::string> &ptype) {
     if (!e) return "";
+    if (auto *call = cast<CallExpression *>(e))
+        if (auto *fnId = cast<IdentifierExpression *>(call->base);
+                fnId && qs(fnId->name.toString()) == "qsTr") return "string";
     if (auto *n = cast<NestedExpression *>(e)) return inferType(n->expression, ptype);
     if (auto *id = cast<IdentifierExpression *>(e)) {
         std::string n = qs(id->name.toString());
@@ -1136,9 +1179,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             auto *aes = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
             auto *fm = aes ? cast<FieldMemberExpression *>(aes->expression) : nullptr;
             if (!fm) continue;
-            auto *base = cast<IdentifierExpression *>(fm->base);
-            if (!base) continue;
-            std::string bn = qs(base->name.toString()), mem = qs(fm->name.toString());
+            std::string mem = qs(fm->name.toString());
+            // The base may be a bare identifier (`root.x`, `group.x`) or the object's own id in
+            // front of a group (`root.group.x`) — both name the same thing.
+            std::string bn = groupNameOf(fm->base);
+            if (bn.empty()) {
+                auto *base = cast<IdentifierExpression *>(fm->base);
+                if (!base) continue;
+                bn = qs(base->name.toString());
+            }
             std::string nm = qs(pub->name.toString()), rd, ty;
             if (!g_selfId.empty() && bn == g_selfId && pt0.count(mem)) { ty = pt0[mem]; rd = mem; }
             else if (!g_selfId.empty() && bn == g_selfId && g_baseProps.count(mem)) {
@@ -1426,8 +1475,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string read, atype, setObj, setProp;
             if (auto *fm = cast<FieldMemberExpression *>(al.second)) {
                 auto *base = cast<IdentifierExpression *>(fm->base);
-                std::string bn = base ? qs(base->name.toString()) : "";
                 std::string mem = qs(fm->name.toString());
+                std::string bn = groupNameOf(fm->base);          // `root.group.x` -> `group`
+                if (bn.empty()) bn = base ? qs(base->name.toString()) : "";
                 if (base && !g_selfId.empty() && bn == g_selfId && t.count(mem)) {
                     atype = t[mem]; read = SELF + "." + mem; setObj = SELF; setProp = mem;   // own property
                 } else if (base && !g_selfId.empty() && bn == g_selfId && g_baseProps.count(mem)) {
@@ -1437,7 +1487,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                    : atype == "bool" ? "propBool(" + SELF + ", \"" : "propInt(" + SELF + ", \"";
                     read = g_baseIsD ? (SELF + "." + mem) : (rd + mem + "\")");
                     setObj = SELF; setProp = mem;
-                } else if (base && g_groups.count(bn)) {
+                } else if (g_groups.count(bn)) {   // `base` is null for `root.group.x`; bn came from groupNameOf
                     // a member of a grouped property
                     auto mt = g_groups[bn]->propType.find(mem);
                     if (mt != g_groups[bn]->propType.end()) {
@@ -1892,6 +1942,7 @@ int main(int argc, char **argv) {
     QString code = QString::fromUtf8(f.readAll());
     const char *inPath = pos[0];
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
+    g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name
 
     Engine engine;
     Lexer lexer(&engine);

@@ -304,22 +304,27 @@ bool qtd_install_translator(const char* qmBase) {
 
 // property access by name via QVariant (runs ReadProperty/WriteProperty on the
 // meta-object -> propcb on the D side). Works for custom AND built-in.
-int  qtd_prop_get_int(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toInt(); }
-void qtd_prop_set_int(void* o, const char* n, int v) { static_cast<QObject*>(o)->setProperty(n, v); }
-double qtd_prop_get_double(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toDouble(); }
-void qtd_prop_set_double(void* o, const char* n, double v) { static_cast<QObject*>(o)->setProperty(n, v); }
-bool qtd_prop_get_bool(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toBool(); }
-void qtd_prop_set_bool(void* o, const char* n, bool v) { static_cast<QObject*>(o)->setProperty(n, v); }
+// Every property helper below is NULL-GUARDED. These are reached through propObj, which returns
+// null whenever a property does not actually hold an object; a null there must be a visible
+// no-op/zero, never a crash inside QObject::setProperty.
+int  qtd_prop_get_int(void* o, const char* n) { return o ? static_cast<QObject*>(o)->property(n).toInt() : 0; }
+void qtd_prop_set_int(void* o, const char* n, int v) { if (!o) return; static_cast<QObject*>(o)->setProperty(n, v); }
+double qtd_prop_get_double(void* o, const char* n) { if (!o) return 0; return static_cast<QObject*>(o)->property(n).toDouble(); }
+void qtd_prop_set_double(void* o, const char* n, double v) { if (!o) return; static_cast<QObject*>(o)->setProperty(n, v); }
+bool qtd_prop_get_bool(void* o, const char* n) { if (!o) return false; return static_cast<QObject*>(o)->property(n).toBool(); }
+void qtd_prop_set_bool(void* o, const char* n, bool v) { if (!o) return; static_cast<QObject*>(o)->setProperty(n, v); }
 // A QObject*-valued property — a GROUPED property (`group.count: 42` in QML) is one of these:
 // the group is a real child object reached through the parent's meta-object, and its members are
 // ordinary properties on it. Returns null if the property is absent or not an object.
 void* qtd_prop_get_obj(void* o, const char* n) {
+    if (!o) return nullptr;
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
 // Reset a property to its default — what `prop: undefined` means in QML. It must go through
 // QMetaProperty::reset: the RESET method named by Q_PROPERTY is an ordinary member, not a slot or
 // Q_INVOKABLE, so invoking it BY NAME finds nothing and silently does nothing.
 bool qtd_prop_reset(void* o, const char* n) {
+    if (!o) return false;
     auto* obj = static_cast<QObject*>(o);
     int i = obj->metaObject()->indexOfProperty(n);
     return i >= 0 && obj->metaObject()->property(i).reset(obj);
@@ -327,16 +332,19 @@ bool qtd_prop_reset(void* o, const char* n) {
 // Write a QObject* into a property — how a child object built in D is attached to a member of a
 // GROUPED property (`group.object: QtObject { … }`).
 void qtd_prop_set_obj(void* o, const char* n, void* v) {
+    if (!o) return;
     static_cast<QObject*>(o)->setProperty(n, QVariant::fromValue(static_cast<QObject*>(v)));
 }
 // Invoke a parameterless member (a signal or an invokable) by name on any QObject — how a QML
 // handler emits a signal that belongs to a GROUPED property's object rather than to itself.
 // Returns false if there is no such member.
 bool qtd_invoke0(void* o, const char* member) {
+    if (!o) return false;
     return QMetaObject::invokeMethod(static_cast<QObject*>(o), member, Qt::DirectConnection);
 }
-void* qtd_prop_get_qs(void* o, const char* n) { return new QString(static_cast<QObject*>(o)->property(n).toString()); }
+void* qtd_prop_get_qs(void* o, const char* n) { return new QString(o ? static_cast<QObject*>(o)->property(n).toString() : QString()); }
 void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
+    if (!o) return;
     static_cast<QObject*>(o)->setProperty(n, QString::fromUtf8(p, len));
 }
 

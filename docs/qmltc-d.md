@@ -340,13 +340,35 @@ A property with no RESET is a PARTIAL, since there is nothing to call. Works thr
 in both the declarative and the statement form. Fixture `CReset.qml`; `specialProperties.qml` from
 the corpus is green because of it.
 
+### `qsTr`, and a group is a QObject — not merely another type
+
+`qsTr("…")` compiles to `translate("<file base name>", …)`. QML's translation context for a
+document is the file's base name, so the compiled call resolves against the same context the
+engine would use; with no translator covering the string Qt returns the source either way.
+Fixture `Tr.qml`; `newLineTranslation.qml` from the corpus is green because of it.
+
+An alias target may also be written through the object's own id — `root.group.str` means what
+`group.str` means — which `PrivateProperty.qml` uses.
+
+That file also produced the session's one **SEGFAULT**, and it is worth recording why. A grouped
+property was identified as "a non-scalar property whose type names another Component". But
+`Q_PROPERTY(ValueTypeGroup vt ...)` also names another Component and is a **value type** — there is
+no object behind it. `propObj` returned null and `setProperty` on null crashed. Two fixes, both
+needed:
+
+- **`isPointer` is the real test**, and it is a boolean literal — the registry field reader only
+  looked at string literals, which is why the flag had been dismissed as unusable earlier. It reads
+  booleans now, and a value-type group is an honest PARTIAL.
+- **Every property helper in the runtime is null-guarded.** Reaching for an object that isn't there
+  must be a visible no-op, never a crash inside Qt.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 21 | **21** |
+| pure-QtQml (42) | 22 | **22** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 28 | **28** |
+| **total (108)** | 29 | **29** |
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.
