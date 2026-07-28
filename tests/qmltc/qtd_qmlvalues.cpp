@@ -119,6 +119,11 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
         return cur;
     };
     for (auto &a : muts) {
+        // `name()` invokes a no-arg method on the root — the engine side of the same protocol.
+        if (a.endsWith(QLatin1String("()"))) {
+            QMetaObject::invokeMethod(obj, a.chopped(2).toUtf8().constData(), Qt::DirectConnection);
+            continue;
+        }
         int eq = a.indexOf('=');
         if (eq < 0) continue;
         QStringList parts = a.left(eq).split('.');

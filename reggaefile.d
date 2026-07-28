@@ -11,7 +11,7 @@ import reggae;
 import qtd_build;
 import std.file : getcwd, exists, dirEntries, SpanMode, readText;
 import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
-import std.array : array, replace, join;
+import std.array : array, replace, join, split;
 import std.algorithm : map, filter, sort;
 import std.process : execute;
 import std.string : strip;
@@ -409,7 +409,8 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             //    A binding that isn't reactive would diverge here (dependent wouldn't update).
             auto setFile = buildPath(corpusDir, name ~ ".set");
             if (exists(setFile)) {
-                auto setArgs = readText(setFile).strip;
+                // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
+                auto setArgs = readText(setFile).strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 auto cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
                     ~ " && diff " ~ a ~ ".set " ~ b ~ ".set'";
@@ -564,7 +565,8 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             //    connection to the BASE type's notify signal diverges here.
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {
-                auto setArgs = readText(setFile).strip;
+                // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
+                auto setArgs = readText(setFile).strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc,
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
@@ -697,7 +699,8 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {
-                auto setArgs = readText(setFile).strip;
+                // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
+                auto setArgs = readText(setFile).strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 ts ~= Target.phony("qmltcc-" ~ name ~ "-set-" ~ dc,
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs

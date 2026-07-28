@@ -432,13 +432,40 @@ name for the very object that property already holds, so it contributes nothing 
 compare. Refusing the file over a redundant name would have been the wrong call —
 `defaultAlias.qml` and `DefaultPropertyAliasChild.qml` from the corpus are both green.
 
+### `Qt.binding`, and what a plain assignment means
+
+`p2 = Qt.binding(function() { return p1 * 2 })` installs a NEW binding at runtime; `p2 = 42`
+**removes** the binding entirely. Both compile to a per-property selector: every recompute —
+declarative and imperative — is connected up front and simply returns unless it is the active one,
+so nothing has to be disconnected at runtime.
+
+```d
+private int __bind_p2 = 0;                       // 0 = declarative, N = Nth install, -1 = none
+void rebind() { __bind_p2 = 1; __rc_p2_1(); }
+void unbind() { __bind_p2 = -1; p2 = 42; }
+@Slot void __rc_p2()   { if (__bind_p2 != 0) return; … }   // `p1 + 1`
+@Slot void __rc_p2_1() { if (__bind_p2 != 1) return; … }   // `p1 * 2`
+```
+
+Verified against the engine across all three states — declarative, rebound, unbound — and the
+unbound one is the point: after `unbind()`, changing `p1` must NOT revive the binding.
+
+**The differential can now invoke methods.** A mutation argument `name()` calls a no-arg method on
+both sides (the oracle via `QMetaObject::invokeMethod`). Without it there was no way to observe
+anything a method does, which is exactly where imperative binding changes live. Fixtures
+`Rebind.qml` / `Unbind.qml`.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 26 | **26** |
+| pure-QtQml (42) | 27 | **27** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 33 | **33** |
+| **total (108)** | 34 | **34** |
+
+Three of the remaining pure-QtQml files are *correctly* not compiling: `badFile.qml` is invalid on
+purpose, and `attachedPropertyDerived.qml` / `singletonUser.qml` are deliberate refusals the engine
+shares. The reachable denominator is 41, not 42.
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.

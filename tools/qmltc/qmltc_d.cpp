@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <functional>
 #include <cctype>
 #include <fstream>
 
@@ -340,6 +341,18 @@ static std::map<std::string, const DType *> g_attached;
 // per document, reached through a lazy accessor — `SingletonThing.integerProperty` reads off it.
 static std::set<std::string> g_singletons;
 
+// Properties that a function REASSIGNS at runtime — with `Qt.binding(...)` (install a new
+// binding) or with a plain value (which, in QML, REMOVES the binding). Such a property gets a
+// selector so the declarative recompute can stand down. Collected before anything is emitted.
+static std::set<std::string> g_rebound;
+// Of those, the ones that actually GOT a selector — i.e. that carry a declarative binding for the
+// selector to stand down from. A literal-initialised property is just assigned; emitting a
+// selector write for it would reference a field that was never declared.
+static std::set<std::string> g_hasSelector;
+// Imperative bindings found: property -> [(slot index, expression, deps)].
+struct ReBind { int idx; std::string expr; std::vector<std::string> deps; };
+static std::map<std::string, std::vector<ReBind>> g_rebinds;
+
 // A `pragma Singleton` type is only USABLE if a qmldir declares it — that is how QML resolves the
 // name, and a document using an undeclared one does not load at all.
 static bool singletonDeclaredInQmldir(const QString &dir, const std::string &name) {
@@ -458,6 +471,7 @@ static bool literalOf(Statement *st, const QString &dtype, std::string &out) {
 // false on anything outside this subset (calls, member access, comparisons, ...) -> the caller
 // falls back to PARTIAL, so an uncompilable binding is reported and skipped, never mis-emitted.
 static std::string inferType(ExpressionNode *e, const std::map<std::string, std::string> &ptype);
+static ExpressionNode *findReturnExpr(StatementList *body);
 
 // The ONE place that turns a property NAME into the D expression that reads it:
 //   - a property of this object, a param or a local -> the plain name (a D field/variable);
@@ -944,6 +958,43 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
     }
     auto *es = cast<ExpressionStatement *>(st);
     if (!es) return false;
+    // `p = <value>` on a property that carries a binding REMOVES that binding in QML. The
+    // selector records it so the declarative recompute stops driving the property.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+        if (auto *lhs = cast<IdentifierExpression *>(bin->left);
+                lhs && g_hasSelector.count(qs(lhs->name.toString()))
+                && !cast<CallExpression *>(bin->right)) {
+            std::string nm = qs(lhs->name.toString()), val;
+            auto ty = g_propType.count(nm) ? g_propType[nm] : std::string();
+            if (ty.empty() || !compileExpr(bin->right, QString::fromStdString(ty), val)) return false;
+            body += "        __bind_" + nm + " = -1;\n        " + nm + " = " + val + ";\n";
+            return true;
+        }
+    // `p = Qt.binding(function(){ return <expr> })` — install a NEW binding on p at runtime.
+    // Compiled as an extra recompute slot guarded by p's selector; the assignment just switches
+    // the selector and evaluates once. The new binding's dependencies are connected up front.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+        if (auto *lhs = cast<IdentifierExpression *>(bin->left))
+            if (auto *call = cast<CallExpression *>(bin->right))
+                if (auto *fm = cast<FieldMemberExpression *>(call->base))
+                    if (auto *b = cast<IdentifierExpression *>(fm->base);
+                            b && qs(b->name.toString()) == "Qt"
+                            && qs(fm->name.toString()) == "binding" && call->arguments) {
+                        std::string nm = qs(lhs->name.toString());
+                        auto *fe = call->arguments->expression->asFunctionDefinition();
+                        auto *ret = fe && fe->body ? findReturnExpr(fe->body) : nullptr;
+                        auto ty = g_propType.count(nm) ? g_propType[nm] : std::string();
+                        std::string expr;
+                        if (!ret || ty.empty() || !compileExpr(ret, QString::fromStdString(ty), expr))
+                            return false;
+                        std::vector<std::string> deps;
+                        collectIds(ret, deps);
+                        int idx = (int) g_rebinds[nm].size() + 1;
+                        g_rebinds[nm].push_back({idx, expr, deps});
+                        body += "        __bind_" + nm + " = " + std::to_string(idx) + ";\n"
+                              + "        __rc_" + nm + "_" + std::to_string(idx) + "();\n";
+                        return true;
+                    }
     // `<selfId>.prop = <expr>` — the object's own property, written through its id.
     if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
         if (auto *fm = cast<FieldMemberExpression *>(bin->left))
@@ -1184,6 +1235,10 @@ struct ObjNode {
     // through THAT PROPERTY, not through children()[0] — so the dump label is the property name.
     std::string defaultKidLabel;
     bool defaultKidIsList = false;                              // ...and reached at an INDEX
+    // No-arg QML `function`s on the ROOT. The differential can then exercise them: a mutation
+    // argument `name()` invokes one on both sides, which is the only way to observe anything a
+    // method does — imperative binding installs, resets, counters.
+    std::vector<std::string> methods0;
     std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
 };
 
@@ -1218,6 +1273,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedAliasRead = g_aliasRead;
     auto savedAliasDep = g_aliasDep;
     auto savedAliasWrite = g_aliasWrite;
+    auto savedRebound = g_rebound;
+    auto savedHasSelector = g_hasSelector;
+    auto savedRebinds = g_rebinds;
+    g_rebound.clear();
+    g_hasSelector.clear();
+    g_rebinds.clear();
     g_scope.clear();
     g_propType.clear();
     g_aliasRead.clear();
@@ -1316,6 +1377,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &sg : g_signals) g_scope.insert(sg);
         g_propType = pt0;
         for (auto &bp : g_baseProps) g_propType[bp.first] = bp.second;
+        // Which properties does a function reassign? Their recompute needs a selector, and that
+        // has to be known before the property is emitted — hence a scan rather than discovery
+        // during compilation.
+        {
+            std::function<void(Node *)> scan = [&](Node *n) {
+                if (!n) return;
+                if (auto *blk = cast<Block *>(n)) { for (auto *st = blk->statements; st; st = st->next) scan(st->statement); return; }
+                if (auto *iff = cast<IfStatement *>(n)) { scan(iff->ok); scan(iff->ko); return; }
+                if (auto *es = cast<ExpressionStatement *>(n))
+                    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+                        if (auto *lhs = cast<IdentifierExpression *>(bin->left);
+                                lhs && pt0.count(qs(lhs->name.toString())))
+                            g_rebound.insert(qs(lhs->name.toString()));
+            };
+            for (auto *m = init ? init->members : nullptr; m; m = m->next)
+                if (auto *se = cast<UiSourceElement *>(m->member))
+                    if (auto *fn = se->sourceElement->asFunctionDefinition())
+                        for (auto *st = fn->body; st; st = st->next) scan(st->statement);
+        }
+        // A selector only exists for a reassigned property that carries a BINDING (a
+        // literal-initialised one is just a field). Decide it here: the methods that consult it
+        // are compiled before the properties are emitted.
+        for (auto *m = init ? init->members : nullptr; m; m = m->next)
+            if (auto *pub = cast<UiPublicMember *>(m->member);
+                    pub && pub->type == UiPublicMember::Property && g_rebound.count(qs(pub->name.toString())))
+                if (auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
+                    auto *e = es->expression;
+                    if (auto *u = cast<UnaryMinusExpression *>(e)) e = u->expression;
+                    bool literal = cast<NumericLiteral *>(e) || cast<StringLiteral *>(e)
+                                || cast<TrueLiteral *>(e) || cast<FalseLiteral *>(e);
+                    if (!literal) g_hasSelector.insert(qs(pub->name.toString()));
+                }
         // Pre-resolve aliases whose target needs no child object, so a binding can USE the alias.
         for (auto *m = init ? init->members : nullptr; m; m = m->next) {
             auto *pub = cast<UiPublicMember *>(m->member);
@@ -2024,7 +2117,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     std::string fbody;
                     bool ok = compileStmtList(fn->body, ptWithParams, fbody);
                     g_returnType = savedRT;
-                    if (ok) { methods += "    " + rt + " " + name + "(" + sig + ") {\n" + fbody + "    }\n"; done = true; }
+                    if (ok) {
+                        methods += "    " + rt + " " + name + "(" + sig + ") {\n" + fbody + "    }\n";
+                        if (sig.empty()) node.methods0.push_back(name);
+                        done = true;
+                    }
                 }
                 if (!done) {
                     std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has an unsupported return type — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
@@ -2039,6 +2136,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ++partial; continue;
             }
             methods += "    void " + name + "(" + sig + ") {\n" + fbody + "    }\n";
+            if (sig.empty()) node.methods0.push_back(name);
         }
     }
 
@@ -2060,6 +2158,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (p.bound) {
             body += "    " + notifyUda + p.dtype + " " + p.name + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
+            // Which binding currently drives this property. 0 = the declarative one; a
+            // `Qt.binding(...)` install switches it, and a plain assignment (`p = 42`) clears it
+            // to -1 — matching QML, where assigning a value REMOVES the binding. Every recompute
+            // is connected up front and simply does nothing unless it is the active one, which
+            // avoids having to disconnect anything at runtime.
+            if (g_rebound.count(p.name)) {
+                g_hasSelector.insert(p.name);
+                body += "    private int __bind_" + p.name + " = 0;\n";
+                recompute += "    @Slot void __rc_" + p.name + "() {\n"
+                           + "        if (__bind_" + p.name + " != 0) return;\n"
+                           + "        auto _v = " + p.expr + ";\n"
+                           + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
+                           + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
+                anyBound = true;
+                continue;
+            }
             recompute += "    @Slot void __rc_" + p.name + "() {\n"
                        + "        auto _v = " + p.expr + ";\n"
                        + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
@@ -2068,6 +2182,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         } else {
             body += "    " + notifyUda + p.dtype + " " + p.name + " = " + p.expr + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
+        }
+    }
+
+    // Imperatively-installed bindings: one guarded recompute each, connected up front so the
+    // selector alone decides which is live.
+    for (auto &rb : g_rebinds) {
+        auto pt = g_propType.count(rb.first) ? g_propType[rb.first] : std::string();
+        for (auto &b : rb.second) {
+            recompute += "    @Slot void __rc_" + rb.first + "_" + std::to_string(b.idx) + "() {\n"
+                       + "        if (__bind_" + rb.first + " != " + std::to_string(b.idx) + ") return;\n"
+                       + "        auto _v = " + b.expr + ";\n"
+                       + "        if (" + rb.first + " != _v) { " + rb.first + " = _v;"
+                       + (notified(rb.first) ? " " + rb.first + "Changed.emit();" : "") + " }\n    }\n";
+            for (auto &d : b.deps)
+                if (isProp(d))
+                    handlerWire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_"
+                                 + rb.first + "_" + std::to_string(b.idx) + "()\");\n";
         }
     }
 
@@ -2166,6 +2297,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_aliasRead = savedAliasRead;
     g_aliasDep = savedAliasDep;
     g_aliasWrite = savedAliasWrite;
+    g_rebound = savedRebound;
+    g_hasSelector = savedHasSelector;
+    g_rebinds = savedRebinds;
     return node;
 }
 
@@ -2403,6 +2537,10 @@ int main(int argc, char **argv) {
         if (!bt.first.empty()) std::printf("    auto o = new %s();\n", qPrintable(cls));
         else                   std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
         std::printf("    foreach (a; args[1 .. $]) {\n");
+        // `name()` INVOKES a no-arg method — the only way to observe what a method does
+        // (imperative binding installs, resets, counters). Everything else is `name=value`.
+        for (auto &m : rootNode.methods0)
+            std::printf("        if (a == \"%s()\") { o.%s(); continue; }\n", m.c_str(), m.c_str());
         std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
         for (auto &l : lines) {   // dynamic mutation of any int/double/bool/string prop (via meta, dotted path)
