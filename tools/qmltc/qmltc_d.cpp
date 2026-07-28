@@ -1474,6 +1474,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> attachedKidBindings; // ("Type.member", init)
+    struct ArrayElem { std::string prop; int idx; UiObjectDefinition *def; };
+    std::vector<ArrayElem> arrayBindings;                                        // `listProp: [ … ]`
     std::vector<UiObjectDefinition *> defaultKids;                               // bare `Type { }` children
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
@@ -1579,6 +1581,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
             }
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
+            continue;
+        }
+        // `listProp: [ Type { … }, Type { … } ]` — an array binding fills a `list<>` property.
+        // Each element is a child object, reached by the engine at its INDEX in that property.
+        if (auto *ab = cast<UiArrayBinding *>(m->member)) {
+            std::string nm = qname(ab->qualifiedId);
+            int idx = 0;
+            for (auto *am = ab->members; am; am = am->next, ++idx) {
+                auto *od = cast<UiObjectDefinition *>(am->member);
+                if (!od) {
+                    std::fprintf(stderr, "qmltc-d: %s: element %d of array binding '%s' in %s is not "
+                                 "an object — skipped (later phase)\n", inPath, idx, nm.c_str(), cls.c_str());
+                    ++partial; continue;
+                }
+                arrayBindings.push_back({nm, idx, od});
+            }
             continue;
         }
         // A bare `Type { ... }` is a default-property child (e.g. an Item inside an Item).
@@ -1985,6 +2003,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(path);
+    }
+
+    // Array-binding elements: each is an ordinary child object; the engine reaches it at its index
+    // in the list property, so that is the dump label. Nothing is appended to the D-side list —
+    // the dump reads the field, exactly as for default children.
+    for (auto &ae : arrayBindings) {
+        std::string field = "_al_" + ae.prop + "_" + std::to_string(ae.idx);
+        std::string childCls = cls + "_" + ae.prop + "_" + std::to_string(ae.idx);
+        std::string childType = ae.def->qualifiedTypeNameId ? qname(ae.def->qualifiedTypeNameId) : "";
+        auto cbt = boundTypeFor(childType);
+        if (!cbt.first.empty()) g_extraImports += "import " + cbt.second + ";\n";
+        ObjNode kid = compileObject(ae.def->initializer, childCls, classes, partial, inPath, cbt.first);
+        childFields += "    " + childCls + " " + field + ";\n";
+        childWire += "        " + field + " = " + (cbt.first.empty() ? "newQObject!" + childCls + "()"
+                                                                     : "new " + childCls + "()") + ";\n";
+        node.groupKids.push_back({field, kid});
+        node.groupKidPaths.push_back(ae.prop + "[" + std::to_string(ae.idx) + "]");
     }
 
     // A child object bound to an ATTACHED member: built in D, then attached through the attached

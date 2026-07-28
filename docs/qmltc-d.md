@@ -486,6 +486,16 @@ labelled `@N` (= `children()[N]`), but the engine holds them in that type's own 
 QObject children of its own — a `TextEdit` makes a `QTextDocument` first, and the `@N` index would
 have pointed at it. Bound-type default children are now labelled `data[i]`.
 
+### Array bindings
+
+`kids: [ QtObject{…}, QtObject{…} ]` fills a `list<>` property. Each element is compiled as an
+ordinary child object and labelled at its INDEX in that property (`kids[0].hello`), which is where
+the engine holds it. Nothing is appended to a D-side list — the dump reads the field directly, the
+same arrangement default children already use. Fixture `ArrayBinding.qml`.
+
+`listProperty.qml` from the corpus stays PARTIAL: it also needs `list<int>`, `myList.push(…)` and
+an array of ids (`ids: [a, a1, a2]`).
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
