@@ -326,6 +326,24 @@ static bool literalOf(Statement *st, const QString &dtype, std::string &out) {
 // falls back to PARTIAL, so an uncompilable binding is reported and skipped, never mis-emitted.
 static std::string inferType(ExpressionNode *e, const std::map<std::string, std::string> &ptype);
 
+// The ONE place that turns a property NAME into the D expression that reads it:
+//   - a property of this object, a param or a local -> the plain name (a D field/variable);
+//   - a BASE property with a D base -> also a plain name (inherited @Property IS a field);
+//   - a BASE property with a bound C++ base -> a meta-object read.
+// Anything else resolves to nothing the generated class defines, so it is a compile failure
+// (PARTIAL), never a bare name emitted on faith.
+static bool readName(const std::string &n, std::string &out) {
+    auto bp = g_baseProps.find(n);
+    if (bp != g_baseProps.end()) {
+        if (g_baseIsD) { out = n; return true; }
+        const char *rd = bp->second == "string" ? "propStr(this, \"" : bp->second == "double" ? "propDouble(this, \""
+                       : bp->second == "bool" ? "propBool(this, \"" : "propInt(this, \"";
+        out = rd + n + "\")"; return true;
+    }
+    if (!g_scope.count(n)) return false;
+    out = n; return true;
+}
+
 static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &out) {
     if (!e) return false;
     if (auto *nested = cast<NestedExpression *>(e)) {
@@ -333,22 +351,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (!compileExpr(nested->expression, dtype, inner)) return false;
         out = "(" + inner + ")"; return true;
     }
-    if (auto *id = cast<IdentifierExpression *>(e)) {
-        std::string n = qs(id->name.toString());
-        auto bp = g_baseProps.find(n);   // a base C++ property -> read via meta (no D field)
-        if (bp != g_baseProps.end() && g_baseIsD) { out = n; return true; }   // D base: a real field
-        if (bp != g_baseProps.end()) {
-            const char *rd = bp->second == "string" ? "propStr(this, \"" : bp->second == "double" ? "propDouble(this, \""
-                           : bp->second == "bool" ? "propBool(this, \"" : "propInt(this, \"";
-            out = rd + n + "\")"; return true;
-        }
-        if (!g_scope.count(n)) return false;   // not a name the generated class defines -> PARTIAL
-        out = n; return true;
-    }
+    if (auto *id = cast<IdentifierExpression *>(e)) return readName(qs(id->name.toString()), out);
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
         auto *base = cast<IdentifierExpression *>(fm->base);
-        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { out = qs(fm->name.toString()); return true; }
+        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId)
+            return readName(qs(fm->name.toString()), out);   // `self.x` reads x however x is stored
         // `TypeName.Green` -> the D enum member `Color.Green` (int-valued).
         if (base && qs(base->name.toString()) == g_className) {
             auto it = g_enumMember.find(qs(fm->name.toString()));
@@ -1134,6 +1142,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string mem = qs(fm->name.toString());
                 if (base && !g_selfId.empty() && bn == g_selfId && t.count(mem)) {
                     atype = t[mem]; expr = mem; deps.push_back(mem);            // reactive self alias
+                } else if (base && !g_selfId.empty() && bn == g_selfId && g_baseProps.count(mem)) {
+                    // `property alias a: self.<baseProperty>` — the target lives on the base type.
+                    // Reading it goes through readName (field for a D base, meta read for a bound
+                    // C++ one); listing it as a dependency makes the wire connect the BASE's notify.
+                    //
+                    // But a QML alias is a REFERENCE and we compile it to a recomputed COPY, so it
+                    // is only faithful while something re-evaluates it. If the base property has no
+                    // NOTIFY (`Q_PROPERTY(int x MEMBER m_x)`), nothing ever will: a later write to
+                    // the target would leave the alias stale — silently wrong. Refuse it instead.
+                    bool live = dBase && dBase->propNotify.count(mem);
+                    if (!live)
+                        std::fprintf(stderr, "qmltc-d: %s: alias '%s' targets base property '%s', which has no NOTIFY — "
+                                     "an alias compiled as a copy could not stay in sync — skipped (later phase)\n",
+                                     inPath, al.first.c_str(), mem.c_str());
+                    else if (readName(mem, expr)) { atype = g_baseProps[mem]; deps.push_back(mem); }
                 } else if (base && childType.count(bn + "." + mem)) {
                     atype = childType[bn + "." + mem];
                     expr = childAccess[bn + "." + mem];   // "field.prop"
@@ -1333,12 +1356,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire = "    void __qmltcWire() {\n";
         wire += childWire;   // build children first
         wire += baseWire;    // set base C++ properties
-        // Connect handlers BEFORE the initial binding pass. A bound property's first evaluation
-        // IS a change (`property int p: dummy` goes 0 -> 42) and QML's handler observes it; wiring
-        // the handlers afterwards would miss it. A property initialised from a LITERAL is assigned
-        // in its field initialiser and emits nothing, so this doesn't make handlers fire on init.
+        // Connect EVERYTHING before the initial binding pass. Two reasons:
+        //  - a bound property's first evaluation IS a change (`property int p: dummy` goes
+        //    0 -> 42) and QML's handler observes it; wiring handlers afterwards would miss it.
+        //  - it makes the initial pass order-independent. Bindings are recomputed in declaration
+        //    order, but aliases are appended after the declared properties, so `property int n:
+        //    someAlias + 1` would otherwise be computed while the alias still held 0. With the
+        //    connections already live, evaluating the alias propagates into the dependent binding.
+        //    Recomputes are idempotent (each emits only on an actual change), so the extra passes
+        //    settle instead of looping.
+        // A property initialised from a LITERAL is assigned in its field initialiser and emits
+        // nothing, so none of this makes handlers fire on init.
         wire += handlerWire;
-        for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
         for (auto &p : props) if (p.bound)
             for (auto &d : p.deps) {
                 if (isProp(d)) {   // a property of THIS object: qmltc-d named its notify <p>Changed
@@ -1358,6 +1387,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 wire += "        connectMeta(this, \"" + sig + "\", this, \"__rc_" + p.name + "()\");\n";
             }
         wire += crossConnects;   // live child-alias connects (cross-object)
+        for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
     }

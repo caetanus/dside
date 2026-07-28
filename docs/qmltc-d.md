@@ -208,6 +208,25 @@ now fail on a FEATURE instead (`property alias` onto a base property) — the la
 gone for them. The remaining 7 root in types we have not vendored yet (`QmlGroupPropertyTestType`,
 `TypeWithExtension`, …); reaching them is adding headers to the spec, not writing code.
 
+### `property alias` onto a base property
+
+An alias may now target a property of the base type, not just one declared in the same object —
+`property alias xyAlias: root.xy` on a C++ base, `property alias valueAlias: root.value` on a D one.
+Reading goes through the one name-resolution path (`readName`): a plain field for a D base, a
+meta-object read for a bound C++ one. Fixtures `CAlias.qml` / `DAlias.qml`, both `.set`-mutated.
+
+**A QML alias is a REFERENCE; we compile it to a recomputed COPY.** That is faithful only while
+something re-evaluates it, so an alias onto a base property with **no NOTIFY**
+(`Q_PROPERTY(int x MEMBER m_x)`) is REFUSED — a later write to the target would leave the alias
+stale, which is the silent-wrong class we keep guarding against. That is also why
+`specialProperties.qml` stays PARTIAL: its `xAlias`/`yAlias`/`zAlias` target MEMBER properties.
+
+Wiring order changed to make this work: connections are now established BEFORE the initial binding
+pass. Bindings are recomputed in declaration order but aliases are appended after declared
+properties, so `property int n: someAlias + 1` used to be computed while the alias still held 0.
+With connections already live the evaluation propagates instead, and recomputes are idempotent
+(each emits only on a real change), so the extra passes settle rather than loop.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
