@@ -1180,6 +1180,9 @@ struct ObjNode {
     std::vector<AliasLine> aliasLines;
     std::vector<std::pair<std::string, ObjNode>> groupKids;     // (D field, child)
     std::vector<std::string> groupKidPaths;                     // QML path, parallel to groupKids
+    // When a single-object `default property` holds the lone bare child, the engine reaches it
+    // through THAT PROPERTY, not through children()[0] — so the dump label is the property name.
+    std::string defaultKidLabel;
     std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
 };
 
@@ -1368,6 +1371,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::string enumDecls, signalDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     bool hasCustomDefaultProp = false;                                           // a `default property` declared
+    std::string defaultPropName;                                                 // ...its name
+    std::string defaultKidLabel;                                                 // dump label for the lone default child
+    bool defaultPropIsList = false;                                              // ...and whether it's a list<>
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *sb = cast<UiScriptBinding *>(m->member)) {
             std::string hid = qname(sb->qualifiedId);
@@ -1481,7 +1487,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // that list rather than the object's QObject children; whether that breaks our `@N` =
             // children()[N] dump model depends on there being bare children, which we only know after
             // the scan — record it and decide below.
-            if (pub->isDefaultMember()) hasCustomDefaultProp = true;
+            if (pub->isDefaultMember()) {
+                hasCustomDefaultProp = true;
+                defaultPropName = name;
+                defaultPropIsList = qmlType.startsWith(QLatin1String("list<"));
+            }
             // `property alias <name>: <target>` — collect; resolved to a bound property (with the
             // target's type) once all property types are known.
             if (qmlType == "alias") {
@@ -1556,10 +1566,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // children — so `@N` = children()[N] no longer holds. Only a problem when there ARE bare
     // children; flag PARTIAL for each rather than emit a wrong dump.
     if (hasCustomDefaultProp && !defaultKids.empty()) {
-        std::fprintf(stderr, "qmltc-d: %s: bare children under a custom default property in %s not yet supported — skipped (later phase)\n",
-                     inPath, cls.c_str());
-        partial += (int)defaultKids.size();
-        defaultKids.clear();
+        // A single-OBJECT default property takes exactly one bare child, and that child is the
+        // property's value — so it is an ordinary property-bound child (`child: QtObject{…}`),
+        // dumped under the property's name rather than as `@N`.
+        if (!defaultPropIsList && defaultKids.size() == 1 && !defaultPropName.empty()) {
+            // Keep it on the default-child path (that is what resolves the child's TYPE, local or
+            // bound); only the DUMP LABEL changes — the engine reaches it through the property,
+            // not through children()[0].
+            defaultKidLabel = defaultPropName;
+        } else {
+            // A list<> default property redirects bare children into that list, not the object's
+            // QObject children — so `@N` = children()[N] no longer holds.
+            std::fprintf(stderr, "qmltc-d: %s: bare children under a custom default property in %s not yet supported — skipped (later phase)\n",
+                         inPath, cls.c_str());
+            partial += (int)defaultKids.size();
+            defaultKids.clear();
+        }
     }
 
     // Default-property children: a bare `Type { }`. The child type is mapped to a bound Qt type
@@ -1617,6 +1639,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n";
         node.defaultKids.push_back({field, kid});
+        node.defaultKidLabel = defaultKidLabel;
     }
 
     // Resolve `property alias <name>: <target>`. A SELF target (`<id>.<prop>` or bare `<prop>`)
@@ -2173,7 +2196,7 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
     // oracle resolves it via childItems()[i] (declaration order == child list order).
     for (size_t i = 0; i < n.defaultKids.size(); ++i)
         collectDump(n.defaultKids[i].second, acc + n.defaultKids[i].first + ".",
-                    lab + "@" + std::to_string(i) + ".", out);
+                    lab + (n.defaultKidLabel.empty() ? "@" + std::to_string(i) : n.defaultKidLabel) + ".", out);
 }
 
 int main(int argc, char **argv) {

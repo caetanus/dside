@@ -398,6 +398,24 @@ requires the `qmldir` declaration too. That is why `singletonUser.qml` from the 
 PARTIAL: the corpus ships no `qmldir` (Qt's own test generates one from CMake), and compiling a
 file the engine itself rejects would be compile-clean with nothing to compare against.
 
+### A single-object `default property`
+
+`default property QtObject child` takes exactly one bare child, and that child IS the property's
+value — the engine reaches it through the property, not through `children()[0]`. So it stays on
+the default-child path (which is what resolves the child's own type, local or bound) and only its
+DUMP LABEL changes, from `@0` to the property's name. Fixtures `DefaultHolder.qml` +
+`UsesDefault.qml`.
+
+A `list<>` default property still flags PARTIAL — it redirects bare children into that list, so
+`@N` = `children()[N]` no longer holds. That is what keeps `defaultProperty.qml` from the corpus
+PARTIAL: its *grandchildren* sit under a `list<QtObject>`.
+
+Worth noting how the first cut of this was wrong in a way the diff could not catch: routing the
+bare child through the ordinary property-child path lost the child's TYPE, so the child compiled
+as a bare `QtObject` and **vanished from the dump entirely**. The diff was green — because both
+sides were then compared on fewer properties. A differential only proves that what you emit is
+right, never that you emitted enough; the label list is part of what has to be reviewed.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
