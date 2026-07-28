@@ -87,6 +87,15 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
     return "mkdir -p " ~ dirName(lock) ~ " && flock " ~ lock ~ " sh -c '" ~ esc ~ "'";
 }
 
+// reggaeBuild() runs on EVERY ./build (even --list), so an unconditional write here bumps the
+// mtime of a file that other guards use as their freshness input — forcing a full libsample
+// rebuild every time, and worse, doing it WHILE sibling targets link against the artifacts.
+// Write only when the content actually differs.
+void writeIfChanged(string path, string content) {
+    if (exists(path) && readText(path) == content) return;
+    std.file.write(path, content);
+}
+
 // Build the `gen` + `shims` targets for a spec. `root` is the repo root; `spec` is the
 // spec basename under generator/. `mods` are the pkg-config modules the binding needs.
 QtdBinding qtdBinding(string root, string spec, string[] mods) {
@@ -215,10 +224,10 @@ Target[] libsampleTargets(string root, string pyside) {
     auto hdrs = dirEntries(LS, "*.h", SpanMode.shallow).map!(e => baseName(e.name))
         .filter!(h => h != "libminimalmacros.h" && h != "libsamplemacros.h").array;
     hdrs.sort();
-    std.file.write(buildPath(bdir, "sample_all.h"),
+    writeIfChanged(buildPath(bdir, "sample_all.h"),
         `#include "libsamplemacros.h"` ~ "\n" ~ hdrs.map!(h => `#include "` ~ h ~ `"`).join("\n") ~ "\n");
     // discovery-mode spec (paths known at configure time).
-    std.file.write(specPath,
+    writeIfChanged(specPath,
         `{ "qt_version": "0", "pkg_config": "Qt6Core", "out_dir": "` ~ gen ~ `",`
         ~ ` "d_package": "sample", "abi": "cxx", "source_filter": "` ~ build ~ `",`
         ~ ` "include_paths": ["` ~ build ~ `"], "headers": ["` ~ buildPath(build, "sample_all.h") ~ `"] }`);

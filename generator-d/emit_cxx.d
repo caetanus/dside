@@ -2830,8 +2830,15 @@ string virtCpp(string manifest, string includeLine) {
         // generic helpers (qtdmoc.cpp) — so a D subclass can be @QObject (have its
         // own signals/slots/props) IN ADDITION to overriding virtuals. If nothing is
         // attached (qtd_moc_meta==null), it falls back to the base behavior.
+        //
+        // A DYNAMIC meta-object installed on us wins over the attached one, exactly as in
+        // QtdMocObject: QML installs a QQmlVMEMetaObject for the members a .qml declares, and it
+        // chains ours as its parent. Note the inversion this fixes — the fallback branch calls
+        // Base::metaObject(), which DOES honour the dynamic one, so it was only the interesting
+        // case (an attached @QObject subclass) that shadowed it.
         auto moc = format(
             "    const QMetaObject* metaObject() const override {\n"
+            ~ "        if (d_ptr->metaObject) return d_ptr->dynamicMetaObject();\n"
             ~ "        auto m = qtd_moc_meta((void*)this); return m ? static_cast<const QMetaObject*>(m) : %s::metaObject(); }\n"
             ~ "    void* qt_metacast(const char* n) override {\n"
             ~ "        if (qtd_moc_classmatch((void*)this, n)) return this;\n"
