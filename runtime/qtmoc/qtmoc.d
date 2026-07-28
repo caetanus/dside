@@ -40,7 +40,7 @@ extern (C) nothrow {
                       const(char)**, const(char)**, const(int)*, int,
                       MakeCb, DestroyCb, SlotCb, PropCb);
     void  qtd_moc_activate(void*, int, void**);
-    void* qtd_connect_meta(void*, const(char)*, void*, const(char)*);
+    int qtd_connect_meta(void*, const(char)*, void*, const(char)*);
     void* qtd_metacast(void*, const(char)*);   // QObject::qt_metacast(n) on a qobj — for the identity test
     const(char)* qtd_moc_classname(void*);     // metaObject()->className() of the qobj
     int  qtd_moc_owner_check();                // 1=owner thread, 0=other thread, -1=no owner (r8 #6)
@@ -741,6 +741,13 @@ void setProp(T)(T o, string name, string v) {
 /// end can be a D @QObject or a raw built-in QObject (void*), in any
 /// combination — both have a meta-object.
 void connectMeta(A, B)(A sender, string sig, B receiver, string slot) {
-    qtd_connect_meta(qobjOf(sender), (sig ~ "\0").ptr,
-                     qobjOf(receiver), (slot ~ "\0").ptr);
+    if (!tryConnectMeta(sender, sig, receiver, slot))
+        throw new Exception("connectMeta failed: no such signal \"" ~ sig ~ "\" or slot \""
+                            ~ slot ~ "\" (or a null endpoint)");
+}
+
+/// Same, but reports failure instead of throwing — for callers that legitimately probe.
+bool tryConnectMeta(A, B)(A sender, string sig, B receiver, string slot) {
+    return qtd_connect_meta(qobjOf(sender), (sig ~ "\0").ptr,
+                            qobjOf(receiver), (slot ~ "\0").ptr) != 0;
 }

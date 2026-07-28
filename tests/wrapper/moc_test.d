@@ -30,5 +30,15 @@ void main() {
     assert(qtd_metacast(qw, "QWidget\0".ptr) !is null, "trampoline must still cast to base QWidget");
     assert(qtd_metacast(qw, "Bogus\0".ptr) is null, "trampoline unknown cast must be null");
 
+    // A signature that does not resolve used to be swallowed: connectMeta discarded the result,
+    // so a typo produced a connection that silently never fired. Generated code (qmltc-d emits
+    // hundreds of these) must not be able to fail that quietly.
+    bool threwSig = false, threwSlot = false;
+    try connectMeta(cf, "noSuchSignal(int)", cf, "onAngle(int)"); catch (Exception) threwSig = true;
+    try connectMeta(cf, "angleChanged(int)", cf, "noSuchSlot(int)"); catch (Exception) threwSlot = true;
+    assert(threwSig && threwSlot, "connectMeta must throw on an unresolvable signature");
+    assert(!tryConnectMeta(cf, "noSuchSignal(int)", cf, "onAngle(int)"), "tryConnectMeta reports it");
+    assert(tryConnectMeta(cf, "angleChanged(int)", cf, "onAngle(int)"), "tryConnectMeta on a good pair");
+
     writefln("cannon_widget OK: setAngle->angleChanged->onAngle=%d, paintEvent=%d", cf.lastAngle, cf.paints);
 }

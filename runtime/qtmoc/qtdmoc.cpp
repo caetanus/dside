@@ -388,15 +388,20 @@ void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
 
 // connects signal->slot by signature (works for custom AND built-in: both have a
 // meta-object). Returns a QMetaObject::Connection* (or null if not found).
-void* qtd_connect_meta(void* s, const char* sig, void* r, const char* slot) {
-    if (!s || !r) return nullptr;   // a null side is a no-op, never a crash
+// Returns 1 on success, 0 if either side is null or a signature does not resolve. It used to
+// return a heap-allocated QMetaObject::Connection that no caller ever freed or used; the
+// connection is owned by the two QObjects anyway, so nothing is allocated now. The D side turns
+// a 0 into a thrown error — a mistyped signature must not be a connection that silently never
+// fires (qmltc-d emits hundreds of these).
+int qtd_connect_meta(void* s, const char* sig, void* r, const char* slot) {
+    if (!s || !r) return 0;
     auto* so = static_cast<QObject*>(s);
     auto* ro = static_cast<QObject*>(r);
     int si = so->metaObject()->indexOfSignal(QMetaObject::normalizedSignature(sig));
     int ri = ro->metaObject()->indexOfMethod(QMetaObject::normalizedSignature(slot));
-    if (si < 0 || ri < 0) return nullptr;
-    auto c = QObject::connect(so, so->metaObject()->method(si), ro, ro->metaObject()->method(ri));
-    return new QMetaObject::Connection(std::move(c));
+    if (si < 0 || ri < 0) return 0;
+    return QObject::connect(so, so->metaObject()->method(si),
+                            ro, ro->metaObject()->method(ri)) ? 1 : 0;
 }
 
 // ---- QML type registration (qmlRegisterType for D @QObject types) -------------
