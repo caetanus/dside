@@ -679,6 +679,10 @@ mixin template QtdWidget(Base) {
 
 // ---- properties (access by name via QVariant) -------------------------------
 /// Reads an int property by name (custom @Property or built-in).
+private extern(C) bool qtd_invoke0(void*, const(char)*);
+/// Invoke a parameterless member (signal or invokable) by name — used to emit a signal that
+/// belongs to another object, e.g. a grouped property's.
+bool invoke0(T)(T o, string member) { return qtd_invoke0(qobjOf(o), (member ~ "\0").ptr); }
 private extern(C) void* qtd_prop_get_obj(void*, const(char)*);
 /// The object held by a QObject*-valued property — how a GROUPED property (`group.count`) is
 /// reached: the group is a child object, its members are plain properties on it.

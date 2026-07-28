@@ -277,9 +277,11 @@ static std::map<std::string, std::string> g_baseProps;
 // same observation path the engine-side oracle uses.)
 static bool g_baseIsD;
 
-// The base type's GROUPED properties for the object being compiled: group name -> (member -> D
-// type). Filled from the registry; empty unless the base declares object-valued properties.
-static std::map<std::string, std::map<std::string, std::string>> g_groups;
+// The base type's GROUPED properties for the object being compiled: group name -> that group
+// class's whole registry entry, so its member types, NOTIFY names and signal signatures are all
+// reachable. Empty unless the base declares object-valued properties.
+struct DType;
+static std::map<std::string, const DType *> g_groups;
 
 // D type of each in-scope name (declared property, base property, function param, local). Lets
 // compileExpr decide COERCIONS — notably JS `+` string concatenation, where QML converts the
@@ -417,8 +419,8 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (base) {
             auto g = g_groups.find(qs(base->name.toString()));
             if (g != g_groups.end()) {
-                auto m = g->second.find(qs(fm->name.toString()));
-                if (m == g->second.end()) return false;
+                auto m = g->second->propType.find(qs(fm->name.toString()));
+                if (m == g->second->propType.end()) return false;
                 const char *rd = m->second == "string" ? "propStr(" : m->second == "double" ? "propDouble("
                                : m->second == "bool" ? "propBool(" : "propInt(";
                 out = rd + std::string("propObj(this, \"") + qs(base->name.toString()) + "\"), \""
@@ -761,6 +763,35 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
     }
     auto *es = cast<ExpressionStatement *>(st);
     if (!es) return false;
+    // `group.<signal>()` — emit a signal that belongs to the GROUP object, not to this one.
+    if (auto *call = cast<CallExpression *>(es->expression); call && !call->arguments)
+        if (auto *fm = cast<FieldMemberExpression *>(call->base))
+            if (auto *b = cast<IdentifierExpression *>(fm->base)) {
+                auto g = g_groups.find(qs(b->name.toString()));
+                if (g != g_groups.end() && g->second->signalSig.count(qs(fm->name.toString()))) {
+                    body += "        invoke0(propObj(this, \"" + qs(b->name.toString()) + "\"), \""
+                          + qs(fm->name.toString()) + "\");\n";
+                    return true;
+                }
+            }
+    // `group.member = <expr>` — assign through the group object (a meta-object hop), the write
+    // counterpart of reading `group.member` in an expression.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+        if (auto *fm = cast<FieldMemberExpression *>(bin->left))
+            if (auto *b = cast<IdentifierExpression *>(fm->base)) {
+                auto g = g_groups.find(qs(b->name.toString()));
+                if (g != g_groups.end()) {
+                    std::string mem = qs(fm->name.toString());
+                    auto mt = g->second->propType.find(mem);
+                    std::string val;
+                    if (mt == g->second->propType.end()
+                            || !compileExpr(bin->right, QString::fromStdString(mt->second), val))
+                        return false;
+                    body += "        setProp(propObj(this, \"" + qs(b->name.toString()) + "\"), \""
+                          + mem + "\", " + val + ");\n";
+                    return true;
+                }
+            }
     // `x++` / `++x` / `x--` / `--x` on a property -> the same in D.
     {
         ExpressionNode *inner = nullptr;
@@ -770,6 +801,20 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         else if (auto *p = cast<PreDecrementExpression *>(es->expression)) { inner = p->expression; op = "--"; }
         else if (auto *p = cast<PostDecrementExpression *>(es->expression)) { inner = p->base; op = "--"; }
         if (inner) {
+            // `group.member++` has no D lvalue — it is a read-modify-write through the group.
+            if (auto *fm = cast<FieldMemberExpression *>(inner))
+                if (auto *b = cast<IdentifierExpression *>(fm->base)) {
+                    auto g = g_groups.find(qs(b->name.toString()));
+                    if (g != g_groups.end()) {
+                        std::string mem = qs(fm->name.toString()), rd;
+                        auto mt = g->second->propType.find(mem);
+                        if (mt == g->second->propType.end() || !compileExpr(inner, "", rd)) return false;
+                        std::string gobj = "propObj(this, \"" + qs(b->name.toString()) + "\")";
+                        body += "        setProp(" + gobj + ", \"" + mem + "\", cast(" + mt->second
+                              + ")(" + rd + (op[0] == '+' ? " + 1" : " - 1") + "));\n";
+                        return true;
+                    }
+                }
             std::string lv;   // the lvalue: an identifier or a self member (`foo.count` -> count)
             if (!compileExpr(inner, "", lv)) return false;
             body += "        " + lv + op + ";\n";
@@ -919,7 +964,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A grouped property's MEMBERS are typed from the group class's own registry entry.
     if (dBase) for (auto &g : dBase->groupClass)
         for (auto &kv : g_dTypes)
-            if (kv.second.dClass == g.second) { g_groups[g.first] = kv.second.propType; break; }
+            if (kv.second.dClass == g.second) { g_groups[g.first] = &kv.second; break; }
     g_className = cls;
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *en = cast<UiEnumDeclaration *>(m->member))
@@ -993,6 +1038,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
     std::vector<std::pair<std::string, ExpressionNode *>> rawGroupAssigns;        // `group.member: expr`
+    std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
     std::string enumDecls, signalDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     bool hasCustomDefaultProp = false;                                           // a `default property` declared
@@ -1009,10 +1055,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             // A plain `<name>: <expr>` that isn't an id/handler assigns a base C++ Q_PROPERTY;
             // a DOTTED one (`group.count: 42`) assigns a member of a GROUPED property.
-            if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+            {
                 auto dot = hid.find('.');
-                if (dot == std::string::npos) { rawBaseAssigns.push_back({hid, es->expression}); continue; }
-                if (g_groups.count(hid.substr(0, dot))) { rawGroupAssigns.push_back({hid, es->expression}); continue; }
+                std::string head = dot == std::string::npos ? "" : hid.substr(0, dot);
+                std::string tail = dot == std::string::npos ? "" : hid.substr(dot + 1);
+                // `group.on<Signal>: <body>` — a handler on the GROUP object, not on this one.
+                if (g_groups.count(head) && tail.size() > 2 && tail[0] == 'o' && tail[1] == 'n'
+                        && std::isupper((unsigned char)tail[2])) {
+                    std::string sig = tail.substr(2);
+                    sig[0] = (char)std::tolower((unsigned char)sig[0]);
+                    rawGroupHandlers.push_back({head + "." + sig, sb->statement});
+                    continue;
+                }
+                if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+                    if (dot == std::string::npos) { rawBaseAssigns.push_back({hid, es->expression}); continue; }
+                    if (g_groups.count(head)) { rawGroupAssigns.push_back({hid, es->expression}); continue; }
+                }
             }
         }
         // A QML `enum Name { A, B = 5, C }` -> a D enum (int members).
@@ -1038,6 +1096,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (ob->hasOnToken) {
                 std::fprintf(stderr, "qmltc-d: %s: '%s on %s' value source in %s not yet supported — skipped (later phase)\n",
                              inPath, qname(ob->qualifiedTypeNameId).c_str(), qname(ob->qualifiedId).c_str(), cls.c_str());
+                ++partial; continue;
+            }
+            // A DOTTED target (`group.object: QtObject { … }`) binds a child to a member of a
+            // GROUPED property, which we don't model: the child would have to be built and then
+            // assigned through the group object. Emitting it as a normal child produced a D class
+            // named after the dotted path — invalid, and reported compile-clean.
+            if (qname(ob->qualifiedId).find('.') != std::string::npos) {
+                std::fprintf(stderr, "qmltc-d: %s: child object bound to '%s' (a member of a grouped "
+                             "property) in %s not yet supported — skipped (later phase)\n",
+                             inPath, qname(ob->qualifiedId).c_str(), cls.c_str());
                 ++partial; continue;
             }
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
@@ -1346,13 +1414,41 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         node.baseProps.push_back({ba.first, ty});
     }
 
+    // Handlers ON a grouped property (`group.onCountChanged: …`): the signal belongs to the GROUP
+    // object, the slot to this one. The signal's real signature comes from the group class's
+    // registry entry — a NOTIFY is not necessarily a parameterless `<prop>Changed`.
+    std::string groupHandlerSlots;
+    for (auto &gh : rawGroupHandlers) {
+        auto dot = gh.first.find('.');
+        std::string gname = gh.first.substr(0, dot), sig = gh.first.substr(dot + 1);
+        auto *gt = g_groups[gname];
+        // the handler body may be a bare statement or `function(...) { … }`
+        Statement *bodyStmt = gh.second;
+        StatementList *fnBody = nullptr;
+        if (auto *es = cast<ExpressionStatement *>(bodyStmt))
+            if (auto *fe = es->expression->asFunctionDefinition()) fnBody = fe->body;
+        std::string hbody;
+        bool ok = fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(bodyStmt, ptype, hbody);
+        if (!ok) {
+            std::fprintf(stderr, "qmltc-d: %s: handler '%s' on grouped property in %s not yet supported — skipped (later phase)\n",
+                         inPath, gh.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        auto ss = gt->signalSig.find(sig);
+        std::string cppsig = ss != gt->signalSig.end() ? ss->second : (sig + "()");
+        std::string slot = "__hg_" + gname + "_" + sig;
+        groupHandlerSlots += "    @Slot void " + slot + "() {\n" + hbody + "    }\n";
+        handlerWire += "        connectMeta(propObj(this, \"" + gname + "\"), \"" + cppsig
+                     + "\", this, \"" + slot + "()\");\n";
+    }
+
     // Grouped-property assignments: set the member on the group OBJECT, which is reached through
     // the parent's meta-object. The dump reports them under the same dotted path the engine-side
     // oracle walks (`group.count`), so the two sides compare directly.
     for (auto &ga : rawGroupAssigns) {
         auto dot = ga.first.find('.');
         std::string gname = ga.first.substr(0, dot), mem = ga.first.substr(dot + 1);
-        auto &members = g_groups[gname];
+        auto &members = g_groups[gname]->propType;
         auto mt = members.find(mem);
         std::string val;
         if (mt == members.end() || !compileExpr(ga.second, QString::fromStdString(mt->second), val)) {
@@ -1495,7 +1591,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Only a D base is a real D superclass. A BOUND C++ base is reached through the trampoline
     // mixin instead (the class must not also derive from the extern(C++) declaration).
     std::string ext = (dBase && !dBase->bound) ? (" : " + dBase->dClass) : "";
-    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
+    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + body
+             + childFields + methods + recompute + handlerSlots + groupHandlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;

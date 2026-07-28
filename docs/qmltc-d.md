@@ -267,8 +267,31 @@ auto _v = propInt(propObj(this, "group"), "count");
 The registry identifies the group: a non-scalar property whose declared type names another
 Component in the same `.qmltypes` is a group, and that Component supplies its members' types. (The
 `isPointer: true` flag is a boolean literal, not a string, so membership is the reliable test.)
-Fixture `CGroup.qml`. `groupedProperty.qml` from the corpus still needs handlers ON the group
-(`group.onCountChanged`), so it stays PARTIAL.
+
+Handlers ON the group work too — the signal belongs to the group object, the slot to this one, and
+the signature comes from the group class's registry entry rather than being assumed to be a
+parameterless `<prop>Changed`:
+
+```qml
+group.onCountChanged: { seen = seen + 1; group.str = "changed" }
+```
+```d
+@Slot void __hg_group_countChanged() {
+    seen = (seen + 1);
+    setProp(propObj(this, "group"), "str", "changed");
+}
+// in __qmltcWire:
+connectMeta(propObj(this, "group"), "countChanged()", this, "__hg_group_countChanged()");
+```
+
+A statement body can also write a group member, increment one (`group.count++` — a
+read-modify-write, since there is no D lvalue), and emit a signal belonging to the group
+(`group.triggered()`, via the new `qtmoc.invoke0`). Fixtures `CGroup.qml` and `CGroupHandler.qml`.
+
+`groupedProperty.qml` from the corpus still stays PARTIAL, on one remaining construct: a CHILD
+object bound into a group member (`group.object: QtObject { … }`). That one is instructive — it
+used to be emitted as an ordinary child and produced a D class named after the dotted path
+(`class GP_group.object`), which is not valid D and was reported compile-clean. It is refused now.
 
 One thing this exposed: the value-DUMP and the MUTATION target are not the same expression. A
 child object is a D field chain (`o.kid`), a grouped property is a meta-object hop

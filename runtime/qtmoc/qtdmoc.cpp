@@ -315,6 +315,12 @@ void qtd_prop_set_bool(void* o, const char* n, bool v) { static_cast<QObject*>(o
 void* qtd_prop_get_obj(void* o, const char* n) {
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
+// Invoke a parameterless member (a signal or an invokable) by name on any QObject — how a QML
+// handler emits a signal that belongs to a GROUPED property's object rather than to itself.
+// Returns false if there is no such member.
+bool qtd_invoke0(void* o, const char* member) {
+    return QMetaObject::invokeMethod(static_cast<QObject*>(o), member, Qt::DirectConnection);
+}
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(static_cast<QObject*>(o)->property(n).toString()); }
 void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
     static_cast<QObject*>(o)->setProperty(n, QString::fromUtf8(p, len));
