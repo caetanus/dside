@@ -306,6 +306,16 @@ static std::map<std::string, const DType *> g_groups;
 // non-string side and D's `~` does not. Maintained alongside g_scope.
 static std::map<std::string, std::string> g_propType;
 
+// Aliases resolved for use INSIDE expressions: name -> how to read the target from `this`, and
+// the target's own name so a binding through the alias depends on the TARGET (whose reactivity
+// already exists). Only targets reachable without the child objects — self, base, group — are
+// pre-resolved here, because children are compiled after the bindings that might use them.
+static std::map<std::string, std::string> g_aliasRead;
+static std::map<std::string, std::string> g_aliasDep;
+// Writing THROUGH an alias: (target object expression, target property). `alias: value` in QML
+// assigns the target, it does not shadow it.
+static std::map<std::string, std::pair<std::string, std::string>> g_aliasWrite;
+
 // Every bare name that RESOLVES in the generated D class: declared properties, base C++
 // properties, `function` names, declared signals, plus (pushed while a body compiles) the
 // enclosing function's params and `var` locals. An identifier outside it is something QML
@@ -403,6 +413,7 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
 // Anything else resolves to nothing the generated class defines, so it is a compile failure
 // (PARTIAL), never a bare name emitted on faith.
 static bool readName(const std::string &n, std::string &out) {
+    if (auto a = g_aliasRead.find(n); a != g_aliasRead.end()) { out = a->second; return true; }
     auto bp = g_baseProps.find(n);
     if (bp != g_baseProps.end()) {
         if (g_baseIsD) { out = n; return true; }
@@ -575,7 +586,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
 static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (!e) return;
     if (auto *nested = cast<NestedExpression *>(e)) { collectIds(nested->expression, ids); return; }
-    if (auto *id = cast<IdentifierExpression *>(e)) { ids.push_back(qs(id->name.toString())); return; }
+    if (auto *id = cast<IdentifierExpression *>(e)) {
+        auto n = qs(id->name.toString());
+        auto a = g_aliasDep.find(n);
+        ids.push_back(a != g_aliasDep.end() ? a->second : n);   // through an alias -> its target
+        return;
+    }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) ids.push_back(qs(fm->name.toString()));
@@ -796,6 +812,18 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                     return true;
                 }
             }
+    // `aliasName = <expr>` inside a body — same reference semantics as the declarative form.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+        if (auto *lhs = cast<IdentifierExpression *>(bin->left)) {
+            auto aw = g_aliasWrite.find(qs(lhs->name.toString()));
+            if (aw != g_aliasWrite.end()) {
+                std::string ty = g_propType.count(qs(lhs->name.toString())) ? g_propType[qs(lhs->name.toString())] : "";
+                std::string val;
+                if (ty.empty() || !compileExpr(bin->right, QString::fromStdString(ty), val)) return false;
+                body += "        setProp(" + aw->second.first + ", \"" + aw->second.second + "\", " + val + ");\n";
+                return true;
+            }
+        }
     // `group.member = <expr>` — assign through the group object (a meta-object hop), the write
     // counterpart of reading `group.member` in an expression.
     if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
@@ -940,6 +968,13 @@ struct ObjNode {
     // PATH differ (field `_g_group_object`, path `group.object`), so both are carried. (A struct
     // holding an ObjNode by value can't be declared here — ObjNode is still incomplete — so the
     // path rides alongside, one entry per groupKids entry.)
+    // A QML alias is a REFERENCE. It is compiled as a compile-time ALIAS, not a property: nothing
+    // is stored, reads go straight to the target and writes land on it. That removes the whole
+    // question of keeping a copy in sync — a binding that uses the alias depends on the TARGET,
+    // whose reactivity already exists — and it is what an alias actually means.
+    // (name, read expression, D type, write target object, write target property)
+    struct AliasLine { std::string name, read, dtype, setObj, setProp; };
+    std::vector<AliasLine> aliasLines;
     std::vector<std::pair<std::string, ObjNode>> groupKids;     // (D field, child)
     std::vector<std::string> groupKidPaths;                     // QML path, parallel to groupKids
     std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
@@ -973,8 +1008,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedBaseProps = g_baseProps;
     auto savedScope = g_scope;
     auto savedPropType = g_propType;
+    auto savedAliasRead = g_aliasRead;
+    auto savedAliasDep = g_aliasDep;
+    auto savedAliasWrite = g_aliasWrite;
     g_scope.clear();
     g_propType.clear();
+    g_aliasRead.clear();
+    g_aliasDep.clear();
+    g_aliasWrite.clear();
     g_funcRet.clear();
     g_funcReads.clear();
     g_enumMember.clear();
@@ -1056,6 +1097,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &sg : g_signals) g_scope.insert(sg);
         g_propType = pt0;
         for (auto &bp : g_baseProps) g_propType[bp.first] = bp.second;
+        // Pre-resolve aliases whose target needs no child object, so a binding can USE the alias.
+        for (auto *m = init ? init->members : nullptr; m; m = m->next) {
+            auto *pub = cast<UiPublicMember *>(m->member);
+            if (!pub || pub->type != UiPublicMember::Property) continue;
+            if (!pub->memberType || pub->memberType->name.toString() != "alias") continue;
+            auto *aes = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+            auto *fm = aes ? cast<FieldMemberExpression *>(aes->expression) : nullptr;
+            if (!fm) continue;
+            auto *base = cast<IdentifierExpression *>(fm->base);
+            if (!base) continue;
+            std::string bn = qs(base->name.toString()), mem = qs(fm->name.toString());
+            std::string nm = qs(pub->name.toString()), rd, ty;
+            if (!g_selfId.empty() && bn == g_selfId && pt0.count(mem)) { ty = pt0[mem]; rd = mem; }
+            else if (!g_selfId.empty() && bn == g_selfId && g_baseProps.count(mem)) {
+                ty = g_baseProps[mem];
+                if (!readName(mem, rd)) continue;
+            } else if (g_groups.count(bn)) {
+                auto mt = g_groups[bn]->propType.find(mem);
+                if (mt == g_groups[bn]->propType.end()) continue;
+                ty = mt->second;
+                const char *r = ty == "string" ? "propStr(" : ty == "double" ? "propDouble("
+                              : ty == "bool" ? "propBool(" : "propInt(";
+                rd = r + std::string("propObj(this, \"") + bn + "\"), \"" + mem + "\")";
+            } else continue;
+            g_aliasRead[nm] = rd;
+            g_aliasDep[nm] = (g_groups.count(bn) ? bn + "." + mem : mem);
+            g_aliasWrite[nm] = g_groups.count(bn)
+                ? std::pair<std::string, std::string>{"propObj(this, \"" + bn + "\")", mem}
+                : std::pair<std::string, std::string>{"this", mem};
+            g_scope.insert(nm);
+            g_propType[nm] = ty;
+        }
     }
 
     std::vector<Prop> props;
@@ -1314,48 +1387,58 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::map<std::string, std::string> t;
         for (auto &p : props) t[p.name] = p.dtype;
         for (auto &al : aliases) {
-            std::string expr, atype;
-            std::vector<std::string> deps;
+            // An alias is resolved to (how to READ the target, where to WRITE it). No property is
+            // emitted, so there is no copy to keep in sync and no NOTIFY requirement on the target.
+            // The owning object's access path isn't known here (an alias may live in a child), so
+            // emit a marker that collectDump replaces with the real one.
+            static const std::string SELF = "\x01";
+            std::string read, atype, setObj, setProp;
             if (auto *fm = cast<FieldMemberExpression *>(al.second)) {
                 auto *base = cast<IdentifierExpression *>(fm->base);
                 std::string bn = base ? qs(base->name.toString()) : "";
                 std::string mem = qs(fm->name.toString());
                 if (base && !g_selfId.empty() && bn == g_selfId && t.count(mem)) {
-                    atype = t[mem]; expr = mem; deps.push_back(mem);            // reactive self alias
+                    atype = t[mem]; read = SELF + "." + mem; setObj = SELF; setProp = mem;   // own property
                 } else if (base && !g_selfId.empty() && bn == g_selfId && g_baseProps.count(mem)) {
-                    // `property alias a: self.<baseProperty>` — the target lives on the base type.
-                    // Reading it goes through readName (field for a D base, meta read for a bound
-                    // C++ one); listing it as a dependency makes the wire connect the BASE's notify.
-                    //
-                    // But a QML alias is a REFERENCE and we compile it to a recomputed COPY, so it
-                    // is only faithful while something re-evaluates it. If the base property has no
-                    // NOTIFY (`Q_PROPERTY(int x MEMBER m_x)`), nothing ever will: a later write to
-                    // the target would leave the alias stale — silently wrong. Refuse it instead.
-                    bool live = dBase && dBase->propNotify.count(mem);
-                    if (!live)
-                        std::fprintf(stderr, "qmltc-d: %s: alias '%s' targets base property '%s', which has no NOTIFY — "
-                                     "an alias compiled as a copy could not stay in sync — skipped (later phase)\n",
-                                     inPath, al.first.c_str(), mem.c_str());
-                    else if (readName(mem, expr)) { atype = g_baseProps[mem]; deps.push_back(mem); }
+                    // a property of the base type: read as the base is read, write through meta.
+                    atype = g_baseProps[mem];
+                    std::string rd = atype == "string" ? "propStr(" + SELF + ", \"" : atype == "double" ? "propDouble(" + SELF + ", \""
+                                   : atype == "bool" ? "propBool(" + SELF + ", \"" : "propInt(" + SELF + ", \"";
+                    read = g_baseIsD ? (SELF + "." + mem) : (rd + mem + "\")");
+                    setObj = SELF; setProp = mem;
+                } else if (base && g_groups.count(bn)) {
+                    // a member of a grouped property
+                    auto mt = g_groups[bn]->propType.find(mem);
+                    if (mt != g_groups[bn]->propType.end()) {
+                        atype = mt->second;
+                        const char *rd = atype == "string" ? "propStr(" : atype == "double" ? "propDouble("
+                                       : atype == "bool" ? "propBool(" : "propInt(";
+                        std::string gobj = "propObj(" + SELF + ", \"" + bn + "\")";
+                        read = rd + gobj + ", \"" + mem + "\")";
+                        setObj = gobj; setProp = mem;
+                    }
                 } else if (base && childType.count(bn + "." + mem)) {
                     atype = childType[bn + "." + mem];
-                    expr = childAccess[bn + "." + mem];   // "field.prop"
-                    // If the child prop carries a NOTIFY, the alias is LIVE: connect the child's
-                    // change signal to this alias's recompute (cross-object connect).
-                    if (childNotified.count(bn + "." + mem)) {
-                        std::string field = expr.substr(0, expr.find('.'));
-                        crossConnects += "        connectMeta(" + field + ", \"" + mem + "Changed()\", this, \"__rc_" + al.first + "()\");\n";
-                    }
+                    std::string acc = childAccess[bn + "." + mem];   // "field.prop"
+                    read = SELF + "." + acc;
+                    setObj = SELF + "." + acc.substr(0, acc.find('.')); setProp = mem;
                 }
             } else if (auto *id = cast<IdentifierExpression *>(al.second)) {
                 std::string bn = qs(id->name.toString());
-                if (t.count(bn)) { atype = t[bn]; expr = bn; deps.push_back(bn); }
+                if (t.count(bn)) { atype = t[bn]; read = SELF + "." + bn; setObj = SELF; setProp = bn; }
+                else if (g_baseProps.count(bn)) {
+                    atype = g_baseProps[bn];
+                    std::string rd = atype == "string" ? "propStr(" + SELF + ", \"" : atype == "double" ? "propDouble(" + SELF + ", \""
+                                   : atype == "bool" ? "propBool(" + SELF + ", \"" : "propInt(" + SELF + ", \"";
+                    read = g_baseIsD ? (SELF + "." + bn) : (rd + bn + "\")");
+                    setObj = SELF; setProp = bn;
+                }
             }
             if (atype.empty()) {
                 std::fprintf(stderr, "qmltc-d: %s: alias '%s' target is unsupported — skipped (later phase)\n", inPath, al.first.c_str());
                 ++partial; continue;
             }
-            props.push_back({al.first, atype, expr, true, deps});
+            node.aliasLines.push_back({al.first, read, atype, setObj, setProp});
         }
     }
 
@@ -1430,6 +1513,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // __qmltcWire, and record for the dump (read back through the meta-object). int/string only.
     std::string baseWire;
     for (auto &ba : rawBaseAssigns) {
+        // `aliasName: <expr>` assigns THROUGH the alias — QML aliases are references, so this
+        // writes the target rather than declaring anything of our own.
+        if (auto aw = g_aliasWrite.find(ba.first); aw != g_aliasWrite.end()) {
+            std::string ty = g_propType.count(ba.first) ? g_propType[ba.first] : "", val;
+            if (ty.empty() || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
+                std::fprintf(stderr, "qmltc-d: %s: assignment to alias '%s' in %s not yet supported — skipped (later phase)\n",
+                             inPath, ba.first.c_str(), cls.c_str());
+                ++partial; continue;
+            }
+            baseWire += "        setProp(" + aw->second.first + ", \"" + aw->second.second + "\", " + val + ");\n";
+            continue;
+        }
         // The registry is authoritative: a property it declares with a type we don't compile
         // against must NOT fall through to literal inference, which would emit a plausible but
         // wrong value (a QJSValue property assigned `true` is not a bool).
@@ -1671,6 +1766,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_groups = savedGroups;
     g_scope = savedScope;
     g_propType = savedPropType;
+    g_aliasRead = savedAliasRead;
+    g_aliasDep = savedAliasDep;
+    g_aliasWrite = savedAliasWrite;
     return node;
 }
 
@@ -1688,6 +1786,15 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         const char *fn = (s.second == "string") ? "propStr(" : (s.second == "double") ? "propDouble("
                        : (s.second == "bool") ? "propBool(" : "propInt(";
         out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second, self, s.first});
+    }
+    for (auto &a : n.aliasLines) {
+        // Resolve the self marker to this object's access path. An alias reads and writes the
+        // TARGET, so it needs no property of its own and no reactivity.
+        auto sub = [&](std::string x) {
+            for (size_t i; (i = x.find('\x01')) != std::string::npos;) x.replace(i, 1, self);
+            return x;
+        };
+        out.push_back({lab + a.name, sub(a.read), a.dtype, sub(a.setObj), a.setProp});
     }
     for (auto &s : n.groupProps) {
         auto dot = s.first.find('.');

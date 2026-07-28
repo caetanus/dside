@@ -254,11 +254,19 @@ An alias may now target a property of the base type, not just one declared in th
 Reading goes through the one name-resolution path (`readName`): a plain field for a D base, a
 meta-object read for a bound C++ one. Fixtures `CAlias.qml` / `DAlias.qml`, both `.set`-mutated.
 
-**A QML alias is a REFERENCE; we compile it to a recomputed COPY.** That is faithful only while
-something re-evaluates it, so an alias onto a base property with **no NOTIFY**
-(`Q_PROPERTY(int x MEMBER m_x)`) is REFUSED — a later write to the target would leave the alias
-stale, which is the silent-wrong class we keep guarding against. That is also why
-`specialProperties.qml` stays PARTIAL: its `xAlias`/`yAlias`/`zAlias` target MEMBER properties.
+**A QML alias is a REFERENCE, and it is now compiled as one** — as a compile-time alias, not a
+property. Nothing is stored: a read goes straight to the target, a write lands on it, and a binding
+that uses the alias depends on the TARGET, whose reactivity already exists.
+
+That removes a whole class of problem rather than guarding against it. The earlier model compiled
+an alias to a recomputed COPY, which is only faithful while something re-evaluates it — so an alias
+onto a property with **no NOTIFY** (`Q_PROPERTY(int x MEMBER m_x)`) had to be refused, since a later
+write would leave the copy stale. As a reference there is nothing to go stale, and the engine's own
+behaviour follows for free: in `CAliasWrite.qml` a binding over such an alias does NOT re-evaluate
+after a write — and neither does the engine's, because the target has no NOTIFY to fire.
+
+Across the corpus this took alias blockers from 29 occurrences (17 "target unsupported" + 12
+"no NOTIFY") down to 5.
 
 Wiring order changed to make this work: connections are now established BEFORE the initial binding
 pass. Bindings are recomputed in declaration order but aliases are appended after declared
