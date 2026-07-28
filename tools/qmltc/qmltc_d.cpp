@@ -115,10 +115,9 @@ struct DType {
     // from the assigned literal produces a WRONG value silently — `jsvalue: true` on a QJSValue
     // property is not a bool. Assigning or reading one is PARTIAL.
     std::set<std::string> propUnsupported;
-    // A registry field naming a semantic we do not implement (QML_EXTENDED grafts another
-    // object's members onto this type). Compiling such a root without honouring it would produce
-    // an object missing members the engine's has, so the type is refused outright.
-    std::string unsupportedSemantic;
+    // QML_EXTENDED: the class whose members the engine grafts onto this type. We don't build that
+    // object, so those members (and only those) are unusable — see the fold-in below.
+    std::string extensionClass;
     std::string prototype;                                // registry `prototype:` (the base class)
     // Object-valued properties: `Q_PROPERTY(TestTypeGrouped *group ...)`. QML addresses their
     // members with dotted syntax (`group.count: 42`) — a GROUPED property. Maps property -> the
@@ -172,8 +171,7 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
         dt.bound = bound;
         dt.dClass = qmltypesField(comp->initializer, "name");
         dt.prototype = qmltypesField(comp->initializer, "prototype");
-        if (auto ext = qmltypesField(comp->initializer, "extension"); !ext.empty())
-            dt.unsupportedSemantic = "QML_EXTENDED(" + ext + ")";
+        dt.extensionClass = qmltypesField(comp->initializer, "extension");
         std::string qmlName = dt.dClass;               // fallback if `exports` is absent
         for (auto *c = comp->initializer ? comp->initializer->members : nullptr; c; c = c->next) {
             // exports: ["AppTypes/Backend 1.0"] -> the element name a .qml writes is `Backend`.
@@ -226,11 +224,43 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
         dt.dModule = bound ? (std::string(dScope) + "." + low) : dScope;
         g_dTypes[qmlName] = dt;
     }
-    // An unimplemented semantic is INHERITED: TypeWithBaseTypeExtension declares no extension of
-    // its own but derives from a type that does, so it too gains members we would not emit. The
-    // registry records `prototype`, which is the C++ class name — index by that to walk up.
     std::map<std::string, DType *> byClass;
     for (auto &kv : g_dTypes) byClass[kv.second.dClass] = &kv.second;
+    // A registry Component lists only the type's OWN members; the engine's object also has its
+    // base's. Fold the prototype chain in so a base property is typed from the registry instead of
+    // falling through to literal inference.
+    for (auto &kv : g_dTypes)
+        for (std::string proto = kv.second.prototype; !proto.empty();) {
+            auto it = byClass.find(proto);
+            if (it == byClass.end()) break;
+            for (auto &p : it->second->propType)   kv.second.propType.emplace(p.first, p.second);
+            for (auto &p : it->second->propNotify) kv.second.propNotify.emplace(p.first, p.second);
+            for (auto &p : it->second->signalSig)  kv.second.signalSig.emplace(p.first, p.second);
+            for (auto &p : it->second->groupClass) kv.second.groupClass.emplace(p.first, p.second);
+            for (auto &p : it->second->propUnsupported) kv.second.propUnsupported.insert(p);
+            proto = it->second->prototype;
+        }
+    // QML_EXTENDED grafts ANOTHER object's members onto the type. We don't build that object, so
+    // the type is still usable — only its EXTENSION members are not. Marking them unsupported (by
+    // name, from the extension's own Component) turns any use into an honest PARTIAL, instead of
+    // refusing every .qml rooted in such a type even when it never touches the extension. The
+    // extension is inherited down the prototype chain, same as anything else.
+    for (auto &kv : g_dTypes) {
+        std::vector<std::string> exts;
+        if (!kv.second.extensionClass.empty()) exts.push_back(kv.second.extensionClass);
+        for (std::string proto = kv.second.prototype; !proto.empty();) {
+            auto it = byClass.find(proto);
+            if (it == byClass.end()) break;
+            if (!it->second->extensionClass.empty()) exts.push_back(it->second->extensionClass);
+            proto = it->second->prototype;
+        }
+        for (auto &e : exts) {
+            auto it = byClass.find(e);
+            if (it == byClass.end()) continue;
+            for (auto &p : it->second->propType) kv.second.propUnsupported.insert(p.first);
+            for (auto &p : it->second->propUnsupported) kv.second.propUnsupported.insert(p);
+        }
+    }
     // A candidate group whose class isn't in the registry can't have its members typed, so it is
     // not a group we can compile — demote it to "declared with an unsupported type".
     for (auto &kv : g_dTypes) {
@@ -238,18 +268,6 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             if (byClass.count(it->second)) { ++it; continue; }
             kv.second.propUnsupported.insert(it->first);
             it = kv.second.groupClass.erase(it);
-        }
-    }
-    for (auto &kv : g_dTypes) {
-        if (!kv.second.unsupportedSemantic.empty()) continue;
-        for (std::string proto = kv.second.prototype; !proto.empty();) {
-            auto it = byClass.find(proto);
-            if (it == byClass.end()) break;
-            if (!it->second->unsupportedSemantic.empty()) {
-                kv.second.unsupportedSemantic = it->second->unsupportedSemantic + " on base " + proto;
-                break;
-            }
-            proto = it->second->prototype;
         }
     }
     return true;
@@ -1762,11 +1780,7 @@ int main(int argc, char **argv) {
     const DType *rootD = nullptr;
     if (bt.first.empty() && rootResolvedPath.empty()) {
         rootD = dTypeFor(rootType);
-        if (rootD && !rootD->unsupportedSemantic.empty()) {
-            std::fprintf(stderr, "qmltc-d: %s: root type '%s' uses %s, which qmltc-d does not implement — "
-                         "skipped (later phase)\n", inPath, rootType.c_str(), rootD->unsupportedSemantic.c_str());
-            rootD = nullptr;   // fall through to the unmapped-root PARTIAL below
-        } else if (rootD && rootD->bound) {
+        if (rootD && rootD->bound) {
             // Route into the bound-subclass backend (the same one QtQuick types use): the class
             // and its module come from the registry, the trampoline from the binding. The registry
             // additionally supplies the base property TYPES and notify names, which the bound path

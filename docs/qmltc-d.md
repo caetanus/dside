@@ -212,13 +212,29 @@ any more; the per-type QML *semantics* are. What each now stops on:
 | `NamespacedTypes` | a function body form we don't compile |
 | `specialProperties`, `propertyAliasAttributes` | alias onto a base property with **no NOTIFY** (refused, see above) + `undefined`/RESET |
 | `mySignals` | `font`/`QtObject`-typed properties |
-| `QmlTypeWithExtension`, `QmlTypeWithBaseTypeExtension` | `QML_EXTENDED` — refused outright (see below) |
+| — | `QML_EXTENDED` no longer blocks a file that doesn't use the extension (see below) |
 
-A type whose registry declares a semantic we do not implement is now **refused**, and the refusal
-is INHERITED through the registry's `prototype` chain: `TypeWithBaseTypeExtension` declares no
-extension of its own but derives from one that does, so it would silently lack members the
-engine's object has. Without that rule it reported compile-clean and could not even be
-instantiated by the oracle.
+### QML_EXTENDED, scoped to what it actually breaks
+
+`QML_EXTENDED(Extension)` grafts another object's members onto a type. We don't build that object,
+so those members are not ours to emit — but the TYPE still is. Refusing every `.qml` rooted in such
+a type was too blunt: both corpus files that use one never touch the extension at all.
+
+So the extension's members are marked unusable **by name**, taken from the extension's own
+Component, and inherited down the `prototype` chain (`TypeWithBaseTypeExtension` declares no
+extension but derives from one that does). Touching one is an honest PARTIAL:
+
+```
+base property 'count' in X has an unsupported declared type — skipped (later phase)
+```
+
+while a file that only uses the type's own members compiles. **`QmlTypeWithExtension.qml` and
+`QmlTypeWithBaseTypeExtension.qml` are both GREEN.**
+
+The registry fold-in that made this precise also fixed something broader: a Component lists only a
+type's OWN members, so a base property was previously invisible to the registry and fell back to
+literal inference. The `prototype` chain is now folded in — property types, notify names, signal
+signatures and groups all inherit.
 
 Two things the registry buys that literal inference cannot: the declared **type** of a base
 property, and its real **notify signature**. `TypeWithProperties::d` notifies with
@@ -308,9 +324,9 @@ wrong. Each dump line now carries its mutation target explicitly.
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 17 | **17** |
+| pure-QtQml (42) | 19 | **19** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 24 | **24** |
+| **total (108)** | 26 | **26** |
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.
