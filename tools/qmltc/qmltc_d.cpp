@@ -98,12 +98,20 @@ static std::string qname(UiQualifiedId *id) {
 // (qmlTypeComponent!T) and validated by Qt's own reader. It is itself a QML document, so it is
 // parsed with the SAME QQmlJS frontend this tool already uses; no new format, no new parser.
 struct DType {
-    std::string dClass;                                   // the D class name
+    std::string dClass;                                   // the D (or bound C++) class name
+    std::string dModule;                                  // D module declaring it
+    bool bound = false;                                   // true: a C++ type reached through the
+                                                          // binding (subclass via the trampoline
+                                                          // mixin, base props through the meta-
+                                                          // object); false: a D class we inherit.
     std::map<std::string, std::string> propType;          // property -> D type (int/string/double/bool)
     std::map<std::string, std::string> propNotify;        // property -> its notify signal
+    // Signal name -> its full C++ signature ("dSignal(QString,int)"). A NOTIFY signal does not
+    // have to be a parameterless `<prop>Changed`: connecting it needs the real signature, and the
+    // registry is the only place that has it.
+    std::map<std::string, std::string> signalSig;
 };
-static std::map<std::string, DType> g_dTypes;             // QML element name -> D type
-static std::string g_dModule;                             // D module that declares them
+static std::map<std::string, DType> g_dTypes;             // QML element name -> registered type
 
 // C++ type spellings as they appear in a .qmltypes -> the D type qmltc-d compiles against.
 static const char *dtypeOfCxx(const std::string &t) {
@@ -127,7 +135,12 @@ static std::string qmltypesField(UiObjectInitializer *init, const char *key) {
 
 // Parse a `.qmltypes` registry: Module { Component { name; exports: ["Uri/Name 1.0"]; Property {…} } }.
 // The QML element name comes from `exports` (what a .qml actually writes); `name` is the class.
-static bool loadDTypes(const char *path, const char *dModule) {
+// `bound` selects the backend: false -> the type is a D class and we inherit it directly;
+// true -> it is a C++ type bound by the generator, so the generated class subclasses it through
+// the trampoline mixin and reads/writes base properties through the meta-object. `dScope` is the
+// D module (bound=false, all types share one) or the D PACKAGE (bound=true, one module per class,
+// named after it in lower case — the generator's modBase rule).
+static bool loadDTypes(const char *path, const char *dScope, bool bound) {
     QFile f(QString::fromUtf8(path));
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", path); return false; }
     auto *engine = new Engine();                       // leaked: the AST must outlive this call
@@ -138,11 +151,11 @@ static bool loadDTypes(const char *path, const char *dModule) {
     auto *program = cast<UiProgram *>(parser->ast());
     auto *mod = program && program->members ? cast<UiObjectDefinition *>(program->members->member) : nullptr;
     if (!mod) { std::fprintf(stderr, "qmltc-d: %s has no Module block\n", path); return false; }
-    g_dModule = dModule;
     for (auto *m = mod->initializer ? mod->initializer->members : nullptr; m; m = m->next) {
         auto *comp = cast<UiObjectDefinition *>(m->member);
         if (!comp || qname(comp->qualifiedTypeNameId) != "Component") continue;
         DType dt;
+        dt.bound = bound;
         dt.dClass = qmltypesField(comp->initializer, "name");
         std::string qmlName = dt.dClass;               // fallback if `exports` is absent
         for (auto *c = comp->initializer ? comp->initializer->members : nullptr; c; c = c->next) {
@@ -160,7 +173,20 @@ static bool loadDTypes(const char *path, const char *dModule) {
                 continue;
             }
             auto *sub = cast<UiObjectDefinition *>(c->member);
-            if (!sub || qname(sub->qualifiedTypeNameId) != "Property") continue;
+            if (!sub) continue;
+            if (qname(sub->qualifiedTypeNameId) == "Signal") {
+                std::string sn = qmltypesField(sub->initializer, "name");
+                std::string ps;
+                for (auto *pm = sub->initializer ? sub->initializer->members : nullptr; pm; pm = pm->next)
+                    if (auto *par = cast<UiObjectDefinition *>(pm->member);
+                            par && qname(par->qualifiedTypeNameId) == "Parameter") {
+                        std::string pt = qmltypesField(par->initializer, "type");
+                        if (!pt.empty()) ps += (ps.empty() ? "" : ",") + pt;
+                    }
+                if (!sn.empty()) dt.signalSig[sn] = sn + "(" + ps + ")";
+                continue;
+            }
+            if (qname(sub->qualifiedTypeNameId) != "Property") continue;
             std::string pn = qmltypesField(sub->initializer, "name");
             const char *pd = dtypeOfCxx(qmltypesField(sub->initializer, "type"));
             if (pn.empty() || !pd[0]) continue;        // a property type we don't compile against
@@ -168,7 +194,11 @@ static bool loadDTypes(const char *path, const char *dModule) {
             std::string note = qmltypesField(sub->initializer, "notify");
             if (!note.empty()) dt.propNotify[pn] = note;
         }
-        if (!dt.dClass.empty()) g_dTypes[qmlName] = dt;
+        if (dt.dClass.empty()) continue;
+        std::string low = dt.dClass;
+        for (auto &ch : low) ch = (char)std::tolower((unsigned char)ch);
+        dt.dModule = bound ? (std::string(dScope) + "." + low) : dScope;
+        g_dTypes[qmlName] = dt;
     }
     return true;
 }
@@ -748,7 +778,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_signalParams.clear();
     g_baseProps.clear();
     auto savedBaseIsD = g_baseIsD;
-    g_baseIsD = dBase != nullptr;
+    g_baseIsD = dBase != nullptr && !dBase->bound;   // a bound C++ base still goes through meta
     // An app-defined D base contributes its properties WITH THEIR DECLARED TYPES, straight from
     // the registry — better than the literal-inference fallback used for a bound C++ base, and it
     // also puts properties the .qml only READS (never assigns) in scope.
@@ -1241,8 +1271,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // the registry records — don't assume the <prop>Changed spelling.
                 if (!dBase) continue;
                 auto n = dBase->propNotify.find(d);
-                if (n != dBase->propNotify.end())
-                    wire += "        connectMeta(this, \"" + n->second + "()\", this, \"__rc_" + p.name + "()\");\n";
+                if (n == dBase->propNotify.end()) continue;
+                // Use the signal's REAL signature — a NOTIFY may carry parameters
+                // (TypeWithProperties::dSignal(QString,int)), and connecting it as `name()`
+                // silently matches nothing, leaving the binding dead.
+                auto sg = dBase->signalSig.find(n->second);
+                std::string sig = sg != dBase->signalSig.end() ? sg->second : (n->second + "()");
+                wire += "        connectMeta(this, \"" + sig + "\", this, \"__rc_" + p.name + "()\");\n";
             }
         wire += crossConnects;   // live child-alias connects (cross-object)
         wire += handlerWire;
@@ -1256,7 +1291,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A bound C++ base is reached through the generated trampoline (the mixin); a D base is just
     // a D superclass — `@QObject class Foo : Backend`. qtmoc's __traits(allMembers) already flattens
     // inherited @Property/Signal/@Slot into the subclass meta-object.
-    std::string ext = dBase ? (" : " + dBase->dClass) : "";
+    // Only a D base is a real D superclass. A BOUND C++ base is reached through the trampoline
+    // mixin instead (the class must not also derive from the extern(C++) declaration).
+    std::string ext = (dBase && !dBase->bound) ? (" : " + dBase->dClass) : "";
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + body + childFields + methods + recompute + handlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
@@ -1305,7 +1342,11 @@ int main(int argc, char **argv) {
         // --dtypes <registry.qmltypes> <d-module>: app-defined QML types written in D. The registry
         // is the CTFE .qmltypes of those types; the module is where the D classes live (the
         // .qmltypes format has no field for it, so it is a build input, like a header path).
-        else if (std::strcmp(argv[i], "--dtypes") == 0 && i + 2 < argc) { const char *rf = argv[i + 1]; loadDTypes(rf, argv[i + 2]); i += 2; }
+        else if (std::strcmp(argv[i], "--dtypes") == 0 && i + 2 < argc) { loadDTypes(argv[i + 1], argv[i + 2], false); i += 2; }
+        // --cpptypes <registry.qmltypes> <d-package>: app-defined QML types written in C++. Same
+        // registry format (here produced by Qt's own moc --output-json | qmltyperegistrar), but the
+        // base is reached through the generator's binding, so the generated class SUBCLASSES it.
+        else if (std::strcmp(argv[i], "--cpptypes") == 0 && i + 2 < argc) { loadDTypes(argv[i + 1], argv[i + 2], true); i += 2; }
         else pos.push_back(argv[i]);
     }
     if (pos.empty()) { std::fprintf(stderr, "usage: %s [--dump] <file.qml> [ClassName]\n", argv[0]); return 2; }
@@ -1354,20 +1395,28 @@ int main(int argc, char **argv) {
             }
         }
     }
+    // An app-defined type written in D: `@QObject` + qmlRegisterType. The generated class simply
+    // DERIVES from it — no trampoline, no mixin, inherited properties are real fields.
+    const DType *rootD = nullptr;
+    if (bt.first.empty() && rootResolvedPath.empty()) {
+        rootD = dTypeFor(rootType);
+        if (rootD && rootD->bound) {
+            // Route into the bound-subclass backend (the same one QtQuick types use): the class
+            // and its module come from the registry, the trampoline from the binding. The registry
+            // additionally supplies the base property TYPES and notify names, which the bound path
+            // otherwise has to infer from the assigned literal.
+            bt = {rootD->dClass, rootD->dModule};
+        } else if (rootD) {
+            g_extraImports += "import " + rootD->dModule + ";\n";
+        }
+    }
+
     if (!bt.first.empty()) {
         g_extraImports += "import " + bt.second + ";\n";
         // the QtdWidget mixin needs the binding's `qtvirt` module (subclass factory / attach /
         // __<Base>_vnames), which lives at <package>.qtvirt.
         std::string pkg = bt.second.substr(0, bt.second.rfind('.'));
         g_extraImports += "import " + pkg + ".qtvirt;\n";
-    }
-
-    // An app-defined type written in D: `@QObject` + qmlRegisterType. The generated class simply
-    // DERIVES from it — no trampoline, no mixin, inherited properties are real fields.
-    const DType *rootD = nullptr;
-    if (bt.first.empty() && rootResolvedPath.empty()) {
-        rootD = dTypeFor(rootType);
-        if (rootD) g_extraImports += "import " + g_dModule + ";\n";
     }
 
     int partial = 0;

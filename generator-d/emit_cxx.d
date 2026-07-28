@@ -2879,7 +2879,10 @@ string virtCpp(string manifest, string includeLine) {
 // D side: per-subclass factory taking the override callbacks and returning the
 // class (a live C++ object whose vtable calls back into D). Callback types are
 // named aliases (an inline `extern(C) T function(..)` param confuses the parser).
-string virtD(string manifest, string dpkg) {
+// `imps` reports the modules qtvirt.d imports, so the caller can mark them REFERENCED: a virtual's
+// parameter type (QChildEvent, QTimerEvent, …) may be reachable from no bound signature other than
+// this trampoline, and without a stub the generated import doesn't resolve.
+string virtD(string manifest, string dpkg, out string[] imps) {
     auto head = manifest ~ "\nmodule " ~ dpkg ~ ".qtvirt;\n";
     if (!TRAMPS.length) return head;
     bool[string] impSet;
@@ -2908,7 +2911,8 @@ string virtD(string manifest, string dpkg) {
     }
     auto cbAliases = "alias __QtdSlotCb = extern (C) void function(void*, int, void**) nothrow;\n"
         ~ "alias __QtdPropCb = extern (C) void function(void*, int, int, void**) nothrow;\n";
-    auto impLines = impSet.byKey.array.sort.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+    imps = impSet.byKey.array.sort.array;
+    auto impLines = imps.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
     return head ~ impLines ~ "\n" ~ cbAliases ~ aliases ~ "extern (C) nothrow {\n" ~ decls ~ "}\n" ~ facts;
 }
 

@@ -49,7 +49,13 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
         return 1;
     }
     QObject *obj = comp.create();
-    if (!obj) { std::fprintf(stderr, "qmlvalues: create() failed for %s\n", argv[1]); return 1; }
+    if (!obj) {
+        // create() can fail AFTER a clean compile (a type that refuses to instantiate, a failing
+        // required property, ...); its reason is only in the component's errors, so print them.
+        std::fprintf(stderr, "qmlvalues: create() failed for %s\n", argv[1]);
+        for (const auto &e : comp.errors()) std::fprintf(stderr, "  %s\n", qPrintable(e.toString()));
+        return 1;
+    }
 
     // Args after the .qml: `name=value` mutations, and an optional `--props <file>` listing the
     // exact property PATHS to dump (one per line). With --props we read those (incl. base C++

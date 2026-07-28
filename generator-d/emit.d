@@ -67,8 +67,11 @@ void main(string[] args) {
     auto cflags = execute(["pkg-config", "--cflags"] ~ pkgs).output.split;
     auto res = execute(["clang", "-print-resource-dir"]).output.strip;
     string[] extraI;
+    // Relative include paths resolve against the SPEC (like out_dir), not the cwd: gend is invoked
+    // from the repo root by the build and from generator/ by hand, and both must find the headers.
     if (auto ip = "include_paths" in spec.object)
-        foreach (p; ip.array) extraI ~= "-I" ~ p.str;
+        foreach (p; ip.array)
+            extraI ~= "-I" ~ (isAbsolute(p.str) ? p.str : buildNormalizedPath(specPath.dirName, p.str));
     // Make Qt signals detectable: Q_SIGNALS expands to
     // `public QT_ANNOTATE_ACCESS_SPECIFIER(qt_signal)`, so defining the annotation
     // hook tags every signal method with an AnnotateAttr("qt_signal") (shiboken's way).
@@ -138,7 +141,15 @@ void main(string[] args) {
                 includes ~= decl;
             }
             else if (discMod.length) includes ~= discMod;
-            else includes ~= decl;   // headers-mode: your own class -> the header it's defined in
+            // headers-mode: your own class -> the header it's defined in. Prefer the name AS
+            // LISTED in the spec: `decl` is the path libclang resolved, which for a relative
+            // include_path is relative to the GENERATOR's cwd and so unusable from the build's.
+            // The listed name resolves against the include_path, which every consumer is given.
+            else {
+                string inc = decl;
+                foreach (h; headers) if (decl.endsWith(h)) { inc = h; break; }
+                includes ~= inc;
+            }
             targets ~= cur;
         }
         writefln("discovered %d classes%s%s", targets.length,
@@ -313,7 +324,9 @@ void main(string[] args) {
         if (MICASTS.length) cxxGen["qtmi"] = true;
         // Subclass trampolines — a C++ trampoline per spec-listed class whose virtuals fwd to D.
         std.file.write(buildPath(outDir, "qtvirt.cpp"), virtCpp(manifest, sigInc));
-        std.file.write(buildPath(dsub, "qtvirt.d"), virtD(manifest, dpkg));
+        string[] virtImps;
+        std.file.write(buildPath(dsub, "qtvirt.d"), virtD(manifest, dpkg, virtImps));
+        foreach (r; virtImps) cxxRef[r] = true;   // a trampoline-only type still needs its stub
         if (TRAMPS.length) cxxGen["qtvirt"] = true;
         // Out-of-line copy-ctor/dtor (gap: std:: by value) + inline-ctor shims (gap: no symbol).
         std.file.write(buildPath(outDir, "qtdctor.cpp"), ctorCpp(manifest, sigInc));

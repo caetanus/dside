@@ -1,0 +1,21 @@
+{
+  "qt_version": "6.11",
+  "pkg_config": "Qt6Qml Qt6Core",
+  "out_dir": "../generated/qt-6.11/cxx-corpustypes",
+  "d_package": "qt.corpustypes",
+  "abi": "cxx",
+  "headers": [
+    "typewithmanyproperties.h",
+    "typewithproperties.h",
+    "typewithsignal.h",
+    "typewithspecialproperties.h"
+  ],
+  "source_filter": "tests/qmltc/cpptypes",
+  "include_paths": ["../tests/qmltc/cpptypes"],
+  "subclass": [
+    "TypeWithManyProperties",
+    "TypeWithProperties",
+    "TypeWithSignal",
+    "TypeWithSpecialProperties"
+  ]
+}

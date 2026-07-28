@@ -106,6 +106,7 @@ Build reggaeBuild() {
     all ~= qmlTypesCheckTargets(root, qml);   // CTFE .qmltypes (Qt-agnostic), validated by Qt's reader
     all ~= qmltcTargets(root, qml, buildPath(root, "tests", "qmltc", "corpus"), "");   // qmltc-d: .qml -> D vs oracle
     all ~= qmltcDTypeTargets(root, qml);   // .qml rooted in an APP-DEFINED type written in D
+    all ~= qmltcCppTypeTargets(root, qml); // ... and in C++ (Qt's own corpus types, vendored)
     // (b) QtQuick: a bound-type root (Item -> QQuickItem) compiled to a D subclass, diffed vs the engine.
     if (execute(["pkg-config", "--exists", "Qt6Quick"]).status == 0) {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
@@ -388,7 +389,10 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ " -L-lstdc++";
-            auto app = Target(appBin, link, [gen, appHelper, qtdBindLib(bind, dc), bind.shims]);
+            // Guarded: with a `<Name>.set` sidecar TWO phony targets depend on this binary, and a
+            // concurrent re-schedule links over it while the other target is running it.
+            auto app = Target(appBin, guarded(appBin ~ ".lock", link.replace("$out", appBin), appBin, [genD]),
+                              [gen, appHelper, qtdBindLib(bind, dc), bind.shims]);
             // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
             //    The oracle dumps the EXACT property paths qmltc-d emits (`--labels` -> a .props
             //    file, `--props` to the oracle), so base C++ properties the .qml set are compared too.
@@ -544,7 +548,8 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > $out",
                 [tool, Target(qmlFile), types]);
             auto appBin = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ "_check");
-            auto app = Target(appBin, dc ~ " -of=$out " ~ genD ~ " " ~ appD ~ dcLink,
+            auto appCmd = dc ~ " -of=" ~ appBin ~ " " ~ genD ~ " " ~ appD ~ dcLink;
+            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin, [genD]),
                 [gd, Target(appD), qtdBindLib(bind, dc), bind.shims]);
             // 4) run both over the SAME .qml and diff (same --labels/--props protocol as the corpus).
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
@@ -559,6 +564,119 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             if (exists(setFile)) {
                 auto setArgs = readText(setFile).strip;
                 ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc,
+                    "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
+                    ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set'",
+                    [app, oracle, tool]);
+            }
+        }
+    }
+    return ts;
+}
+
+// qmltc-d against APP-DEFINED QML TYPES WRITTEN IN C++ — the same thing the D-type backend does,
+// with the type's language swapped, which is the whole point: QML resolves a type through its
+// meta-object. The types in tests/qmltc/cpptypes/ are VERBATIM copies from Qt's own qmltc corpus
+// (ordinary Q_OBJECT + QML_ELEMENT + Q_PROPERTY classes), vendored like tests/uic/corpus/.
+//
+// The pipeline over them is Qt's OWN, not something we reimplement:
+//   moc --output-json  ->  qmltyperegistrar  ->  { registration .cpp , .qmltypes }
+// The registration .cpp is linked into the ORACLE (so the engine can instantiate the types); the
+// .qmltypes is the registry qmltc-d reads (`--cpptypes`), giving it the base property TYPES and
+// NOTIFY names instead of inferring them from the assigned literal.
+//
+// The COMPILED side reuses the bound-subclass backend already proven on QtQuick: the generator
+// binds these headers (spec_cxx_corpustypes.json, headers-mode — the generator's primary use case)
+// and emits a trampoline per type, so the generated D class subclasses the C++ type and drives
+// base properties through the meta-object.
+Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
+    if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
+    auto dir = buildPath(root, "tests", "qmltc", "cpptypes");
+    auto moc = "/usr/lib/qt6/moc", reg = "/usr/lib/qt6/qmltyperegistrar";
+    if (!exists(dir) || !exists(moc) || !exists(reg)) return [];
+    auto bind = qtdBinding(root, "spec_cxx_corpustypes.json", ["Qt6Qml"]);
+    auto here = buildPath(root, "tests", "qmltc");
+    auto tool = qmltcTool(root, qmlBind);          // one qmltc-d, shared with the other suites
+    auto toolBin = buildPath(qmlBind.bdir, "qmltc-d");
+    auto cflags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
+    auto headers = ["typewithmanyproperties", "typewithproperties", "typewithsignal",
+                    "typewithspecialproperties"];
+
+    // 1) Qt's moc over each vendored header -> moc_<h>.cpp + moc_<h>.cpp.json.
+    Target[] mocObjs;
+    string[] jsons;
+    foreach (h; headers) {
+        auto hdr = buildPath(dir, h ~ ".h");
+        auto mocCpp = buildPath(bind.bdir, "moc_" ~ h ~ ".cpp");
+        auto j = mocCpp ~ ".json";
+        jsons ~= j;
+        // moc writes the .json as a SIDE EFFECT of -o, so the .cpp is the tracked output.
+        auto m = Target(mocCpp, guarded(mocCpp ~ ".lock",
+            moc ~ " " ~ pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " --output-json -o " ~ mocCpp ~ " " ~ hdr,
+            mocCpp, [hdr]), [Target(hdr)]);
+        mocObjs ~= Target(buildPath(bind.bdir, "moc_" ~ h ~ ".o"),
+            "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ mocCpp ~ " -o $out", [m]);
+    }
+    // 2) qmltyperegistrar over the moc JSON -> the registration .cpp AND the .qmltypes registry.
+    auto regCpp = buildPath(bind.bdir, "qmltyperegistrations.cpp");
+    auto typesFile = buildPath(bind.bdir, "QmltcTests.qmltypes");
+    auto regT = Target(regCpp, guarded(regCpp ~ ".lock",
+        reg ~ " --generate-qmltypes=" ~ typesFile ~ " --import-name=QmltcTests"
+        ~ " --major-version=1 --minor-version=0 -o " ~ regCpp ~ " " ~ jsons.join(" "),
+        regCpp, jsons), mocObjs);   // deps on the moc targets: the JSON must exist first
+    auto regObj = Target(buildPath(bind.bdir, "qmltyperegistrations.o"),
+        "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ regCpp ~ " -o $out", [regT]);
+    auto implObj = Target(buildPath(bind.bdir, "typewithproperties.o"),
+        "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ buildPath(dir, "typewithproperties.cpp") ~ " -o $out",
+        [Target(buildPath(dir, "typewithproperties.cpp"))]);
+    auto typesLib = buildPath(bind.bdir, "libcorpustypes.a");
+    auto lib = Target(typesLib, "ar rcs $out $in", mocObjs ~ [regObj, implObj]);
+
+    // 3) the ORACLE: the stock C++ oracle linked against the types. --whole-archive is REQUIRED —
+    //    the module registration is a static QQmlModuleRegistration nothing references, so a
+    //    normal archive link drops the object and the engine reports "module not installed".
+    auto oracleBin = buildPath(bind.bdir, "qmlvalues-cpp");
+    auto oracleCpp = buildPath(here, "qtd_qmlvalues.cpp");
+    auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
+        "clang++ " ~ cflags ~ " -o " ~ oracleBin ~ " " ~ oracleCpp
+        ~ " -Wl,--whole-archive " ~ typesLib ~ " -Wl,--no-whole-archive "
+        ~ execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip,
+        oracleBin, [oracleCpp]), [Target(oracleCpp), lib]);
+
+    // A bound root sets properties before any QGuiApplication exists; the helper provides one.
+    auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
+    auto appHelper = Target(appObj, guarded(appObj ~ ".lock",
+        "clang++ " ~ cflags ~ " -c " ~ buildPath(here, "qtd_qmltc_app.cpp") ~ " -o " ~ appObj,
+        appObj, [buildPath(here, "qtd_qmltc_app.cpp")]), [Target(buildPath(here, "qtd_qmltc_app.cpp"))]);
+
+    Target[] ts;
+    auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
+    corpus.sort();
+    foreach (dc; DCS) {
+        foreach (qmlFile; corpus) {
+            auto name = baseName(qmlFile).stripExtension;
+            auto arg = " --cpptypes " ~ typesFile ~ " qt.corpustypes";
+            auto genD = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ ".d");
+            auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ arg ~ " > $out",
+                [tool, Target(qmlFile), regT]);
+            auto appBin = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ "_check");
+            auto appCmd =
+                dc ~ " -of=" ~ appBin ~ " " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
+                ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
+                ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L=" ~ typesLib ~ " -L--end-group "
+                ~ pkgLibs(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -L-lstdc++";
+            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin, [genD]),
+                [gd, appHelper, lib, qtdBindLib(bind, dc), bind.shims]);
+            auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
+            auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ arg ~ " > " ~ props ~ " 2>/dev/null; ";
+            ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc,
+                "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
+                ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
+            auto setFile = buildPath(dir, name ~ ".set");
+            if (exists(setFile)) {
+                auto setArgs = readText(setFile).strip;
+                ts ~= Target.phony("qmltcc-" ~ name ~ "-set-" ~ dc,
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
                     ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set'",

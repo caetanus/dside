@@ -169,6 +169,44 @@ notify signal*.
 
 Two real runtime bugs surfaced and were fixed here — see "Bugs this found" below.
 
+### Compiling a .qml against a C++ type from Qt's own corpus (DONE)
+
+The same thing with the type's language swapped — targets `qmltcc-<Name>-<dc>` over
+`tests/qmltc/cpptypes/`, green on ldc2 and dmd. The types there are **verbatim copies from Qt's
+qmltc corpus** (`TypeWithManyProperties`, `TypeWithProperties`, `TypeWithSpecialProperties`, …),
+vendored the way `tests/uic/corpus/` vendors Qt's `.ui` files. We wrote none of them.
+
+The pipeline over them is **Qt's own**, not a reimplementation:
+
+```
+moc --output-json  ->  qmltyperegistrar  ->  { registration .cpp , .qmltypes }
+```
+
+The registration `.cpp` goes into the ORACLE so the engine can instantiate the types (linked with
+`--whole-archive`: the registration is a static `QQmlModuleRegistration` nothing references, and a
+plain archive link drops it — the engine then reports *module not installed*). The `.qmltypes` is
+the registry qmltc-d reads via `--cpptypes`. It is the same registry code path as `--dtypes`; only
+the backend differs:
+
+| registry says | backend | base property access |
+|---|---|---|
+| a D type | `@QObject class X : Base` — plain D inheritance | inherited field, direct |
+| a C++ type | `mixin QtdWidget!Base` — the generator's trampoline | through the meta-object |
+
+The binding for those headers is `spec_cxx_corpustypes.json` in **headers-mode**, which is the
+generator's primary use case, not a special mode (`spec_userlib.json` is the same shape).
+
+Two things the registry buys that literal inference cannot: the declared **type** of a base
+property, and its real **notify signature**. `TypeWithProperties::d` notifies with
+`dSignal(QString,int)` — connecting it as `dSignal()` matches nothing and leaves the binding
+silently dead. The `.set` differential caught exactly that.
+
+**Honest corpus effect.** Over the 42 pure-QtQml corpus files, the count that fails with *"root
+type is not a bound Qt type"* drops **9 → 7**. `propertyAliasAttributes` and `specialProperties`
+now fail on a FEATURE instead (`property alias` onto a base property) — the language barrier is
+gone for them. The remaining 7 root in types we have not vendored yet (`QmlGroupPropertyTestType`,
+`TypeWithExtension`, …); reaching them is adding headers to the spec, not writing code.
+
 Nothing here is silently dropped: any member or binding qmltc-d can't compile is reported on stderr
 and the file exits `3` (PARTIAL), never a wrong emission.
 
