@@ -2,10 +2,12 @@
 # with distro Qt5 AND Qt6, and enforces the Qt-version-INDEPENDENT gates. The manifest gates are
 # ADVISORY here (see below) — an honest limitation, not a hidden one.
 #
-# The default `./build` (full matrix) does NOT run the manifest gates: they are OPTIONAL top-level
-# targets in the reggae graph (reachable by name, excluded from defaultTargets), so the mandatory
-# matrix step can't be forced to fail on baseline drift. The manifest gates are then run in a
-# SEPARATE advisory step (continue-on-error). This is the r8 #1 fix — the aggregators are split.
+# Whether the default `./build` runs the manifest gates is decided by the Qt it finds: the gates are
+# MANDATORY when the installed Qt minor equals the one the baselines were recorded against, and
+# OPTIONAL (reachable by name, excluded from defaultTargets) otherwise. On a runner whose distro Qt
+# is a different minor they therefore stay out of the mandatory matrix step and are run by the
+# SEPARATE advisory step below (continue-on-error) — the r8 #1 split, now conditioned on the actual
+# version instead of disabling the gate everywhere including the machines it is valid on.
 #
 # STILL a scaffold, NOT proven green on a real runner. Two things are genuinely unresolved and
 # stated openly:
