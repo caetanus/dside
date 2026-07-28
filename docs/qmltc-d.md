@@ -669,3 +669,44 @@ Original analysis (layers, each uncovered by fixing the one before it):
      not emitted for these types;
   4. for States specifically, a state subsystem: PropertyChanges holds OVERRIDES applied
      to a target on entry and reverted on exit, not properties of its own.
+
+
+## Measured against Qt's own shipped QML (944 documents)
+
+Not a corpus I wrote, so it measures what QML demands rather than what I implemented.
+
+| | complete | partial | refused |
+|---|---|---|---|
+| qmltc-d over all 944 | 4 | 940 | 0 |
+
+"Partial" means it generates code but SKIPS members. For calibration, Qt's own qmltc over the
+first 120 of the same files: 66 compiled, 51 refused (it will not resolve those modules
+standalone) — it takes less, but what it takes it takes whole.
+
+Causes, aggregated over the first 400 documents (~4500 skips):
+
+| count | cause |
+|---|---|
+| 583 | property with an unsupported binding/type |
+| 241 | `alias` whose target is unsupported |
+| 187 | root type not a bound Qt type |
+| 57  | unsupported default child |
+
+### Binding more QtQuick types does NOT move this — measured, not assumed
+
+The obvious read of "187 unbound root types" is that the fix is more types. It is not. I bound
+84 more QtQuick types (qmlmap 40 -> 124, every exported QQuick* class with a findable header) and
+re-ran the same 944: complete went from 4 to **5**. The documents that were failing are mostly
+QtQuick.**Controls**, Quick3D and WebEngine — different modules, not QtQuick — and the ones that
+did advance simply reached their NEXT unsupported member (visible skips rose from 172 to 583 as
+documents got further in before stopping).
+
+That batch was reverted. It was not free: it uncovered four generator problems, each hidden
+behind the one before it — a non-virtual redeclaration colliding with D's `final` (fixable, and
+the fix must key on the CANONICAL signature or it eats legitimate overloads like
+QGridLayout::addWidget); a primary base Qt does not export; the same for a secondary (MI) base;
+and the unexported class still being emitted as a pending base. Landing it would have meant
+carrying four half-finished generator changes for +1 document out of 944.
+
+The honest conclusion: the remaining distance is `alias` support and the Controls/Templates
+module, not more QtQuick element types.
