@@ -114,6 +114,13 @@ Build reggaeBuild() {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
     }
+    // QtQuick.Templates — the C++ side of QtQuick.Controls, and the vocabulary real QML documents
+    // are written against (measured: Controls is what most of Qt's own .qml needs).
+    if (execute(["pkg-config", "--exists", "Qt6QuickTemplates2"]).status == 0) {
+        auto ctrl = qtdBinding(root, "spec_cxx_controls.json",
+                               ["Qt6QuickTemplates2", "Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
+        all ~= qmltcTargets(root, ctrl, buildPath(root, "tests", "qmltc", "controls"), "c");
+    }
     if (haveQt5())
         qmlSuite(qtdBinding(root, "spec_cxx_qml_qt5.json", ["Qt5Qml", "Qt5Gui"]), "-qt5");
 

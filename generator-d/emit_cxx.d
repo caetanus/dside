@@ -2242,7 +2242,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
 string[] nestedEnumLines(CXCursor cur) {
     string[] L;
     foreach (c; children(cur))
-        if (c.kind == CXCursor_EnumDecl && isPublic(c)) {
+        // PROTECTED nested enums are emitted too. A protected virtual can take one
+        // (QQuickAbstractButton::buttonChange(ButtonChange)), and the trampoline overriding it
+        // needs the type BY NAME — without it the generated callback alias fails to compile,
+        // pointing at a line with no hint that the enum was filtered out here.
+        if (c.kind == CXCursor_EnumDecl
+                && (isPublic(c) || clang_getCXXAccessSpecifier(c) == CX_CXXProtected)) {
             auto en = clang_getCursorSpelling(c).str;
             // anonymous enum: empty spelling, or libclang's synthetic "(unnamed enum at ...)".
             bool anon = !en.length || en.canFind('(');
@@ -2268,7 +2273,12 @@ string[] nestedEnumLines(CXCursor cur) {
 string[] nestedEnumAliases(CXCursor cur, string name) {
     string[] al; bool[string] seen;
     foreach (c; children(cur))
-        if (c.kind == CXCursor_EnumDecl && isPublic(c)) {
+        // PROTECTED nested enums are emitted too. A protected virtual can take one
+        // (QQuickAbstractButton::buttonChange(ButtonChange)), and the trampoline overriding it
+        // needs the type BY NAME — without it the generated callback alias fails to compile,
+        // pointing at a line with no hint that the enum was filtered out here.
+        if (c.kind == CXCursor_EnumDecl
+                && (isPublic(c) || clang_getCXXAccessSpecifier(c) == CX_CXXProtected)) {
             auto en = clang_getCursorSpelling(c).str;
             bool anon = !en.length || en.canFind('(');   // anon values are bare members: Class.Value
             foreach (ch; children(c))
