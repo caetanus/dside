@@ -2191,6 +2191,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // (Item -> QQuickItem) and compiled as a nested subclass in its own field, built in __qmltcWire.
     // For the differential we don't need to reparent (the D dump reads the field directly; the
     // oracle reads childItems()[i]) — only the declaration order must match.
+    // The loop below has a local `childType` (the child's QML type NAME) that shadows the map of
+    // the same name, so the map is reached through this reference.
+    auto &childTypeMap = childType;
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
         std::string childType = od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : "";
@@ -2250,6 +2253,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n";
+        // A BARE child with an id is just as addressable as one bound to a property:
+        // `property alias source: dps.source` where dps is a default child is the dominant shape
+        // in real QML (241 of the alias skips measured against Qt's own .qml). Registering its
+        // members here is what lets an alias — or any binding — reach them.
+        if (!kid.id.empty()) {
+            for (auto &sc : kid.scalars) {
+                childTypeMap[kid.id + "." + sc.first] = sc.second;
+                childAccess[kid.id + "." + sc.first] = field + "." + sc.first;
+            }
+            for (auto &n : kid.notified) childNotified[kid.id + "." + n] = true;
+        }
         node.defaultKids.push_back({field, kid});
         node.defaultKidLabel = defaultKidLabel;
         node.defaultKidIsList = defaultKidIsList;
