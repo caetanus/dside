@@ -121,6 +121,7 @@ struct DType {
     // QML_EXTENDED: the class whose members the engine grafts onto this type. We don't build that
     // object, so those members (and only those) are unusable — see the fold-in below.
     std::string extensionClass;
+    std::string attachedClass;                            // registry `attachedType:` (QML_ATTACHED)
     std::string prototype;                                // registry `prototype:` (the base class)
     // Object-valued properties: `Q_PROPERTY(TestTypeGrouped *group ...)`. QML addresses their
     // members with dotted syntax (`group.count: 42`) — a GROUPED property. Maps property -> the
@@ -128,6 +129,7 @@ struct DType {
     std::map<std::string, std::string> groupClass;
 };
 static std::map<std::string, DType> g_dTypes;             // QML element name -> registered type
+static std::string g_qmlUri;                             // the module those types are registered under
 
 // C++ type spellings as they appear in a .qmltypes -> the D type qmltc-d compiles against.
 static const char *dtypeOfCxx(const std::string &t) {
@@ -175,10 +177,12 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
         auto *comp = cast<UiObjectDefinition *>(m->member);
         if (!comp || qname(comp->qualifiedTypeNameId) != "Component") continue;
         DType dt;
+        std::string uri;
         dt.bound = bound;
         dt.dClass = qmltypesField(comp->initializer, "name");
         dt.prototype = qmltypesField(comp->initializer, "prototype");
         dt.extensionClass = qmltypesField(comp->initializer, "extension");
+        dt.attachedClass = qmltypesField(comp->initializer, "attachedType");
         std::string qmlName = dt.dClass;               // fallback if `exports` is absent
         for (auto *c = comp->initializer ? comp->initializer->members : nullptr; c; c = c->next) {
             // exports: ["AppTypes/Backend 1.0"] -> the element name a .qml writes is `Backend`.
@@ -189,8 +193,10 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
                             if (auto *sl = cast<StringLiteral *>(arr->elements->element->initializer)) {
                                 std::string e = qs(sl->value.toString());
                                 auto slash = e.find('/'), space = e.find(' ');
-                                if (slash != std::string::npos)
+                                if (slash != std::string::npos) {
                                     qmlName = e.substr(slash + 1, (space == std::string::npos ? e.size() : space) - slash - 1);
+                                    uri = e.substr(0, slash);   // the module these types live in
+                                }
                             }
                 continue;
             }
@@ -233,6 +239,7 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             if (!rst.empty()) dt.propReset[pn] = rst;
         }
         if (dt.dClass.empty()) continue;
+        if (g_qmlUri.empty() && !uri.empty()) g_qmlUri = uri;
         std::string low = dt.dClass;
         for (auto &ch : low) ch = (char)std::tolower((unsigned char)ch);
         dt.dModule = bound ? (std::string(dScope) + "." + low) : dScope;
@@ -322,6 +329,11 @@ static std::map<std::string, std::string> g_baseReset;
 // reachable. Empty unless the base declares object-valued properties.
 struct DType;
 static std::map<std::string, const DType *> g_groups;
+
+// QML types (by element name) whose ATTACHED object this document addresses — `TestType.count`.
+// Maps the element name to the registry entry of its attached class, whose members type the
+// accesses. The attached object itself is fetched at runtime by name, so nothing is hard-coded.
+static std::map<std::string, const DType *> g_attached;
 
 // D type of each in-scope name (declared property, base property, function param, local). Lets
 // compileExpr decide COERCIONS — notably JS `+` string concatenation, where QML converts the
@@ -447,6 +459,30 @@ static std::string groupNameOf(ExpressionNode *e) {
     return "";
 }
 
+// `TestType` or `root.TestType` -> the element name whose attached object is meant.
+static std::string attachedNameOf(ExpressionNode *e) {
+    if (auto *id = cast<IdentifierExpression *>(e))
+        return g_attached.count(qs(id->name.toString())) ? qs(id->name.toString()) : "";
+    if (auto *fm = cast<FieldMemberExpression *>(e))
+        if (auto *b = cast<IdentifierExpression *>(fm->base);
+                b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                && g_attached.count(qs(fm->name.toString())))
+            return qs(fm->name.toString());
+    return "";
+}
+// Reaching an attached object goes through Qt's QML type REGISTRY, and a module's registration is
+// lazy — nothing materialises it without an engine importing the module. A compiled document has
+// no engine, so it must call the module's own registration function itself. qmltyperegistrar
+// generates it as `qml_register_types_<uri>`; note this is only needed for attached properties,
+// everything else reaches its type directly.
+static bool g_needsModuleRegistration;
+// True while compiling a root whose members were merged in from a local `.qml` base type.
+static bool g_localMerged;
+static std::string attachedExpr(const std::string &typeName) {
+    g_needsModuleRegistration = true;
+    return "attachedObj(this, \"" + g_qmlUri + "\", \"" + typeName + "\")";
+}
+
 // `x: undefined` in QML RESETS the property — it calls the RESET method, it does not assign a
 // value. Emits that call for `prop` on `obj`, or returns false when the property has no resetter
 // (in which case assigning undefined is not something we can reproduce).
@@ -491,6 +527,19 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (base && qs(base->name.toString()) == g_className) {
             auto it = g_enumMember.find(qs(fm->name.toString()));
             if (it != g_enumMember.end()) { out = it->second + "." + qs(fm->name.toString()); return true; }
+        }
+        // `Type.member` — a member of the object ATTACHED to us by `Type`. The attached object is
+        // fetched by type name at runtime; its members are ordinary properties on it.
+        {
+            std::string an = attachedNameOf(fm->base);
+            if (!an.empty()) {
+                auto m = g_attached[an]->propType.find(qs(fm->name.toString()));
+                if (m == g_attached[an]->propType.end()) return false;
+                const char *rd = m->second == "string" ? "propStr(" : m->second == "double" ? "propDouble("
+                               : m->second == "bool" ? "propBool(" : "propInt(";
+                out = rd + attachedExpr(an) + ", \"" + qs(fm->name.toString()) + "\")";
+                return true;
+            }
         }
         // `group.member` -> a member of a GROUPED property: the group is a real child object
         // reached through the meta-object, its members are ordinary properties on it.
@@ -662,6 +711,10 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
         // connects the group's own notify rather than looking for a property of this class.
         else if (base && g_groups.count(qs(base->name.toString())))
             ids.push_back(qs(base->name.toString()) + "." + qs(fm->name.toString()));
+        // likewise for a member of an ATTACHED object (`TestType.attachedCount`, possibly written
+        // through the object's own id).
+        else if (auto an = attachedNameOf(fm->base); !an.empty())
+            ids.push_back(an + "." + qs(fm->name.toString()));
         else if (base && qs(base->name.toString()) == g_className && g_enumMember.count(qs(fm->name.toString()))) { /* enum member: constant, no dep */ }
         else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
         return;
@@ -867,6 +920,42 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
     }
     auto *es = cast<ExpressionStatement *>(st);
     if (!es) return false;
+    // `<selfId>.prop = <expr>` — the object's own property, written through its id.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+        if (auto *fm = cast<FieldMemberExpression *>(bin->left))
+            if (auto *b = cast<IdentifierExpression *>(fm->base);
+                    b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                    && attachedNameOf(fm->base).empty() && groupNameOf(fm->base).empty()) {
+                std::string nm = qs(fm->name.toString()), val;
+                auto ty = ptype.find(nm) != ptype.end() ? ptype.at(nm)
+                        : (g_propType.count(nm) ? g_propType[nm] : "");
+                if (ty.empty() || !compileExpr(bin->right, QString::fromStdString(ty), val)) return false;
+                std::string lv;
+                if (!readName(nm, lv)) return false;
+                body += "        " + lv + " = " + val + ";\n";
+                return true;
+            }
+    // `Type.member = <expr>` / `Type.member++` / `Type.<signal>()` on an ATTACHED object.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+        if (auto *fm = cast<FieldMemberExpression *>(bin->left)) {
+            std::string an = attachedNameOf(fm->base);
+            if (!an.empty()) {
+                std::string mem = qs(fm->name.toString()), val;
+                auto mt = g_attached[an]->propType.find(mem);
+                if (mt == g_attached[an]->propType.end()
+                        || !compileExpr(bin->right, QString::fromStdString(mt->second), val)) return false;
+                body += "        setProp(" + attachedExpr(an) + ", \"" + mem + "\", " + val + ");\n";
+                return true;
+            }
+        }
+    if (auto *call = cast<CallExpression *>(es->expression); call && !call->arguments)
+        if (auto *fm = cast<FieldMemberExpression *>(call->base)) {
+            std::string an = attachedNameOf(fm->base);
+            if (!an.empty() && g_attached[an]->signalSig.count(qs(fm->name.toString()))) {
+                body += "        invoke0(" + attachedExpr(an) + ", \"" + qs(fm->name.toString()) + "\");\n";
+                return true;
+            }
+        }
     // `group.<signal>()` — emit a signal that belongs to the GROUP object, not to this one.
     if (auto *call = cast<CallExpression *>(es->expression); call && !call->arguments)
         if (auto *fm = cast<FieldMemberExpression *>(call->base))
@@ -922,6 +1011,18 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         else if (auto *p = cast<PreDecrementExpression *>(es->expression)) { inner = p->expression; op = "--"; }
         else if (auto *p = cast<PostDecrementExpression *>(es->expression)) { inner = p->base; op = "--"; }
         if (inner) {
+            // `Type.member++` on an attached object: same read-modify-write shape.
+            if (auto *fm = cast<FieldMemberExpression *>(inner)) {
+                std::string an = attachedNameOf(fm->base);
+                if (!an.empty()) {
+                    std::string mem = qs(fm->name.toString()), rd;
+                    auto mt = g_attached[an]->propType.find(mem);
+                    if (mt == g_attached[an]->propType.end() || !compileExpr(inner, "", rd)) return false;
+                    body += "        setProp(" + attachedExpr(an) + ", \"" + mem + "\", cast(" + mt->second
+                          + ")(" + rd + (op[0] == '+' ? " + 1" : " - 1") + "));\n";
+                    return true;
+                }
+            }
             // `group.member++` has no D lvalue — it is a read-modify-write through the group.
             if (auto *fm = cast<FieldMemberExpression *>(inner))
                 if (auto *b = cast<IdentifierExpression *>(fm->base)) {
@@ -1033,6 +1134,7 @@ struct ObjNode {
     std::vector<std::pair<std::string, std::string>> scalars;   // custom @Property (name, dtype)
     std::vector<std::pair<std::string, std::string>> baseProps; // base C++ Q_PROPERTYs set (name, dtype)
     std::vector<std::pair<std::string, std::string>> groupProps;// grouped members set ("group.member", dtype)
+    std::vector<std::pair<std::string, std::string>> attachedProps;// attached members set ("Type.member", dtype)
     std::vector<std::string> notified;                          // props that carry a NOTIFY signal
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
     // Children attached to a member of a GROUPED property. Unlike `kids`, the D FIELD and the QML
@@ -1108,6 +1210,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     if (dBase) for (auto &g : dBase->groupClass)
         for (auto &kv : g_dTypes)
             if (kv.second.dClass == g.second) { g_groups[g.first] = &kv.second; break; }
+    auto savedAttached = g_attached;
+    g_attached.clear();
+    // Any registered type that declares QML_ATTACHED can be addressed as `Type.member` from any
+    // object, so the whole registry is in scope — not just this object's base.
+    for (auto &kv : g_dTypes) {
+        if (kv.second.attachedClass.empty()) continue;
+        for (auto &a : g_dTypes)
+            if (a.second.dClass == kv.second.attachedClass) { g_attached[kv.first] = &a.second; break; }
+    }
     g_className = cls;
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *en = cast<UiEnumDeclaration *>(m->member))
@@ -1215,12 +1326,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
+    std::vector<std::pair<std::string, UiObjectInitializer *>> attachedKidBindings; // ("Type.member", init)
     std::vector<UiObjectDefinition *> defaultKids;                               // bare `Type { }` children
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
     std::vector<std::pair<std::string, ExpressionNode *>> rawGroupAssigns;        // `group.member: expr`
     std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
+    std::vector<std::pair<std::string, ExpressionNode *>> rawAttachedAssigns;     // `Type.member: expr`
+    std::vector<std::pair<std::string, Statement *>> rawAttachedHandlers;         // `Type.on<Sig>: body`
     std::string enumDecls, signalDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     bool hasCustomDefaultProp = false;                                           // a `default property` declared
@@ -1241,6 +1355,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 auto dot = hid.find('.');
                 std::string head = dot == std::string::npos ? "" : hid.substr(0, dot);
                 std::string tail = dot == std::string::npos ? "" : hid.substr(dot + 1);
+                // `Type.member: <expr>` / `Type.on<Sig>: body` — the ATTACHED object of `Type`.
+                if (g_attached.count(head)) {
+                    if (tail.size() > 2 && tail[0] == 'o' && tail[1] == 'n'
+                            && std::isupper((unsigned char)tail[2])) {
+                        std::string sig = tail.substr(2);
+                        sig[0] = (char)std::tolower((unsigned char)sig[0]);
+                        rawAttachedHandlers.push_back({head + "." + sig, sb->statement});
+                    } else if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+                        rawAttachedAssigns.push_back({hid, es->expression});
+                    } else { ++partial; }
+                    continue;
+                }
                 // `group.on<Signal>: <body>` — a handler on the GROUP object, not on this one.
                 if (g_groups.count(head) && tail.size() > 2 && tail[0] == 'o' && tail[1] == 'n'
                         && std::isupper((unsigned char)tail[2])) {
@@ -1288,6 +1414,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string qid = qname(ob->qualifiedId);
                 auto dot = qid.find('.');
                 if (dot != std::string::npos) {
+                    if (g_attached.count(qid.substr(0, dot))) {
+                        attachedKidBindings.push_back({qid, ob->initializer});
+                        continue;
+                    }
                     if (!g_groups.count(qid.substr(0, dot))) {
                         std::fprintf(stderr, "qmltc-d: %s: child object bound to '%s' in %s is not a grouped "
                                      "property — skipped (later phase)\n", inPath, qid.c_str(), cls.c_str());
@@ -1661,6 +1791,84 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         node.groupKidPaths.push_back(path);
     }
 
+    // A child object bound to an ATTACHED member: built in D, then attached through the attached
+    // object. Same field-vs-path split as a group child — the D field can't be the dotted path.
+    for (auto &ak : attachedKidBindings) {
+        auto dot = ak.first.find('.');
+        std::string tn = ak.first.substr(0, dot), mem = ak.first.substr(dot + 1);
+        std::string field = "_a_" + tn + "_" + mem;
+        std::string childCls = cls + "_" + tn + "_" + mem;
+        ObjNode kid = compileObject(ak.second, childCls, classes, partial, inPath);
+        childFields += "    " + childCls + " " + field + ";\n";
+        childWire += "        " + field + " = newQObject!" + childCls + "();\n";
+        childWire += "        setPropObj(" + attachedExpr(tn) + ", \"" + mem + "\", " + field + ");\n";
+        node.groupKids.push_back({field, kid});
+        node.groupKidPaths.push_back(ak.first);
+    }
+
+    // Use-site override: merging a local type's members in front of this file's can leave two
+    // assignments to the same attached member. QML semantics are last-wins, and a duplicate would
+    // also emit the same dump label twice.
+    {
+        std::vector<std::pair<std::string, ExpressionNode *>> dedup;
+        for (auto it = rawAttachedAssigns.rbegin(); it != rawAttachedAssigns.rend(); ++it) {
+            bool seen = false;
+            for (auto &d : dedup) if (d.first == it->first) { seen = true; break; }
+            if (!seen) dedup.push_back(*it);
+        }
+        std::reverse(dedup.begin(), dedup.end());
+        rawAttachedAssigns.swap(dedup);
+    }
+
+    // Attached-property assignments and handlers. The attached object is fetched by type name at
+    // runtime; from there its members and signals are ordinary ones on that object.
+    std::string attachedHandlerSlots;
+    // An attached assignment inherited from a local `.qml` BASE is not reproduced faithfully: the
+    // engine does not re-apply the base's attached bindings to the derived object's attachment
+    // (attachedPropertyDerived.qml keeps the default where the base sets 41+1). Rather than emit a
+    // plausible-but-different value, refuse the case.
+    if (g_localMerged && !rawAttachedAssigns.empty()) {
+        std::fprintf(stderr, "qmltc-d: %s: attached properties inherited from a local .qml base type in %s "
+                     "are not yet supported — skipped (later phase)\n", inPath, cls.c_str());
+        ++partial;
+        rawAttachedAssigns.clear();
+    }
+    for (auto &aa : rawAttachedAssigns) {
+        auto dot = aa.first.find('.');
+        std::string tn = aa.first.substr(0, dot), mem = aa.first.substr(dot + 1);
+        auto mt = g_attached[tn]->propType.find(mem);
+        std::string val;
+        if (mt == g_attached[tn]->propType.end()
+                || !compileExpr(aa.second, QString::fromStdString(mt->second), val)) {
+            std::fprintf(stderr, "qmltc-d: %s: attached property '%s' in %s not yet supported — skipped (later phase)\n",
+                         inPath, aa.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        baseWire += "        setProp(" + attachedExpr(tn) + ", \"" + mem + "\", " + val + ");\n";
+        node.attachedProps.push_back({aa.first, mt->second});
+    }
+    for (auto &ah : rawAttachedHandlers) {
+        auto dot = ah.first.find('.');
+        std::string tn = ah.first.substr(0, dot), sig = ah.first.substr(dot + 1);
+        auto *at = g_attached[tn];
+        Statement *bodyStmt = ah.second;
+        StatementList *fnBody = nullptr;
+        if (auto *es = cast<ExpressionStatement *>(bodyStmt))
+            if (auto *fe = es->expression->asFunctionDefinition()) fnBody = fe->body;
+        std::string hbody;
+        if (!(fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(bodyStmt, ptype, hbody))) {
+            std::fprintf(stderr, "qmltc-d: %s: handler '%s' on an attached property in %s not yet supported — skipped (later phase)\n",
+                         inPath, ah.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        auto ss = at->signalSig.find(sig);
+        std::string cppsig = ss != at->signalSig.end() ? ss->second : (sig + "()");
+        std::string slot = "__ha_" + tn + "_" + sig;
+        attachedHandlerSlots += "    @Slot void " + slot + "() {\n" + hbody + "    }\n";
+        handlerWire += "        connectMeta(" + attachedExpr(tn) + ", \"" + cppsig
+                     + "\", this, \"" + slot + "()\");\n";
+    }
+
     // Handlers ON a grouped property (`group.onCountChanged: …`): the signal belongs to the GROUP
     // object, the slot to this one. The signal's real signature comes from the group class's
     // registry entry — a NOTIFY is not necessarily a parameterless `<prop>Changed`.
@@ -1811,6 +2019,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
                     continue;
                 }
+                // `Type.member` — the notify belongs to the ATTACHED object.
+                if (auto dot = d.find('.'); dot != std::string::npos && g_attached.count(d.substr(0, dot))) {
+                    std::string tn = d.substr(0, dot), mem = d.substr(dot + 1);
+                    auto *at = g_attached[tn];
+                    auto nt = at->propNotify.find(mem);
+                    if (nt == at->propNotify.end()) continue;
+                    auto sg = at->signalSig.find(nt->second);
+                    std::string sig = sg != at->signalSig.end() ? sg->second : (nt->second + "()");
+                    wire += "        connectMeta(" + attachedExpr(tn) + ", \"" + sig
+                          + "\", this, \"__rc_" + p.name + "()\");\n";
+                    continue;
+                }
                 // `group.member` — the notify belongs to the GROUP object, and its signature comes
                 // from the group class's registry entry (a NOTIFY need not be `<prop>Changed()`).
                 if (auto dot = d.find('.'); dot != std::string::npos && g_groups.count(d.substr(0, dot))) {
@@ -1852,7 +2072,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // mixin instead (the class must not also derive from the extern(C++) declaration).
     std::string ext = (dBase && !dBase->bound) ? (" : " + dBase->dClass) : "";
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + body
-             + childFields + methods + recompute + handlerSlots + groupHandlerSlots + wire + "}\n";
+             + childFields + methods + recompute + handlerSlots + groupHandlerSlots
+             + attachedHandlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
@@ -1864,6 +2085,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_baseIsD = savedBaseIsD;
     g_baseReset = savedBaseReset;
     g_groups = savedGroups;
+    g_attached = savedAttached;
     g_scope = savedScope;
     g_propType = savedPropType;
     g_aliasRead = savedAliasRead;
@@ -1906,6 +2128,14 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
     }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
     // Group children: read through the D field, but label with the QML path the oracle walks.
+    for (auto &a : n.attachedProps) {
+        auto dot = a.first.find('.');
+        std::string tn = a.first.substr(0, dot), mem = a.first.substr(dot + 1);
+        const char *fn = (a.second == "string") ? "propStr(" : (a.second == "double") ? "propDouble("
+                       : (a.second == "bool") ? "propBool(" : "propInt(";
+        std::string aobj = "attachedObj(" + self + ", \"" + g_qmlUri + "\", \"" + tn + "\")";
+        out.push_back({lab + a.first, fn + aobj + ", \"" + mem + "\")", a.second, aobj, mem});
+    }
     for (size_t i = 0; i < n.groupKids.size(); ++i)
         collectDump(n.groupKids[i].second, acc + n.groupKids[i].first + ".",
                     lab + n.groupKidPaths[i] + ".", out);
@@ -1970,6 +2200,7 @@ int main(int argc, char **argv) {
         // A local `.qml`-defined ROOT type (e.g. `LocallyImported { ... }`): take the local
         // definition's base and MERGE this file's use-site members onto the local definition's.
         if (UiObjectDefinition *lt = loadLocalType(rootType, inPath, &rootResolvedPath)) {
+            g_localMerged = true;
             std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
             bt = boundTypeFor(ltRoot);
             rootInit = lt->initializer ? lt->initializer : root->initializer;
@@ -2034,6 +2265,14 @@ int main(int argc, char **argv) {
     std::printf("module %s;\n", qPrintable(cls));
     std::printf("import qtmoc;\nimport std.conv : to;   // JS `+` string concatenation coerces\n%s\n%s",
                 g_extraImports.c_str(), classes.c_str());
+    if (g_needsModuleRegistration) {
+        std::string sym = g_qmlUri;
+        for (auto &c : sym) if (c == '.') c = '_';
+        std::printf("// Attached properties resolve through Qt's QML type registry, whose module\n"
+                    "// registration is lazy — with no engine to import the module, the compiled\n"
+                    "// document registers it itself (qmltyperegistrar emits this function).\n"
+                    "extern(C++) void qml_register_types_%s();\n", sym.c_str());
+    }
     // A bound visual root needs a QGuiApplication before setting a property that lays out text.
     if (!bt.first.empty()) std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
 
@@ -2046,6 +2285,11 @@ int main(int argc, char **argv) {
         // A bound-type subclass is constructed with `new` (the mixin ctor builds the trampoline);
         // a fresh @QObject uses newQObject!T.
         if (!bt.first.empty()) std::printf("    qtd_qmltc_init_gui_app();\n");
+        if (g_needsModuleRegistration) {
+            std::string sym = g_qmlUri;
+            for (auto &c : sym) if (c == '.') c = '_';
+            std::printf("    qml_register_types_%s();\n", sym.c_str());
+        }
         if (!bt.first.empty()) std::printf("    auto o = new %s();\n", qPrintable(cls));
         else                   std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
         std::printf("    foreach (a; args[1 .. $]) {\n");

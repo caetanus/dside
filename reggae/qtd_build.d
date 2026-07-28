@@ -110,8 +110,12 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
             cxx ~= " -I" ~ (isAbsolute(p.str) ? p.str : buildNormalizedPath(dirName(specPath), p.str));
     // qtdmoc.cpp needs the Qt private headers; the QML registration block is compiled in only
     // when this binding actually links Qt6Qml (else it would reference QQmlPrivate with no lib).
+    // qtdmoc.cpp needs QtCore private (QMetaObjectBuilder) always, and — in a QML-enabled binding
+    // — QtQml private too: attached-property lookup goes through QQmlMetaType, which is private.
+    bool hasQml = mods.canFind("Qt6Qml") || mods.canFind("Qt5Qml");
     auto priv = mocPrivateFlags(cflags).join(" ")
-        ~ ((mods.canFind("Qt6Qml") || mods.canFind("Qt5Qml")) ? " -DQTD_ENABLE_QML" : "");
+        ~ (hasQml ? " " ~ modulePrivateFlags(pkgCflags([mods.canFind("Qt6Qml") ? "Qt6Qml" : "Qt5Qml"]), "QtQml").join(" ")
+                    ~ " -DQTD_ENABLE_QML" : "");
 
     // gend fully owns genDir: wipe it first so stale files from an earlier layout can't
     // linger (a flat qfoo.d beside the nested qt/pkg/qfoo.d would clash on the module).

@@ -5,6 +5,14 @@
 // Formatting is chosen to match D's writefln("%s", v): int as-is, bool true/false, double via a
 // minimal round-trippable form, string raw.
 #include <QGuiApplication>
+// Resolving an ATTACHED path segment (`TestType.attachedCount`) needs the QML type registry.
+// Only the app-type oracle is compiled with Qt's private include dirs; the plain one keeps
+// working without this.
+#if __has_include(<QtQml/private/qqmlmetatype_p.h>)
+#  include <QtQml/private/qqmlmetatype_p.h>
+#  include <QtQml/qqml.h>
+#  define QTD_HAVE_ATTACHED 1
+#endif
 #include <QQmlEngine>
 #include <QQmlComponent>
 #include <QMetaProperty>
@@ -62,15 +70,18 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
     // Q_PROPERTYs the QML file set, which auto-discovery misses); without it we auto-discover the
     // QML-declared properties.
     std::string propsFile;
+    QString attachedUri;
     std::vector<QString> muts;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--props" && i + 1 < argc) { propsFile = argv[++i]; continue; }
+        // The module whose types may appear as ATTACHED path segments.
+        if (a == "--attached-uri" && i + 1 < argc) { attachedUri = QString::fromUtf8(argv[++i]); continue; }
         muts.push_back(QString::fromUtf8(argv[i]));
     }
     // Walk a dotted path to the object holding the leaf property; returns null if a hop is missing.
     // A `@N` segment is the Nth default child (QObject child, declaration order).
-    auto walk = [](QObject *root, const QStringList &parts) -> QObject * {
+    auto walk = [&](QObject *root, const QStringList &parts) -> QObject * {
         QObject *cur = root;
         for (int j = 0; j < parts.size() - 1 && cur; ++j) {
             const QString &p = parts[j];
@@ -78,9 +89,23 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                 int idx = p.mid(1).toInt();
                 auto ch = cur->children();
                 cur = (idx >= 0 && idx < ch.size()) ? ch[idx] : nullptr;
-            } else {
-                cur = cur->property(p.toUtf8().constData()).value<QObject *>();
+                continue;
             }
+            QVariant v = cur->property(p.toUtf8().constData());
+            if (v.isValid()) { cur = v.value<QObject *>(); continue; }
+#ifdef QTD_HAVE_ATTACHED
+            // Not a property: it may name a TYPE whose attached object is meant
+            // (`TestType.attachedCount`). Read the one the engine already created.
+            if (!attachedUri.isEmpty()) {
+                auto t = QQmlMetaType::qmlType(p, attachedUri, QTypeRevision());
+                if (t.isValid())
+                    if (auto fn = t.attachedPropertiesFunction(nullptr)) {
+                        cur = qmlAttachedPropertiesObject(cur, fn, /*createIfMissing*/ false);
+                        continue;
+                    }
+            }
+#endif
+            cur = nullptr;
         }
         return cur;
     };

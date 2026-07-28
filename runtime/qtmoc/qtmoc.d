@@ -679,6 +679,12 @@ mixin template QtdWidget(Base) {
 
 // ---- properties (access by name via QVariant) -------------------------------
 /// Reads an int property by name (custom @Property or built-in).
+private extern(C) void* qtd_attached_obj(void*, const(char)*, const(char)*);
+/// The ATTACHED-properties object a registered QML type provides for `o` — QML's `Type.prop`.
+/// The type is resolved by NAME in Qt's registry, so no compile-time knowledge of it is needed.
+void* attachedObj(T)(T o, string uri, string typeName) {
+    return qtd_attached_obj(qobjOf(o), (uri ~ "\0").ptr, (typeName ~ "\0").ptr);
+}
 private extern(C) bool qtd_prop_reset(void*, const(char)*);
 /// Reset a property to its default (QML's `prop: undefined`). Goes through QMetaProperty::reset —
 /// a Q_PROPERTY RESET method is not a slot, so it cannot be invoked by name.

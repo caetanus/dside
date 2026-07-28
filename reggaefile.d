@@ -611,9 +611,9 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     // .hpp among them, and dropping it left its type out of the registry entirely.
     auto headers = ["typewithmanyproperties.h", "typewithproperties.h", "typewithsignal.h",
                     "typewithspecialproperties.h", "testgroupedtype.h", "typewithnamespace.h",
-                    "testprivateproperty.h", "extensiontypes.h", "singletontype.h", "hpp.hpp"];
+                    "testprivateproperty.h", "extensiontypes.h", "singletontype.h", "hpp.hpp", "testattachedtype.h"];
     auto implCpps = ["typewithproperties", "testgroupedtype", "typewithnamespace",
-                     "testprivateproperty", "extensiontypes", "singletontype"];
+                     "testprivateproperty", "extensiontypes", "singletontype", "testattachedtype"];
 
     // 1) Qt's moc over each vendored header -> moc_<h>.cpp + moc_<h>.cpp.json.
     Target[] mocObjs;
@@ -681,7 +681,11 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
             auto appCmd =
                 dc ~ " -of=" ~ appBin ~ " " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
-                ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L=" ~ typesLib ~ " -L--end-group "
+                ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group"
+                // --whole-archive on the types: their QQmlModuleRegistration is a static object
+                // nothing references, and without it the module isn't registered in this process —
+                // so an ATTACHED object (looked up through Qt's QML type registry) comes back null.
+                ~ " -L--whole-archive -L=" ~ typesLib ~ " -L--no-whole-archive "
                 ~ pkgLibs(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -L-lstdc++";
             auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin, [genD]),
                 [gd, appHelper, lib, qtdBindLib(bind, dc), bind.shims]);
@@ -689,7 +693,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ arg ~ " > " ~ props ~ " 2>/dev/null; ";
             ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc,
                 "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
-                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b
                 ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {
@@ -697,7 +701,8 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 ts ~= Target.phony("qmltcc-" ~ name ~ "-set-" ~ dc,
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
-                    ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set'",
+                    ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b ~ ".set && diff "
+                    ~ a ~ ".set " ~ b ~ ".set'",
                     [app, oracle, tool]);
             }
         }

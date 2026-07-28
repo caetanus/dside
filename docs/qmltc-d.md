@@ -362,13 +362,37 @@ needed:
 - **Every property helper in the runtime is null-guarded.** Reaching for an object that isn't there
   must be a visible no-op, never a crash inside Qt.
 
+### Attached properties
+
+`TestType.attachedCount: 42` addresses the object `TestType` attaches to us. The type is resolved
+**by name in Qt's own QML type registry**, so nothing about it is hard-coded — and the attached
+object is fetched with **`qmlAttachedPropertiesObject`**, not the raw attach function: the raw one
+*constructs a new attachment on every call*, so writing then reading saw two different objects and
+every value came back as its default. Assignments, handlers (`TestType.onAttachedCountChanged`),
+writes/increments/emits through the attachment, children bound into an attached member, and
+reactivity of a binding that reads one are all supported. Fixture `CAttached.qml`;
+`AttachedProperty.qml` from the corpus is green.
+
+Two things this needed beyond the compiler:
+
+- **A compiled document registers the module itself.** Attached lookup goes through the QML type
+  registry, and a module's registration is *lazy* — nothing materialises it without an engine
+  importing the module. The generated code calls `qml_register_types_<uri>` (which
+  qmltyperegistrar emits) when, and only when, the document uses an attached property.
+- **The oracle learned to walk an attached path segment** (`--attached-uri`), since `TestType` is
+  not a property of anything.
+
+`attachedPropertyDerived.qml` stays PARTIAL: it inherits attached assignments from a local `.qml`
+base, and the engine does *not* re-apply the base's attached bindings to the derived object's
+attachment. Rather than emit a plausible-but-different value, that case is refused.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 22 | **22** |
+| pure-QtQml (42) | 23 | **23** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 29 | **29** |
+| **total (108)** | 30 | **30** |
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.

@@ -14,7 +14,8 @@
     "testprivateproperty.h",
     "extensiontypes.h",
     "hpp.hpp",
-    "singletontype.h"
+    "singletontype.h",
+    "testattachedtype.h"
   ],
   "source_filter": "tests/qmltc/cpptypes",
   "include_paths": [

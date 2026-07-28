@@ -26,6 +26,8 @@
 #  define QTD_HAVE_QML 1
 #  include <QtQml/qqmlprivate.h>
 #  include <QtQml/qqmllist.h>
+#  include <QtQml/private/qqmlmetatype_p.h>
+#  include <QtQml/qqml.h>
 #  include <array>
 #  include <utility>
 #endif
@@ -320,6 +322,25 @@ void* qtd_prop_get_obj(void* o, const char* n) {
     if (!o) return nullptr;
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
+#ifdef QTD_HAVE_QML
+// The ATTACHED-properties object a QML type provides for `obj` (`TestType.attachedCount` in QML).
+// The type is looked up BY NAME in Qt's own QML type registry, so this works for any registered
+// type without the D side knowing it at compile time. Returns null when the type is unknown or
+// attaches nothing — the callers null-guard, so that stays a visible no-op.
+void* qtd_attached_obj(void* obj, const char* uri, const char* typeName) {
+    if (!obj) return nullptr;
+    auto t = QQmlMetaType::qmlType(QString::fromUtf8(typeName), QString::fromUtf8(uri), QTypeRevision());
+    if (!t.isValid()) return nullptr;
+    auto fn = t.attachedPropertiesFunction(nullptr);
+    if (!fn) return nullptr;
+    // Go through qmlAttachedPropertiesObject, NOT the raw function: the raw one CONSTRUCTS an
+    // attached object every time it is called. The public entry point caches per (object, type),
+    // which is what QML semantics require — `Type.x: 1` then reading `Type.x` must see the same
+    // object. Calling the raw function gave a fresh, empty attachment on every access.
+    return qmlAttachedPropertiesObject(static_cast<QObject*>(obj), fn, /*create*/ true);
+}
+#endif
+
 // Reset a property to its default — what `prop: undefined` means in QML. It must go through
 // QMetaProperty::reset: the RESET method named by Q_PROPERTY is an ordinary member, not a slot or
 // Q_INVOKABLE, so invoking it BY NAME finds nothing and silently does nothing.
@@ -351,6 +372,7 @@ void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
 // connects signal->slot by signature (works for custom AND built-in: both have a
 // meta-object). Returns a QMetaObject::Connection* (or null if not found).
 void* qtd_connect_meta(void* s, const char* sig, void* r, const char* slot) {
+    if (!s || !r) return nullptr;   // a null side is a no-op, never a crash
     auto* so = static_cast<QObject*>(s);
     auto* ro = static_cast<QObject*>(r);
     int si = so->metaObject()->indexOfSignal(QMetaObject::normalizedSignature(sig));
