@@ -386,6 +386,18 @@ Two things this needed beyond the compiler:
 base, and the engine does *not* re-apply the base's attached bindings to the derived object's
 attachment. Rather than emit a plausible-but-different value, that case is refused.
 
+### QML singletons
+
+A sibling `.qml` with `pragma Singleton` compiles to its own D class plus a lazy one-instance
+accessor, so `SingletonFixture.integerProperty` is an ordinary read. Fixtures
+`SingletonFixture.qml` + `UsesSingleton.qml`.
+
+**`pragma Singleton` alone does not make a type usable** — QML resolves the name through a
+`qmldir` entry, and a document using an undeclared singleton does not load at all. So qmltc-d
+requires the `qmldir` declaration too. That is why `singletonUser.qml` from the corpus stays
+PARTIAL: the corpus ships no `qmldir` (Qt's own test generates one from CMake), and compiling a
+file the engine itself rejects would be compile-clean with nothing to compare against.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |

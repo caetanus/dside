@@ -1,0 +1,3 @@
+# Lets the ENGINE resolve the singleton by name (`import "."`). qmltc-d resolves it from the
+# sibling .qml directly; this file is what the oracle side needs.
+singleton SingletonFixture 1.0 SingletonFixture.qml

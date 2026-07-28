@@ -15,6 +15,7 @@
 #include <QtQml/private/qqmljsast_p.h>
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -335,6 +336,24 @@ static std::map<std::string, const DType *> g_groups;
 // accesses. The attached object itself is fetched at runtime by name, so nothing is hard-coded.
 static std::map<std::string, const DType *> g_attached;
 
+// QML singletons declared in a sibling `.qml` (`pragma Singleton`). A singleton is ONE instance
+// per document, reached through a lazy accessor — `SingletonThing.integerProperty` reads off it.
+static std::set<std::string> g_singletons;
+
+// A `pragma Singleton` type is only USABLE if a qmldir declares it — that is how QML resolves the
+// name, and a document using an undeclared one does not load at all.
+static bool singletonDeclaredInQmldir(const QString &dir, const std::string &name) {
+    QFile f(dir + "/qmldir");
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    for (const auto &line : QString::fromUtf8(f.readAll()).split(u'\n')) {
+        auto t = line.trimmed();
+        if (!t.startsWith(QLatin1String("singleton "))) continue;
+        auto parts = t.split(u' ', Qt::SkipEmptyParts);
+        if (parts.size() >= 2 && parts[1] == QString::fromStdString(name)) return true;
+    }
+    return false;
+}
+
 // D type of each in-scope name (declared property, base property, function param, local). Lets
 // compileExpr decide COERCIONS — notably JS `+` string concatenation, where QML converts the
 // non-string side and D's `~` does not. Maintained alongside g_scope.
@@ -527,6 +546,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (base && qs(base->name.toString()) == g_className) {
             auto it = g_enumMember.find(qs(fm->name.toString()));
             if (it != g_enumMember.end()) { out = it->second + "." + qs(fm->name.toString()); return true; }
+        }
+        // `Singleton.member` — a read off the singleton's one instance.
+        if (base && g_singletons.count(qs(base->name.toString()))) {
+            out = "__singleton_" + qs(base->name.toString()) + "()." + qs(fm->name.toString());
+            return true;
         }
         // `Type.member` — a member of the object ATTACHED to us by `Type`. The attached object is
         // fetched by type name at runtime; its members are ordinary properties on it.
@@ -1109,7 +1133,7 @@ static std::set<std::string> g_resolving;
 // we mirror that. Returns null (and leaves *outPath empty) if missing or already on the resolution
 // stack. Engine/Parser are leaked (process-lifetime) so the returned AST stays valid.
 static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
-                                         std::string *outPath = nullptr) {
+                                         std::string *outPath = nullptr, bool *isSingleton = nullptr) {
     QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
     QString path = dir + "/" + QString::fromStdString(typeName) + ".qml";
     std::string p = qs(path);
@@ -1126,6 +1150,12 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     if (!parser->parse()) return nullptr;
     auto *program = cast<UiProgram *>(parser->ast());
     if (!program || !program->members || !program->members->member) return nullptr;
+    if (isSingleton) {
+        *isSingleton = false;
+        for (auto *h = program->headers; h; h = h->next)
+            if (auto *pr = cast<UiPragma *>(h->headerItem))
+                if (pr->name.toString() == QLatin1String("Singleton")) { *isSingleton = true; break; }
+    }
     return cast<UiObjectDefinition *>(program->members->member);
 }
 
@@ -2238,7 +2268,40 @@ int main(int argc, char **argv) {
         g_extraImports += "import " + pkg + ".qtvirt;\n";
     }
 
-    int partial = 0;
+    // Sibling `.qml` files declaring `pragma Singleton` whose element name appears in this
+    // document: compile each as its own D class plus a lazy one-instance accessor, so
+    // `Singleton.member` is an ordinary read. Scanning the source text is enough to decide WHICH
+    // to compile — an unused one simply isn't emitted, and a used one must resolve anyway.
+    std::string singletonDecls;
+    int partialSing = 0;
+    {
+        QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
+        for (const auto &fi : QDir(dir).entryInfoList(QStringList() << "*.qml", QDir::Files)) {
+            std::string nm = qs(fi.completeBaseName());
+            if (nm == qs(cls) || code.indexOf(QString::fromStdString(nm)) < 0) continue;
+            bool sing = false;
+            std::string p2;
+            UiObjectDefinition *lt = loadLocalType(nm, inPath, &p2, &sing);
+            if (!lt || !sing) continue;
+            // `pragma Singleton` alone does not make a type resolvable: QML requires a `qmldir`
+            // declaring it. Without one the ENGINE cannot load a document that uses it, so
+            // neither should we — resolving it anyway would compile a file the engine rejects.
+            if (!singletonDeclaredInQmldir(dir, nm)) continue;
+            g_singletons.insert(nm);
+            // compile it like any local type, then a lazy accessor for its ONE instance
+            std::string sres;
+            g_resolving.insert(p2);
+            ObjNode sn = compileObject(lt->initializer, "__Sing_" + nm, sres, partialSing, inPath);
+            g_resolving.erase(p2);
+            singletonDecls += sres;
+            singletonDecls += "private __gshared __Sing_" + nm + " __sing_inst_" + nm + ";\n"
+                + "private __Sing_" + nm + " __singleton_" + nm + "() {\n"
+                + "    if (__sing_inst_" + nm + " is null) __sing_inst_" + nm
+                + " = newQObject!__Sing_" + nm + "();\n    return __sing_inst_" + nm + ";\n}\n";
+        }
+    }
+
+    int partial = partialSing;
     // An unmapped root that is neither QtObject, a resolved local `.qml` type, nor a registered
     // D type is an app-defined type we have no registry for. Treating it as a fresh @QObject would
     // silently emit values the engine doesn't have, so flag PARTIAL.
@@ -2263,8 +2326,8 @@ int main(int argc, char **argv) {
 
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
-    std::printf("import qtmoc;\nimport std.conv : to;   // JS `+` string concatenation coerces\n%s\n%s",
-                g_extraImports.c_str(), classes.c_str());
+    std::printf("import qtmoc;\nimport std.conv : to;   // JS `+` string concatenation coerces\n%s\n%s%s",
+                g_extraImports.c_str(), singletonDecls.c_str(), classes.c_str());
     if (g_needsModuleRegistration) {
         std::string sym = g_qmlUri;
         for (auto &c : sym) if (c == '.') c = '_';
