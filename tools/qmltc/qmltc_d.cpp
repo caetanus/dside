@@ -372,6 +372,14 @@ static bool singletonDeclaredInQmldir(const QString &dir, const std::string &nam
 // non-string side and D's `~` does not. Maintained alongside g_scope.
 static std::map<std::string, std::string> g_propType;
 
+// `property list<int> nums: [3, 1, 4]` — a list of a VALUE type. Unlike list<QtObject>, whose
+// elements are separate objects the engine reaches through a QQmlListReference, these live in the
+// property itself. They are held as a plain D array field, NOT an @Property: qtmoc's cppSig maps
+// only scalars, so exposing one to the meta-object would need a D-slice <-> QList<T> marshalling
+// layer in the runtime. Bindings that READ the list (`nums.length`, `nums[0]`) therefore work and
+// are compared; the list property itself is not yet dumped. name -> D element type.
+static std::map<std::string, std::string> g_valueLists;
+
 // Aliases resolved for use INSIDE expressions: name -> how to read the target from `this`, and
 // the target's own name so a binding through the alias depends on the TARGET (whose reactivity
 // already exists). Only targets reachable without the child objects — self, base, group — are
@@ -539,6 +547,7 @@ static bool readName(const std::string &n, std::string &out) {
                        : bp->second == "bool" ? "propBool(this, \"" : "propInt(this, \"";
         out = rd + n + "\")"; return true;
     }
+    if (g_valueLists.count(n)) { out = n; return true; }
     if (!g_scope.count(n)) return false;
     out = n; return true;
 }
@@ -551,7 +560,35 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         out = "(" + inner + ")"; return true;
     }
     if (auto *id = cast<IdentifierExpression *>(e)) return readName(qs(id->name.toString()), out);
+    // `[3, 1, 4]` -> a D array literal. Element type comes from the property's declared type, so
+    // the elements compile with the same rules as a scalar binding of that type.
+    if (auto *arr = cast<ArrayPattern *>(e)) {
+        std::string items;
+        for (auto *it = arr->elements; it; it = it->next) {
+            if (!it->element || !it->element->initializer) return false;
+            std::string one;
+            if (!compileExpr(it->element->initializer, dtype, one)) return false;
+            items += (items.empty() ? "" : ", ") + one;
+        }
+        out = "[" + items + "]"; return true;
+    }
+    // `nums[i]` on a value list -> D indexing (same syntax, and D bounds-checks it).
+    if (auto *am = cast<ArrayMemberExpression *>(e)) {
+        auto *b = cast<IdentifierExpression *>(am->base);
+        if (b && g_valueLists.count(qs(b->name.toString()))) {
+            std::string idx;
+            if (!compileExpr(am->expression, QStringLiteral("int"), idx)) return false;
+            out = qs(b->name.toString()) + "[" + idx + "]"; return true;
+        }
+        return false;
+    }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
+        // `nums.length` -> D's .length, but QML's is an int and D's is a size_t: cast so the
+        // property's declared int type and any arithmetic on it stay int.
+        if (auto *b = cast<IdentifierExpression *>(fm->base);
+                b && qs(fm->name.toString()) == "length" && g_valueLists.count(qs(b->name.toString()))) {
+            out = "cast(int) " + qs(b->name.toString()) + ".length"; return true;
+        }
         // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId)
@@ -1216,6 +1253,10 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
 
 struct ObjNode {
     std::string id;                                             // this object's QML `id:` (if any)
+    // Value lists (`property list<int>`): name -> D element type. Dumped as one label whose value
+    // is the elements joined by "," — the oracle formats a QVariantList the same way. Without a
+    // label the engine's own property would be uncompared, and --verify-props rejects that.
+    std::vector<std::pair<std::string, std::string>> valueLists;
     std::vector<std::pair<std::string, std::string>> scalars;   // custom @Property (name, dtype)
     std::vector<std::pair<std::string, std::string>> baseProps; // base C++ Q_PROPERTYs set (name, dtype)
     std::vector<std::pair<std::string, std::string>> groupProps;// grouped members set ("group.member", dtype)
@@ -1484,7 +1525,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
     std::vector<std::pair<std::string, ExpressionNode *>> rawAttachedAssigns;     // `Type.member: expr`
     std::vector<std::pair<std::string, Statement *>> rawAttachedHandlers;         // `Type.on<Sig>: body`
-    std::string enumDecls, signalDecls;                                           // emitted D enums / signals
+    std::string enumDecls, signalDecls, valueListDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     bool hasCustomDefaultProp = false;                                           // a `default property` declared
     std::string defaultPropName;                                                 // ...its name
@@ -1647,6 +1688,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             const char *dt = dtypeOf(qmlType);
             std::string expr;
             auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+            // `property list<int> nums: [...]` — a list of a VALUE type. Held as a plain D array
+            // field so bindings can read it (see g_valueLists for why it is not an @Property).
+            if (dt[0] && pub->typeModifier == QLatin1String("list") && !pub->isDefaultMember()) {
+                std::string init = "[]";
+                if (es && !compileExpr(es->expression, qmlType, init)) {
+                    std::fprintf(stderr, "qmltc-d: %s: list property '%s' has an unsupported initialiser"
+                                 " — skipped (later phase)\n", inPath, name.c_str());
+                    ++partial; continue;
+                }
+                g_valueLists[name] = dt;
+                valueListDecls += "    " + std::string(dt) + "[] " + name + " = " + init + ";\n";
+                continue;
+            }
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
             if (pub->binding) {
                 if (auto *ob = cast<UiObjectBinding *>(pub->binding)) { childBindings.push_back({name, ob->initializer}); continue; }
@@ -2218,6 +2272,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto notified = [&](const std::string &n){ return std::find(needsNotify.begin(), needsNotify.end(), n) != needsNotify.end(); };
     node.notified = needsNotify;   // so a parent can tell whether an aliased child prop is live
 
+    for (auto &vl : g_valueLists) node.valueLists.push_back({vl.first, vl.second});
     std::string body, recompute;
     bool anyBound = false;
     for (auto &p : props) {
@@ -2345,7 +2400,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Only a D base is a real D superclass. A BOUND C++ base is reached through the trampoline
     // mixin instead (the class must not also derive from the extern(C++) declaration).
     std::string ext = (dBase && !dBase->bound) ? (" : " + dBase->dClass) : "";
-    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + body
+    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + enumDecls + signalDecls + valueListDecls + body
              + childFields + methods + recompute + handlerSlots + groupHandlerSlots
              + attachedHandlerSlots + wire + "}\n";
     g_selfId = savedId;
@@ -2380,6 +2435,10 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
                         std::vector<DumpLine> &out) {
     std::string self = acc.substr(0, acc.size() - 1);
     for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first, s.second, self, s.first});
+    // "" dtype keeps it out of the mutation block below (a list is not settable from a token).
+    for (auto &s : n.valueLists)
+        out.push_back({lab + s.first,
+                       acc + s.first + ".map!(e => e.to!string).join(\",\")", "", self, s.first});
     // Base C++ properties have no D field — read them through the meta-object (prop<Int|Str>).
     for (auto &s : n.baseProps) {
         const char *fn = (s.second == "string") ? "propStr(" : (s.second == "double") ? "propDouble("
@@ -2593,7 +2652,7 @@ int main(int argc, char **argv) {
         collectDump(rootNode, "o.", "", lines);
         std::sort(lines.begin(), lines.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });
         std::printf("\nvoid main(string[] args) {\n");
-        std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n");
+        std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n    import std.algorithm : map; import std.array : join;\n");
         // A bound-type subclass is constructed with `new` (the mixin ctor builds the trampoline);
         // a fresh @QObject uses newQObject!T.
         if (!bt.first.empty()) std::printf("    qtd_qmltc_init_gui_app();\n");

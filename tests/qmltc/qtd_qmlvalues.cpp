@@ -45,7 +45,17 @@ static std::string fmt(const QVariant &v) {
         // simple values; QString::number(d) gives the same shortest form D uses here.
         return QString::number(v.toDouble()).toStdString();
     }
-    default: return v.toString().toStdString();
+    default:
+        // A `list<int>`-style value list has no useful toString (it yields ""), which would have
+        // silently matched an empty D side. Serialize the elements joined by "," — the same shape
+        // the compiled D side prints — so the comparison is real.
+        if (v.canConvert<QVariantList>() && v.typeId() != QMetaType::QString) {
+            const QVariantList l = v.toList();
+            std::string out;
+            for (const QVariant &e : l) { if (!out.empty()) out += ","; out += fmt(e); }
+            return out;
+        }
+        return v.toString().toStdString();
     }
 }
 
