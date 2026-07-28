@@ -188,6 +188,20 @@ void main(string[] args) {
         // subclass_derived: auto-subclass EVERY discovered class transitively deriving from a listed
         // base (e.g. all QQuickItem-derived visual types). A wrapper generator must not carry a
         // hand-maintained per-type subclass list — whatever is discovered under the base is wrapped.
+        // The EXPLICIT `subclass` list gets the same test the derived one already applies. A class
+        // with no public default constructor (QQuickBasePositioner) or an abstract one cannot back
+        // a trampoline: the generated C++ then fails with "must explicitly initialize the base
+        // class", hundreds of lines into a generated file, naming the trampoline rather than the
+        // spec entry that asked for it. Dropping it here says which entry is at fault and why.
+        if ("subclass" in spec.object) {
+            foreach (cur; targets) {
+                auto nm = clang_getCursorSpelling(cur).str;
+                if (nm !in SUBCLASS || isSubclassable(cur)) continue;
+                writefln("spec `subclass`: %s cannot be subclassed (abstract, or no public default "
+                         ~ "constructor) — dropped; a trampoline for it would not compile", nm);
+                SUBCLASS.remove(nm);
+            }
+        }
         if (auto sd = "subclass_derived" in spec.object) {
             int n0 = cast(int) SUBCLASS.length;
             foreach (baseJ; sd.array)
