@@ -25,6 +25,7 @@
 module qtmoc;
 
 import std.traits : Parameters, hasUDA, getUDAs;
+import std.meta : AliasSeq, Filter, staticMap;
 
 // ---- runtime C++ (qtdmoc.cpp) -----------------------------------------------
 alias SlotCb = extern (C) void function(void*, int, void**) nothrow;
@@ -232,19 +233,19 @@ template signalMembers(T) {
     }
     enum signalMembers = mocFilter!(T, isSig);
 }
-template slotMembers(T) {
-    template isSlot(string m) {
-        // Ask the FIRST overload for the UDA: getUDAs on an overload set is deprecated and would
-        // warn on every build of a class that has one. Whether more than one overload is allowed
-        // at all is decided by validateMeta, which rejects it outright.
-        static if (__traits(compiles, __traits(getOverloads, T, m))
-                   && __traits(getOverloads, T, m).length > 0)
-            enum isSlot = hasUDA!(__traits(getOverloads, T, m)[0], Slot);
-        else static if (is(typeof(__traits(getMember, T, m)) == function))
-            enum isSlot = hasUDA!(__traits(getMember, T, m), Slot);
-        else enum isSlot = false;
+// Slots are keyed by FUNCTION SYMBOL, not by name, because Qt supports overloaded slots:
+// `toggle()`, `toggle(int)` and `toggle(bool)` are three distinct entries in a meta-object,
+// told apart by their full signature — moc emits all three. Keying by name would collapse
+// them into one, so each overload gets its own entry here too.
+template slotSymbols(T) {
+    enum isSlotSym(alias f) = hasUDA!(f, Slot);
+    template ovlsOf(string m) {
+        static if (m.length && __traits(compiles, __traits(getOverloads, T, m)))
+            alias ovlsOf = Filter!(isSlotSym, __traits(getOverloads, T, m));
+        else
+            alias ovlsOf = AliasSeq!();
     }
-    enum slotMembers = mocFilter!(T, isSlot);
+    alias slotSymbols = staticMap!(ovlsOf, __traits(allMembers, T));
 }
 string[] mocFilter(T, alias pred)() {
     string[] r;
@@ -264,8 +265,8 @@ string[] signalSigs(T)() {
 }
 string[] slotSigs(T)() {
     string[] r;
-    static foreach (m; slotMembers!T)
-        r ~= sigString!(m, Parameters!(__traits(getMember, T, m)));
+    static foreach (f; slotSymbols!T)
+        r ~= sigString!(__traits(identifier, f), Parameters!f);
     return r;
 }
 
@@ -314,19 +315,9 @@ int[] propNotify(T)() {
 // instantiation fires the static asserts; at runtime it is a no-op (optimized away).
 void validateMeta(T)() {
     import std.traits : ReturnType;
-    // The meta-object is keyed by slot NAME: slotSigs emits one signature per name and the
-    // dispatcher indexes that same list, so a second overload of the same name would be built into
-    // neither — it simply would not exist as a slot, and a connect to it would fail at runtime with
-    // no hint why. Reject it at compile time instead of losing it. (Supporting overloads means
-    // keying the meta-object by (name, overload index) throughout — a real change, not a tweak.)
-    static foreach (m; slotMembers!T)
-        static assert(__traits(getOverloads, T, m).length == 1,
-            "qtmoc: @Slot " ~ T.stringof ~ "." ~ m ~ " is overloaded. The meta-object is keyed by " ~
-            "slot name, so only one overload would be registered and connecting to the other would " ~
-            "fail at runtime. Give the slots distinct names.");
-    static foreach (m; slotMembers!T)
-        static assert(is(ReturnType!(__traits(getMember, T, m)) == void),
-            "qtmoc: @Slot " ~ T.stringof ~ "." ~ m ~ " must return void. " ~
+    static foreach (f; slotSymbols!T)
+        static assert(is(ReturnType!f == void),
+            "qtmoc: @Slot " ~ T.stringof ~ "." ~ __traits(identifier, f) ~ " must return void. " ~
             "A method that returns a value is an invokable, not a slot, and the runtime " ~
             "would discard the return — emit the result through a Signal instead.");
     static foreach (m; propMembers!T) {{
@@ -381,14 +372,17 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
 }
 
 // invokes slot `m` of `o` reading the args from the C array (args[0] is the return).
-void callSlot(T, string m)(T o, void** args) {
-    alias P = Parameters!(__traits(getMember, T, m));
+// `f` is the slot's own function symbol, so an overloaded name still calls the RIGHT overload:
+// __traits(child) binds that exact symbol to the instance, where __traits(getMember, o, name)
+// would reopen the overload set and re-resolve it from the argument types.
+void callSlot(alias f, T)(T o, void** args) {
+    alias P = Parameters!f;
     P vals;
     static foreach (j, X; P) {
         static if (is(X == string)) vals[j] = qsToD(args[j + 1]);
         else vals[j] = *cast(X*) args[j + 1];
     }
-    __traits(getMember, o, m)(vals);
+    __traits(child, o, f)(vals);
 }
 
 // ---- factory ----------------------------------------------------------------
@@ -436,8 +430,8 @@ private void wireQObject(T)(T o, void* qobj) {
     }
     void delegate(int, void**) nothrow disp = (int idx, void** a) nothrow {
         try {
-            static foreach (i, m; slotMembers!T)
-                if (idx == i) { callSlot!(T, m)(o, a); return; }
+            static foreach (i, f; slotSymbols!T)
+                if (idx == i) { callSlot!f(o, a); return; }
         } catch (Exception e) { qtdOnCallbackError(e); }
     };
     void delegate(int, int, void**) nothrow prop = (int idx, int write, void** a) nothrow {
@@ -572,10 +566,10 @@ string qmlTypeComponent(T)(string uri, int vmaj, int vmin, string qmlName) {
             } else s ~= " }\n";
         }
     }}
-    static foreach (m; slotMembers!T) {{
-        alias P = Parameters!(__traits(getMember, T, m));
-        alias PN = ParameterIdentifierTuple!(__traits(getMember, T, m));
-        s ~= "        Method { name: \"" ~ m ~ "\"";
+    static foreach (f; slotSymbols!T) {{
+        alias P = Parameters!f;
+        alias PN = ParameterIdentifierTuple!f;
+        s ~= "        Method { name: \"" ~ __traits(identifier, f) ~ "\"";
         static if (P.length) {
             s ~= "\n";
             static foreach (i, X; P)
@@ -686,7 +680,7 @@ mixin template QtdWidget(Base) {
         static foreach (m; signalMembers!_Self) { __traits(getMember, this, m)._bind(_qobj, __si); __si++; }
         auto __self = this;
         void delegate(int, void**) nothrow __disp = (int idx, void** a) nothrow {
-            try { static foreach (i, m; slotMembers!_Self) if (idx == i) { callSlot!(_Self, m)(__self, a); return; } }
+            try { static foreach (i, f; slotSymbols!_Self) if (idx == i) { callSlot!f(__self, a); return; } }
             catch (Exception e) { qtdOnCallbackError(e); }
         };
         void delegate(int, int, void**) nothrow __prp = (int idx, int write, void** a) nothrow {
