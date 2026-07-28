@@ -120,6 +120,10 @@ struct DType {
     // an object missing members the engine's has, so the type is refused outright.
     std::string unsupportedSemantic;
     std::string prototype;                                // registry `prototype:` (the base class)
+    // Object-valued properties: `Q_PROPERTY(TestTypeGrouped *group ...)`. QML addresses their
+    // members with dotted syntax (`group.count: 42`) — a GROUPED property. Maps property -> the
+    // C++ class of the group, so its members can be typed from that class's own registry entry.
+    std::map<std::string, std::string> groupClass;
 };
 static std::map<std::string, DType> g_dTypes;             // QML element name -> registered type
 
@@ -203,7 +207,15 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             std::string pn = qmltypesField(sub->initializer, "name");
             const char *pd = dtypeOfCxx(qmltypesField(sub->initializer, "type"));
             if (pn.empty()) continue;
-            if (!pd[0]) { dt.propUnsupported.insert(pn); continue; }   // declared, but not a type we compile
+            if (!pd[0]) {
+                // A non-scalar property naming another type in this registry is a GROUP
+                // (`Q_PROPERTY(TestTypeGrouped *group ...)`), addressed as `group.member` in QML.
+                // Whether that type is really present is settled below, once every Component is
+                // read; anything left over is an unsupported scalar.
+                auto raw = qmltypesField(sub->initializer, "type");
+                if (!raw.empty() && raw != "QObject") { dt.groupClass[pn] = raw; continue; }
+                dt.propUnsupported.insert(pn); continue;   // declared, but not a type we compile
+            }
             dt.propType[pn] = pd;
             std::string note = qmltypesField(sub->initializer, "notify");
             if (!note.empty()) dt.propNotify[pn] = note;
@@ -219,6 +231,15 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
     // registry records `prototype`, which is the C++ class name — index by that to walk up.
     std::map<std::string, DType *> byClass;
     for (auto &kv : g_dTypes) byClass[kv.second.dClass] = &kv.second;
+    // A candidate group whose class isn't in the registry can't have its members typed, so it is
+    // not a group we can compile — demote it to "declared with an unsupported type".
+    for (auto &kv : g_dTypes) {
+        for (auto it = kv.second.groupClass.begin(); it != kv.second.groupClass.end();) {
+            if (byClass.count(it->second)) { ++it; continue; }
+            kv.second.propUnsupported.insert(it->first);
+            it = kv.second.groupClass.erase(it);
+        }
+    }
     for (auto &kv : g_dTypes) {
         if (!kv.second.unsupportedSemantic.empty()) continue;
         for (std::string proto = kv.second.prototype; !proto.empty();) {
@@ -255,6 +276,10 @@ static std::map<std::string, std::string> g_baseProps;
 // round-trip. (The value DUMP still goes through the meta-object — that is deliberate: it is the
 // same observation path the engine-side oracle uses.)
 static bool g_baseIsD;
+
+// The base type's GROUPED properties for the object being compiled: group name -> (member -> D
+// type). Filled from the registry; empty unless the base declares object-valued properties.
+static std::map<std::string, std::map<std::string, std::string>> g_groups;
 
 // D type of each in-scope name (declared property, base property, function param, local). Lets
 // compileExpr decide COERCIONS — notably JS `+` string concatenation, where QML converts the
@@ -386,6 +411,20 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (base && qs(base->name.toString()) == g_className) {
             auto it = g_enumMember.find(qs(fm->name.toString()));
             if (it != g_enumMember.end()) { out = it->second + "." + qs(fm->name.toString()); return true; }
+        }
+        // `group.member` -> a member of a GROUPED property: the group is a real child object
+        // reached through the meta-object, its members are ordinary properties on it.
+        if (base) {
+            auto g = g_groups.find(qs(base->name.toString()));
+            if (g != g_groups.end()) {
+                auto m = g->second.find(qs(fm->name.toString()));
+                if (m == g->second.end()) return false;
+                const char *rd = m->second == "string" ? "propStr(" : m->second == "double" ? "propDouble("
+                               : m->second == "bool" ? "propBool(" : "propInt(";
+                out = rd + std::string("propObj(this, \"") + qs(base->name.toString()) + "\"), \""
+                    + qs(fm->name.toString()) + "\")";
+                return true;
+            }
         }
         // `<string>.length` -> D length (cast to int to match QML's int result).
         if (qs(fm->name.toString()) == "length") {
@@ -827,6 +866,7 @@ struct ObjNode {
     std::string id;                                             // this object's QML `id:` (if any)
     std::vector<std::pair<std::string, std::string>> scalars;   // custom @Property (name, dtype)
     std::vector<std::pair<std::string, std::string>> baseProps; // base C++ Q_PROPERTYs set (name, dtype)
+    std::vector<std::pair<std::string, std::string>> groupProps;// grouped members set ("group.member", dtype)
     std::vector<std::string> notified;                          // props that carry a NOTIFY signal
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
     std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
@@ -874,6 +914,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the registry — better than the literal-inference fallback used for a bound C++ base, and it
     // also puts properties the .qml only READS (never assigns) in scope.
     if (dBase) for (auto &p : dBase->propType) g_baseProps[p.first] = p.second;
+    auto savedGroups = g_groups;
+    g_groups.clear();
+    // A grouped property's MEMBERS are typed from the group class's own registry entry.
+    if (dBase) for (auto &g : dBase->groupClass)
+        for (auto &kv : g_dTypes)
+            if (kv.second.dClass == g.second) { g_groups[g.first] = kv.second.propType; break; }
     g_className = cls;
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         if (auto *en = cast<UiEnumDeclaration *>(m->member))
@@ -946,6 +992,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
+    std::vector<std::pair<std::string, ExpressionNode *>> rawGroupAssigns;        // `group.member: expr`
     std::string enumDecls, signalDecls;                                           // emitted D enums / signals
     Statement *onCompleted = nullptr;                                            // Component.onCompleted body
     bool hasCustomDefaultProp = false;                                           // a `default property` declared
@@ -960,9 +1007,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 rawHandlers.push_back({sig, sb->statement});
                 continue;
             }
-            // A plain `<name>: <expr>` that isn't an id/handler assigns a base C++ Q_PROPERTY.
-            if (hid.find('.') == std::string::npos)
-                if (auto *es = cast<ExpressionStatement *>(sb->statement)) { rawBaseAssigns.push_back({hid, es->expression}); continue; }
+            // A plain `<name>: <expr>` that isn't an id/handler assigns a base C++ Q_PROPERTY;
+            // a DOTTED one (`group.count: 42`) assigns a member of a GROUPED property.
+            if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+                auto dot = hid.find('.');
+                if (dot == std::string::npos) { rawBaseAssigns.push_back({hid, es->expression}); continue; }
+                if (g_groups.count(hid.substr(0, dot))) { rawGroupAssigns.push_back({hid, es->expression}); continue; }
+            }
         }
         // A QML `enum Name { A, B = 5, C }` -> a D enum (int members).
         if (auto *en = cast<UiEnumDeclaration *>(m->member)) {
@@ -1295,6 +1346,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         node.baseProps.push_back({ba.first, ty});
     }
 
+    // Grouped-property assignments: set the member on the group OBJECT, which is reached through
+    // the parent's meta-object. The dump reports them under the same dotted path the engine-side
+    // oracle walks (`group.count`), so the two sides compare directly.
+    for (auto &ga : rawGroupAssigns) {
+        auto dot = ga.first.find('.');
+        std::string gname = ga.first.substr(0, dot), mem = ga.first.substr(dot + 1);
+        auto &members = g_groups[gname];
+        auto mt = members.find(mem);
+        std::string val;
+        if (mt == members.end() || !compileExpr(ga.second, QString::fromStdString(mt->second), val)) {
+            std::fprintf(stderr, "qmltc-d: %s: grouped property '%s' in %s not yet supported — skipped (later phase)\n",
+                         inPath, ga.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        baseWire += "        setProp(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + val + ");\n";
+        node.groupProps.push_back({ga.first, mt->second});
+    }
+
     // QML `function`s -> D methods (no-arg). A `return <expr>` body becomes a typed method whose
     // return type was inferred into g_funcRet; other bodies become void methods (assignments/calls).
     // Typed PARAMETERS are still a later step.
@@ -1436,22 +1505,34 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_signalParams = savedSignalParams;
     g_baseProps = savedBaseProps;
     g_baseIsD = savedBaseIsD;
+    g_groups = savedGroups;
     g_scope = savedScope;
     g_propType = savedPropType;
     return node;
 }
 
 // Flatten the object tree into dump lines with dotted paths (`kid.y` <- access o.kid.y).
-struct DumpLine { std::string label, access, dtype; };
+// `setObj`/`setProp` are the target of a MUTATION, which is not always derivable from the label:
+// a child object path is a D field chain (`o.kid`), a grouped property is reached through the
+// meta-object (`propObj(o, "group")`). Deriving it from the dotted label alone got that wrong.
+struct DumpLine { std::string label, access, dtype, setObj, setProp; };
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
                         std::vector<DumpLine> &out) {
-    for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first, s.second});
+    std::string self = acc.substr(0, acc.size() - 1);
+    for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first, s.second, self, s.first});
     // Base C++ properties have no D field — read them through the meta-object (prop<Int|Str>).
     for (auto &s : n.baseProps) {
-        std::string self = acc.substr(0, acc.size() - 1);
         const char *fn = (s.second == "string") ? "propStr(" : (s.second == "double") ? "propDouble("
                        : (s.second == "bool") ? "propBool(" : "propInt(";
-        out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second});
+        out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second, self, s.first});
+    }
+    for (auto &s : n.groupProps) {
+        auto dot = s.first.find('.');
+        std::string gname = s.first.substr(0, dot), mem = s.first.substr(dot + 1);
+        const char *fn = (s.second == "string") ? "propStr(" : (s.second == "double") ? "propDouble("
+                       : (s.second == "bool") ? "propBool(" : "propInt(";
+        std::string gobj = "propObj(" + self + ", \"" + gname + "\")";
+        out.push_back({lab + s.first, fn + gobj + ", \"" + mem + "\")", s.second, gobj, mem});
     }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
     // Default (unnamed) children: the D field is accessed directly, but the label uses `@<i>` so the
@@ -1602,12 +1683,10 @@ int main(int argc, char **argv) {
         for (auto &l : lines) {   // dynamic mutation of any int/double/bool/string prop (via meta, dotted path)
             if (l.dtype != "string" && l.dtype != "int" && l.dtype != "double" && l.dtype != "bool") continue;
             if (l.label.find('@') != std::string::npos) continue;   // default-child mutation not supported
-            auto dot = l.label.rfind('.');   // the PROPERTY PATH (not the read access) -> the setProp target
-            std::string obj = (dot == std::string::npos) ? "o" : "o." + l.label.substr(0, dot);
-            std::string prop = (dot == std::string::npos) ? l.label : l.label.substr(dot + 1);
             std::string val = (l.dtype == "int") ? "v.to!int" : (l.dtype == "double") ? "v.to!double"
                             : (l.dtype == "bool") ? "v.to!bool" : "v";
-            std::printf("        if (k == \"%s\") setProp(%s, \"%s\", %s);\n", l.label.c_str(), obj.c_str(), prop.c_str(), val.c_str());
+            std::printf("        if (k == \"%s\") setProp(%s, \"%s\", %s);\n",
+                        l.label.c_str(), l.setObj.c_str(), l.setProp.c_str(), val.c_str());
         }
         std::printf("    }\n");
         for (auto &l : lines)

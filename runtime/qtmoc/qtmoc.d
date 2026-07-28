@@ -679,6 +679,10 @@ mixin template QtdWidget(Base) {
 
 // ---- properties (access by name via QVariant) -------------------------------
 /// Reads an int property by name (custom @Property or built-in).
+private extern(C) void* qtd_prop_get_obj(void*, const(char)*);
+/// The object held by a QObject*-valued property — how a GROUPED property (`group.count`) is
+/// reached: the group is a child object, its members are plain properties on it.
+void* propObj(T)(T o, string name) { return qtd_prop_get_obj(qobjOf(o), (name ~ "\0").ptr); }
 int propInt(T)(T o, string name) { return qtd_prop_get_int(qobjOf(o), (name ~ "\0").ptr); }
 /// Writes an int property by name (fires the notify, if any).
 void setProp(T)(T o, string name, int v) { qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v); }

@@ -309,6 +309,12 @@ double qtd_prop_get_double(void* o, const char* n) { return static_cast<QObject*
 void qtd_prop_set_double(void* o, const char* n, double v) { static_cast<QObject*>(o)->setProperty(n, v); }
 bool qtd_prop_get_bool(void* o, const char* n) { return static_cast<QObject*>(o)->property(n).toBool(); }
 void qtd_prop_set_bool(void* o, const char* n, bool v) { static_cast<QObject*>(o)->setProperty(n, v); }
+// A QObject*-valued property — a GROUPED property (`group.count: 42` in QML) is one of these:
+// the group is a real child object reached through the parent's meta-object, and its members are
+// ordinary properties on it. Returns null if the property is absent or not an object.
+void* qtd_prop_get_obj(void* o, const char* n) {
+    return static_cast<QObject*>(o)->property(n).value<QObject*>();
+}
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(static_cast<QObject*>(o)->property(n).toString()); }
 void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
     static_cast<QObject*>(o)->setProperty(n, QString::fromUtf8(p, len));

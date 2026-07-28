@@ -208,7 +208,7 @@ any more; the per-type QML *semantics* are. What each now stops on:
 
 | file | blocker |
 |---|---|
-| `groupedProperty`, `PrivateProperty` | grouped-property member syntax |
+| `groupedProperty`, `PrivateProperty` | handlers ON the group (`group.onCountChanged`) — the member syntax itself now works, see below |
 | `NamespacedTypes` | a function body form we don't compile |
 | `specialProperties`, `propertyAliasAttributes` | alias onto a base property with **no NOTIFY** (refused, see above) + `undefined`/RESET |
 | `mySignals` | `font`/`QtObject`-typed properties |
@@ -249,6 +249,31 @@ pass. Bindings are recomputed in declaration order but aliases are appended afte
 properties, so `property int n: someAlias + 1` used to be computed while the alias still held 0.
 With connections already live the evaluation propagates instead, and recomputes are idempotent
 (each emits only on a real change), so the extra passes settle rather than loop.
+
+### Grouped properties
+
+`Q_PROPERTY(TestTypeGrouped *group READ getGroup)` is addressed from QML with dotted syntax. The
+group is a real child object reached through the parent's meta-object, so its members are ordinary
+properties on it — `qtmoc.propObj` returns it and the member is set/read from there:
+
+```qml
+QmlGroupPropertyTestType { group.count: 42; property int mirrored: group.count }
+```
+```d
+setProp(propObj(this, "group"), "count", 42);
+auto _v = propInt(propObj(this, "group"), "count");
+```
+
+The registry identifies the group: a non-scalar property whose declared type names another
+Component in the same `.qmltypes` is a group, and that Component supplies its members' types. (The
+`isPointer: true` flag is a boolean literal, not a string, so membership is the reliable test.)
+Fixture `CGroup.qml`. `groupedProperty.qml` from the corpus still needs handlers ON the group
+(`group.onCountChanged`), so it stays PARTIAL.
+
+One thing this exposed: the value-DUMP and the MUTATION target are not the same expression. A
+child object is a D field chain (`o.kid`), a grouped property is a meta-object hop
+(`propObj(o, "group")`), and deriving the mutation target from the dotted label got the latter
+wrong. Each dump line now carries its mutation target explicitly.
 
 ## Corpus scoreboard (every number build+diff VERIFIED)
 

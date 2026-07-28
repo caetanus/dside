@@ -528,7 +528,9 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
 
         // 1) the type REGISTRY: a D driver writes the CTFE .qmltypes of the app's types.
         auto genBin = buildPath(bind.bdir, "dtypes-gen-" ~ dc);
-        auto gen = Target(genBin, dc ~ " -of=$out " ~ buildPath(dir, "qmltypes_gen.d") ~ " " ~ appD ~ dcLink,
+        // Shared by every qmltcd- target -> guard it, like the oracle and qmltc-d itself.
+        auto genCmd = dc ~ " -of=" ~ genBin ~ " " ~ buildPath(dir, "qmltypes_gen.d") ~ " " ~ appD ~ dcLink;
+        auto gen = Target(genBin, guarded(genBin ~ ".lock", genCmd, genBin, [appD]),
             [Target(buildPath(dir, "qmltypes_gen.d")), Target(appD), qtdBindLib(bind, dc), bind.shims]);
         auto typesFile = buildPath(bind.bdir, "AppTypes-" ~ dc ~ ".qmltypes");
         auto types = Target(typesFile, "$in $out", [gen]);
