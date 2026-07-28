@@ -390,7 +390,14 @@ struct RawHandler { std::string sig; Statement *stmt; FunctionDeclaration *fn; s
 // after the bindings that use it, so its id and declared property types are pre-scanned: `field`
 // is the D field holding it, `propType` its declared properties.
 static const char *dtypeOf(const QString &qmlType);   // defined below; used by the pre-scan
-struct ChildRef { std::string field; std::map<std::string, std::string> propType; };
+struct ChildRef {
+    std::string field;
+    std::map<std::string, std::string> propType;
+    // The child's declared signals (name -> parameters) and its no-arg functions, so a parent can
+    // connect to `<id>`'s signals and call `<id>.method()`.
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> signalParams;
+    std::set<std::string> methods0;
+};
 static std::map<std::string, ChildRef> g_childIds;
 
 // Properties a PARENT binding depends on, per child id. The child decides which of its properties
@@ -410,6 +417,8 @@ static void prescanChildIds(UiObjectInitializer *init) {
         if (!ci) continue;
         std::string field = qs(pub->name.toString()), cid;
         std::map<std::string, std::string> pts;
+        std::map<std::string, std::vector<std::pair<std::string, std::string>>> sigs;
+        std::set<std::string> meths;
         for (auto *cm = ci->members; cm; cm = cm->next) {
             if (auto *sb = cast<UiScriptBinding *>(cm->member)) {
                 if (qname(sb->qualifiedId) != "id") continue;
@@ -422,9 +431,25 @@ static void prescanChildIds(UiObjectInitializer *init) {
                     cp && cp->type == UiPublicMember::Property && cp->memberType) {
                 const char *dt = dtypeOf(cp->memberType->name.toString());
                 if (dt[0]) pts[qs(cp->name.toString())] = dt;
+                continue;
             }
+            if (auto *cp = cast<UiPublicMember *>(cm->member);
+                    cp && cp->type == UiPublicMember::Signal) {
+                std::vector<std::pair<std::string, std::string>> ps;
+                bool ok = true;
+                for (auto *pp = cp->parameters; pp; pp = pp->next) {
+                    const char *dt = pp->type ? dtypeOf(pp->type->toString()) : "";
+                    if (!dt[0]) { ok = false; break; }
+                    ps.push_back({qs(pp->name.toString()), dt});
+                }
+                if (ok) sigs[qs(cp->name.toString())] = ps;
+                continue;
+            }
+            if (auto *se = cast<UiSourceElement *>(cm->member))
+                if (auto *fd = cast<FunctionDeclaration *>(se->sourceElement))
+                    if (!fd->formals) meths.insert(qs(fd->name.toString()));
         }
-        if (!cid.empty()) g_childIds[cid] = {field, pts};
+        if (!cid.empty()) g_childIds[cid] = {field, pts, sigs, meths};
     }
 }
 
@@ -434,12 +459,22 @@ static void prescanChildIds(UiObjectInitializer *init) {
 // is not an on<Signal> function) — the caller reports that rather than wiring something wrong.
 static bool connectionsHandlers(UiObjectInitializer *init, std::vector<RawHandler> &out) {
     std::vector<RawHandler> found;
+    std::string sender;          // "" = this
+    const ChildRef *targetChild = nullptr;
     for (auto *cm = init ? init->members : nullptr; cm; cm = cm->next) {
         if (auto *sb = cast<UiScriptBinding *>(cm->member)) {
             if (qname(sb->qualifiedId) != "target") return false;
             auto *es = cast<ExpressionStatement *>(sb->statement);
             auto *idexp = es ? cast<IdentifierExpression *>(es->expression) : nullptr;
-            if (!idexp || g_selfId.empty() || qs(idexp->name.toString()) != g_selfId) return false;
+            if (!idexp) return false;
+            std::string tid = qs(idexp->name.toString());
+            if (!g_selfId.empty() && tid == g_selfId) continue;      // target: this object
+            // target: a CHILD's id — connect to the child's signal instead. This is the shape
+            // Connections is actually used in; the enclosing object would just use `onSig:`.
+            auto ci = g_childIds.find(tid);
+            if (ci == g_childIds.end()) return false;
+            sender = ci->second.field;
+            targetChild = &ci->second;
             continue;
         }
         auto *se = cast<UiSourceElement *>(cm->member);
@@ -450,6 +485,12 @@ static bool connectionsHandlers(UiObjectInitializer *init, std::vector<RawHandle
         std::string sig = hn.substr(2);
         sig[0] = (char)std::tolower((unsigned char)sig[0]);
         found.push_back({sig, nullptr, fd, ""});
+    }
+    // `target:` may appear after the handlers, so the sender is applied once the whole element is
+    // read. A signal the target does not declare is an error, not a connection to nothing.
+    for (auto &h : found) {
+        h.sender = sender;
+        if (targetChild && !targetChild->signalParams.count(h.sig)) return false;
     }
     for (auto &h : found) out.push_back(h);
     return true;
@@ -739,6 +780,29 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (fn == "min" && args.size() == 2) { out = "(" + args[0] + " < " + args[1] + " ? " + args[0] + " : " + args[1] + ")"; return true; }
             if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
             return false;
+        }
+        // `<childId>.method()` / `<childId>.signal(args)` — a call on ANOTHER object reached
+        // through its id. The child is a D field, so this is a direct call; a name the child does
+        // not declare fails rather than compiling to something that silently does nothing.
+        if (recv) {
+            auto ci = g_childIds.find(qs(recv->name.toString()));
+            if (ci != g_childIds.end()) {
+                std::string mn = qs(fm->name.toString());
+                bool isSig = ci->second.signalParams.count(mn) > 0;
+                if (!isSig && !ci->second.methods0.count(mn)) return false;
+                if (!isSig && call->arguments) return false;   // only no-arg methods are pre-scanned
+                std::vector<std::string> args;
+                for (auto *a = call->arguments; a; a = a->next) {
+                    std::string one;
+                    if (!compileExpr(a->expression, dtype, one)) return false;
+                    args.push_back(one);
+                }
+                std::string joined;
+                for (auto &x : args) joined += (joined.empty() ? "" : ", ") + x;
+                // A signal is emitted through its Signal! field; a function is a plain method.
+                out = ci->second.field + "." + mn + (isSig ? ".emit(" : "(") + joined + ")";
+                return true;
+            }
         }
         // `qsTr("…")` — QML's translation call. Its context is the .qml file's base name, which is
         // what the engine uses, so the compiled form resolves against the same context.
@@ -2059,7 +2123,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // `on<Prop>Changed` connects to a property's change signal (mark the prop notified);
         // `on<Signal>` connects to a declared signal directly.
         std::string notifyProp, hbody;
-        bool isCustom = g_signals.count(h.sig) > 0;
+        // A handler on another object's signal takes its parameter types from THAT object, and is
+        // never an `on<Prop>Changed` of this one.
+        const ChildRef *hostChild = nullptr;
+        if (!h.sender.empty())
+            for (auto &kv : g_childIds)
+                if (kv.second.field == h.sender) { hostChild = &kv.second; break; }
+        const std::vector<std::pair<std::string, std::string>> *sigParams = nullptr;
+        if (hostChild) {
+            auto sp0 = hostChild->signalParams.find(h.sig);
+            if (sp0 != hostChild->signalParams.end()) sigParams = &sp0->second;
+        } else if (auto sp0 = g_signalParams.find(h.sig); sp0 != g_signalParams.end())
+            sigParams = &sp0->second;
+        bool isCustom = hostChild ? true : g_signals.count(h.sig) > 0;
         if (!isCustom && h.sig.size() > 7 && h.sig.compare(h.sig.size() - 7, 7, "Changed") == 0)
             notifyProp = h.sig.substr(0, h.sig.size() - 7);
         // A handler body may be a statement, a function expression `function(a, b) { ... }` whose
@@ -2078,9 +2154,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         bool bodyOk;
         {
             ScopeGuard sg;   // the signal's arguments are named in the body (formals override)
-            if (auto sp0 = g_signalParams.find(h.sig); sp0 != g_signalParams.end()) {
+            if (sigParams) {
                 int i = 0;
-                for (auto &pp : sp0->second) {
+                for (auto &pp : *sigParams) {
                     auto pn = i < (int)fnParams.size() ? fnParams[i] : pp.first;
                     g_scope.insert(pn);
                     g_propType[pn] = pp.second;   // typed: `stringProp = x + y` can coerce y
@@ -2098,20 +2174,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // A custom signal handler takes the signal's parameters (accessible by name in the body);
         // param NAMES come from the handler function's formals when present, TYPES from the signal.
         std::string dparams, cppsig;
-        auto sp = g_signalParams.find(h.sig);
-        if (sp != g_signalParams.end()) {
+        if (sigParams) {
             int i = 0;
-            for (auto &pp : sp->second) {
+            for (auto &pp : *sigParams) {
                 std::string pn = (i < (int)fnParams.size()) ? fnParams[i] : pp.first;
                 dparams += (dparams.empty() ? "" : ", ") + pp.second + " " + pn;
                 cppsig += (cppsig.empty() ? "" : ",") + cppTypeOf(pp.second);
                 ++i;
             }
         }
-        handlerSlots += "    @Slot void __h_" + h.sig + "(" + dparams + ") {\n" + hbody + "    }\n";
-        // sender defaults to `this`; a Connections element can name another object.
+        // The slot name carries the SENDER: two Connections targeting different objects may both
+        // handle a signal of the same name, and a bare __h_<sig> made those collide (a D
+        // redeclaration error — caught, but only at link time and only by luck of compiling both).
         std::string sndr = h.sender.empty() ? "this" : h.sender;
-        handlerWire += "        connectMeta(" + sndr + ", \"" + h.sig + "(" + cppsig + ")\", this, \"__h_" + h.sig + "(" + cppsig + ")\");\n";
+        std::string slotName = "__h_" + (h.sender.empty() ? "" : h.sender + "_") + h.sig;
+        handlerSlots += "    @Slot void " + slotName + "(" + dparams + ") {\n" + hbody + "    }\n";
+        handlerWire += "        connectMeta(" + sndr + ", \"" + h.sig + "(" + cppsig + ")\", this, \""
+                     + slotName + "(" + cppsig + ")\");\n";
     }
     // Component.onCompleted runs once at construction — emit its body at the tail of __qmltcWire
     // (after children built, bindings initialised, handlers connected), matching QML's timing.
