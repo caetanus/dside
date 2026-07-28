@@ -561,6 +561,10 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) ids.push_back(qs(fm->name.toString()));
+        // `group.member` depends on that member OF THE GROUP OBJECT — kept dotted so the wire
+        // connects the group's own notify rather than looking for a property of this class.
+        else if (base && g_groups.count(qs(base->name.toString())))
+            ids.push_back(qs(base->name.toString()) + "." + qs(fm->name.toString()));
         else if (base && qs(base->name.toString()) == g_className && g_enumMember.count(qs(fm->name.toString()))) { /* enum member: constant, no dep */ }
         else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
         return;
@@ -914,6 +918,12 @@ struct ObjNode {
     std::vector<std::pair<std::string, std::string>> groupProps;// grouped members set ("group.member", dtype)
     std::vector<std::string> notified;                          // props that carry a NOTIFY signal
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
+    // Children attached to a member of a GROUPED property. Unlike `kids`, the D FIELD and the QML
+    // PATH differ (field `_g_group_object`, path `group.object`), so both are carried. (A struct
+    // holding an ObjNode by value can't be declared here — ObjNode is still incomplete — so the
+    // path rides alongside, one entry per groupKids entry.)
+    std::vector<std::pair<std::string, ObjNode>> groupKids;     // (D field, child)
+    std::vector<std::string> groupKidPaths;                     // QML path, parallel to groupKids
     std::vector<std::pair<std::string, ObjNode>> defaultKids;   // default-property children (field, child)
 };
 
@@ -1033,6 +1043,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<Prop> props;
     std::vector<std::pair<std::string, Statement *>> rawHandlers;                 // (signal, body)
     std::vector<std::pair<std::string, UiObjectInitializer *>> childBindings;     // (field, init)
+    std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
     std::vector<UiObjectDefinition *> defaultKids;                               // bare `Type { }` children
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
@@ -1099,14 +1110,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ++partial; continue;
             }
             // A DOTTED target (`group.object: QtObject { … }`) binds a child to a member of a
-            // GROUPED property, which we don't model: the child would have to be built and then
-            // assigned through the group object. Emitting it as a normal child produced a D class
-            // named after the dotted path — invalid, and reported compile-clean.
-            if (qname(ob->qualifiedId).find('.') != std::string::npos) {
-                std::fprintf(stderr, "qmltc-d: %s: child object bound to '%s' (a member of a grouped "
-                             "property) in %s not yet supported — skipped (later phase)\n",
-                             inPath, qname(ob->qualifiedId).c_str(), cls.c_str());
-                ++partial; continue;
+            // GROUPED property: build the child, then attach it THROUGH the group object. The D
+            // field cannot be named after the dotted path (`class X_group.object` is not valid D),
+            // so field and QML path are tracked separately from here on.
+            {
+                std::string qid = qname(ob->qualifiedId);
+                auto dot = qid.find('.');
+                if (dot != std::string::npos) {
+                    if (!g_groups.count(qid.substr(0, dot))) {
+                        std::fprintf(stderr, "qmltc-d: %s: child object bound to '%s' in %s is not a grouped "
+                                     "property — skipped (later phase)\n", inPath, qid.c_str(), cls.c_str());
+                        ++partial; continue;
+                    }
+                    groupKidBindings.push_back({qid, ob->initializer});
+                    continue;
+                }
             }
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer});
             continue;
@@ -1414,6 +1432,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         node.baseProps.push_back({ba.first, ty});
     }
 
+    // Children attached to a grouped property's member: compile like any child, but the D field is
+    // named after the sanitised path (a dotted name is not a valid D identifier) and the object is
+    // attached THROUGH the group rather than held by a property of this class.
+    for (auto &gk : groupKidBindings) {
+        std::string path = gk.first;
+        auto dot = path.find('.');
+        std::string gname = path.substr(0, dot), mem = path.substr(dot + 1);
+        std::string field = "_g_" + gname + "_" + mem;
+        std::string childCls = cls + "_" + gname + "_" + mem;
+        ObjNode kid = compileObject(gk.second, childCls, classes, partial, inPath);
+        childFields += "    " + childCls + " " + field + ";\n";
+        childWire += "        " + field + " = newQObject!" + childCls + "();\n";
+        childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
+        node.groupKids.push_back({field, kid});
+        node.groupKidPaths.push_back(path);
+    }
+
     // Handlers ON a grouped property (`group.onCountChanged: …`): the signal belongs to the GROUP
     // object, the slot to this one. The signal's real signature comes from the group class's
     // registry entry — a NOTIFY is not necessarily a parameterless `<prop>Changed`.
@@ -1564,6 +1599,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
                     continue;
                 }
+                // `group.member` — the notify belongs to the GROUP object, and its signature comes
+                // from the group class's registry entry (a NOTIFY need not be `<prop>Changed()`).
+                if (auto dot = d.find('.'); dot != std::string::npos && g_groups.count(d.substr(0, dot))) {
+                    std::string gname = d.substr(0, dot), mem = d.substr(dot + 1);
+                    auto *gt = g_groups[gname];
+                    auto nt = gt->propNotify.find(mem);
+                    if (nt == gt->propNotify.end()) continue;   // no NOTIFY -> nothing can re-fire it
+                    auto sg = gt->signalSig.find(nt->second);
+                    std::string sig = sg != gt->signalSig.end() ? sg->second : (nt->second + "()");
+                    wire += "        connectMeta(propObj(this, \"" + gname + "\"), \"" + sig
+                          + "\", this, \"__rc_" + p.name + "()\");\n";
+                    continue;
+                }
                 // A property of a D BASE: its notify signal is whatever the type declared, which
                 // the registry records — don't assume the <prop>Changed spelling.
                 if (!dBase) continue;
@@ -1632,6 +1680,10 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         out.push_back({lab + s.first, fn + gobj + ", \"" + mem + "\")", s.second, gobj, mem});
     }
     for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
+    // Group children: read through the D field, but label with the QML path the oracle walks.
+    for (size_t i = 0; i < n.groupKids.size(); ++i)
+        collectDump(n.groupKids[i].second, acc + n.groupKids[i].first + ".",
+                    lab + n.groupKidPaths[i] + ".", out);
     // Default (unnamed) children: the D field is accessed directly, but the label uses `@<i>` so the
     // oracle resolves it via childItems()[i] (declaration order == child list order).
     for (size_t i = 0; i < n.defaultKids.size(); ++i)

@@ -679,6 +679,11 @@ mixin template QtdWidget(Base) {
 
 // ---- properties (access by name via QVariant) -------------------------------
 /// Reads an int property by name (custom @Property or built-in).
+private extern(C) void qtd_prop_set_obj(void*, const(char)*, void*);
+/// Attach an object to a QObject*-valued property (the write counterpart of [propObj]).
+void setPropObj(T, U)(T o, string name, U v) {
+    qtd_prop_set_obj(qobjOf(o), (name ~ "\0").ptr, qobjOf(v));
+}
 private extern(C) bool qtd_invoke0(void*, const(char)*);
 /// Invoke a parameterless member (signal or invokable) by name — used to emit a signal that
 /// belongs to another object, e.g. a grouped property's.

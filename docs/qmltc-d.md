@@ -208,7 +208,7 @@ any more; the per-type QML *semantics* are. What each now stops on:
 
 | file | blocker |
 |---|---|
-| `groupedProperty`, `PrivateProperty` | handlers ON the group (`group.onCountChanged`) — the member syntax itself now works, see below |
+| `PrivateProperty` | a private-API property accessor |
 | `NamespacedTypes` | a function body form we don't compile |
 | `specialProperties`, `propertyAliasAttributes` | alias onto a base property with **no NOTIFY** (refused, see above) + `undefined`/RESET |
 | `mySignals` | `font`/`QtObject`-typed properties |
@@ -288,10 +288,16 @@ A statement body can also write a group member, increment one (`group.count++` �
 read-modify-write, since there is no D lvalue), and emit a signal belonging to the group
 (`group.triggered()`, via the new `qtmoc.invoke0`). Fixtures `CGroup.qml` and `CGroupHandler.qml`.
 
-`groupedProperty.qml` from the corpus still stays PARTIAL, on one remaining construct: a CHILD
-object bound into a group member (`group.object: QtObject { … }`). That one is instructive — it
-used to be emitted as an ordinary child and produced a D class named after the dotted path
-(`class GP_group.object`), which is not valid D and was reported compile-clean. It is refused now.
+A CHILD object can be bound into a group member (`group.object: QtObject { … }`): the child is
+built in D and attached THROUGH the group with `setPropObj`. Its D field cannot be named after the
+dotted path (`class X_group.object` is not valid D), so the field and the QML path the oracle walks
+are tracked separately — the same field-vs-label split that mutation targets already needed.
+A binding that READS a group member is reactive too: the dependency is kept dotted
+(`group.count`), and the wire connects the GROUP's notify rather than looking for a property of
+this class. Fixture `CGroupChild.qml`.
+
+**With that, `groupedProperty.qml` from Qt's corpus compiles and diffs GREEN** — the first corpus
+file rooted in an app-defined C++ type to do so.
 
 One thing this exposed: the value-DUMP and the MUTATION target are not the same expression. A
 child object is a D field chain (`o.kid`), a grouped property is a meta-object hop
@@ -302,9 +308,9 @@ wrong. Each dump line now carries its mutation target explicitly.
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 16 | **16** |
+| pure-QtQml (42) | 17 | **17** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 23 | **23** |
+| **total (108)** | 24 | **24** |
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.

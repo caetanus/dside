@@ -315,6 +315,11 @@ void qtd_prop_set_bool(void* o, const char* n, bool v) { static_cast<QObject*>(o
 void* qtd_prop_get_obj(void* o, const char* n) {
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
+// Write a QObject* into a property — how a child object built in D is attached to a member of a
+// GROUPED property (`group.object: QtObject { … }`).
+void qtd_prop_set_obj(void* o, const char* n, void* v) {
+    static_cast<QObject*>(o)->setProperty(n, QVariant::fromValue(static_cast<QObject*>(v)));
+}
 // Invoke a parameterless member (a signal or an invokable) by name on any QObject — how a QML
 // handler emits a signal that belongs to a GROUPED property's object rather than to itself.
 // Returns false if there is no such member.
