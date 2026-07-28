@@ -73,6 +73,29 @@ struct QtdBinding {
     string[] mods;    // pkg-config modules (Qt6Widgets, …)
 }
 
+// The Qt minor a binding was generated for ("6.11"), taken from its genDir (…/qt-6.11/cxx-…),
+// and the minor actually installed. A coverage baseline is only meaningful against the SDK it was
+// recorded on, so these two decide whether the manifest gate can be enforced or must stay
+// advisory — the answer is a version question, not a permanent exemption.
+string bindingQtMinor(string genDir) {
+    // Walk from the RIGHT and require a digit after "qt-": the project directory itself is
+    // called qt-dlang-gen, which a plain startsWith("qt-") happily matched first.
+    auto parts = genDir.split(dirSeparator);
+    foreach_reverse (part; parts) {
+        if (!part.startsWith("qt-") || part.length <= 3) continue;
+        auto rest = part["qt-".length .. $];
+        if (rest[0] >= '0' && rest[0] <= '9') return rest;
+    }
+    return "";
+}
+
+string installedQtMinor(string pkgMod) {
+    auto r = execute(["pkg-config", "--modversion", pkgMod]);
+    if (r.status != 0) return "";
+    auto v = r.output.strip.split(".");
+    return v.length >= 2 ? v[0] ~ "." ~ v[1] : "";
+}
+
 private string gendPath(string root) { return buildPath(root, "generator-d", "gend"); }
 
 // The generator binary is an INPUT to every gen step, but it was only ever built by hand

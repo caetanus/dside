@@ -122,12 +122,18 @@ Build reggaeBuild() {
 
     // --- coverage manifest gate: regenerate a binding and diff its per-symbol manifest against a
     //     checked-in baseline, failing on regression (disappeared/worsened/new-drop symbol).
-    //     These are OPTIONAL top-level targets (critics r8 #1): the default `./build` full matrix
-    //     must NOT run them, because their baselines are pinned to Qt 6.11 and a runner on a
-    //     different Qt minor would measure SDK drift, not a generator regression. They stay
-    //     reachable by name (`./build manifest-gate-qtwidgets`) so CI can run them ADVISORY.
+    //     The baselines are recorded against ONE Qt minor, and on a different minor the gate would
+    //     measure SDK drift instead of a generator regression — which is why these used to be
+    //     OPTIONAL. But "optional" meant the default ./build never ran them, so a real symbol
+    //     regression could land unnoticed on the very machine whose Qt the baselines match. That
+    //     is a version question, not a permanent exemption: the gate is MANDATORY when the
+    //     installed Qt minor equals the one the binding (and therefore its baseline) was generated
+    //     for, and advisory-by-name otherwise.
     auto manifestGates = manifestGateTargets(root, [ex, qml], ["qtwidgets", "qml"],
                                              ["qtwidgets.manifest.tsv", "qml.manifest.tsv"]);
+    bool gatesEnforceable = bindingQtMinor(ex.genDir).length
+        && bindingQtMinor(ex.genDir) == installedQtMinor("Qt6Widgets")
+        && bindingQtMinor(qml.genDir) == installedQtMinor("Qt6Qml");
 
     // --- expected-fails registry consumer: validate schema/kind and that every `risk` probe names
     //     a real build target (so the inventory is enforcement, not just prose).
@@ -149,10 +155,13 @@ Build reggaeBuild() {
     // --- shiboken libsample corner cases (skipped if the pyside-setup clone is absent) ---
     all ~= libsampleTargets(root, buildNormalizedPath(root, "..", "pyside-setup"));
 
-    // Mandatory targets are built by the default `./build`; the manifest gates are OPTIONAL —
-    // in the graph (reachable by name) but excluded from defaultTargets() so the full matrix on a
-    // mismatched Qt minor doesn't fail on baseline drift (critics r8 #1).
+    // On the Qt the baselines were recorded against, the gates run with everything else; on any
+    // other minor they stay reachable by name but out of defaultTargets(), so the full matrix
+    // never fails on SDK drift.
     import std.range : chain;
+    if (gatesEnforceable)
+        return Build(chain(all.map!(t => createTopLevelTarget(t)),
+                           manifestGates.map!(t => createTopLevelTarget(t))));
     return Build(chain(all.map!(t => createTopLevelTarget(t)),
                        manifestGates.map!(t => optional(t))));
 }
