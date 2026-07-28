@@ -405,7 +405,12 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ " -L-lstdc++";
             // Guarded: with a `<Name>.set` sidecar TWO phony targets depend on this binary, and a
             // concurrent re-schedule links over it while the other target is running it.
-            auto app = Target(appBin, guarded(appBin ~ ".lock", link.replace("$out", appBin), appBin, [genD]),
+            // The link also consumes the helper object and BOTH binding archives; leaving them out
+            // pins a stale binary whenever the binding or the runtime changes — a green target
+            // proving something about code that is no longer in the tree.
+            auto appIns = [genD, appObj, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),
+                           buildPath(bind.bdir, "libshims.a")];
+            auto app = Target(appBin, guarded(appBin ~ ".lock", link.replace("$out", appBin), appBin, appIns),
                               [gen, appHelper, qtdBindLib(bind, dc), bind.shims]);
             // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
             //    The oracle dumps the EXACT property paths qmltc-d emits (`--labels` -> a .props
@@ -549,7 +554,8 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
         auto genBin = buildPath(bind.bdir, "dtypes-gen-" ~ dc);
         // Shared by every qmltcd- target -> guard it, like the oracle and qmltc-d itself.
         auto genCmd = dc ~ " -of=" ~ genBin ~ " " ~ buildPath(dir, "qmltypes_gen.d") ~ " " ~ appD ~ dcLink;
-        auto gen = Target(genBin, guarded(genBin ~ ".lock", genCmd, genBin, [appD]),
+        auto gen = Target(genBin, guarded(genBin ~ ".lock", genCmd, genBin,
+            [appD, buildPath(dir, "qmltypes_gen.d"), buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")]),
             [Target(buildPath(dir, "qmltypes_gen.d")), Target(appD), qtdBindLib(bind, dc), bind.shims]);
         auto typesFile = buildPath(bind.bdir, "AppTypes-" ~ dc ~ ".qmltypes");
         auto types = Target(typesFile, "$in $out", [gen]);
@@ -558,7 +564,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
         auto oracleBin = buildPath(bind.bdir, "qmlvalues-d-" ~ dc);
         auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
             dc ~ " -of=" ~ oracleBin ~ " " ~ buildPath(here, "qtd_qmlvalues_d.d") ~ " " ~ appD ~ " " ~ oracleObj ~ dcLink,
-            oracleBin, [appD]),
+            oracleBin, [appD, buildPath(here, "qtd_qmlvalues_d.d"), oracleObj]),
             [Target(buildPath(here, "qtd_qmlvalues_d.d")), Target(appD), oracleLib, qtdBindLib(bind, dc), bind.shims]);
 
         foreach (qmlFile; corpus) {
@@ -570,7 +576,8 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
                 [tool, Target(qmlFile), types]);
             auto appBin = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ "_check");
             auto appCmd = dc ~ " -of=" ~ appBin ~ " " ~ genD ~ " " ~ appD ~ dcLink;
-            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin, [genD]),
+            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin,
+                [genD, appD, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"), buildPath(bind.bdir, "libshims.a")]),
                 [gd, Target(appD), qtdBindLib(bind, dc), bind.shims]);
             // 4) run both over the SAME .qml and diff (same --labels/--props protocol as the corpus).
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
@@ -676,11 +683,14 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     //    normal archive link drops the object and the engine reports "module not installed".
     auto oracleBin = buildPath(bind.bdir, "qmlvalues-cpp");
     auto oracleCpp = buildPath(here, "qtd_qmlvalues.cpp");
+    // typesLib is IN the link: without it here, changing a vendored C++ type rebuilds the archive
+    // and the compiled side, but not the oracle — so the differential compares a new compiled side
+    // against an oracle built from the old types, and passes. Demonstrated before this was fixed.
     auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
         "clang++ " ~ cflags ~ " -o " ~ oracleBin ~ " " ~ oracleCpp
         ~ " -Wl,--whole-archive " ~ typesLib ~ " -Wl,--no-whole-archive "
         ~ execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip,
-        oracleBin, [oracleCpp]), [Target(oracleCpp), lib]);
+        oracleBin, [oracleCpp, typesLib]), [Target(oracleCpp), lib]);
 
     // A bound root sets properties before any QGuiApplication exists; the helper provides one.
     auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
@@ -697,7 +707,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
             auto arg = " --cpptypes " ~ typesFile ~ " qt.corpustypes";
             auto genD = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ ".d");
             auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ arg ~ " > $out",
-                [tool, Target(qmlFile), regT]);
+                [tool, Target(qmlFile), regT, bind.gen]);   // regenerating the binding must re-emit
             auto appBin = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ "_check");
             auto appCmd =
                 dc ~ " -of=" ~ appBin ~ " " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
@@ -708,7 +718,9 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 // so an ATTACHED object (looked up through Qt's QML type registry) comes back null.
                 ~ " -L--whole-archive -L=" ~ typesLib ~ " -L--no-whole-archive "
                 ~ pkgLibs(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -L-lstdc++";
-            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin, [genD]),
+            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin,
+                [genD, appObj, typesLib, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),
+                 buildPath(bind.bdir, "libshims.a")]),
                 [gd, appHelper, lib, qtdBindLib(bind, dc), bind.shims]);
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ arg ~ " > " ~ props ~ " 2>/dev/null; ";
