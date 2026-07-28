@@ -15,6 +15,7 @@
 #endif
 #include <QQmlEngine>
 #include <QQmlComponent>
+#include <QQmlListReference>
 #include <QMetaProperty>
 #include <QVariant>
 #include <QByteArray>
@@ -89,6 +90,14 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                 int idx = p.mid(1).toInt();
                 auto ch = cur->children();
                 cur = (idx >= 0 && idx < ch.size()) ? ch[idx] : nullptr;
+                continue;
+            }
+            // `name[i]` — an element of a list property (what a `default property list<>` holds).
+            if (p.endsWith(u']')) {
+                int br = p.indexOf(u'[');
+                QQmlListReference ref(cur, p.left(br).toUtf8().constData());
+                int idx = p.mid(br + 1, p.size() - br - 2).toInt();
+                cur = (ref.isValid() && idx >= 0 && idx < ref.count()) ? ref.at(idx) : nullptr;
                 continue;
             }
             QVariant v = cur->property(p.toUtf8().constData());

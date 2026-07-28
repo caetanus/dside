@@ -406,9 +406,13 @@ the default-child path (which is what resolves the child's own type, local or bo
 DUMP LABEL changes, from `@0` to the property's name. Fixtures `DefaultHolder.qml` +
 `UsesDefault.qml`.
 
-A `list<>` default property still flags PARTIAL — it redirects bare children into that list, so
-`@N` = `children()[N]` no longer holds. That is what keeps `defaultProperty.qml` from the corpus
-PARTIAL: its *grandchildren* sit under a `list<QtObject>`.
+A `list<>` default property works the same way, one step further: the children go INTO the list,
+so the engine reaches them at an INDEX and the label becomes `<prop>[i]`. The oracle learned to
+walk such a segment through `QQmlListReference`. Fixtures `ListHolder.qml` + `UsesList.qml`;
+`defaultProperty.qml` from the corpus is green, grandchildren included.
+
+(`list<QtObject>` keeps `list` in the AST's `typeModifier`, not in the type name — testing the
+name for `list<` matched nothing and silently kept the old PARTIAL.)
 
 Worth noting how the first cut of this was wrong in a way the diff could not catch: routing the
 bare child through the ordinary property-child path lost the child's TYPE, so the child compiled
@@ -420,9 +424,9 @@ right, never that you emitted enough; the label list is part of what has to be r
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 23 | **23** |
+| pure-QtQml (42) | 24 | **24** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 30 | **30** |
+| **total (108)** | 31 | **31** |
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.
