@@ -386,6 +386,48 @@ static std::map<std::string, std::string> g_valueLists;
 // empty meaning `this`.
 struct RawHandler { std::string sig; Statement *stmt; FunctionDeclaration *fn; std::string sender; };
 
+// A CHILD object's `id`, so the parent's bindings can read `<id>.<prop>`. The child is compiled
+// after the bindings that use it, so its id and declared property types are pre-scanned: `field`
+// is the D field holding it, `propType` its declared properties.
+static const char *dtypeOf(const QString &qmlType);   // defined below; used by the pre-scan
+struct ChildRef { std::string field; std::map<std::string, std::string> propType; };
+static std::map<std::string, ChildRef> g_childIds;
+
+// Properties a PARENT binding depends on, per child id. The child decides which of its properties
+// get a change signal, but only the parent knows it reads them — so the requirement is recorded
+// here while the parent's bindings compile, and consulted when the child is compiled.
+static std::map<std::string, std::set<std::string>> g_forceNotify;
+
+// Collect `id:` and declared property types of every child object bound to a named property, so
+// `<id>.<prop>` resolves in this object's bindings.
+static void prescanChildIds(UiObjectInitializer *init) {
+    for (auto *m = init ? init->members : nullptr; m; m = m->next) {
+        auto *pub = cast<UiPublicMember *>(m->member);
+        if (!pub || pub->type != UiPublicMember::Property || !pub->binding) continue;
+        UiObjectInitializer *ci = nullptr;
+        if (auto *ob = cast<UiObjectBinding *>(pub->binding)) ci = ob->initializer;
+        else if (auto *od = cast<UiObjectDefinition *>(pub->binding)) ci = od->initializer;
+        if (!ci) continue;
+        std::string field = qs(pub->name.toString()), cid;
+        std::map<std::string, std::string> pts;
+        for (auto *cm = ci->members; cm; cm = cm->next) {
+            if (auto *sb = cast<UiScriptBinding *>(cm->member)) {
+                if (qname(sb->qualifiedId) != "id") continue;
+                if (auto *es = cast<ExpressionStatement *>(sb->statement))
+                    if (auto *idn = cast<IdentifierExpression *>(es->expression))
+                        cid = qs(idn->name.toString());
+                continue;
+            }
+            if (auto *cp = cast<UiPublicMember *>(cm->member);
+                    cp && cp->type == UiPublicMember::Property && cp->memberType) {
+                const char *dt = dtypeOf(cp->memberType->name.toString());
+                if (dt[0]) pts[qs(cp->name.toString())] = dt;
+            }
+        }
+        if (!cid.empty()) g_childIds[cid] = {field, pts};
+    }
+}
+
 // `Connections { target: X; function onSig(a) { ... } }` is WIRING, not an object to build, so it
 // is desugared into ordinary handlers and reuses the connect machinery. Returns false when the
 // element uses a shape not handled yet (a target other than the enclosing object, or a member that
@@ -626,6 +668,17 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId)
             return readName(qs(fm->name.toString()), out);   // `self.x` reads x however x is stored
+        // `<childId>.<prop>` -> the child object's D field. A child is a real @QObject field, so
+        // this is a direct read, not a meta lookup.
+        if (base) {
+            auto ci = g_childIds.find(qs(base->name.toString()));
+            if (ci != g_childIds.end()) {
+                auto pt = ci->second.propType.find(qs(fm->name.toString()));
+                if (pt == ci->second.propType.end()) return false;
+                out = ci->second.field + "." + qs(fm->name.toString());
+                return true;
+            }
+        }
         // `TypeName.Green` -> the D enum member `Color.Green` (int-valued).
         if (base && qs(base->name.toString()) == g_className) {
             auto it = g_enumMember.find(qs(fm->name.toString()));
@@ -819,6 +872,13 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
         // connects the group's own notify rather than looking for a property of this class.
         else if (base && g_groups.count(qs(base->name.toString())))
             ids.push_back(qs(base->name.toString()) + "." + qs(fm->name.toString()));
+        // `<childId>.<prop>` — the notify belongs to the CHILD, which is compiled later, so record
+        // that it must emit one for this property.
+        else if (base && g_childIds.count(qs(base->name.toString()))) {
+            std::string cid = qs(base->name.toString()), mem = qs(fm->name.toString());
+            g_forceNotify[cid].insert(mem);
+            ids.push_back(cid + "." + mem);
+        }
         // likewise for a member of an ATTACHED object (`TestType.attachedCount`, possibly written
         // through the object's own id).
         else if (auto an = attachedNameOf(fm->base); !an.empty())
@@ -1348,6 +1408,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedBaseProps = g_baseProps;
     auto savedScope = g_scope;
     auto savedPropType = g_propType;
+    auto savedChildIds = g_childIds;
+    g_childIds.clear();
+    prescanChildIds(init);
     auto savedAliasRead = g_aliasRead;
     auto savedAliasDep = g_aliasDep;
     auto savedAliasWrite = g_aliasWrite;
@@ -1979,6 +2042,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 
     std::vector<std::string> propNames, needsNotify;
     for (auto &p : props) propNames.push_back(p.name);
+    // A PARENT binding that reads `<thisObject'sId>.<prop>` needs a change signal on that property,
+    // and only the parent knew that — it recorded the requirement while its own bindings compiled.
+    if (!g_selfId.empty())
+        if (auto fn = g_forceNotify.find(g_selfId); fn != g_forceNotify.end())
+            for (auto &m : fn->second)
+                if (std::find(propNames.begin(), propNames.end(), m) != propNames.end()
+                        && std::find(needsNotify.begin(), needsNotify.end(), m) == needsNotify.end())
+                    needsNotify.push_back(m);
     auto isProp = [&](const std::string &n){ return std::find(propNames.begin(), propNames.end(), n) != propNames.end(); };
 
     std::map<std::string, std::string> ptype;
@@ -2408,6 +2479,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
                     continue;
                 }
+                // `<childId>.<prop>` — the notify belongs to the CHILD object, held in a D field.
+                if (auto dot = d.find('.'); dot != std::string::npos && g_childIds.count(d.substr(0, dot))) {
+                    auto &cr = g_childIds[d.substr(0, dot)];
+                    wire += "        connectMeta(" + cr.field + ", \"" + d.substr(dot + 1)
+                          + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+                    continue;
+                }
                 // `Type.member` — the notify belongs to the ATTACHED object.
                 if (auto dot = d.find('.'); dot != std::string::npos && g_attached.count(d.substr(0, dot))) {
                     std::string tn = d.substr(0, dot), mem = d.substr(dot + 1);
@@ -2483,6 +2561,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_rebound = savedRebound;
     g_hasSelector = savedHasSelector;
     g_rebinds = savedRebinds;
+    g_childIds = savedChildIds;   // the PARENT's child ids: its wiring still needs them
     return node;
 }
 
