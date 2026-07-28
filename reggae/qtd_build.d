@@ -129,6 +129,18 @@ Target gendTarget(string root) {
 // the same output then truncate each other's files. Wrap such a command so it is (a)
 // serialized by an flock on `lock`, and (b) a no-op when `output` is already newer than
 // every `newerThan` input. Single quotes in `cmd` are escaped for the `sh -c '…'` wrapper.
+// Same, for a command that LINKS a binary (its text still contains `$out`). The binary is written
+// to a temporary and moved into place, because `mv` within one filesystem is atomic: a run already
+// executing the old file keeps its inode, and no one can ever observe the half-written one.
+// Writing straight to the final path leaves a window where the file exists but is not yet
+// executable — a concurrent run of a test that uses it then dies with EACCES ("Permission
+// denied"), which is exactly how this surfaced in a full-matrix run of qmltc_Computed_dmd_check.
+string guardedLink(string lock, string cmdWithOut, string output, string[] newerThan) {
+    auto tmp = output ~ ".tmp$$";
+    return guarded(lock, cmdWithOut.replace("$out", tmp) ~ " && mv -f " ~ tmp ~ " " ~ output,
+                   output, newerThan);
+}
+
 string guarded(string lock, string cmd, string output, string[] newerThan) {
     auto test = newerThan.map!(d => "[ " ~ output ~ " -nt " ~ d ~ " ]").join(" && ");
     auto inner = (test.length ? "if " ~ test ~ "; then exit 0; fi; " : "") ~ cmd;

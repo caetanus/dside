@@ -761,3 +761,45 @@ bool tryConnectMeta(A, B)(A sender, string sig, B receiver, string slot) {
     return qtd_connect_meta(qobjOf(sender), (sig ~ "\0").ptr,
                             qobjOf(receiver), (slot ~ "\0").ptr) != 0;
 }
+
+/// Type-checked connect between two D @QObjects, by MEMBER NAME rather than by signature string:
+///
+///     connect!("valueChanged", "setValue")(src, dst);
+///
+/// The signature strings are still what reaches Qt — this builds them at compile time from the
+/// actual declarations, so a misspelled name or a slot that cannot take the signal's arguments is
+/// a build error instead of a runtime throw. The string form (connectMeta) stays: generated code
+/// resolves names that have no D symbol to point at, which is exactly the case qmltc-d is in.
+///
+/// An OVERLOADED slot needs no disambiguation here: the overload is selected by the signal's own
+/// parameter types, so `connect!("withInt", "toggle")` and `connect!("withBool", "toggle")` each
+/// pick the right `toggle`. Qt's pointer-to-member form needs qOverload for this.
+template connect(string signalName, string slotName) {
+    void connect(S, R)(S sender, R receiver) {
+        static assert(__traits(hasMember, S, signalName),
+            "qtmoc: " ~ S.stringof ~ " has no member '" ~ signalName ~ "'");
+        alias SigField = typeof(__traits(getMember, S, signalName));
+        static assert(is(SigField == Signal!A, A...),
+            "qtmoc: " ~ S.stringof ~ "." ~ signalName ~ " is not a Signal");
+        static if (is(SigField == Signal!A, A...)) {
+            static assert(__traits(hasMember, R, slotName),
+                "qtmoc: " ~ R.stringof ~ " has no member '" ~ slotName ~ "'");
+            // Pick the overload whose parameters are exactly the signal's. Qt also allows a slot
+            // to take FEWER arguments, but an exact match is the only one that cannot silently
+            // read the wrong thing, so that is what is offered until the shorter forms are tested.
+            alias Ovls = __traits(getOverloads, R, slotName);
+            enum matches(alias f) = is(Parameters!f == A);
+            alias Picked = Filter!(matches, Ovls);
+            static assert(Picked.length != 0,
+                "qtmoc: no overload of " ~ R.stringof ~ "." ~ slotName ~ " takes ("
+                ~ A.stringof ~ "), which is what " ~ S.stringof ~ "." ~ signalName ~ " emits");
+            static assert(Picked.length == 1,
+                "qtmoc: " ~ R.stringof ~ "." ~ slotName ~ " has several overloads taking ("
+                ~ A.stringof ~ ")");
+            static assert(hasUDA!(Picked[0], Slot),
+                "qtmoc: " ~ R.stringof ~ "." ~ slotName ~ " is not marked @Slot, so it is not in "
+                ~ "the meta-object and nothing could be connected to it");
+            connectMeta(sender, sigString!(signalName, A), receiver, sigString!(slotName, A));
+        }
+    }
+}

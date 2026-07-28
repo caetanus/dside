@@ -433,7 +433,7 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             // proving something about code that is no longer in the tree.
             auto appIns = [genD, appObj, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),
                            buildPath(bind.bdir, "libshims.a")];
-            auto app = Target(appBin, guarded(appBin ~ ".lock", link.replace("$out", appBin), appBin, appIns),
+            auto app = Target(appBin, guardedLink(appBin ~ ".lock", link, appBin, appIns),
                               [gen, appHelper, qtdBindLib(bind, dc), bind.shims]);
             // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
             //    The oracle dumps the EXACT property paths qmltc-d emits (`--labels` -> a .props
@@ -598,8 +598,8 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > $out",
                 [tool, Target(qmlFile), types]);
             auto appBin = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ "_check");
-            auto appCmd = dc ~ " -of=" ~ appBin ~ " " ~ genD ~ " " ~ appD ~ dcLink;
-            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin,
+            auto appCmd = dc ~ " -of=$out " ~ genD ~ " " ~ appD ~ dcLink;
+            auto app = Target(appBin, guardedLink(appBin ~ ".lock", appCmd, appBin,
                 [genD, appD, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"), buildPath(bind.bdir, "libshims.a")]),
                 [gd, Target(appD), qtdBindLib(bind, dc), bind.shims]);
             // 4) run both over the SAME .qml and diff (same --labels/--props protocol as the corpus).
@@ -733,7 +733,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 [tool, Target(qmlFile), regT, bind.gen]);   // regenerating the binding must re-emit
             auto appBin = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ "_check");
             auto appCmd =
-                dc ~ " -of=" ~ appBin ~ " " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
+                dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group"
                 // --whole-archive on the types: their QQmlModuleRegistration is a static object
@@ -741,7 +741,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 // so an ATTACHED object (looked up through Qt's QML type registry) comes back null.
                 ~ " -L--whole-archive -L=" ~ typesLib ~ " -L--no-whole-archive "
                 ~ pkgLibs(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -L-lstdc++";
-            auto app = Target(appBin, guarded(appBin ~ ".lock", appCmd, appBin,
+            auto app = Target(appBin, guardedLink(appBin ~ ".lock", appCmd, appBin,
                 [genD, appObj, typesLib, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),
                  buildPath(bind.bdir, "libshims.a")]),
                 [gd, appHelper, lib, qtdBindLib(bind, dc), bind.shims]);
