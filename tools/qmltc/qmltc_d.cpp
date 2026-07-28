@@ -1495,6 +1495,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // `list<QtObject>` keeps `list` in typeModifier and `QtObject` as the member
                 // type — the modifier is where "is this a list" actually lives.
                 defaultPropIsList = pub->typeModifier == QLatin1String("list");
+                // `default property alias child: self.someObject` — an alias is a REFERENCE, so
+                // the bare child lands on the TARGET. Name the target, since that is what the
+                // engine (and the dump) reaches it through.
+                if (qmlType == QLatin1String("alias"))
+                    if (auto *aes = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr)
+                        if (auto *fm = cast<FieldMemberExpression *>(aes->expression))
+                            if (auto *b = cast<IdentifierExpression *>(fm->base);
+                                    b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId)
+                                defaultPropName = qs(fm->name.toString());
             }
             // `property alias <name>: <target>` — collect; resolved to a bound property (with the
             // target's type) once all property types are known.
@@ -1701,6 +1710,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
             }
             if (atype.empty()) {
+                // An alias onto a declared property we hold no SCALAR type for is an alias to an
+                // OBJECT property. It is a reference to the very object that property already
+                // names, so it contributes no value of its own to compare — accept it and emit
+                // no dump line, rather than refuse the file over a redundant name.
+                bool objectAlias = false;
+                if (auto *fm = cast<FieldMemberExpression *>(al.second))
+                    if (auto *b = cast<IdentifierExpression *>(fm->base);
+                            b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                            && g_scope.count(qs(fm->name.toString())))
+                        objectAlias = true;
+                if (objectAlias) continue;
                 std::fprintf(stderr, "qmltc-d: %s: alias '%s' target is unsupported — skipped (later phase)\n", inPath, al.first.c_str());
                 ++partial; continue;
             }

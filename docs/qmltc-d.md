@@ -420,13 +420,25 @@ as a bare `QtObject` and **vanished from the dump entirely**. The diff was green
 sides were then compared on fewer properties. A differential only proves that what you emit is
 right, never that you emitted enough; the label list is part of what has to be reviewed.
 
+### `default property alias`, and aliases onto object properties
+
+An alias is a reference, so `default property alias child: self.someObject` means the bare child
+lands on **`someObject`** — which is what the engine, and therefore the dump, reaches it through.
+The default-property machinery now resolves an alias target to that name. Fixtures
+`AliasHolder.qml` + `UsesAliasDefault.qml`.
+
+An alias whose target is an OBJECT property is accepted and emits no dump line: it is a second
+name for the very object that property already holds, so it contributes nothing of its own to
+compare. Refusing the file over a redundant name would have been the wrong call —
+`defaultAlias.qml` and `DefaultPropertyAliasChild.qml` from the corpus are both green.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 24 | **24** |
+| pure-QtQml (42) | 26 | **26** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 31 | **31** |
+| **total (108)** | 33 | **33** |
 
 The second column is the only one that means anything, and it is checked by generating,
 compiling and diffing each file against the engine — not by trusting the tool's own exit code.
