@@ -1915,6 +1915,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             const char *dt = dtypeOf(qmlType);
             std::string expr;
             auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+            // `property var x: <expr>` — QML gives `var` no static type; it holds a QVariant. The
+            // type of the INITIALISER is nonetheless known, so a var whose value is a scalar
+            // compiles as that scalar and behaves identically for every read the document makes.
+            // What is NOT supported is a var that changes type later (QML allows it, a typed D
+            // field does not) or one holding an object/array — those still fail loudly rather
+            // than being guessed into the wrong type.
+            std::string varInferred;
+            if (qmlType == "var" && es) {
+                std::map<std::string, std::string> pt0;
+                for (auto &pp : props) pt0[pp.name] = pp.dtype;
+                varInferred = inferType(es->expression, pt0);
+                if (!varInferred.empty()) dt = varInferred.c_str();
+            }
             // `property list<int> nums: [...]` — a list of a VALUE type. Held as a plain D array
             // field so bindings can read it (see g_valueLists for why it is not an @Property).
             if (dt[0] && pub->typeModifier == QLatin1String("list") && !pub->isDefaultMember()) {
@@ -1947,9 +1960,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (auto *od = cast<UiObjectDefinition *>(pub->binding)) { childBindings.push_back({name, od->initializer}); continue; }
             }
             if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
-            if (dt[0] && pub->statement && literalOf(pub->statement, qmlType, expr)) {
+            // The VALUE must compile as the inferred type too, or `property var n: 42` emits a
+            // double literal into an int field.
+            QString effType = varInferred.empty() ? qmlType : QString::fromStdString(varInferred);
+            if (dt[0] && pub->statement && literalOf(pub->statement, effType, expr)) {
                 props.push_back({name, dt, expr, false, {}});
-            } else if (dt[0] && es && compileExpr(es->expression, qmlType, expr)) {
+            } else if (dt[0] && es && compileExpr(es->expression, effType, expr)) {
                 std::vector<std::string> ids; collectIds(es->expression, ids);
                 props.push_back({name, dt, expr, true, ids});
             } else {
