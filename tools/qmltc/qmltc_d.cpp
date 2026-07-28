@@ -1528,6 +1528,63 @@ struct ObjNode {
 // (and any nested child classes) to `classes`. Recursive: a child object `field: Type { ... }`
 // (a UiObjectBinding) becomes a nested @QObject `cls_field` held in a plain field and constructed
 // in __qmltcWire, so the whole tree materialises without the QML engine. Returns the ObjNode.
+// One `State`: its name and the overrides its PropertyChanges blocks declare, as raw expressions
+// (compiled later, once the property types of the enclosing object are known).
+struct StateOverride { std::string prop; ExpressionNode *value; };
+struct StateEntry { std::string name; std::vector<StateOverride> overrides; };
+
+// Reads `states: State { ... }` (or a list of them) into a table. Returns false for any shape not
+// handled — a target other than the enclosing object, or a member that is neither `name` nor a
+// PropertyChanges — so it is reported instead of silently producing a state that does nothing.
+static bool collectStates(UiObjectMember *binding, std::vector<StateEntry> &out) {
+    std::vector<UiObjectInitializer *> stateInits;
+    if (auto *ob = cast<UiObjectBinding *>(binding)) {
+        if (!ob->qualifiedTypeNameId || qname(ob->qualifiedTypeNameId) != "State") return false;
+        stateInits.push_back(ob->initializer);
+    } else if (auto *arr = cast<UiArrayBinding *>(binding)) {
+        for (auto *m = arr->members; m; m = m->next)
+            if (auto *od = cast<UiObjectDefinition *>(m->member)) {
+                if (!od->qualifiedTypeNameId || qname(od->qualifiedTypeNameId) != "State") return false;
+                stateInits.push_back(od->initializer);
+            }
+    } else return false;
+
+    for (auto *si : stateInits) {
+        StateEntry e;
+        for (auto *m = si ? si->members : nullptr; m; m = m->next) {
+            if (auto *sb = cast<UiScriptBinding *>(m->member)) {
+                if (qname(sb->qualifiedId) != "name") return false;
+                auto *es = cast<ExpressionStatement *>(sb->statement);
+                auto *sl = es ? cast<StringLiteral *>(es->expression) : nullptr;
+                if (!sl) return false;
+                e.name = qs(sl->value.toString());
+                continue;
+            }
+            auto *od = cast<UiObjectDefinition *>(m->member);
+            if (!od || !od->qualifiedTypeNameId || qname(od->qualifiedTypeNameId) != "PropertyChanges")
+                return false;
+            for (auto *pm = od->initializer ? od->initializer->members : nullptr; pm; pm = pm->next) {
+                auto *psb = cast<UiScriptBinding *>(pm->member);
+                if (!psb) return false;
+                std::string pn = qname(psb->qualifiedId);
+                auto *pes = cast<ExpressionStatement *>(psb->statement);
+                if (!pes) return false;
+                if (pn == "target") {
+                    // Only the enclosing object: anything else needs a reference this object does
+                    // not hold, and wiring it to the wrong target would be worse than refusing.
+                    auto *idx = cast<IdentifierExpression *>(pes->expression);
+                    if (!idx || g_selfId.empty() || qs(idx->name.toString()) != g_selfId) return false;
+                    continue;
+                }
+                e.overrides.push_back({pn, pes->expression});
+            }
+        }
+        if (e.name.empty()) return false;
+        out.push_back(e);
+    }
+    return !out.empty();
+}
+
 static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              std::string &classes, int &partial, const char *inPath,
                              const std::string &boundBase = "", const DType *dBase = nullptr) {
@@ -1767,6 +1824,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // hold the same value, which is how it went unnoticed once already.
     struct ChildBinding { std::string field; UiObjectInitializer *init; std::string type; };
     std::vector<ChildBinding> childBindings;     // (field, init)
+    std::vector<StateEntry> stateTable;          // `states:` compiled as data, not as objects
+    std::string initialState;                    // the document's `state: "..."`, if any
     std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
     std::vector<std::pair<std::string, UiObjectInitializer *>> attachedKidBindings; // ("Type.member", init)
     struct ArrayElem { std::string prop; int idx; UiObjectDefinition *def; };
@@ -1825,7 +1884,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     continue;
                 }
                 if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
-                    if (dot == std::string::npos) { rawBaseAssigns.push_back({hid, es->expression}); continue; }
+                    if (dot == std::string::npos) {
+                        // `state: "big"` selects which State's overrides apply. It is recorded
+                        // rather than assigned: assigning the base property would set the name
+                        // without applying anything, which reads as a state that silently did
+                        // nothing.
+                        if (hid == "state")
+                            if (auto *sl = cast<StringLiteral *>(es->expression)) {
+                                initialState = qs(sl->value.toString());
+                                rawBaseAssigns.push_back({hid, es->expression});
+                                continue;
+                            }
+                        rawBaseAssigns.push_back({hid, es->expression}); continue;
+                    }
                     if (g_groups.count(head)) { rawGroupAssigns.push_back({hid, es->expression}); continue; }
                     // `vgroup.member: <expr>` — same shape, but it must compile to a
                     // read-modify-write on the VALUE (see rawValueGroupAssigns below).
@@ -1878,6 +1949,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     groupKidBindings.push_back({qid, ob->initializer});
                     continue;
                 }
+            }
+            // `states: State { name: "x"; PropertyChanges { target: <self>; p: v } }` is not an
+            // object tree to build — it is a table of OVERRIDES the engine applies to a target when
+            // that state is entered. Compiled as objects it produced labels the engine has no
+            // property for (a PropertyChanges holds no `width` of its own).
+            if (qname(ob->qualifiedId) == "states") {
+                if (!collectStates(m->member, stateTable)) {
+                    std::fprintf(stderr, "qmltc-d: %s: `states` in %s uses a shape not compiled yet "
+                                 "(only State { name; PropertyChanges { target: <this object>; ... } })"
+                                 " — skipped (later phase)\n", inPath, cls.c_str());
+                    ++partial;
+                }
+                continue;
             }
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer,
                                          ob->qualifiedTypeNameId ? qname(ob->qualifiedTypeNameId) : ""});
@@ -2750,6 +2834,39 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
         wire += crossConnects;   // live child-alias connects (cross-object)
         for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
+        // A state named by `state:` is applied AFTER the declarative bindings have run, which is
+        // the order the engine uses: the state's overrides win over the base values.
+        // Only the initial state is applied; changing `state` at runtime (and reverting the
+        // previous state's overrides) is the next step and is not compiled yet.
+        if (!stateTable.empty()) {
+            if (initialState.empty()) {
+                std::fprintf(stderr, "qmltc-d: %s: %s declares states but no initial `state:` — nothing "
+                             "to apply, and switching states at runtime is not compiled yet "
+                             "(later phase)\n", inPath, cls.c_str());
+                ++partial;
+            }
+            for (auto &st : stateTable) {
+                if (st.name != initialState) continue;
+                for (auto &ov : st.overrides) {
+                    std::string ty = isProp(ov.prop) ? ptype[ov.prop]
+                                   : (g_baseProps.count(ov.prop) ? g_baseProps[ov.prop] : "");
+                    std::string val;
+                    if (ty.empty() || !compileExpr(ov.value, QString::fromStdString(ty), val)) {
+                        std::fprintf(stderr, "qmltc-d: %s: state '%s' override of '%s' in %s not yet "
+                                     "supported — skipped (later phase)\n", inPath, st.name.c_str(),
+                                     ov.prop.c_str(), cls.c_str());
+                        ++partial; continue;
+                    }
+                    if (isProp(ov.prop)) {
+                        wire += "        " + ov.prop + " = " + val + ";\n";
+                        if (std::find(needsNotify.begin(), needsNotify.end(), ov.prop) != needsNotify.end())
+                            wire += "        " + ov.prop + "Changed.emit();\n";
+                    } else {
+                        wire += "        setProp(this, \"" + ov.prop + "\", " + val + ");\n";
+                    }
+                }
+            }
+        }
         wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
     }

@@ -637,8 +637,16 @@ Transition included. IntValidator and DoubleValidator do not, and the generator 
 it cannot marshal, and a trampoline missing a pure virtual would be abstract. Supporting
 non-const reference parameters is a generator change, not a qmltc-d one.
 
-So States are blocked by layer 4 alone: the objects construct, but PropertyChanges holds
-OVERRIDES applied to a target on entry and reverted on exit, not properties of its own.
+Layer 4, STATES: the initial state is compiled. `states:` is read as DATA — a table of
+overrides — not built as objects, the same treatment Connections gets, because a State is not
+something the document reads back. `state: "big"` then applies that state's overrides after the
+declarative bindings have run, which is the order the engine uses. QState.qml compares a
+QML-declared property (tag) and a base C++ one (width), both matching the engine.
+
+NOT compiled yet, and reported rather than assumed: switching `state` at RUNTIME, which also
+requires reverting the previous state's overrides (the engine restores the base values on exit);
+a `target:` other than the enclosing object; and `states` with no initial `state:` — that last
+one is flagged PARTIAL, since a state table nothing selects would otherwise look applied.
 
 Original analysis (layers, each uncovered by fixing the one before it):
   1. carry the child's QML type through the property-binding path (done and reverted —
