@@ -77,6 +77,14 @@ uint     clang_isPODType(CXType);                // trivially-copyable POD -> bi
 uint     clang_CXXMethod_isDeleted(CXCursor);    // `= delete`d special member
 uint     clang_CXXMethod_isDefaulted(CXCursor);  // `= default`ed special member (trivial)
 int      clang_getCursorVisibility(CXCursor);    // 0=invalid 1=hidden 2=protected 3=default (exported)
+
+// Diagnostics — so the generator can refuse to emit from a translation unit that did not parse.
+alias CXDiagnostic = void*;
+uint     clang_getNumDiagnostics(CXTranslationUnit);
+CXDiagnostic clang_getDiagnostic(CXTranslationUnit, uint);
+void     clang_disposeDiagnostic(CXDiagnostic);
+uint     clang_getDiagnosticSeverity(CXDiagnostic);   // 3 = Error, 4 = Fatal
+CXString clang_formatDiagnostic(CXDiagnostic, uint options);
 int      clang_Cursor_getNumArguments(CXCursor);
 CXCursor clang_Cursor_getArgument(CXCursor, uint);
 int      clang_Type_getNumTemplateArguments(CXType);

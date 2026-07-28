@@ -107,6 +107,30 @@ void main(string[] args) {
         cast(const(char*)*) cargv.ptr, cast(int) cargv.length, &uf, 1, 0x02 /*Incomplete*/);
     auto tuCursor = clang_getTranslationUnitCursor(tu);
 
+    // FAIL CLOSED on a translation unit that did not parse. libclang happily returns a TU with
+    // fatal errors (a header it could not find yields an EMPTY one), and discovery then reports
+    // "0 classes" and exits 0 — a binding with nothing in it, which the build accepts because it
+    // pipes this output to /dev/null. That is how a spec whose include path stopped resolving can
+    // rot invisibly.
+    {
+        int fatal = 0;
+        auto nd = clang_getNumDiagnostics(tu);
+        foreach (i; 0 .. nd) {
+            auto d = clang_getDiagnostic(tu, i);
+            if (clang_getDiagnosticSeverity(d) >= 3) {   // Error = 3, Fatal = 4
+                if (fatal < 10) stderr.writefln("gend: %s", clang_formatDiagnostic(d, 0).str);
+                fatal++;
+            }
+            clang_disposeDiagnostic(d);
+        }
+        if (fatal) {
+            stderr.writefln("gend: %s: %d parse error(s) — refusing to emit a binding from an "
+                ~ "incomplete translation unit", specPath, fatal);
+            import core.stdc.stdlib : exit;
+            exit(1);
+        }
+    }
+
     // resolve target class cursors
     CXCursor[] targets; string[] includes;
     CXCursor[] freeFns;   // namespace/global free functions (discovery mode only)

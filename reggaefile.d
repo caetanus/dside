@@ -160,6 +160,22 @@ Build reggaeBuild() {
 // QUiLoader.load() for every .ui. The oracle load + the tree serializer live in a C++
 // helper (links Qt6UiTools); the D side just diffs the two dumps. Built against the
 // non-wrap widgets binding `ex`, per compiler.
+// The QUiLoader dump helper is used by BOTH uic differentials. Declaring it twice with the same
+// output and no dependencies made reggae execute it once per reaching top-level target — four
+// concurrent `clang++ -o` on one path per build, while other targets linked against it. One
+// memoised, guarded node instead.
+private Target[string] _uidumpObjs;
+Target uidumpObj(string root, QtdBinding ex, string dc) {
+    auto o = buildPath(ex.bdir, "uidump-" ~ dc ~ ".o");
+    if (auto p = o in _uidumpObjs) return *p;
+    auto src = buildPath(root, "tests", "uic", "qtd_uidump.cpp");
+    auto cf = pkgCflags(["Qt6UiTools", "Qt6Widgets"]) ~ " -std=c++17 -fPIC -O2";
+    auto t = Target(o, guarded(o ~ ".lock", "clang++ " ~ cf ~ " -c " ~ src ~ " -o " ~ o, o, [src]),
+                    [Target(src)]);
+    _uidumpObjs[o] = t;
+    return t;
+}
+
 Target[] uicheckTargets(string root, QtdBinding ex) {
     auto here = buildPath(root, "tests", "uic");
     auto cf = pkgCflags(["Qt6UiTools", "Qt6Widgets"]) ~ " -std=c++17 -fPIC -O2";
@@ -169,9 +185,8 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
     auto checkD = buildPath(here, "uicheck.d");
     Target[] ts;
     foreach (dc; DCS) {
-        auto uidumpO = buildPath(ex.bdir, "uidump-" ~ dc ~ ".o");   // absolute -> reggae keeps it here
-        auto uidumpT = Target(uidumpO,
-            "clang++ " ~ cf ~ " -c " ~ buildPath(here, "qtd_uidump.cpp") ~ " -o $out", []);
+        auto uidumpO = buildPath(ex.bdir, "uidump-" ~ dc ~ ".o");
+        auto uidumpT = uidumpObj(root, ex, dc);
         auto lib = qtdBindLib(ex, dc);
         auto bin = Target("uicheck-" ~ dc ~ "-bin",
             dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
@@ -196,8 +211,7 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
     Target[] ts;
     foreach (dc; DCS) {
         auto uidumpO = buildPath(ex.bdir, "uidump-" ~ dc ~ ".o");
-        auto uidumpT = Target(uidumpO,
-            "clang++ " ~ cf ~ " -c " ~ buildPath(here, "qtd_uidump.cpp") ~ " -o $out", []);
+        auto uidumpT = uidumpObj(root, ex, dc);
         auto lib = qtdBindLib(ex, dc);
         auto bin = Target("corpus-check-" ~ dc ~ "-bin",
             dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
