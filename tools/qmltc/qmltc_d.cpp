@@ -1707,6 +1707,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
     }
 
+    // A bound Qt base holds bare children in its own default property — `data` for anything
+    // QQuickItem-derived — and that, not `children()[i]`, is the path the engine resolves. The
+    // `@N` form is kept only for a plain @QObject root, which has no such property.
+    if (defaultKidLabel.empty() && !boundBase.empty() && !defaultKids.empty()) {
+        defaultKidLabel = "data";
+        defaultKidIsList = true;
+    }
+
     // Default-property children: a bare `Type { }`. The child type is mapped to a bound Qt type
     // (Item -> QQuickItem) and compiled as a nested subclass in its own field, built in __qmltcWire.
     // For the differential we don't need to reparent (the D dump reads the field directly; the

@@ -24,11 +24,15 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <set>
 
 // Recurse the object tree: dump each QML-declared scalar property as `<prefix>name\tvalue`, and
 // descend into QObject* properties (a child object) with a dotted prefix — matching qmltc-d's
 // generated dump, which reads o.kid.y directly.
 static void dumpObj(QObject *obj, const std::string &prefix, std::vector<std::string> &lines);
+static void enumPaths(QObject *obj, const std::string &prefix, std::vector<std::string> &out, int depth);
+
+static std::string qs(const QString &s) { return s.toStdString(); }
 
 static std::string fmt(const QVariant &v) {
     switch (v.typeId()) {
@@ -70,12 +74,14 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
     // exact property PATHS to dump (one per line). With --props we read those (incl. base C++
     // Q_PROPERTYs the QML file set, which auto-discovery misses); without it we auto-discover the
     // QML-declared properties.
-    std::string propsFile;
+    std::string propsFile, verifyFile;
     QString attachedUri;
     std::vector<QString> muts;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--props" && i + 1 < argc) { propsFile = argv[++i]; continue; }
+        // Cross-check a label file against what the engine actually built (see enumPaths).
+        if (a == "--verify-props" && i + 1 < argc) { verifyFile = argv[++i]; continue; }
         // The module whose types may appear as ATTACHED path segments.
         if (a == "--attached-uri" && i + 1 < argc) { attachedUri = QString::fromUtf8(argv[++i]); continue; }
         muts.push_back(QString::fromUtf8(argv[i]));
@@ -138,6 +144,37 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                          m->propertyOffset(), m->propertyCount(),
                          m == obj->metaObject() ? "  <- metaObject()" : "");
 
+    if (!verifyFile.empty()) {
+        // Compare COVERAGE, not spelling. The same object is reachable by several routes — a
+        // property-held child is also a QObject child, an attached object is a child too — so
+        // requiring the label's PATH to match the enumerator's would report divergences that are
+        // only naming. What has to hold is that every declared (object, property) the engine
+        // built is named by SOME label.
+        std::vector<std::string> have;
+        enumPaths(obj, "", have, 0);
+        std::set<std::pair<QObject *, std::string>> covered;
+        std::ifstream f(verifyFile);
+        std::vector<std::string> labels;
+        for (std::string l; std::getline(f, l);) if (!l.empty()) labels.push_back(l);
+        for (const auto &l : labels) {
+            QStringList parts = QString::fromStdString(l).split('.');
+            if (QObject *cur = walk(obj, parts)) covered.insert({cur, qs(parts.last())});
+        }
+        int missing = 0;
+        for (const auto &pth : have) {
+            auto dot = pth.rfind('.');
+            QStringList parts = QString::fromStdString(pth).split('.');
+            QObject *owner = walk(obj, parts);
+            std::string leaf = dot == std::string::npos ? pth : pth.substr(dot + 1);
+            if (owner && covered.count({owner, leaf})) continue;
+            std::fprintf(stderr, "qmlvalues: engine has '%s', no label\n", pth.c_str());
+            ++missing;
+        }
+        if (have.empty() && labels.empty())
+            std::fprintf(stderr, "qmlvalues: nothing to compare — the engine built no QML-declared scalar\n");
+        return missing ? 4 : 0;
+    }
+
     std::vector<std::string> lines;
     if (!propsFile.empty()) {
         std::ifstream f(propsFile);
@@ -145,8 +182,22 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
         while (std::getline(f, label)) {
             if (label.empty()) continue;
             QStringList parts = QString::fromStdString(label).split('.');
-            if (QObject *cur = walk(obj, parts))
-                lines.push_back(label + "\t" + fmt(cur->property(parts.last().toUtf8().constData())));
+            QObject *cur = walk(obj, parts);
+            // A label the engine cannot resolve used to be OMITTED, which makes a mismatch look
+            // like agreement whenever the other side also prints nothing — and an unchecked leaf
+            // read returns an invalid QVariant that formats as "", matching any empty string.
+            // Both are now hard errors: the differential must compare, or fail.
+            if (!cur) {
+                std::fprintf(stderr, "qmlvalues: no object at path '%s'\n", label.c_str());
+                return 3;
+            }
+            auto leaf = parts.last().toUtf8();
+            if (cur->metaObject()->indexOfProperty(leaf.constData()) < 0) {
+                std::fprintf(stderr, "qmlvalues: '%s' has no property '%s' (class %s)\n",
+                             label.c_str(), leaf.constData(), cur->metaObject()->className());
+                return 3;
+            }
+            lines.push_back(label + "\t" + fmt(cur->property(leaf.constData())));
         }
     } else {
         dumpObj(obj, "", lines);
@@ -161,6 +212,60 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
 #ifndef QTD_QMLVALUES_NO_MAIN
 int main(int argc, char **argv) { return qtd_qmlvalues_main(argc, argv); }
 #endif
+
+// Every QML-declared SCALAR the engine built, as the dotted path the label protocol would use.
+// This is the independent half of the differential: the label list is chosen by the tool under
+// test, so on its own it can only prove that what it emitted is right — never that it emitted
+// enough. Comparing this set against the labels detects the whole class of "both sides shrank"
+// false greens, including a file whose label set is EMPTY.
+static void enumPaths(QObject *obj, const std::string &prefix, std::vector<std::string> &out, int depth) {
+    // One object is often reachable by two routes — a property-held child is ALSO a QObject child,
+    // so `kid.y` and `@0.y` name the same thing. Visit each object once; the first (property)
+    // route wins, which is the one the label protocol prefers.
+    static std::set<QObject *> seen;
+    if (depth == 0) seen.clear();
+    if (!obj || depth > 8 || !seen.insert(obj).second) return;
+    const QMetaObject *mo = obj->metaObject();
+    // Only members the DOCUMENT declared. Qt names the meta-object it builds for a document
+    // `<Type>_QML_<n>`, so that marker separates "declared in this .qml" from the C++ properties
+    // a bound base contributes — a Text brings ~35 of its own, which are not the document's and
+    // are not qmltc-d's to reproduce.
+    bool declared = QByteArray(mo->className()).contains("_QML");
+    // Walk EVERY property, but only report a SCALAR when the document declared it. An
+    // object- or list-valued property must be followed regardless of where it was declared —
+    // a base type's `default property QtObject child` is how the document's child is reached,
+    // and skipping it would make that child look unreachable except as a bare `@N`.
+    for (int i = 0; i < mo->propertyCount(); ++i) {
+        QMetaProperty p = mo->property(i);
+        std::string path = prefix + p.name();
+        QVariant v = p.read(obj);
+        if (v.metaType().flags() & QMetaType::PointerToQObject) {
+            // An object-valued property carries no scalar of its own; recurse for its members.
+            enumPaths(v.value<QObject *>(), path + ".", out, depth + 1);
+            continue;
+        }
+        // A list property holds objects, never a scalar of its own — recurse per element. An
+        // EMPTY list must still not be reported as a missing scalar, so test the declared type
+        // rather than whether the value happens to convert.
+        if (QByteArray(p.typeName()).startsWith("QQmlListProperty")) {
+            QQmlListReference ref(obj, p.name());
+            for (int k = 0; ref.isValid() && k < ref.count(); ++k)
+                enumPaths(ref.at(k), path + "[" + std::to_string(k) + "].", out, depth + 1);
+            continue;
+        }
+        if (declared && i >= mo->propertyOffset()) out.push_back(path);
+    }
+    // Bare children the document declared. A bound C++ type also creates children of its own
+    // (a TextEdit makes a QTextDocument); those carry no QML-declared property, so the
+    // propertyOffset test below skips them — which is also why `@N` indices can disagree.
+    int n = 0;
+    for (QObject *c : obj->children()) {
+        const QMetaObject *cm = c->metaObject();
+        if (cm->propertyOffset() < cm->propertyCount())
+            enumPaths(c, prefix + "@" + std::to_string(n) + ".", out, depth + 1);
+        ++n;
+    }
+}
 
 void dumpObj(QObject *obj, const std::string &prefix, std::vector<std::string> &lines) {
     // QML-declared properties live at [propertyOffset, propertyCount) — above everything the C++

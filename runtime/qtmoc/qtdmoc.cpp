@@ -26,8 +26,10 @@
 #  define QTD_HAVE_QML 1
 #  include <QtQml/qqmlprivate.h>
 #  include <QtQml/qqmllist.h>
-#  include <QtQml/private/qqmlmetatype_p.h>
-#  include <QtQml/qqml.h>
+#  if QT_VERSION >= 0x060000
+#    include <QtQml/private/qqmlmetatype_p.h>
+#    include <QtQml/qqml.h>
+#  endif
 #  include <array>
 #  include <utility>
 #endif
@@ -322,7 +324,12 @@ void* qtd_prop_get_obj(void* o, const char* n) {
     if (!o) return nullptr;
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
-#ifdef QTD_HAVE_QML
+// Attached-property lookup needs QQmlMetaType::qmlType(QString, QString, QTypeRevision) and
+// qmlAttachedPropertiesObject — QTypeRevision is Qt6-only and Qt5's QQmlMetaType has no
+// (QString, QString, …) overload at all. Qt5 gets the stub; a Qt5 document using an attached
+// property fails to resolve it rather than failing to build. (Same shape as the QT_VERSION
+// branch in the RegisterType block below.)
+#if defined(QTD_HAVE_QML) && QT_VERSION >= 0x060000
 // The ATTACHED-properties object a QML type provides for `obj` (`TestType.attachedCount` in QML).
 // The type is looked up BY NAME in Qt's own QML type registry, so this works for any registered
 // type without the D side knowing it at compile time. Returns null when the type is unknown or
@@ -339,6 +346,8 @@ void* qtd_attached_obj(void* obj, const char* uri, const char* typeName) {
     // object. Calling the raw function gave a fresh, empty attachment on every access.
     return qmlAttachedPropertiesObject(static_cast<QObject*>(obj), fn, /*create*/ true);
 }
+#else
+void* qtd_attached_obj(void*, const char*, const char*) { return nullptr; }
 #endif
 
 // Reset a property to its default — what `prop: undefined` means in QML. It must go through

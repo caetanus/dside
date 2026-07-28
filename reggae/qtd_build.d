@@ -123,9 +123,15 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     auto stamp = buildPath(bdir, "gen.stamp");
     auto gend = gendPath(root);
     auto genCmd = "rm -rf " ~ genDir ~ " && " ~ gend ~ " " ~ specPath ~ " >/dev/null && touch " ~ stamp;
+    // The generator COPIES these runtime sources verbatim into the binding (emit.d), so they are
+    // build INPUTS. Without the edge, editing the runtime leaves every already-generated binding
+    // on the old copy and the whole matrix goes green against code that is no longer in the tree —
+    // which is exactly how a Qt5 build break stayed hidden.
+    auto runtimeSrc = ["qtmoc/qtdmoc.cpp", "qtmoc/qtmoc.d", "holder/qtd_holder.cpp", "holder/holder.d"]
+        .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
     auto gen = Target(stamp,
-        guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, gend]),
-        [Target(specPath), Target(gend)]);
+        guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, gend] ~ runtimeSrc),
+        [Target(specPath), Target(gend)] ~ runtimeSrc.map!(f => Target(f)).array);
 
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
     // headers. Shims are C++ -> identical for ldc2/dmd, so this target is shared.

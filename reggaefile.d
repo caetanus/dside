@@ -400,8 +400,12 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             auto b = genD ~ ".qmlvals";
             auto props = genD ~ ".props";
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > " ~ props ~ " 2>/dev/null; ";
+            // The diff alone can only prove that what the tool EMITTED matches. --verify-props
+            // is the independent half: it fails if the engine built a QML-declared member the
+            // label list never mentions, which is the "both sides shrank" false green.
             auto cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
             // 4) LIVE-BINDING differential: if a `<Name>.set` sidecar lists `name=value` mutations,
@@ -560,6 +564,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             ts ~= Target.phony("qmltcd-" ~ name ~ "-" ~ dc,
                 "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
                 ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
             // 5) LIVE-binding differential: mutate both, re-diff. A binding that lost its
             //    connection to the BASE type's notify signal diverges here.
@@ -696,6 +701,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
             ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc,
                 "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props ~ " --attached-uri QmltcTests"
                 ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {

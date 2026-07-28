@@ -461,6 +461,31 @@ both sides (the oracle via `QMetaObject::invokeMethod`). Without it there was no
 anything a method does, which is exactly where imperative binding changes live. Fixtures
 `Rebind.qml` / `Unbind.qml`.
 
+## The differential's blind spot, and the gate that closes it
+
+A differential proves that what the tool EMITTED matches the engine. It cannot prove the tool
+emitted ENOUGH — the label list is chosen by the tool under test, so anything it silently omits is
+compared on neither side and the diff goes green on less. An audit found this is not theoretical:
+8 corpus files counted as "verified green" compared **zero** properties.
+
+Every differential target now also runs `qmlvalues --verify-props`, which enumerates what the
+ENGINE actually built — every QML-declared property of every reachable object, following object
+and `list<>` properties and bare children — and fails if any of it has no label. Coverage is
+compared by (object, property) IDENTITY rather than by path spelling, because one object is
+legitimately reachable by several routes (a property-held child is also a QObject child; an
+attached object is a child too).
+
+The oracle also stopped degrading: in `--props` mode an unresolvable path, or a leaf the object
+does not actually have, is now a hard error. Previously it omitted the line — and an unchecked
+leaf read returns an invalid QVariant that formats as `""`, so a mismatch could look like
+agreement whenever the other side also printed nothing.
+
+Turning the gate on immediately found a real modelling error: bare children of a BOUND type were
+labelled `@N` (= `children()[N]`), but the engine holds them in that type's own default property
+(`data` for anything QQuickItem-derived). The two coincide only when the type creates no internal
+QObject children of its own — a `TextEdit` makes a `QTextDocument` first, and the `@N` index would
+have pointed at it. Bound-type default children are now labelled `data[i]`.
+
 ## Corpus scoreboard (every number build+diff VERIFIED)
 
 | corpus half | compile-clean | verified build+diff green |
