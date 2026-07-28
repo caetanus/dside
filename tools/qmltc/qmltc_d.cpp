@@ -962,9 +962,12 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
     // selector records it so the declarative recompute stops driving the property.
     if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
         if (auto *lhs = cast<IdentifierExpression *>(bin->left);
-                lhs && g_hasSelector.count(qs(lhs->name.toString()))
-                && !cast<CallExpression *>(bin->right)) {
+                lhs && !cast<CallExpression *>(bin->right)
+                && (g_hasSelector.count(qs(lhs->name.toString()))
+                    || (g_aliasDep.count(qs(lhs->name.toString()))
+                        && g_hasSelector.count(g_aliasDep[qs(lhs->name.toString())])))) {
             std::string nm = qs(lhs->name.toString()), val;
+            if (auto a = g_aliasDep.find(nm); a != g_aliasDep.end()) nm = a->second;
             auto ty = g_propType.count(nm) ? g_propType[nm] : std::string();
             if (ty.empty() || !compileExpr(bin->right, QString::fromStdString(ty), val)) return false;
             body += "        __bind_" + nm + " = -1;\n        " + nm + " = " + val + ";\n";
@@ -981,6 +984,7 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                             b && qs(b->name.toString()) == "Qt"
                             && qs(fm->name.toString()) == "binding" && call->arguments) {
                         std::string nm = qs(lhs->name.toString());
+                        if (auto a = g_aliasDep.find(nm); a != g_aliasDep.end()) nm = a->second;
                         auto *fe = call->arguments->expression->asFunctionDefinition();
                         auto *ret = fe && fe->body ? findReturnExpr(fe->body) : nullptr;
                         auto ty = g_propType.count(nm) ? g_propType[nm] : std::string();
@@ -1377,38 +1381,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &sg : g_signals) g_scope.insert(sg);
         g_propType = pt0;
         for (auto &bp : g_baseProps) g_propType[bp.first] = bp.second;
-        // Which properties does a function reassign? Their recompute needs a selector, and that
-        // has to be known before the property is emitted — hence a scan rather than discovery
-        // during compilation.
-        {
-            std::function<void(Node *)> scan = [&](Node *n) {
-                if (!n) return;
-                if (auto *blk = cast<Block *>(n)) { for (auto *st = blk->statements; st; st = st->next) scan(st->statement); return; }
-                if (auto *iff = cast<IfStatement *>(n)) { scan(iff->ok); scan(iff->ko); return; }
-                if (auto *es = cast<ExpressionStatement *>(n))
-                    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
-                        if (auto *lhs = cast<IdentifierExpression *>(bin->left);
-                                lhs && pt0.count(qs(lhs->name.toString())))
-                            g_rebound.insert(qs(lhs->name.toString()));
-            };
-            for (auto *m = init ? init->members : nullptr; m; m = m->next)
-                if (auto *se = cast<UiSourceElement *>(m->member))
-                    if (auto *fn = se->sourceElement->asFunctionDefinition())
-                        for (auto *st = fn->body; st; st = st->next) scan(st->statement);
-        }
-        // A selector only exists for a reassigned property that carries a BINDING (a
-        // literal-initialised one is just a field). Decide it here: the methods that consult it
-        // are compiled before the properties are emitted.
-        for (auto *m = init ? init->members : nullptr; m; m = m->next)
-            if (auto *pub = cast<UiPublicMember *>(m->member);
-                    pub && pub->type == UiPublicMember::Property && g_rebound.count(qs(pub->name.toString())))
-                if (auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
-                    auto *e = es->expression;
-                    if (auto *u = cast<UnaryMinusExpression *>(e)) e = u->expression;
-                    bool literal = cast<NumericLiteral *>(e) || cast<StringLiteral *>(e)
-                                || cast<TrueLiteral *>(e) || cast<FalseLiteral *>(e);
-                    if (!literal) g_hasSelector.insert(qs(pub->name.toString()));
-                }
         // Pre-resolve aliases whose target needs no child object, so a binding can USE the alias.
         for (auto *m = init ? init->members : nullptr; m; m = m->next) {
             auto *pub = cast<UiPublicMember *>(m->member);
@@ -1447,6 +1419,54 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             g_scope.insert(nm);
             g_propType[nm] = ty;
         }
+        // Function return types were inferred before the aliases existed, so a function whose
+        // return expression IS an alias came out untyped. Redo that pass now that g_propType
+        // knows the aliases (and the base's properties) too.
+        for (auto *m = init ? init->members : nullptr; m; m = m->next)
+            if (auto *se = cast<UiSourceElement *>(m->member))
+                if (auto *fn = se->sourceElement->asFunctionDefinition())
+                    if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
+                        auto pt = g_propType;
+                        for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;
+                        auto ty2 = inferType(rexpr, pt);
+                        if (!ty2.empty()) g_funcRet[qs(fn->name.toString())] = ty2;
+                    }
+        // Which properties does a function reassign? Their recompute needs a selector, and that
+        // has to be known before the property is emitted — hence a scan rather than discovery
+        // during compilation. Assigning through an ALIAS reassigns the alias's TARGET, so the
+        // scan resolves aliases (which is why it runs after they are known).
+        {
+            std::function<void(Node *)> scan = [&](Node *n) {
+                if (!n) return;
+                if (auto *blk = cast<Block *>(n)) { for (auto *st = blk->statements; st; st = st->next) scan(st->statement); return; }
+                if (auto *iff = cast<IfStatement *>(n)) { scan(iff->ok); scan(iff->ko); return; }
+                if (auto *es = cast<ExpressionStatement *>(n))
+                    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
+                        if (auto *lhs = cast<IdentifierExpression *>(bin->left)) {
+                            auto nm = qs(lhs->name.toString());
+                            auto a = g_aliasDep.find(nm);
+                            if (a != g_aliasDep.end()) nm = a->second;
+                            if (pt0.count(nm)) g_rebound.insert(nm);
+                        }
+            };
+            for (auto *m = init ? init->members : nullptr; m; m = m->next)
+                if (auto *se = cast<UiSourceElement *>(m->member))
+                    if (auto *fn = se->sourceElement->asFunctionDefinition())
+                        for (auto *st = fn->body; st; st = st->next) scan(st->statement);
+        }
+        // A selector only exists for a reassigned property that carries a BINDING (a
+        // literal-initialised one is just a field). Decide it here: the methods that consult it
+        // are compiled before the properties are emitted.
+        for (auto *m = init ? init->members : nullptr; m; m = m->next)
+            if (auto *pub = cast<UiPublicMember *>(m->member);
+                    pub && pub->type == UiPublicMember::Property && g_rebound.count(qs(pub->name.toString())))
+                if (auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
+                    auto *e = es->expression;
+                    if (auto *u = cast<UnaryMinusExpression *>(e)) e = u->expression;
+                    bool literal = cast<NumericLiteral *>(e) || cast<StringLiteral *>(e)
+                                || cast<TrueLiteral *>(e) || cast<FalseLiteral *>(e);
+                    if (!literal) g_hasSelector.insert(qs(pub->name.toString()));
+                }
     }
 
     std::vector<Prop> props;

@@ -450,6 +450,12 @@ void unbind() { __bind_p2 = -1; p2 = 42; }
 Verified against the engine across all three states — declarative, rebound, unbound — and the
 unbound one is the point: after `unbind()`, changing `p1` must NOT revive the binding.
 
+Assigning **through an alias** does all of this to the alias's TARGET — `aliasToOrigin = 42`
+drops `origin`'s binding, `aliasToOrigin = Qt.binding(…)` installs one on it. The selector lives
+on the target, so the reassignment scan runs after the aliases are resolved and looks through
+them. Fixture `AliasRebind.qml`; `propertyAlias.qml` from the corpus is green across all five of
+its states.
+
 **The differential can now invoke methods.** A mutation argument `name()` calls a no-arg method on
 both sides (the oracle via `QMetaObject::invokeMethod`). Without it there was no way to observe
 anything a method does, which is exactly where imperative binding changes live. Fixtures
@@ -459,9 +465,9 @@ anything a method does, which is exactly where imperative binding changes live. 
 
 | corpus half | compile-clean | verified build+diff green |
 |---|---|---|
-| pure-QtQml (42) | 27 | **27** |
+| pure-QtQml (42) | 28 | **28** |
 | QtQuick (66) | 7 | **7** |
-| **total (108)** | 34 | **34** |
+| **total (108)** | 35 | **35** |
 
 Three of the remaining pure-QtQml files are *correctly* not compiling: `badFile.qml` is invalid on
 purpose, and `attachedPropertyDerived.qml` / `singletonUser.qml` are deliberate refusals the engine
