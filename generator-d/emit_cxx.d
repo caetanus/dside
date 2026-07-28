@@ -1378,6 +1378,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 buildable = false; break;
             }
         }
+        // A class asked for in `subclass` that yields NO overridable virtual gets no trampoline —
+        // and used to get no message either, so it simply was not there when something tried to
+        // subclass it (`__<Class>_vnames` undefined, hundreds of lines away). Say so here.
+        if (buildable && !tvs.length)
+            stderr.writefln("subclass %s skipped: no overridable virtual with a marshalable "
+                            ~ "signature — a D subclass of it cannot be generated", name);
         if (buildable && tvs.length) TRAMPS ~= Trampoline(name, cppName, tvs);
     }
 

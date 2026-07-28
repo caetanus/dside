@@ -626,12 +626,19 @@ Probing a property the document never sets exposes it — the engine answers
 `iv.locale = pt_BR` (IntValidator's real default) while our object has no such property.
 A test of that shape was written, committed, and then removed for exactly this reason.
 
-RESOLVED for the 8 types that have a trampoline (State, StateGroup, StateOperation,
-SystemPalette, FontMetrics, TextMetrics, Shortcut, FontLoader): layers 1 and 2 are in, so a
-child bound to a property is built as its real type and its members are compared. QMetrics.qml
-proves it the way the false green could not — it compares 15 members the document never assigns
-(real font metrics: ascent 14.8438, height 18.6094), which only a genuine QQuickFontMetrics
-produces. IntValidator/DoubleValidator/PropertyChanges/Transition still lack layer 3.
+RESOLVED. Layers 1 and 2 are in, so a child bound to a property is built as its real type and
+its members are compared. QMetrics.qml proves it the way the false green could not — it compares
+15 members the document never assigns (real font metrics: ascent 14.8438, height 18.6094), which
+only a genuine QQuickFontMetrics produces.
+
+Layer 3 turned out to block only TWO of the eleven: 10 have a trampoline, PropertyChanges and
+Transition included. IntValidator and DoubleValidator do not, and the generator now says why —
+`QValidator::validate(QString &, int &)` is a PURE virtual whose non-const reference parameters
+it cannot marshal, and a trampoline missing a pure virtual would be abstract. Supporting
+non-const reference parameters is a generator change, not a qmltc-d one.
+
+So States are blocked by layer 4 alone: the objects construct, but PropertyChanges holds
+OVERRIDES applied to a target on entry and reverted on exit, not properties of its own.
 
 Original analysis (layers, each uncovered by fixing the one before it):
   1. carry the child's QML type through the property-binding path (done and reverted —
