@@ -1,5 +1,7 @@
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widgets.qmainwindow;
 import cxxrt, uiform, qrc, std.stdio, std.string;
+import std.algorithm : splitter, canFind, all;
+import std.array : array;
 pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 extern (C) const(char)* qtd_ui_dump(void*); extern (C) const(char)* qtd_ui_load_and_dump(const(char)*);
 mixin(uiForm(import("corpus/addtorrentform.ui")));
@@ -62,10 +64,43 @@ mixin(uiForm(import("corpus/gridpanel.ui")));
 mixin(uiForm(import("corpus/orderdialog.ui")));
 mixin(uiForm(import("corpus/validators.ui")));
 mixin(uiForm(import("corpus/newactiondialog.ui")));
-__gshared int fails, oks;
+__gshared int fails, oks, waived;
+
+// Two forms where the ORACLE (QUiLoader) diverges from Qt's own `uic`, and we match `uic`.
+// Verified by running `uic` on each file and reading the generated setupUi:
+//   addtorrentform  — <property name="margin">8</property> on a QGroupBox's grid: uic emits
+//                     setContentsMargins(8,8,8,8), we emit the same, QUiLoader applies 0.
+//   qprintsettings  — no margin in the .ui at all: neither uic nor we emit setContentsMargins,
+//                     so the value stays lazy and resolves to the style's child margin (9).
+//                     QUiLoader materializes it while the tab page is still parentless (a
+//                     window -> 11) and freezes that. The dump shows both sides ending with the
+//                     SAME parent and isWindow=0, which is what proves it is a freeze, not us.
+// Only lines containing one of these markers may differ, and only in these files. Any other
+// difference — or a difference in any other file — is still a hard failure.
+struct Waiver { string file; string[] markers; }
+immutable Waiver[] WAIVERS = [
+    Waiver("tests/uic/corpus/addtorrentform.ui",       ["groupBox|layout|QGridLayout"]),
+    Waiver("tests/uic/corpus/qprintsettingsoutput.ui", ["copiesTab|layout|QHBoxLayout",
+                                                        "optionsTab|layout|QGridLayout"]),
+];
+
+// True when every line that differs is covered by a waiver marker for this file.
+bool onlyWaived(string p, string a, string b) {
+    const(string)[] markers;
+    foreach (w; WAIVERS) if (w.file == p) markers = w.markers;
+    if (!markers.length) return false;
+    auto la = a.splitter('\n').array, lb = b.splitter('\n').array;
+    bool covered(string line) {
+        foreach (m; markers) if (line.canFind(m)) return true;
+        return false;
+    }
+    foreach (l; la) if (l.length && !lb.canFind(l) && !covered(l)) return false;
+    foreach (l; lb) if (l.length && !la.canFind(l) && !covered(l)) return false;
+    return true;
+}
 // Differential check: the tree WE build must serialize identically to QUiLoader's. On a
 // mismatch, set DIFF=<path> to dump both serializations to /tmp for inspection.
-void ck(T, R)(string p, R root){ T ui; ui.setupUi(root); auto a=qtd_ui_dump(cast(void*)root).fromStringz.idup; auto b=qtd_ui_load_and_dump(p.toStringz).fromStringz.idup; if(a==b){oks++;} else {fails++; writefln("MISMATCH %s",p); if(environment.get("DIFF")==p){ import std.file; std.file.write("/tmp/ours.txt",a); std.file.write("/tmp/oracle.txt",b);} } }
+void ck(T, R)(string p, R root){ T ui; ui.setupUi(root); auto a=qtd_ui_dump(cast(void*)root).fromStringz.idup; auto b=qtd_ui_load_and_dump(p.toStringz).fromStringz.idup; if(a==b){oks++;} else if(onlyWaived(p,a,b)){oks++; waived++; writefln("WAIVED (known QUiLoader-vs-uic margin divergence) %s",p);} else {fails++; writefln("MISMATCH %s",p); if(environment.get("DIFF")==p){ import std.file; std.file.write("/tmp/ours.txt",a); std.file.write("/tmp/oracle.txt",b);} } }
 import std.process : environment;
 void main(){ int argc=1; char*[2] argv=[cast(char*)"c".ptr,null]; auto app=cast(QApplication)__cpp_new(__traits(classInstanceSize,QApplication)); __qapp_ctor(app,argc,argv.ptr,0);
   ck!Ui_AddTorrentFile("tests/uic/corpus/addtorrentform.ui", QDialog_new());
@@ -133,6 +168,7 @@ void main(){ int argc=1; char*[2] argv=[cast(char*)"c".ptr,null]; auto app=cast(
   ck!Ui_OrderDialog("tests/uic/corpus/orderdialog.ui", QDialog_new());
   ck!Ui_ValidatorsForm("tests/uic/corpus/validators.ui", QWidget_new());
   ck!Ui_NewActionDialog("tests/uic/corpus/newactiondialog.ui", QDialog_new());
-  writefln("corpus: %d OK, %d MISMATCH", oks, fails);
+  writefln("corpus: %d OK (%d waived), %d MISMATCH", oks, waived, fails);
+  assert(waived == 2, "a waiver stopped applying — re-verify it against `uic` instead of widening it");
   if (fails) { writeln("corpus_check: FAIL"); assert(false); }
-  writeln("corpus_check OK: our uic == QUiLoader for the whole baseline corpus"); }
+  writefln("corpus_check OK: our uic == QUiLoader across the baseline corpus (%d waived, see WAIVERS)", waived); }

@@ -5,6 +5,8 @@ import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widge
 import qt.widgets.qcheckbox, qt.widgets.qcborarray, qt.widgets.qcborvalue;
 import qt.widgets.qjsondocument, qt.widgets.qjsonparseerror;
 import cxxrt, uiform, qrc, std.stdio, std.string;
+import std.algorithm : splitter, canFind;
+import std.array : array;
 
 // Error-return -> typed D exception (the json/png case). Qt reports bad JSON via a
 // QJsonParseError OUT-PARAM (not a C++ exception, so the Lippincott net never fires); a
@@ -43,7 +45,28 @@ mixin(uiForm(import("proxy.ui")));               // Ui_ProxyDialog (QLineEdit::P
 mixin(uiForm(import("translationsettings.ui"))); // Ui_TranslationSettings
 mixin(uiForm(import("bookwindow.ui")));  // Ui_BookWindow
 
-__gshared int fails;
+__gshared int fails, waived;
+
+// QUiLoader materializes a container page's DEFAULT layout margin while the page is still
+// parentless (a window -> 11) and freezes it; Qt's own `uic` emits no setContentsMargins at all,
+// leaving it lazy so it resolves to the style's child margin (9). We match `uic` — verified by
+// reading `uic tests/uic/tabs.ui`, which creates `pageGeneral = new QWidget()` with no margin
+// call. Only these exact layout lines may differ; anything else is still a failure.
+// The same divergence is waived, with the same justification, in corpus_check.d.
+immutable string[] WAIVED_LINES = [
+    "pageGeneral|layout|QVBoxLayout", "pageAdvanced|layout|QVBoxLayout",
+];
+
+bool onlyWaived(string a, string b) {
+    auto la = a.splitter('\n').array, lb = b.splitter('\n').array;
+    bool covered(string line) {
+        foreach (m; WAIVED_LINES) if (line.canFind(m)) return true;
+        return false;
+    }
+    foreach (l; la) if (l.length && !lb.canFind(l) && !covered(l)) return false;
+    foreach (l; lb) if (l.length && !la.canFind(l) && !covered(l)) return false;
+    return true;
+}
 
 void check(T, R)(string path, R root) {
     T ui;
@@ -52,6 +75,9 @@ void check(T, R)(string path, R root) {
     string oracle = qtd_ui_load_and_dump(path.toStringz).fromStringz.idup;
     if (ours == oracle) {
         writefln("  MATCH     %s", path);
+    } else if (onlyWaived(ours, oracle)) {
+        writefln("  WAIVED    %s (known QUiLoader-vs-uic page-margin divergence)", path);
+        waived++;
     } else {
         writefln("  MISMATCH  %s", path);
         writeln("--- ours ---\n", ours, "--- oracle ---\n", oracle);
@@ -128,5 +154,6 @@ void main() {
     }
 
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }
-    writeln("uicheck OK: our uic == QUiLoader for every .ui");
+    assert(waived == 1, "a waiver stopped applying — re-verify against `uic`, don't widen it");
+    writefln("uicheck OK: our uic == QUiLoader for every .ui (%d waived, see WAIVED_LINES)", waived);
 }

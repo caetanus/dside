@@ -177,6 +177,17 @@ Target uidumpObj(string root, QtdBinding ex, string dc) {
     return t;
 }
 
+// Every .ui the form tests string-import (-J). They are real inputs: without them a changed .ui
+// (or a changed uiform.d / qrc.d, which were compiled but never listed) leaves the previous
+// binary in place and the differential re-reports a stale verdict as if it were fresh.
+Target[] uiInputs(string root, string dir) {
+    Target[] ts = [Target(buildPath(root, "runtime", "uic", "uiform.d")),
+                   Target(buildPath(root, "runtime", "qrc", "qrc.d"))];
+    if (exists(dir))
+        foreach (e; dirEntries(dir, "*.ui", SpanMode.shallow)) ts ~= Target(e.name);
+    return ts;
+}
+
 Target[] uicheckTargets(string root, QtdBinding ex) {
     auto here = buildPath(root, "tests", "uic");
     auto cf = pkgCflags(["Qt6UiTools", "Qt6Widgets"]) ~ " -std=c++17 -fPIC -O2";
@@ -194,7 +205,7 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
             ~ " -I" ~ ex.genDir ~ " -I" ~ buildPath(root, "runtime", "qrc")
             ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
-            [Target(checkD), uidumpT, lib, ex.shims]);
+            [Target(checkD), uidumpT, lib, ex.shims] ~ uiInputs(root, here));
         ts ~= Target.phony("uicheck-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
     }
     return ts;
@@ -219,7 +230,8 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
             ~ " -I" ~ ex.genDir ~ " -I" ~ buildPath(root, "runtime", "qrc")
             ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
-            [Target(checkD), uidumpT, lib, ex.shims]);
+            [Target(checkD), uidumpT, lib, ex.shims]
+            ~ uiInputs(root, here) ~ uiInputs(root, buildPath(here, "corpus")));
         ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
     }
     return ts;

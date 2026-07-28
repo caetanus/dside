@@ -19,6 +19,13 @@
 #include <QPalette>
 #include <QColor>
 #include <QLabel>
+#include <QLayout>
+#include <QLayoutItem>
+#include <QGridLayout>
+#include <QBoxLayout>
+#include <QFormLayout>
+#include <QSpacerItem>
+#include <QSize>
 #include <QFile>
 #include <QUiLoader>
 #include <QList>
@@ -122,6 +129,86 @@ static std::string propsOf(QObject *o) {
     return out;
 }
 
+// ---- layout structure -------------------------------------------------------------------
+// walk() alone compares only NAMED QObjects and their properties, which makes a whole class of
+// .ui content invisible on BOTH sides: an unnamed layout is skipped entirely, a QSpacerItem is
+// not a QObject so it never appears in children(), and per-item alignment / grid cell / stretch
+// live on the QLayoutItem, not on any widget property. gridalignment.ui passed with its
+// alignment silently dropped for exactly that reason.
+//
+// So the layout is serialized structurally, anchored on the OWNING WIDGET's name (which is
+// always set) rather than on the layout's own name — that covers unnamed layouts too. Item
+// order is the layout's own index order, zero-padded so the global sort keeps it stable.
+static std::string idx2(int i) {
+    return (i < 10 ? "0" : "") + std::to_string(i);
+}
+
+static std::string itemLabel(QLayoutItem *it, int i) {
+    if (QWidget *w = it->widget()) {
+        std::string n = u8(w->objectName());
+        return std::string("w:") + w->metaObject()->className() + ":"
+             + (n.empty() ? "#" + idx2(i) : n);
+    }
+    if (QSpacerItem *sp = it->spacerItem()) {
+        // QSpacerItem has no sizePolicy() getter, so the policy is observed through the sizes it
+        // derives from it: maximumSize is QLAYOUTSIZE_MAX on an axis whose policy can grow.
+        QSize h = sp->sizeHint(), mn = sp->minimumSize(), mx = sp->maximumSize();
+        return "spacer:" + std::to_string(h.width()) + "x" + std::to_string(h.height())
+             + ":exp=" + std::to_string(int(sp->expandingDirections()))
+             + ":min=" + std::to_string(mn.width()) + "x" + std::to_string(mn.height())
+             + ":max=" + std::to_string(mx.width()) + "x" + std::to_string(mx.height());
+    }
+    if (QLayout *l = it->layout())
+        return std::string("layout:") + l->metaObject()->className();
+    return "?";
+}
+
+static void walkLayout(const std::string &anchor, QLayout *l, std::vector<std::string> &lines) {
+    int lm, tm, rm, bm;
+    l->getContentsMargins(&lm, &tm, &rm, &bm);
+    lines.push_back(anchor + "|layout|" + l->metaObject()->className()
+                    + "|margins=" + std::to_string(lm) + "," + std::to_string(tm) + ","
+                    + std::to_string(rm) + "," + std::to_string(bm)
+                    + "|spacing=" + std::to_string(l->spacing())
+                    + "|count=" + std::to_string(l->count())
+                    + "|pw=" + (l->parentWidget()
+                        ? u8(l->parentWidget()->objectName()) + ":win="
+                          + (l->parentWidget()->isWindow() ? "1" : "0")
+                        : std::string("<none>")));
+    auto *grid = qobject_cast<QGridLayout *>(l);
+    auto *box  = qobject_cast<QBoxLayout *>(l);
+    auto *form = qobject_cast<QFormLayout *>(l);
+    for (int i = 0; i < l->count(); i++) {
+        QLayoutItem *it = l->itemAt(i);
+        if (!it) continue;
+        std::string line = anchor + "|item" + idx2(i) + "|" + itemLabel(it, i)
+                         + "|align=" + std::to_string(int(it->alignment()));
+        if (grid) {
+            int r, c, rs, cs;
+            grid->getItemPosition(i, &r, &c, &rs, &cs);
+            line += "|cell=" + std::to_string(r) + "," + std::to_string(c) + ","
+                  + std::to_string(rs) + "," + std::to_string(cs);
+        }
+        if (box)  line += "|stretch=" + std::to_string(box->stretch(i));
+        if (form) {
+            int r; QFormLayout::ItemRole role;
+            form->getItemPosition(i, &r, &role);
+            line += "|row=" + std::to_string(r) + "|role=" + std::to_string(int(role));
+        }
+        lines.push_back(line);
+        if (QLayout *sub = it->layout())
+            walkLayout(anchor + ">" + idx2(i), sub, lines);
+    }
+    if (grid) {
+        for (int r = 0; r < grid->rowCount(); r++)
+            if (int s = grid->rowStretch(r))
+                lines.push_back(anchor + "|rowStretch|" + idx2(r) + "=" + std::to_string(s));
+        for (int c = 0; c < grid->columnCount(); c++)
+            if (int s = grid->columnStretch(c))
+                lines.push_back(anchor + "|colStretch|" + idx2(c) + "=" + std::to_string(s));
+    }
+}
+
 static void walk(QObject *o, std::vector<std::string> &lines) {
     QString name = o->objectName();
     // keep only user-named objects; skip Qt's internal helpers (qt_*), unnamed layouts, etc.
@@ -130,6 +217,8 @@ static void walk(QObject *o, std::vector<std::string> &lines) {
         std::string parent = p ? u8(p->objectName()) : std::string();
         lines.push_back(parent + "/" + o->metaObject()->className() + "/" + u8(name)
                         + "/" + textOf(o) + propsOf(o));
+        if (auto *w = qobject_cast<QWidget *>(o))
+            if (QLayout *l = w->layout()) walkLayout(u8(name), l, lines);
     }
     const QObjectList &kids = o->children();
     for (QObject *k : kids) walk(k, lines);

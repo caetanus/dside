@@ -523,7 +523,7 @@ private string genSpacer(ref Gen g, Node sp) {
     string sn = sp.attr("name");
     string name = (sn.length && isValidDId(sn) && !hasField(g, sn))
         ? sn : "__spacer" ~ itos(g.nameCounter++);
-    string w = "0", h = "0", orient = "Horizontal";
+    string w = "0", h = "0", orient = "Horizontal", sizeType = "Expanding";
     foreach (p; sp.childrenOf("property")) {
         string pn = p.attr("name");
         Node v = firstElem(p);
@@ -532,20 +532,47 @@ private string genSpacer(ref Gen g, Node sp) {
             auto parts = splitOn(v.text, "::");
             orient = parts[$ - 1];
         }
+        // <property name="sizeType"> overrides the policy on the spacer's OWN axis (the cross
+        // axis stays Minimum). Ignoring it made every Fixed/Minimum/Preferred spacer expand.
+        else if (pn == "sizeType" && v.tag == "enum") {
+            auto parts = splitOn(v.text, "::");
+            sizeType = parts[$ - 1];
+        }
     }
-    string hp = orient == "Vertical" ? "Minimum" : "Expanding";
-    string vp = orient == "Vertical" ? "Expanding" : "Minimum";
+    string hp = orient == "Vertical" ? "Minimum" : sizeType;
+    string vp = orient == "Vertical" ? sizeType : "Minimum";
     g.fields ~= "    QSpacerItem " ~ name ~ ";\n";
     g.setup ~= "        " ~ name ~ " = QSpacerItem_new(" ~ w ~ ", " ~ h
         ~ ", QSizePolicy.Policy." ~ hp ~ ", QSizePolicy.Policy." ~ vp ~ ");\n";
     return name;
 }
 
+// <item alignment="Qt::AlignLeft|Qt::AlignVCenter"> is an ATTRIBUTE of the item, not a property,
+// so the property loop never saw it and every item was added with alignment 0 — silently dropping
+// the alignment of gridalignment.ui and friends. Returns a D expression, or "0" when absent.
+private string itemAlign(ref Gen g, Node item) {
+    string a = item.attr("alignment");
+    if (!a.length) return "0";
+    string r;
+    foreach (i, f; splitOn(a, "|")) r ~= (i ? " | " : "") ~ enumRef(g, f);
+    return r;
+}
+
+// Qt's uic rule: a plain <widget class="QWidget"> whose parent is neither QMainWindow nor a
+// container (QTabWidget, QStackedWidget, …) is a "layout widget" — one Designer synthesized only
+// to host a layout inside a splitter or similar. Its layout's DEFAULT margin is 0, not the
+// style's. Missing this made qtresourceeditordialog's grid inherit the style margin.
+private bool isContainerCls(string c) {
+    return c == "QStackedWidget" || c == "QToolBox" || c == "QTabWidget" || c == "QScrollArea"
+        || c == "QMdiArea" || c == "QWizard" || c == "QDockWidget";
+}
+
 // A <layout> and its <item>s. `parentVar` is the container's D variable; item widgets are
 // parented to it. Dispatches on the layout class: box (add order), grid (row/col/span),
 // form (LabelRole/FieldRole). Nested layouts recurse and are added via addLayout. Returns
 // the layout's D variable name.
-private string genLayout(ref Gen g, Node lay, string parentVar) {
+private string genLayout(ref Gen g, Node lay, string parentVar, bool zeroMargin = false,
+                         string ownerCls = "") {
     string cls = lay.attr("class");
     // objectName comes from the `name` attribute (modern forms) OR a <property name="objectName">
     // (old Designer forms, where the value is often the literal "unnamed" and NOT unique).
@@ -578,36 +605,39 @@ private string genLayout(ref Gen g, Node lay, string parentVar) {
     }
     if (anyMargin)
         g.setup ~= "        " ~ name ~ ".setContentsMargins(" ~ ml ~ ", " ~ mt ~ ", " ~ mr ~ ", " ~ mb ~ ");\n";
+    else if (zeroMargin)   // layout-widget default: 0, not the style's margin
+        g.setup ~= "        " ~ name ~ ".setContentsMargins(0, 0, 0, 0);\n";
     foreach (item; lay.childrenOf("item")) {
         string row = item.attr("row").length ? item.attr("row") : "0";
         string col = item.attr("column").length ? item.attr("column") : "0";
         string rs = item.attr("rowspan").length ? item.attr("rowspan") : "1";
         string cs = item.attr("colspan").length ? item.attr("colspan") : "1";
+        string al = itemAlign(g, item);
         auto w = item.child("widget");
         auto sub = item.child("layout");
         auto sp = item.child("spacer");
         if (w.ok) {
-            string wn = genWidget(g, w, parentVar, false);
+            string wn = genWidget(g, w, parentVar, false, ownerCls);
             if (grid)
                 g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ", " ~ row ~ ", " ~ col
-                    ~ ", " ~ rs ~ ", " ~ cs ~ ", 0);\n";
+                    ~ ", " ~ rs ~ ", " ~ cs ~ ", " ~ al ~ ");\n";
             else if (form)
                 g.setup ~= "        " ~ name ~ ".setWidget(" ~ row ~ ", QFormLayout.ItemRole."
                     ~ (col == "0" ? "LabelRole" : "FieldRole") ~ ", " ~ wn ~ ");\n";
             else
-                g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ");\n";
+                g.setup ~= "        " ~ name ~ ".addWidget(" ~ wn ~ ", 0, " ~ al ~ ");\n";
         } else if (sp.ok) {
             string spn = genSpacer(g, sp);
             if (grid)
                 g.setup ~= "        " ~ name ~ ".addItem(" ~ spn ~ ", " ~ row ~ ", " ~ col
-                    ~ ", " ~ rs ~ ", " ~ cs ~ ", 0);\n";
+                    ~ ", " ~ rs ~ ", " ~ cs ~ ", " ~ al ~ ");\n";
             else if (!form)
                 g.setup ~= "        " ~ name ~ ".addSpacerItem(" ~ spn ~ ");\n";
         } else if (sub.ok) {
-            string sn = genLayout(g, sub, parentVar);
+            string sn = genLayout(g, sub, parentVar, false, ownerCls);
             if (grid)
                 g.setup ~= "        " ~ name ~ ".addLayout(" ~ sn ~ ", " ~ row ~ ", " ~ col
-                    ~ ", " ~ rs ~ ", " ~ cs ~ ", 0);\n";
+                    ~ ", " ~ rs ~ ", " ~ cs ~ ", " ~ al ~ ");\n";
             else if (form)   // a nested layout in a QFormLayout row -> setLayout(row, role, layout)
                 g.setup ~= "        " ~ name ~ ".setLayout(" ~ row ~ ", QFormLayout.ItemRole."
                     ~ (col == "0" ? "LabelRole" : "FieldRole") ~ ", " ~ sn ~ ");\n";
@@ -701,7 +731,7 @@ private string genMenu(ref Gen g, Node menu, string parentVar) {
 
 // Emit a widget: field + construction (unless root) + properties + its layout. Returns the
 // widget's D variable name ("root" for the root).
-private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
+private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot, string parentCls = "") {
     string var;
     if (isRoot) {
         var = "root";
@@ -721,7 +751,13 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         var = (named && isValidDId(objName)) ? objName : "__w" ~ itos(g.nameCounter++);
         need(g, cls);
         g.fields ~= "    " ~ cls ~ " " ~ var ~ ";\n";
-        g.setup ~= "        " ~ var ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
+        // A page of a container (tab, stack, dock, …) is created PARENTLESS, exactly as Qt's uic
+        // does: addTab/setWidget parents it afterwards. Not cosmetic — a parentless widget is a
+        // window, and QCommonStyle's default layout margin is 11 for a window vs 9 otherwise, so
+        // parenting it up front gave every such page's layout the wrong default margin.
+        // (QSplitter is NOT in this set: uic does pass it as parent.)
+        string ctor = isContainerCls(parentCls) ? "" : parentVar;
+        g.setup ~= "        " ~ var ~ " = " ~ cls ~ "_new(" ~ ctor ~ ");\n";
         if (named)   // unnamed in the .ui -> QUiLoader leaves it nameless; don't setObjectName
             g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ esc(objName) ~ "\");\n";
         if (isLine) {
@@ -745,7 +781,7 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         foreach (act; w.childrenOf("action")) genAction(g, act, var);
         foreach (child; w.childrenOf("widget")) {
             string ccls = child.attr("class");
-            string cn = genWidget(g, child, var, false);
+            string cn = genWidget(g, child, var, false, wcls0);
             if (ccls == "QMenuBar") {
                 foreach (m; child.childrenOf("widget"))
                     if (m.attr("class") == "QMenu") genMenu(g, m, cn);
@@ -753,6 +789,16 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
                 g.setup ~= "        " ~ var ~ ".setMenuBar(" ~ cn ~ ");\n";
             } else if (ccls == "QStatusBar") {
                 g.setup ~= "        " ~ var ~ ".setStatusBar(" ~ cn ~ ");\n";
+            } else if (ccls == "QDockWidget") {
+                // A dock is chrome, not the central widget. Falling through to the else below
+                // made it setCentralWidget and silently displaced the real central widget.
+                // <attribute name="dockWidgetArea"> carries the Qt::DockWidgetArea value.
+                need(g, "DockWidgetArea");
+                string area = "1";
+                foreach (at; child.childrenOf("attribute"))
+                    if (at.attr("name") == "dockWidgetArea") area = firstElem(at).text;
+                g.setup ~= "        " ~ var ~ ".addDockWidget(cast(DockWidgetArea) " ~ area
+                    ~ ", " ~ cn ~ ");\n";
             } else if (ccls == "QToolBar") {
                 need(g, "ToolBarArea");
                 g.setup ~= "        " ~ var ~ ".addToolBar(ToolBarArea.TopToolBarArea, " ~ cn ~ ");\n";
@@ -764,7 +810,11 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
         return var;
     }
     auto lay = w.child("layout");
-    if (lay.ok) genLayout(g, lay, var);
+    if (lay.ok) {
+        bool layoutWidget = !isRoot && w.attr("class") == "QWidget" && w.attr("native") != "true"
+            && parentCls.length && parentCls != "QMainWindow" && !isContainerCls(parentCls);
+        genLayout(g, lay, var, layoutWidget, w.attr("class"));
+    }
     // QComboBox <item>s -> addItem (each item is a model row, not a child QObject). The
     // QString + empty QVariant are lvalues (the shimmed addItem takes them by const ref).
     string wcls = w.attr("class");
@@ -779,12 +829,21 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
                 ~ var ~ ".addItem(_s, _v); }\n";
         }
     }
+    // A QDockWidget's child <widget> is its CONTENT: created with the dock as parent, but the
+    // dock only shows it after setWidget. Without this it existed in the tree yet never appeared
+    // in the dock's layout.
+    if (wcls == "QDockWidget") {
+        foreach (child; w.childrenOf("widget")) {
+            string cn2 = genWidget(g, child, var, false, wcls);
+            g.setup ~= "        " ~ var ~ ".setWidget(" ~ cn2 ~ ");\n";
+        }
+    }
     // Container widgets whose children are direct <widget> pages (not layout items):
     // QTabWidget (addTab + tab title in retranslateUi), QStackedWidget/QSplitter (addWidget).
     if (wcls == "QTabWidget" || wcls == "QStackedWidget" || wcls == "QSplitter") {
         size_t idx = 0;
         foreach (page; w.childrenOf("widget")) {
-            string pn = genWidget(g, page, var, false);
+            string pn = genWidget(g, page, var, false, wcls);
             if (wcls == "QTabWidget") {
                 g.setup ~= "        " ~ var ~ ".addTab(" ~ pn ~ ", \"\");\n";
                 g.trans ~= "        " ~ var ~ ".setTabText(" ~ itos(idx) ~ ", \""
@@ -801,9 +860,10 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot) {
     // each one, mirroring QUiLoader.
     // QMenuBar/QMenu/QToolBar hold <widget class="QMenu"> children that genMenu already built;
     // don't recreate them here.
-    else if (wcls != "QComboBox" && wcls != "QMenuBar" && wcls != "QMenu" && wcls != "QToolBar") {
+    else if (wcls != "QComboBox" && wcls != "QMenuBar" && wcls != "QMenu" && wcls != "QToolBar"
+             && wcls != "QDockWidget") {
         foreach (child; w.childrenOf("widget"))
-            genWidget(g, child, var, false);
+            genWidget(g, child, var, false, wcls);
     }
     // Deferred currentIndex (see genProps): now that the items/pages are in place, select one.
     foreach (p; w.childrenOf("property"))
