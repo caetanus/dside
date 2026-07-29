@@ -123,6 +123,17 @@ through an `id`), which is exactly the guard we want.
   QObject (`control.palette` is a QQuickPalette OBJECT), and the copy dispatches on what the
   QVariant actually holds: reading an object with readOnGadget reads through a pointer as if it
   were the value.
+- **A child object into an object-group member**: `first.handle: Rectangle {}`, how a RangeSlider
+  gets its handles. Scalar writes into such a group already worked; a child object was refused by a
+  gate that only knew D-registered groups, while the emission it guarded resolves the group with
+  propObj at RUNTIME and never needed that gate. The child's TYPE is now carried through as well —
+  it used to be dropped, so every grouped child became a bare QObject and `implicitWidth` failed at
+  runtime on what should have been a QQuickRectangle subclass.
+- **STILL REFUSED: attached properties of bound types** (`Overlay.modal`, `ScrollBar.vertical`,
+  `TableView.editDelegate`). The import alias is stripped from these paths now, so the diagnostic
+  names the real type instead of `T`, but reaching the attached object needs its QML module URI
+  and the property table does not carry one yet. That is the next data field to plumb through,
+  in the same way `isPointer` and `extension` were.
 - **Object groups**: `border.width: 3` on a Rectangle. `border` holds an OBJECT (QQuickPen*), not
   a value, so the write is a plain property write on what the group holds — reached with propObj.
   The distinction is NOT recoverable from the type name (QQuickScaleGrid and QFont look alike): the

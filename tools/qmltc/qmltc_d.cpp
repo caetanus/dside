@@ -2458,7 +2458,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, std::string>> metaAssigns;
     std::vector<StateEntry> stateTable;          // `states:` compiled as data, not as objects
     std::string initialState;                    // the document's `state: "..."`, if any
-    std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
+    // ("group.member", init, child QML type). The type used to be dropped, so every grouped child
+    // was created as a bare newQObject — right for a D-registered group holding plain QObjects,
+    // wrong for `first.handle: Rectangle {}`, whose class must subclass QQuickRectangle (setProp
+    // then failed at runtime: "no writable property implicitWidth").
+    struct GroupKid { std::string path; UiObjectInitializer *init; std::string type; };
+    std::vector<GroupKid> groupKidBindings;
     std::vector<std::pair<std::string, UiObjectInitializer *>> attachedKidBindings; // ("Type.member", init)
     struct ArrayElem { std::string prop; int idx; UiObjectDefinition *def; };
     std::vector<ArrayElem> arrayBindings;                                        // `listProp: [ … ]`
@@ -2609,18 +2614,35 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // so field and QML path are tracked separately from here on.
             {
                 std::string qid = qname(ob->qualifiedId);
+                // `T.Overlay.modal: Rectangle {}` — the path is QUALIFIED by an import alias, so
+                // splitting at the first dot yields `T`, which names no type at all. The alias
+                // names the import, exactly as it does for a type name, so it is dropped here too.
+                if (auto d0 = qid.find('.'); d0 != std::string::npos
+                        && g_importAliases.count(qid.substr(0, d0)))
+                    qid = qid.substr(d0 + 1);
                 auto dot = qid.find('.');
                 if (dot != std::string::npos) {
                     if (g_attached.count(qid.substr(0, dot))) {
                         attachedKidBindings.push_back({qid, ob->initializer});
                         continue;
                     }
-                    if (!g_groups.count(qid.substr(0, dot))) {
+                    // A group of the BOUND type (`up.indicator: Rectangle {}` on a SpinBox) is
+                    // just as assignable: the emission below resolves the group with propObj at
+                    // RUNTIME and never consults g_groups, which only ever held D-registered
+                    // types. The `*` marker is what says the property holds an object.
+                    bool boundObjGroup = false;
+                    if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
+                        auto it = qc->second.find(qid.substr(0, dot));
+                        boundObjGroup = it != qc->second.end() && !it->second.empty()
+                                     && it->second.back() == '*';
+                    }
+                    if (!g_groups.count(qid.substr(0, dot)) && !boundObjGroup) {
                         std::fprintf(stderr, "qmltc-d: %s: child object bound to '%s' in %s is not a grouped "
                                      "property — skipped (later phase)\n", inPath, qid.c_str(), cls.c_str());
                         ++partial; continue;
                     }
-                    groupKidBindings.push_back({qid, ob->initializer});
+                    groupKidBindings.push_back({qid, ob->initializer,
+                                                ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : ""});
                     continue;
                 }
             }
@@ -3518,12 +3540,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // named after the sanitised path (a dotted name is not a valid D identifier) and the object is
     // attached THROUGH the group rather than held by a property of this class.
     for (auto &gk : groupKidBindings) {
-        std::string path = gk.first;
+        std::string path = gk.path;
         auto dot = path.find('.');
         std::string gname = path.substr(0, dot), mem = path.substr(dot + 1);
         std::string field = "_g_" + gname + "_" + mem;
         std::string childCls = cls + "_" + gname + "_" + mem;
-        ObjNode kid = compileObject(gk.second, childCls, classes, partial, inPath);
+        auto gkt = boundTypeFor(gk.type);          // a bound child type makes this a SUBCLASS
+        if (!gkt.first.empty() && !gkt.second.empty()) {
+            std::string imp = "import " + gkt.second + ";\n";
+            if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+            std::string vimp = "import " + gkt.second.substr(0, gkt.second.rfind('.')) + ".qtvirt;\n";
+            if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
+        }
+        ObjNode kid = compileObject(gk.init, childCls, classes, partial, inPath, gkt.first, nullptr, gk.type);
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -3544,9 +3573,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
-                   + "        " + field + " = newQObject!" + childCls + "();\n"
-                   + "        setQtParent(" + field + ", this);\n"
-                   + "";
+                   + "        " + field + " = " + (gkt.first.empty() ? "newQObject!" + childCls + "()"
+                                                                       : "new " + childCls + "()") + ";\n"
+                   + "        setQtParent(" + field + ", this);\n";
         childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(path);
