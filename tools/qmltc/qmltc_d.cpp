@@ -2642,13 +2642,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     qid = qid.substr(d0 + 1);
                 auto dot = qid.find('.');
                 if (dot != std::string::npos) {
-                    // NOT extended to attached types of BOUND modules (`T.Overlay.modal:
-                    // Rectangle {}`). The compiler side works — the property table now carries each
-                    // type's module URI, so attachedObj resolves Overlay in QtQuick.Templates — but
-                    // the ORACLE cannot read such a path back: walking properties never reaches
-                    // `Overlay`, and QQmlProperty does not resolve it either, under the bare name or
-                    // the document's own `T.Overlay`. An unverifiable feature is not worth shipping,
-                    // so this stays refused until the oracle can compare it.
+                    // NOT extended to attached types of BOUND modules, for two separate reasons.
+                    // `Overlay.modal: Rectangle {}` targets a QQmlComponent property: it defines a
+                    // TEMPLATE the overlay instantiates on demand, so compiling it as a child would
+                    // assign an instance where Qt expects a factory — the same mistake the
+                    // Component case already refuses rather than instantiating eagerly. The rest
+                    // (ScrollBar.vertical) are real object properties and the compiler side works
+                    // (the table carries each type's module URI now), but the ORACLE cannot read an
+                    // attached path back, and shipping what the differential cannot compare is how
+                    // false green happens.
                     if (g_attached.count(qid.substr(0, dot))) {
                         attachedKidBindings.push_back({qid, ob->initializer,
                                                        ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : "",
