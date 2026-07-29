@@ -748,6 +748,13 @@ static bool isItemType(const std::string &qmlType) {
     return false;
 }
 
+// Same question asked about an explicit type, for the dump's linkage checks (which run outside
+// any object's compile scope).
+static bool isBoundObjectProp2(const std::string &qmlType, const std::string &n) {
+    if (auto qc = g_qmlCxxType.find(qmlType); qc != g_qmlCxxType.end()) return qc->second.count(n) > 0;
+    return false;
+}
+
 static bool isBoundObjectProp(const std::string &n) {
     if (g_propType.count(n) || g_scope.count(n)) return false;
     if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) return qc->second.count(n) > 0;
@@ -2877,7 +2884,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    + "        setQtParent(" + field + ", this);\n"
                    // ...and the ITEM parent, which is a different link: QQuickItem tracks visual
                    // parentage through parentItem, and an item with none is not in a scene.
-                   + ((isItemType(childType) && isItemType(g_selfQmlType))
+                   // A LOCAL .qml child has no entry in the bound-type table, so its item-ness
+                   // comes from the C++ base it resolved to. Missing that left `Greeter {}` — an
+                   // Item-derived local type — unparented, which is exactly what the new linkage
+                   // check caught.
+                   + (((isItemType(childType) || isItemType(qmlNameOfCxx(childBase)))
+                        && isItemType(g_selfQmlType))
                         ? "        setPropObj(" + field + ", \"parent\", this);\n" : "")
                    + ""
                    + "        classBegin(" + field + ");\n";
@@ -4326,6 +4338,44 @@ int main(int argc, char **argv) {
                         l.setObj.c_str(), l.setProp.c_str(), val.c_str());
         }
         std::printf("    }\n");
+        // LINKAGE CHECKS. Two bugs got past this differential because both sides compared objects
+        // that were configured identically — ours simply was not ATTACHED to anything: a
+        // property-bound child (`contentItem: Label {}`) was never assigned to its property, and a
+        // visual child never got an ITEM parent (only a QObject one). Reading our own D field can
+        // never see either. So the dump now asks QT whether each child is where the document says
+        // it is, which fails loudly if the link is dropped again.
+        {
+            std::set<std::string> done;
+            for (auto &l : lines) {
+                if (l.setObj == "o" || l.setObj.empty()) continue;
+                if (!done.insert(l.setObj).second) continue;
+                auto dot = l.setObj.rfind('.');
+                if (dot == std::string::npos) continue;
+                std::string parentExpr = l.setObj.substr(0, dot);
+                // the label segment naming this child (the one before the property)
+                auto lp = l.label.rfind('.');
+                if (lp == std::string::npos) continue;
+                std::string path = l.label.substr(0, lp);
+                auto sp = path.rfind('.');
+                std::string seg = sp == std::string::npos ? path : path.substr(sp + 1);
+                if (seg.compare(0, 5, "data[") == 0) {
+                    // Guarded: only an ITEM has `parent`. A QtObject child sitting in `data` is
+                    // not visual and must not be required to have an item parent.
+                    std::printf("    assert(!hasProp(%s, \"parent\") || propObj(%s, \"parent\") is qobjOf(%s), "
+                                "\"%s is not parented to %s as an ITEM\");\n",
+                                l.setObj.c_str(), l.setObj.c_str(), parentExpr.c_str(),
+                                l.label.c_str(), parentExpr.c_str());
+                } else if (seg.find('[') == std::string::npos && parentExpr == "o"
+                           && isBoundObjectProp2(rootType, seg)) {
+                    // Only a property of the ROOT's BOUND type: a declared `property QtObject kid:
+                    // QtObject {}` is a plain D field and is not in the meta-object at all, so
+                    // asking Qt for it would fail for a reason that is not a linkage bug.
+                    std::printf("    assert(propObj(%s, \"%s\") is qobjOf(%s), "
+                                "\"%s was built but never assigned to the '%s' property\");\n",
+                                parentExpr.c_str(), seg.c_str(), l.setObj.c_str(), l.label.c_str(), seg.c_str());
+                }
+            }
+        }
         for (auto &l : lines)
             // A double is printed with %.17g on BOTH sides: the default shortest forms disagree on
             // a value that sits exactly between two 6-digit renderings (3.765625 -> D 3.76562,

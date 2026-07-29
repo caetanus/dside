@@ -802,6 +802,11 @@ bool propVar(V, T)(T o, string name, ref V outv) {
                             (cppSig!V ~ "\0").ptr, cast(void*) &outv) != 0;
 }
 
+private extern(C) int qtd_has_prop(void*, const(char)*);
+/// True when the object's meta-object declares `name` — only an Item has `parent`, so a check can
+/// ask instead of assuming.
+bool hasProp(T)(T o, string name) { return qtd_has_prop(qobjOf(o), (name ~ "\0").ptr) != 0; }
+
 private extern(C) int qtd_prop_copy(void*, const(char)*, void*, const(char)*);
 private extern(C) int qtd_prop_copy_group(void*, const(char)*, const(char)*, void*, const(char)*);
 

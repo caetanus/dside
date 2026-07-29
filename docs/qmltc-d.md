@@ -163,6 +163,15 @@ through an `id`), which is exactly the guard we want.
   it because it reads OUR D field while the engine reads ITS object — both configured identically —
   instead of asking the control. Found only because a deep read through `control.indicator` came
   back null.
+- **LINKAGE CHECKS in the dump.** Two bugs got past this differential because both sides compared
+  objects that were configured identically — ours simply was not ATTACHED to anything (a
+  property-bound child never assigned to its property; a visual child with no item parent). Reading
+  our own D field can never see either. The generated dump now asks QT whether each child is where
+  the document says it is: an item child must have the right `parent`, and a child bound to a
+  property of the root's BOUND type must be reachable through that property. Guarded by `hasProp`,
+  since only an Item has `parent` and a QtObject sitting in `data` legitimately does not. Verified
+  to FAIL when the fix is removed, and it immediately found a third case (a local `.qml` Item child
+  was not item-parented either).
 - **Visual children get an ITEM parent.** QQuickItem tracks visual parentage through parentItem,
   which is a different link from the QObject parent: `setQtParent` alone left it null, and an item
   with no parentItem is not in a scene, so writing `visible = true` on it silently does not take

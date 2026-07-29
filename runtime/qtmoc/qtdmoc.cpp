@@ -434,6 +434,13 @@ static bool gadgetProp(const QVariant& v, const char* member, QMetaProperty& out
     return true;
 }
 
+// Does the object's meta-object declare this property at all? Only an Item has `parent`, so a
+// linkage check can ask before asserting instead of assuming every child is visual.
+extern "C" int qtd_has_prop(void* o, const char* n) {
+    if (!o) return 0;
+    return static_cast<QObject*>(o)->metaObject()->indexOfProperty(n) >= 0 ? 1 : 0;
+}
+
 // Copy a property from one object to another WITHOUT naming its type. The QVariant carries the
 // type and QMetaType converts on write, so this reaches QColor, QFont, an enum, a model — every
 // value type at once. The typed helpers each need the D type spelled out, which is exactly what a
