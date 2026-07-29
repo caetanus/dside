@@ -243,6 +243,8 @@ static std::string srcOf(Node *n) {
 static std::string g_outerId, g_outerClass, g_outerQmlType, g_selfClass;
 static std::map<std::string, std::string> g_outerPropType, g_outerBaseProps;
 static bool g_outerUsed = false;
+// True while compiling an object that is a property VALUE SOURCE (`NumberAnimation on v`).
+static bool g_isValueSource = false;
 // The chain of ENCLOSING objects, innermost first. `__outer` is always the IMMEDIATE parent, so an
 // id further up is reached by hopping: `__outer.__outer.gap`. Without this the field was declared
 // as the id-bearing ancestor's class while the value published was the immediate parent's — and
@@ -2145,6 +2147,10 @@ struct ObjNode {
     int outerHops = -1;       // deepest enclosing level it reached (0 = immediate parent)
     bool hasLate = false;     // it (or a descendant) has late-phase work
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
+    // Value sources (`NumberAnimation on v`). They need completion like any object, but they are
+    // NOT children in QML's object model — the engine has no `_vs0.duration` path, so dumping them
+    // as children made the oracle fail on a path that cannot exist.
+    std::vector<std::pair<std::string, ObjNode>> vsKids;
     // Children attached to a member of a GROUPED property. Unlike `kids`, the D FIELD and the QML
     // PATH differ (field `_g_group_object`, path `group.object`), so both are carried. (A struct
     // holding an ObjNode by value can't be declared here — ObjNode is still incomplete — so the
@@ -2554,6 +2560,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, ExpressionNode *>> rawValueGroupAssigns;   // `vgroup.member: expr`
     // `<baseProp>.<member>: expr` where baseProp holds an OBJECT (border.width on a Rectangle).
     std::vector<std::pair<std::string, ExpressionNode *>> rawObjGroupAssigns;
+    // `<Type> on <prop> { ... }` — a value source: built like a child, then handed its property.
+    struct ValueSource { std::string prop; UiObjectInitializer *init; std::string type; };
+    std::vector<ValueSource> valueSources;
     // `<baseProp>.<member>: expr` where baseProp is a plain Q_GADGET value (icon.width).
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseVGroupAssigns;
     std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
@@ -2683,9 +2692,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // width, Behavior on x, ...), NOT a child object bound to <prop>. We don't model these,
             // so flag PARTIAL — treating it as a `<prop>: Type{}` child would emit a wrong dump.
             if (ob->hasOnToken) {
-                std::fprintf(stderr, "qmltc-d: %s: '%s on %s' value source in %s not yet supported — skipped (later phase)\n",
-                             inPath, typeName(ob->qualifiedTypeNameId).c_str(), qname(ob->qualifiedId).c_str(), cls.c_str());
-                ++partial; continue;
+                // `NumberAnimation on width`, `Behavior on x`: a PROPERTY VALUE SOURCE. The object
+                // is built like any child and then handed the property it drives — one generic Qt
+                // interface (QQmlPropertyValueSource) covers every animation type and Behavior, so
+                // nothing here needs to know what a NumberAnimation is. Refusing it meant a
+                // compiled document was visually right and frozen: the animation never existed.
+                std::string vsType = typeName(ob->qualifiedTypeNameId);
+                std::string vsProp = qname(ob->qualifiedId);
+                auto vst = boundTypeFor(vsType);
+                if (vst.first.empty()) {
+                    std::fprintf(stderr, "qmltc-d: %s: '%s on %s' value source in %s is not a bound "
+                                 "type — skipped (later phase)\n", inPath, vsType.c_str(),
+                                 vsProp.c_str(), cls.c_str());
+                    ++partial; continue;
+                }
+                valueSources.push_back({vsProp, ob->initializer, vsType});
+                continue;
             }
             // A DOTTED target (`group.object: QtObject { … }`) binds a child to a member of a
             // GROUPED property: build the child, then attach it THROUGH the group object. The D
@@ -3970,6 +3992,32 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
     };
 
+    // Value sources: build the object, then hand it the property it drives.
+    for (size_t vi = 0; vi < valueSources.size(); ++vi) {
+        auto &vs = valueSources[vi];
+        auto vst = boundTypeFor(vs.type);
+        if (!vst.second.empty()) {
+            std::string imp = "import " + vst.second + ";\n";
+            if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+            std::string vimp = "import " + vst.second.substr(0, vst.second.rfind('.')) + ".qtvirt;\n";
+            if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
+        }
+        std::string field = "_vs" + std::to_string(vi);
+        std::string childCls = cls + "_vs" + std::to_string(vi);
+        bool savedVS = g_isValueSource;
+        g_isValueSource = true;
+        ObjNode kid = compileObject(vs.init, childCls, classes, partial, inPath, vst.first, nullptr, vs.type);
+        g_isValueSource = savedVS;
+        childFields += "    " + childCls + " " + field + ";\n";
+        // qobjOf(this), not cast(void*)this: the handoff carries the C++ QObject, and a void*
+        // passes straight through qobjOf — publishing the D reference handed Qt a pointer that is
+        // not a QObject at all, which segfaulted inside QQmlProperty.
+        childWire += "        __qmltcVsTarget = qobjOf(this); __qmltcVsProp = \"" + vs.prop + "\";\n"
+                   + "        " + field + " = new " + childCls + "();\n"
+                   + "        setQtParent(" + field + ", this);\n";
+        node.vsKids.push_back({field, kid});
+    }
+
     // Grouped assignment on a plain Q_GADGET value: read-modify-write of the whole value.
     for (auto &ga : rawBaseVGroupAssigns) {
         auto dot = ga.first.find('.');
@@ -4416,6 +4464,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Without this the objects are constructed but not COMPLETE: QQuickControl computes
         // hoverEnabled here, and Controls generally do their real initialisation in it.
         for (auto &k : node.kids) wire += "        componentComplete(" + dIdent(k.first) + ");\n";
+    for (auto &k : node.vsKids) wire += "        componentComplete(" + k.first + ");\n";
         for (auto &dk : node.defaultKids) wire += "        componentComplete(" + dk.first + ");\n";
         wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
@@ -4437,6 +4486,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     if (g_outerUsed && !g_outerClass.empty())   // taken BEFORE this object constructs its own kids
         wire.insert(wire.find("classBegin(this);\n") + 18,
                     "        __outer = cast(" + g_outerClass + ") __qmltcOuter;\n");
+    // A value source must know the property it drives BEFORE its own `running: true` is applied
+    // and before it completes — otherwise it starts with nothing to animate. Taken at the top of
+    // the wire, exactly like __outer.
+    if (g_isValueSource)
+        wire.insert(wire.find("classBegin(this);\n") + 18,
+                    "        attachValueSource(this, __qmltcVsTarget, __qmltcVsProp);\n");
     node.usesOuter = g_outerUsed && !g_outerClass.empty();
     // The late pass: this object's deferred connects, then every child's. Emitted only where
     // there is something to do, so the common object is unchanged.
@@ -4777,6 +4832,7 @@ int main(int argc, char **argv) {
     if (isItemType(rootType)) {
         std::printf("extern(C) int qtd_render_item(void*, const(char)*);\n");
         std::printf("extern(C) int qtd_click_item(void*, int, int);\n");
+        std::printf("extern(C) int qtd_run_ms(void*, int);\n");
     }
 
     if (dump) {
@@ -4805,6 +4861,11 @@ int main(int argc, char **argv) {
         if (isItemType(rootType))
             std::printf("    foreach (i, a; args) if (a == \"--click\" && i + 2 < args.length)\n"
                         "        qtd_click_item(qobjOf(o), args[i + 1].to!int, args[i + 2].to!int);\n");
+        // `--run <ms>`: put the object in a live scene and let TIME pass before dumping, so an
+        // animation has a chance to advance. Without it every dump reads the initial value.
+        if (isItemType(rootType))
+            std::printf("    foreach (i, a; args) if (a == \"--run\" && i + 1 < args.length)\n"
+                        "        qtd_run_ms(qobjOf(o), args[i + 1].to!int);\n");
         if (isItemType(rootType))
             std::printf("    foreach (i, a; args) if (a == \"--render\" && i + 1 < args.length) {\n"
                         "        auto rc = qtd_render_item(qobjOf(o), (args[i + 1] ~ \"\\0\").ptr);\n"

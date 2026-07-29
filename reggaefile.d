@@ -484,6 +484,13 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     static immutable Click[] clickable = [Click("QClick", 30, 20, "hits"),
                                          Click("CClick", 40, 15, "hits")];
 
+    // TIME cases: (file, ms, property). Both sides run for the same wall time and the property is
+    // compared. An animation only advances when something drives it, so a compiled object can hold
+    // a correct NumberAnimation that never ticks — invisible to a property dump (reads the initial
+    // value), to a frame comparison (one frame) and to a click test (an event, not time).
+    static struct Timed { string name; int ms; string prop; }
+    static immutable Timed[] timed = [Timed("QAnim", 400, "v")];
+
     static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",
                                             "QText", "QTextEdit", "QTextInput", "QVarCopy",
                                             "QVarTernary"];
@@ -554,6 +561,21 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             // and nothing here drew a pixel before this. Software backend so it is deterministic
             // and needs no GPU; the comparator refuses a frame with no area or a single colour,
             // so this cannot decay into a test that passes on emptiness.
+            // Time: both sides run for the same wall time, then the property is compared — and
+            // the value must differ from the t=0 one, or the test would pass on a frozen document.
+            foreach (tm; timed) if (tm.name == name && rndDep.length) {
+                auto renv3 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto oT = genD ~ ".time.ours", eT = genD ~ ".time.eng", zT = genD ~ ".time.zero";
+                auto tcmd = renv3 ~ appBin ~ " --run " ~ tm.ms.to!string
+                          ~ " | grep '^" ~ tm.prop ~ "\t' > " ~ oT
+                          ~ " && " ~ renv3 ~ rndBin ~ " --run " ~ qmlFile ~ " " ~ tm.ms.to!string
+                          ~ " " ~ tm.prop ~ " > " ~ eT
+                          ~ " && diff " ~ eT ~ " " ~ oT
+                          ~ " && " ~ renv3 ~ appBin ~ " | grep '^" ~ tm.prop ~ "\t' > " ~ zT
+                          ~ " && ! diff -q " ~ oT ~ " " ~ zT ~ " > /dev/null";
+                ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-time-" ~ dc, tcmd,
+                                   [app] ~ rndDep ~ [tool]);
+            }
             // Behaviour: same click to both sides, compare the property it should have changed.
             foreach (ck; clickable) if (ck.name == name && rndDep.length) {
                 auto renv2 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";

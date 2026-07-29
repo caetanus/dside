@@ -3,6 +3,10 @@
 // via QMetaObjectBuilder from signatures the D side provides (extracted
 // by CTFE). qt_metacall maps: signal indices -> activate; slot indices -> D.
 #include <QObject>
+#ifdef QT_QML_LIB
+#include <QtQml/QQmlPropertyValueSource>
+#include <QtQml/QQmlProperty>
+#endif
 #include <QString>
 #include <QMetaProperty>
 #include <QMetaType>
@@ -433,6 +437,29 @@ static bool gadgetProp(const QVariant& v, const char* member, QMetaProperty& out
     out = mo->property(i);
     return true;
 }
+
+// Attach a PROPERTY VALUE SOURCE (`NumberAnimation on width`, `Behavior on x`) to its target.
+// QQmlPropertyValueSource is one generic interface: the object says "I drive this property", Qt
+// hands it a QQmlProperty and the object takes it from there. So this one entry point covers every
+// animation type, Behavior, and anything else that implements it — no per-type mechanism, and no
+// need for the compiler to know what a NumberAnimation is.
+// Only where QtQml is actually LINKED. This file is compiled into every binding's shims, and the
+// widgets binding has no QtQml: the symbols exist in the headers but not in the link, so an
+// unconditional definition broke every widgets test with undefined references. QT_QML_LIB is what
+// pkg-config defines for Qt6Qml, so it marks exactly the bindings that can satisfy them.
+#ifdef QT_QML_LIB
+extern "C" int qtd_attach_value_source(void *src, void *target, const char *prop) {
+    if (!src || !target) return 0;
+    auto *vs = dynamic_cast<QQmlPropertyValueSource *>(static_cast<QObject *>(src));
+    if (!vs) return 0;
+    QQmlProperty p(static_cast<QObject *>(target), QString::fromUtf8(prop));
+    if (!p.isValid()) return 0;
+    vs->setTarget(p);
+    return 1;
+}
+#else
+extern "C" int qtd_attach_value_source(void *, void *, const char *) { return 0; }
+#endif
 
 // Does the object's meta-object declare this property at all? Only an Item has `parent`, so a
 // linkage check can ask before asserting instead of assuming every child is visual.

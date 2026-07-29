@@ -12,6 +12,7 @@
 #include <QImage>
 #include <QMouseEvent>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 
 extern "C" int qtd_render_item(void *item, const char *out) {
     auto *it = reinterpret_cast<QQuickItem *>(item);
@@ -46,5 +47,23 @@ extern "C" int qtd_click_item(void *item, int x, int y) {
     QCoreApplication::sendEvent(win, &press);
     QCoreApplication::sendEvent(win, &release);
     QCoreApplication::processEvents();
+    return 0;
+}
+
+// Put the item in a live scene and spin the event loop for `ms`. Animations only advance when
+// something drives them, so a compiled object can hold a perfectly correct NumberAnimation that
+// never ticks — invisible to a property dump (read too early), to a frame comparison (one frame),
+// and to a click test. Time is its own axis.
+extern "C" int qtd_run_ms(void *item, int ms) {
+    auto *it = reinterpret_cast<QQuickItem *>(item);
+    if (!it) return 1;
+    static QQuickWindow *win = nullptr;
+    win = new QQuickWindow();
+    win->setWidth(qMax(1, int(it->width())));
+    win->setHeight(qMax(1, int(it->height())));
+    it->setParentItem(win->contentItem());
+    win->show();
+    QElapsedTimer t; t.start();
+    while (t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
     return 0;
 }

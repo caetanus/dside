@@ -45,7 +45,13 @@
     "QtQuick/private/qquickvalidator_p.h",
     "QtQuick/private/qquickshortcut_p.h",
     "QtQuick/private/qquickfontloader_p.h",
-    "QtQuick/private/qquickpositioners_p.h"
+    "QtQuick/private/qquickpositioners_p.h",
+    "QtQuick/private/qquickanimation_p.h",
+    "QtQuick/private/qquickbehavior_p.h",
+    "QtQuick/private/qquickanimatorjob_p.h",
+    "QtQuick/private/qquicksmoothedanimation_p.h",
+    "QtQuick/private/qquickspringanimation_p.h",
+    "QtQuick/private/qquickanimationcontroller_p.h"
   ],
   "include_paths": [
     "/usr/include/qt6/QtQuick/6.11.1",
@@ -60,24 +66,26 @@
     "/usr/include/qt6/QtGui/6.11.1/QtGui"
   ],
   "subclass_derived": [
+    "QQuickAbstractAnimation",
     "QQuickItem"
   ],
   "qmltypes": [
     "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes"
   ],
   "subclass": [
+    "QQuickBasePositioner",
+    "QQuickBehavior",
+    "QQuickDoubleValidator",
+    "QQuickFontLoader",
+    "QQuickFontMetrics",
+    "QQuickIntValidator",
+    "QQuickPropertyChanges",
+    "QQuickShortcut",
     "QQuickState",
     "QQuickStateGroup",
     "QQuickStateOperation",
-    "QQuickPropertyChanges",
-    "QQuickTransition",
     "QQuickSystemPalette",
-    "QQuickFontMetrics",
     "QQuickTextMetrics",
-    "QQuickIntValidator",
-    "QQuickDoubleValidator",
-    "QQuickShortcut",
-    "QQuickFontLoader",
-    "QQuickBasePositioner"
+    "QQuickTransition"
   ]
 }

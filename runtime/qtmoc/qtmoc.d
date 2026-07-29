@@ -802,6 +802,21 @@ bool propVar(V, T)(T o, string name, ref V outv) {
                             (cppSig!V ~ "\0").ptr, cast(void*) &outv) != 0;
 }
 
+/// The target a value source is about to be attached to, published by the parent immediately
+/// before constructing it. The object's wire runs inside its CONSTRUCTOR — it sets `running: true`
+/// and completes — so attaching afterwards starts an animation with no property to drive. Same
+/// handoff as __qmltcOuter, and for the same reason.
+void* __qmltcVsTarget;
+string __qmltcVsProp;
+
+private extern(C) int qtd_attach_value_source(void*, void*, const(char)*);
+/// Attaches a property VALUE SOURCE (`NumberAnimation on width`, `Behavior on x`) to its target.
+/// One generic interface covers every animation type and Behavior — the caller never has to know
+/// which, exactly like a property write never has to know the value type.
+bool attachValueSource(S, T)(S src, T target, string prop) {
+    return qtd_attach_value_source(qobjOf(src), qobjOf(target), (prop ~ "\0").ptr) != 0;
+}
+
 private extern(C) int qtd_has_prop(void*, const(char)*);
 /// True when the object's meta-object declares `name` — only an Item has `parent`, so a check can
 /// ask instead of assuming.

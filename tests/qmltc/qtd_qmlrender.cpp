@@ -17,6 +17,7 @@
 #include <QWindow>
 #include <QMouseEvent>
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <cstdio>
 
 // Send a synthetic click at (x, y) to a window and let it be delivered. This is the BEHAVIOUR half
@@ -74,6 +75,21 @@ int main(int argc, char **argv) {
     // `--click <qml> <x> <y> <prop>`: load the document, deliver a click, print ONE property.
     // Deliberately one property and one event to start: the value of this test is that it can
     // fail for a reason no property dump or frame comparison can see.
+    // `--run <qml> <ms> <prop>`: let TIME pass in the interpreted version, then read a property.
+    if (argc == 5 && QString::fromUtf8(argv[1]) == "--run") {
+        QQuickView v;
+        v.setResizeMode(QQuickView::SizeViewToRootObject);
+        v.setSource(QUrl::fromLocalFile(QString::fromUtf8(argv[2])));
+        if (v.status() != QQuickView::Ready) { std::fprintf(stderr, "qmlrender: not ready\n"); return 3; }
+        v.show();
+        QElapsedTimer t; t.start();
+        const int ms = QString::fromUtf8(argv[3]).toInt();
+        while (t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        QObject *root = v.rootObject();
+        const QByteArray prop = QString::fromUtf8(argv[4]).toUtf8();
+        std::printf("%s\t%s\n", prop.constData(), qPrintable(root->property(prop.constData()).toString()));
+        return 0;
+    }
     if (argc == 6 && QString::fromUtf8(argv[1]) == "--click") {
         QQuickView v;
         v.setResizeMode(QQuickView::SizeViewToRootObject);

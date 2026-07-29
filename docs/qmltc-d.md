@@ -238,6 +238,20 @@ through an `id`), which is exactly the guard we want.
   The parameter's `isPointer` matters and cost a debugging round: Qt registers
   `clicked(QQuickMouseEvent*)` and the registry spells the type without the `*`, so the first
   version compiled cleanly and connectMeta failed at RUNTIME — the handler simply never fired.
+- **Property VALUE SOURCES** (`NumberAnimation on v`, `Behavior on x`). Qt models these with ONE
+  generic interface — QQmlPropertyValueSource: the object says "I drive this property", Qt hands it
+  a QQmlProperty, and the object takes over. So a single runtime entry point covers every animation
+  type and Behavior, and the compiler never learns what a NumberAnimation is. Two ordering details
+  are load-bearing: the object must be handed its target BEFORE its own `running: true` is applied
+  and before it completes (the same construction-time handoff `__outer` uses — attaching afterwards
+  starts an animation with nothing to drive), and the handoff carries `qobjOf(this)`, not the D
+  reference, which otherwise segfaults inside QQmlProperty. A value source is completed like any
+  object but is NOT dumped as a child: the engine has no `_vs0.duration` path.
+- **TIME differential.** Both sides run for the same wall time and the property is compared. An
+  animation only advances when something drives it, so a compiled object can hold a perfectly
+  correct animation that never ticks — invisible to a property dump (reads the initial value), to a
+  frame comparison (one frame) and to a click test (an event, not time). The target also requires
+  the value to DIFFER from the t=0 one, so it cannot pass on a frozen document.
 - **BEHAVIOUR differential.** A real click is delivered to both sides and the resulting property
   compared. Nothing else in the suite can see this: a MouseArea whose handler never runs renders
   PIXEL-IDENTICALLY and does nothing. The target also asserts the click MATTERED — it re-runs
