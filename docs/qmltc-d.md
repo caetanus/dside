@@ -229,6 +229,19 @@ through an `id`), which is exactly the guard we want.
   it because it reads OUR D field while the engine reads ITS object — both configured identically —
   instead of asking the control. Found only because a deep read through `control.indicator` came
   back null.
+- **RENDER differential.** The bar is not "the property values match" — it is *renders and behaves
+  like the interpreted version*, and until this existed nothing in the suite drew a pixel. Both
+  sides are now rasterised headless (software backend, deterministic, no GPU) and compared frame to
+  frame: the engine through QQuickView, ours through a `--render <png>` mode the generated main
+  gains when its root is an Item. 9 files, 18 targets, pixel-identical — including text
+  (82-149 distinct colours), which means fonts, colours and item geometry all agree.
+  Two things keep it honest. The comparator REFUSES a frame with no area or a single flat colour,
+  because most of this corpus was written for a property differential and its roots have no visual
+  size — a 1-pixel window compares equal no matter what the compiler emits, and comparing such an
+  image WITH ITSELF fails the gate. And it is verified to detect a real difference: two frames of
+  the same size with a different colour report the first differing pixel.
+  What is still NOT measured: behaviour over time (animations, transitions) and interaction (click,
+  hover, focus). A CheckBox that never toggles would pass everything here.
 - **LINKAGE CHECKS in the dump.** Two bugs got past this differential because both sides compared
   objects that were configured identically — ours simply was not ATTACHED to anything (a
   property-bound child never assigned to its property; a visual child with no item parent). Reading

@@ -4739,6 +4739,9 @@ int main(int argc, char **argv) {
     }
     // A bound visual root needs a QGuiApplication before setting a property that lays out text.
     if (!bt.first.empty()) std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
+    // --render draws the object into a PNG; the helper lives in the test harness, so the
+    // declaration is only emitted where the mode can actually be used.
+    if (isItemType(rootType)) std::printf("extern(C) int qtd_render_item(void*, const(char)*);\n");
 
     if (dump) {
         std::vector<DumpLine> lines;
@@ -4756,6 +4759,17 @@ int main(int argc, char **argv) {
         }
         if (!bt.first.empty()) std::printf("    auto o = new %s();\n", qPrintable(cls));
         else                   std::printf("    auto o = newQObject!%s();\n", qPrintable(cls));
+        // `--render <png>`: draw the object and write the frame instead of dumping property values.
+        // Property values were never the bar — "renders and behaves like the interpreted version"
+        // is — and nothing here drew a pixel until this mode existed. Emitted only for an ITEM
+        // root: anything else has nothing to draw, and comparing two empty frames is worse than
+        // having no test at all.
+        if (isItemType(rootType))
+            std::printf("    foreach (i, a; args) if (a == \"--render\" && i + 1 < args.length) {\n"
+                        "        auto rc = qtd_render_item(qobjOf(o), (args[i + 1] ~ \"\\0\").ptr);\n"
+                        "        if (rc != 0) writefln(\"render failed rc=%%s\", rc);\n"
+                        "        return;\n"
+                        "    }\n");
         std::printf("    foreach (a; args[1 .. $]) {\n");
         // `name()` INVOKES a no-arg method — the only way to observe what a method does
         // (imperative binding installs, resets, counters). Everything else is `name=value`.

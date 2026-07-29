@@ -444,6 +444,16 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     auto oracleFlags = pkgCflags(oracleMods) ~ " -std=c++17 -fPIC -O2";
     auto oracleLibs = execute(["pkg-config", "--libs"] ~ oracleMods).output.strip;
     auto oracleBin = buildPath(bind.bdir, "qmlvalues");
+    auto rndBin = buildPath(bind.bdir, "qmlrender");
+    Target[] rndDep;
+    if (bind.mods.any!(m => m.canFind("Quick"))) {
+        auto rCpp = buildPath(here, "qtd_qmlrender.cpp");
+        auto rFl = pkgCflags(bind.mods ~ ["Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
+        auto rLb = execute(["pkg-config", "--libs"] ~ bind.mods ~ ["Qt6Core"]).output.strip;
+        rndDep ~= Target(rndBin, guardedLink(rndBin ~ ".lock",
+            "clang++ " ~ rFl ~ " " ~ rCpp ~ " -o $out " ~ rLb, rndBin, [rCpp]), [Target(rCpp)]);
+    }
+
     // guardedLink, not guarded: this binary is SHARED by every differential in the suite, so a
     // rebuild of it races with runs already using it — writing straight to the final path leaves a
     // window where the file exists and is not yet executable, and a concurrent run dies with
@@ -460,6 +470,31 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
     auto appHelper = Target(appObj, guarded(appObj ~ ".lock",
         "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o " ~ appObj, appObj, [appCpp]), [Target(appCpp)]);
+    // Files whose render is MEANINGFUL — they have area and more than one colour, so the frame
+    // comparison can actually fail. The list is explicit rather than "every file": most of this
+    // corpus was written for a PROPERTY differential and its roots have no visual size, which
+    // renders a 1-pixel window that would compare equal no matter what the compiler emitted. The
+    // comparator enforces the same rule at runtime, so a file added here that turns out to be
+    // blank fails loudly instead of quietly passing.
+    static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",
+                                            "QText", "QTextEdit", "QTextInput", "QVarCopy",
+                                            "QVarTernary"];
+
+    // The RENDER helper, for suites whose binding has QtQuick: a generated Item root gains a
+    // `--render <png>` mode, which is the only thing in this suite that draws. Built only where
+    // Quick exists — the QtQml-only binding has no Item root to render and must not need it.
+    auto hasQuick = bind.mods.any!(m => m.canFind("Quick"));
+    auto renderCpp = buildPath(here, "qtd_render.cpp");
+    auto renderObj = buildPath(bind.bdir, "qtd_render.o");
+    Target[] renderDep;
+    string renderLink;
+    if (hasQuick) {
+        auto rFlags = pkgCflags(bind.mods ~ ["Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
+        renderDep ~= Target(renderObj, guarded(renderObj ~ ".lock",
+            "clang++ " ~ rFlags ~ " -c " ~ renderCpp ~ " -o " ~ renderObj, renderObj, [renderCpp]),
+            [Target(renderCpp)]);
+        renderLink = " " ~ renderObj;
+    }
 
     Target[] ts;
     auto corpus = dirEntries(corpusDir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
@@ -478,7 +513,7 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
                 [tool, Target(qmlFile), bind.gen]);
             // 2) link the generated D against the binding (same shape as qtdApp).
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
-            auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
+            auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ renderLink ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ " -L-lstdc++";
             // Guarded: with a `<Name>.set` sidecar TWO phony targets depend on this binary, and a
@@ -486,10 +521,10 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             // The link also consumes the helper object and BOTH binding archives; leaving them out
             // pins a stale binary whenever the binding or the runtime changes — a green target
             // proving something about code that is no longer in the tree.
-            auto appIns = [genD, appObj, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),
+            auto appIns = [genD, appObj] ~ (hasQuick ? [renderObj] : []) ~ [buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),
                            buildPath(bind.bdir, "libshims.a")];
             auto app = Target(appBin, guardedLink(appBin ~ ".lock", link, appBin, appIns),
-                              [gen, appHelper, qtdBindLib(bind, dc), bind.shims]);
+                              [gen, appHelper] ~ renderDep ~ [qtdBindLib(bind, dc), bind.shims]);
             // 3) run the generated D and the oracle over the SAME .qml; the value dumps must match.
             //    The oracle dumps the EXACT property paths qmltc-d emits (`--labels` -> a .props
             //    file, `--props` to the oracle), so base C++ properties the .qml set are compared too.
@@ -505,6 +540,21 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
+            // RENDER differential: draw the same document both ways and compare the FRAME. The
+            // property dump can agree while the two paint differently — that is the bar the
+            // project is actually held to ("renders and behaves like the interpreted version"),
+            // and nothing here drew a pixel before this. Software backend so it is deterministic
+            // and needs no GPU; the comparator refuses a frame with no area or a single colour,
+            // so this cannot decay into a test that passes on emptiness.
+            if (renderable.canFind(name) && rndDep.length) {
+                auto ourPng = genD ~ ".our.png", engPng = genD ~ ".eng.png";
+                auto renv = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto rcmd = renv ~ appBin ~ " --render " ~ ourPng
+                          ~ " && " ~ renv ~ rndBin ~ " " ~ qmlFile ~ " " ~ engPng
+                          ~ " && " ~ renv ~ rndBin ~ " --compare " ~ engPng ~ " " ~ ourPng;
+                ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-render-" ~ dc, rcmd,
+                                   [app] ~ rndDep ~ [tool]);
+            }
             // 4) LIVE-BINDING differential: if a `<Name>.set` sidecar lists `name=value` mutations,
             //    apply them to BOTH the generated D and the engine, and diff the post-mutation dumps.
             //    A binding that isn't reactive would diverge here (dependent wouldn't update).
