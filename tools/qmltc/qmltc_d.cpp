@@ -738,6 +738,16 @@ static std::set<std::string> g_scope;
 
 // True when `n` names a property of the object's BOUND type (so it lives in the meta-object)
 // rather than a property the document declares (a plain D field).
+// True when a QML type is an Item — it has QQuickItem's `parent` property. A DEFAULT child of an
+// Item is a VISUAL child in QML, and QQuickItem tracks that through parentItem, not through the
+// QObject parent: setQtParent alone leaves parentItem null, and an item with no parentItem is not
+// in a scene, so writing `visible = true` on it silently does not take (probed directly: set
+// false then true and it stays false). Anchors, layout and `parent` reads depend on the same link.
+static bool isItemType(const std::string &qmlType) {
+    if (auto qc = g_qmlCxxType.find(qmlType); qc != g_qmlCxxType.end()) return qc->second.count("parent") > 0;
+    return false;
+}
+
 static bool isBoundObjectProp(const std::string &n) {
     if (g_propType.count(n) || g_scope.count(n)) return false;
     if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) return qc->second.count(n) > 0;
@@ -2865,6 +2875,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n"
+                   // ...and the ITEM parent, which is a different link: QQuickItem tracks visual
+                   // parentage through parentItem, and an item with none is not in a scene.
+                   + ((isItemType(childType) && isItemType(g_selfQmlType))
+                        ? "        setPropObj(" + field + ", \"parent\", this);\n" : "")
                    + ""
                    + "        classBegin(" + field + ");\n";
         // A BARE child with an id is just as addressable as one bound to a property:

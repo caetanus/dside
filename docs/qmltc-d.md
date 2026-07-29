@@ -163,11 +163,12 @@ through an `id`), which is exactly the guard we want.
   it because it reads OUR D field while the engine reads ITS object — both configured identically —
   instead of asking the control. Found only because a deep read through `control.indicator` came
   back null.
-- **KNOWN GAP — `visible`**: a binding on `visible` does not reproduce the engine. With an
-  identical binding, `clip` recomputes correctly and `visible` ends false where the engine says
-  true. QQuickItem's `visible` is effective-visibility recalculated at completion, and our
-  one-shot-then-notify order is not the engine's evaluate-at-completion order. Found while pinning
-  the enum comparison and recorded rather than avoided.
+- **Visual children get an ITEM parent.** QQuickItem tracks visual parentage through parentItem,
+  which is a different link from the QObject parent: `setQtParent` alone left it null, and an item
+  with no parentItem is not in a scene, so writing `visible = true` on it silently does not take
+  (probed directly: set false, then true, and it stays false). This is what the `visible` gap
+  recorded here actually was — the binding was fine, the parentage was not. Anchors, layout and
+  `parent` reads depend on the same link.
 - **`Math.max`/`Math.min` are variadic**: three arguments (which Qt's Controls use) were refused,
   and the two-argument form was emitted as `a > b ? a : b`, evaluating each operand TWICE — every
   operand here being a meta-object read. Both now go through std.algorithm's variadic max/min,
