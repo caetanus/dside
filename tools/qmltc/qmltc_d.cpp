@@ -750,6 +750,32 @@ static bool isItemType(const std::string &qmlType) {
 
 // Same question asked about an explicit type, for the dump's linkage checks (which run outside
 // any object's compile scope).
+// Resolves a plain property-READ expression to (object expression, group, member). An empty
+// object means it is not a plain read and cannot be copied. Shared by the base-property path and
+// the object-group path so both agree on what "a read" is.
+static void resolveReadSrc(ExpressionNode *e, std::string &obj, std::string &grp, std::string &prp) {
+    obj.clear(); grp.clear(); prp.clear();
+    auto resolveObj = [&](IdentifierExpression *b) -> std::string {
+        std::string bn = qs(b->name.toString()), pre;
+        const OuterFrame *fr = nullptr;
+        if (outerHop(bn, pre, &fr)) return pre.substr(0, pre.size() - 1);
+        if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) return ci->second.field;
+        if (!g_selfId.empty() && bn == g_selfId) return "this";
+        return "";
+    };
+    auto *fmv = cast<FieldMemberExpression *>(e);
+    if (!fmv) return;
+    if (auto *b0 = cast<IdentifierExpression *>(fmv->base)) {
+        obj = resolveObj(b0);
+        if (!obj.empty()) prp = qs(fmv->name.toString());
+    } else if (auto *fmb = cast<FieldMemberExpression *>(fmv->base)) {
+        if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
+            obj = resolveObj(b1);
+            if (!obj.empty()) { grp = qs(fmb->name.toString()); prp = qs(fmv->name.toString()); }
+        }
+    }
+}
+
 static bool isBoundObjectProp2(const std::string &qmlType, const std::string &n) {
     if (auto qc = g_qmlCxxType.find(qmlType); qc != g_qmlCxxType.end()) return qc->second.count(n) > 0;
     return false;
@@ -3663,6 +3689,40 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string vty = inferType(ga.second, ptype), val;
         if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
                 || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
+            // `border.color: control.palette.dark` — a VALUE-typed source. The group is an object,
+            // so this is the same QVariant copy used for a base property, with the group object as
+            // the destination: the type is carried by the variant, not known here.
+            std::string so, sg, sp;
+            resolveReadSrc(ga.second, so, sg, sp);
+            if (!so.empty()) {
+                std::string dst = "propObj(this, \"" + gname + "\")";
+                std::string stmt = sg.empty()
+                    ? "        copyProp(" + so + ", \"" + sp + "\", " + dst + ", \"" + mem + "\");\n"
+                    : "        copyGroupProp(" + so + ", \"" + sg + "\", \"" + sp + "\", " + dst
+                      + ", \"" + mem + "\");\n";
+                // A BINDING, not a one-shot — and its first run belongs in the late phase: the
+                // child is constructed before its parent assigns anything, so a copy made during
+                // the wire necessarily reads a default (measured: #b8b8b8 where the engine had
+                // seagreen). The connect is to whatever the source hangs off, so a later change
+                // still propagates.
+                std::string slot = "__rcg_" + gname + "_" + mem;
+                std::string dep = sg.empty() ? sp : sg, sig;
+                const OuterFrame *fr0 = nullptr;
+                for (auto &f : g_outerChain) if (so.rfind("__outer", 0) == 0) { fr0 = &f; break; }
+                const std::string &srcType = fr0 ? fr0->qmlType : g_selfQmlType;
+                if (fr0 && !fr0->baseProps.count(dep) && fr0->propType.count(dep)) sig = dep + "Changed()";
+                else if (auto qn = g_qmlNotify.find(srcType); qn != g_qmlNotify.end()) {
+                    auto nt = qn->second.find(dep);
+                    if (nt != qn->second.end()) sig = nt->second;
+                }
+                handlerSlots += "    @Slot void " + slot + "() {\n    " + stmt + "    }\n";
+                if (!sig.empty())
+                    handlerWire += "        connectMeta(" + so + ", \"" + sig + "\", this, \""
+                                 + slot + "()\");\n";
+                lateWire += "        " + slot + "();\n";
+                node.groupProps.push_back({ga.first, "string"});
+                continue;
+            }
             std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s: value is not a scalar "
                          "the channel can convert [%s] — skipped (later phase)\n",
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());

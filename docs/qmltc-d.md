@@ -129,6 +129,11 @@ through an `id`), which is exactly the guard we want.
   registry marks it with `isPointer`, which the generator now records in the property table as a
   trailing `*`. The member's type comes from the value and QMetaType converts; setProp throws if
   the member does not exist, so a wrong name is loud rather than dropped.
+- **A value-typed source into an object group**: `border.color: control.palette.dark`. The group is
+  an object, so this is the same QVariant copy a base property uses with the group object as the
+  destination. It is a BINDING whose first run is in the LATE phase — a child is constructed before
+  its parent assigns anything, so a copy made during the wire necessarily reads a default (measured:
+  #b8b8b8 where the engine had seagreen).
 - **Value groups that are plain gadgets**: `icon.width: 24`. QQuickIcon has its own meta-object,
   so setVgroup does a read-modify-write through it. What made this safe to enable is telling it
   apart from the case below at COMPILE time — see the `^` marker.
