@@ -32,6 +32,30 @@ using namespace QQmlJS::AST;
 
 static std::string qs(const QString &s) { return s.toStdString(); }
 
+// A QML name is not necessarily a valid D IDENTIFIER: `delegate` and `scope` are ordinary QML
+// property names and both are D keywords, and they are not rare — 138 of the 944 .qml files Qt
+// ships use one. Emitting them verbatim produced D that does not compile, which no diagnostic
+// could show because the compiler was happy: the file was reported clean and the output was
+// unbuildable. Only the D side is renamed; the QML NAME (dump labels, setProp/propObj strings)
+// must stay exactly as written or it stops naming the property Qt knows.
+static const std::set<std::string> &dKeywords() {
+    static const std::set<std::string> kw = {
+        "abstract","alias","align","asm","assert","auto","body","bool","break","byte","case","cast",
+        "catch","cdouble","cent","cfloat","char","class","const","continue","creal","dchar","debug",
+        "default","delegate","delete","deprecated","do","double","else","enum","export","extern",
+        "false","final","finally","float","for","foreach","foreach_reverse","function","goto",
+        "idouble","if","ifloat","immutable","import","in","inout","int","interface","invariant",
+        "ireal","is","lazy","long","macro","mixin","module","new","nothrow","null","out","override",
+        "package","pragma","private","protected","public","pure","real","ref","return","scope",
+        "shared","short","static","struct","super","switch","synchronized","template","this","throw",
+        "true","try","typeid","typeof","ubyte","ucent","uint","ulong","union","unittest","ushort",
+        "version","void","wchar","while","with","__gshared","__traits","__vector","__parameters" };
+    return kw;
+}
+static std::string dIdent(const std::string &n) {
+    return dKeywords().count(n) ? n + "_" : n;
+}
+
 // The root object's `id:` (e.g. `id: root`), so a self-reference `root.x` in an expression
 // resolves to the property `x`. Set once in main before any expression is compiled.
 static std::string g_selfId;
@@ -2740,6 +2764,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
             QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
             std::string name = qs(pub->name.toString());
+            // A declared property becomes a D FIELD, and the meta-object exports it under that
+            // field's name — so a name that is a D keyword cannot simply be renamed: Qt would stop
+            // knowing the property by its QML name. A CHILD field can be renamed safely (it is not
+            // a property), which is what `delegate` needs; a declared one is refused instead. This
+            // has to be checked before any other handling: a literal-valued property takes an
+            // earlier path and skipped the check entirely when it sat further down.
+            if (dKeywords().count(name)) {
+                std::fprintf(stderr, "qmltc-d: %s: property '%s' in %s is a D keyword, and renaming "
+                             "the field would change the name Qt sees — skipped (later phase)\n",
+                             inPath, name.c_str(), cls.c_str());
+                ++partial; continue;
+            }
             // A custom `default property` (typically `list<QtObject>`) redirects bare children into
             // that list rather than the object's QObject children; whether that breaks our `@N` =
             // children()[N] dump model depends on there being bare children, which we only know after
@@ -2894,6 +2930,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_" + cb.field;
         // Resolve the child's BOUND base, exactly as the default-child path already does, and
         // import its module (plus the package's qtvirt, which the trampoline mixin needs).
+        // A property whose type is QQmlComponent takes a TEMPLATE, not an instance: `delegate:
+        // Item {}` on a Repeater defines what to build per item, and the view instantiates it.
+        // Building it eagerly as a child assigns one instance where Qt expects a factory — the
+        // same mistake the compiler already refuses for an explicit `Component {}`. The registry
+        // says which properties those are, so this is data rather than a list of names.
+        if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
+            auto it = qc->second.find(cb.field);
+            if (it != qc->second.end() && it->second.find("QQmlComponent") != std::string::npos) {
+                std::fprintf(stderr, "qmltc-d: %s: '%s' in %s takes a Component (a template the "
+                             "type instantiates itself), not an object — skipped (later phase)\n",
+                             inPath, cb.field.c_str(), cls.c_str());
+                ++partial; continue;
+            }
+        }
         auto cbt = boundTypeFor(cb.type);
         if (!cbt.first.empty() && !cbt.second.empty()) {
             std::string imp = "import " + cbt.second + ";\n";
@@ -2922,11 +2972,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (auto qp = g_qmlProps.find(cb.type); qp != g_qmlProps.end() && !cbt.first.empty())
             for (auto &pp : qp->second) kid.boundProps.push_back({pp.first, pp.second});
-        childFields += "    " + childCls + " " + cb.field + ";\n";
+        childFields += "    " + childCls + " " + dIdent(cb.field) + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
-                   + "        " + cb.field + " = "
+                   + "        " + dIdent(cb.field) + " = "
                    + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
-                   + "        setQtParent(" + cb.field + ", this);\n"
+                   + "        setQtParent(" + dIdent(cb.field) + ", this);\n"
                    // ...and ACTUALLY ASSIGN it to the property. Creating and parenting the object
                    // is not the same as `contentItem: Label {}`: without this the Control's own
                    // contentItem/indicator stayed NULL, so anything Qt computes from them (an
@@ -2936,8 +2986,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // Only a property of the BOUND type goes through the meta-object; a declared
                    // `property Item foo: Rectangle {}` is a plain D field.
                    + (isBoundObjectProp(cb.field)
-                        ? "        setPropObj(this, \"" + cb.field + "\", " + cb.field + ");\n" : "")
-                   + "        classBegin(" + cb.field + ");\n";
+                        ? "        setPropObj(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n" : "")
+                   + "        classBegin(" + dIdent(cb.field) + ");\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
@@ -4260,7 +4310,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // read what its children settled. A type that does not implement the interface is a no-op.
         // Without this the objects are constructed but not COMPLETE: QQuickControl computes
         // hoverEnabled here, and Controls generally do their real initialisation in it.
-        for (auto &k : node.kids) wire += "        componentComplete(" + k.first + ");\n";
+        for (auto &k : node.kids) wire += "        componentComplete(" + dIdent(k.first) + ");\n";
         for (auto &dk : node.defaultKids) wire += "        componentComplete(" + dk.first + ");\n";
         wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
@@ -4286,7 +4336,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // The late pass: this object's deferred connects, then every child's. Emitted only where
     // there is something to do, so the common object is unchanged.
     std::string lateKids;
-    for (auto &k : node.kids)        if (k.second.hasLate) lateKids += "        " + k.first + ".__qmltcLate();\n";
+    for (auto &k : node.kids)        if (k.second.hasLate) lateKids += "        " + dIdent(k.first) + ".__qmltcLate();\n";
     for (auto &dk : node.defaultKids) if (dk.second.hasLate) lateKids += "        " + dk.first + ".__qmltcLate();\n";
     for (auto &gk : node.groupKids)  if (gk.second.hasLate) lateKids += "        " + gk.first + ".__qmltcLate();\n";
     node.hasLate = !lateWire.empty() || !lateKids.empty();
@@ -4401,7 +4451,7 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
                        : (s.second == "bool") ? "propBool(" : "propInt(";
         out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second, self, s.first});
     }
-    for (auto &k : n.kids) collectDump(k.second, acc + k.first + ".", lab + k.first + ".", out);
+    for (auto &k : n.kids) collectDump(k.second, acc + dIdent(k.first) + ".", lab + k.first + ".", out);
     // Group children: read through the D field, but label with the QML path the oracle walks.
     for (auto &a : n.attachedProps) {
         auto dot = a.first.find('.');

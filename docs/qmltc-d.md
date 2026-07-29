@@ -232,6 +232,17 @@ through an `id`), which is exactly the guard we want.
   both spellings of a read THROUGH one (`control.indicator.width`, `background.implicitWidth`);
   Qt's Controls use them interchangeably, and supporting only the dotted form made the feature look
   arbitrary.
+- **A Component-typed property is NOT a child object.** `delegate: Item {}` on a Repeater, or
+  `sourceComponent:`, takes a TEMPLATE that the type instantiates itself; building it eagerly
+  assigns one instance where Qt expects a factory. The registry says which properties those are
+  (16 of them in the quick binding alone), so this is data, not a list of names. Found by an audit,
+  and only because the eager child ALSO failed to compile — see below.
+- **QML names that are D keywords.** `delegate` and `scope` are ordinary QML names and D keywords.
+  A CHILD field can be renamed (it is not a property); a DECLARED property cannot, because the
+  meta-object exports it under its field name and Qt would stop knowing it — that one is refused.
+  Worth knowing: after the Component rule above, no keyword-named object property remains reachable
+  in Qt's own types, so the rename is defensive. The compile error it caused is what exposed the
+  Component bug, which would otherwise have been silently wrong.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
