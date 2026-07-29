@@ -1191,6 +1191,59 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         out = "(" + c + " ? " + a + " : " + b + ")"; return true;
     }
     if (auto *bin = cast<BinaryExpression *>(e)) {
+        // `control.checkState === Qt.Checked` — comparing an ENUM property to an enum member. The
+        // numeric value is not knowable here, but an enum property READ AS A STRING gives its KEY
+        // (QVariant::toString goes through QMetaEnum), and the member's key is its own name. So
+        // the comparison is done on keys, which needs no table of enum values at all.
+        if (bin->op == QSOperator::StrictEqual || bin->op == QSOperator::Equal
+                || bin->op == QSOperator::StrictNotEqual || bin->op == QSOperator::NotEqual) {
+            auto enumKey = [&](ExpressionNode *x, std::string &key) {
+                auto *fm2 = cast<FieldMemberExpression *>(x);
+                if (!fm2) return false;
+                auto *b2 = cast<IdentifierExpression *>(fm2->base);
+                if (!b2) return false;
+                std::string tn = qs(b2->name.toString()), mem = qs(fm2->name.toString());
+                if (mem.empty() || !std::isupper((unsigned char)mem[0])) return false;
+                // A type name or the `Qt` global — never an object in scope, which would be a
+                // plain property read and must keep compiling as one.
+                if (g_childIds.count(tn) || g_singletons.count(tn)) return false;
+                if (!g_outerId.empty() && tn == g_outerId) return false;
+                if (!g_selfId.empty() && tn == g_selfId) return false;
+                if (tn != "Qt" && !g_qmlCxxType.count(tn)) return false;
+                key = mem; return true;
+            };
+            // ...and the other side must be a property whose type we do NOT map to a D scalar,
+            // which is exactly what an enum property looks like in the tables.
+            auto enumRead = [&](ExpressionNode *x, std::string &outRead) {
+                std::string tmp;
+                auto *fm2 = cast<FieldMemberExpression *>(x);
+                if (!fm2) return false;
+                auto *b2 = cast<IdentifierExpression *>(fm2->base);
+                if (!b2) return false;
+                std::string bn = qs(b2->name.toString()), mem = qs(fm2->name.toString()), pre;
+                const OuterFrame *fr = nullptr;
+                std::string obj;
+                if (outerHop(bn, pre, &fr)) obj = pre.substr(0, pre.size() - 1);
+                else if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) obj = ci->second.field;
+                else if (!g_selfId.empty() && bn == g_selfId) obj = "this";
+                else return false;
+                const std::string &qt = fr ? fr->qmlType : g_selfQmlType;
+                bool scalar = false;
+                if (auto qp = g_qmlProps.find(qt); qp != g_qmlProps.end()) scalar = qp->second.count(mem) > 0;
+                if (scalar) return false;
+                if (auto qc = g_qmlCxxType.find(qt); qc == g_qmlCxxType.end() || !qc->second.count(mem))
+                    return false;
+                outRead = "propStr(" + obj + ", \"" + mem + "\")";
+                return true;
+            };
+            std::string key, read;
+            if ((enumKey(bin->right, key) && enumRead(bin->left, read))
+                    || (enumKey(bin->left, key) && enumRead(bin->right, read))) {
+                bool neg = bin->op == QSOperator::StrictNotEqual || bin->op == QSOperator::NotEqual;
+                out = "(" + read + (neg ? " != \"" : " == \"") + key + "\")";
+                return true;
+            }
+        }
         // Comparisons yield bool and their operands are NOT the target type; compile them with a
         // neutral hint so numeric-literal formatting isn't skewed by a string/bool target.
         bool cmp = false, logical = false;
@@ -1252,6 +1305,19 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
+        // `Text.AlignHCenter` — an enum member is a CONSTANT, not a dependency. Recording the type
+        // name made the binding look like it depended on an object called `Text` and reported a
+        // dead dependency for something that can never change.
+        if (base) {
+            std::string bn = qs(base->name.toString()), mem = qs(fm->name.toString());
+            bool isObj = g_childIds.count(bn) || g_scope.count(bn) || g_singletons.count(bn)
+                      || (!g_selfId.empty() && bn == g_selfId);
+            if (!isObj)
+                for (auto &f : g_outerChain) if (!f.id.empty() && f.id == bn) isObj = true;
+            if (!isObj && !mem.empty() && std::isupper((unsigned char)mem[0])
+                    && (bn == "Qt" || g_qmlCxxType.count(bn)))
+                return;
+        }
         // A read off the enclosing object is a real dependency: record it tagged, so the wiring
         // connects to the OUTER's notify instead of treating the binding as a constant.
         if (base && qs(base->name.toString()) == "parent" && !g_scope.count("parent")

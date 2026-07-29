@@ -145,6 +145,16 @@ through an `id`), which is exactly the guard we want.
   control too), and routing it this way inherits the ordering, hop and notify handling that is
   already correct. A child reparented at runtime, or built by a Repeater, is not compiled at all,
   so the assumption cannot silently drift.
+- **Enum comparisons**: `control.checkState === Qt.Checked`. The numeric value is not knowable
+  here, but an enum property read as a STRING gives its KEY (QVariant::toString goes through
+  QMetaEnum) and the member's key is its own name — so the comparison is done on keys, needing no
+  table of enum values. An enum member is also a CONSTANT, so the type name in `Text.AlignHCenter`
+  is no longer recorded as a dependency (it reported a dead dependency on an object called `Text`).
+- **KNOWN GAP — `visible`**: a binding on `visible` does not reproduce the engine. With an
+  identical binding, `clip` recomputes correctly and `visible` ends false where the engine says
+  true. QQuickItem's `visible` is effective-visibility recalculated at completion, and our
+  one-shot-then-notify order is not the engine's evaluate-at-completion order. Found while pinning
+  the enum comparison and recorded rather than avoided.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
