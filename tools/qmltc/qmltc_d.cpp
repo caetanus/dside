@@ -36,10 +36,6 @@ static std::string qs(const QString &s) { return s.toStdString(); }
 // resolves to the property `x`. Set once in main before any expression is compiled.
 static std::string g_selfId;
 
-// Set when a compiled document needs QColor, so the generated module imports it. Per-document:
-// importing it unconditionally would break a document whose binding has no QColor at all.
-static bool g_needsColor = false;
-
 // Return types of this object's no-arg functions (name -> "int"/"double"/"string"/"bool"), so a
 // call `f()` in a binding can be coerced to the target property's type. Scoped per object.
 static std::map<std::string, std::string> g_funcRet;
@@ -641,13 +637,10 @@ static bool literalOf(Statement *st, const QString &dtype, std::string &out) {
     if (auto *num = cast<NumericLiteral *>(e)) { out = dnum(num->value, dtype == "int", neg); return true; }
     if (neg) return false;
     if (auto *str = cast<StringLiteral *>(e)) {
-        // A colour literal is a STRING in the document ("tomato", "#5692c4") but a QColor in the
-        // property, so it is converted where it is written rather than carried around as text.
-        if (dtype == "color" || dtype == "QColor") {
-            g_needsColor = true;
-            out = "QColor.fromString(" + dstr(str->value.toString()) + ")";
-            return true;
-        }
+        // A colour literal stays a STRING here. It is written through the meta-object, and
+        // QMetaType converts it to the property's declared QColor — calling QColor.fromString
+        // would be doing by hand what the type system already does, and it drags the binding's
+        // QColor module into every document that mentions a colour.
         out = dstr(str->value.toString());
         return true;
     }
@@ -948,13 +941,10 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         return false;
     }
     if (auto *str = cast<StringLiteral *>(e)) {
-        // A colour literal is a STRING in the document ("tomato", "#5692c4") but a QColor in the
-        // property, so it is converted where it is written rather than carried around as text.
-        if (dtype == "color" || dtype == "QColor") {
-            g_needsColor = true;
-            out = "QColor.fromString(" + dstr(str->value.toString()) + ")";
-            return true;
-        }
+        // A colour literal stays a STRING here. It is written through the meta-object, and
+        // QMetaType converts it to the property's declared QColor — calling QColor.fromString
+        // would be doing by hand what the type system already does, and it drags the binding's
+        // QColor module into every document that mentions a colour.
         out = dstr(str->value.toString());
         return true;
     }
@@ -1873,6 +1863,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // hold the same value, which is how it went unnoticed once already.
     struct ChildBinding { std::string field; UiObjectInitializer *init; std::string type; };
     std::vector<ChildBinding> childBindings;     // (field, init)
+    // Declared properties whose value must go through the meta-object rather than into the D
+    // field: a value type takes its literal as a string and QMetaType converts it.
+    std::vector<std::pair<std::string, std::string>> metaAssigns;
     std::vector<StateEntry> stateTable;          // `states:` compiled as data, not as objects
     std::string initialState;                    // the document's `state: "..."`, if any
     std::vector<std::pair<std::string, UiObjectInitializer *>> groupKidBindings;  // ("group.member", init)
@@ -2144,14 +2137,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // double literal into an int field.
             QString effType = varInferred.empty() ? qmlType : QString::fromStdString(varInferred);
             if (dt[0] && pub->statement && literalOf(pub->statement, effType, expr)) {
-                // A scalar literal becomes a FIELD INITIALISER, which D evaluates at compile time.
-                // A value type cannot: QColor.fromString is a C++ call with no CTFE body, so the
-                // initialiser fails to compile. Those are assigned in the wire instead, by
-                // marking the property bound — the expression is constant, so it settles in one
-                // pass and nothing observes an intermediate value.
+                // A scalar literal becomes a FIELD INITIALISER, evaluated at compile time.
+                // A VALUE TYPE cannot go that way, and must not be assigned to the D field
+                // directly either: the literal is a string and the field is a QColor, and it is
+                // the META-OBJECT that converts between them (QMetaType). So the field is
+                // declared without an initialiser and the value is written through setProp —
+                // which is the whole point of the property being in the meta-object.
                 bool scalar = !std::strcmp(dt, "int") || !std::strcmp(dt, "bool")
                            || !std::strcmp(dt, "double") || !std::strcmp(dt, "string");
-                props.push_back({name, dt, expr, !scalar, {}});
+                if (!scalar) {
+                    props.push_back({name, dt, "", false, {}});
+                    metaAssigns.push_back({name, expr});
+                } else props.push_back({name, dt, expr, false, {}});
             } else if (dt[0] && es && compileExpr(es->expression, effType, expr)) {
                 std::vector<std::string> ids; collectIds(es->expression, ids);
                 props.push_back({name, dt, expr, true, ids});
@@ -2828,7 +2825,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                        + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
             anyBound = true;
         } else {
-            body += "    " + notifyUda + p.dtype + " " + p.name + " = " + p.expr + ";\n";
+            // An empty expr means the value is written through the meta-object (see metaAssigns):
+            // the field is declared bare and QMetaType fills it.
+            body += "    " + notifyUda + p.dtype + " " + p.name
+                  + (p.expr.empty() ? "" : " = " + p.expr) + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
         }
     }
@@ -2982,6 +2982,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             stateMethods += "    }\n";
             wire += "        connectMeta(this, \"stateChanged(QString)\", this, \"__applyState()\");\n";
         }
+        // Values that must be converted by the meta-type system on their way in.
+        for (auto &ma : metaAssigns)
+            wire += "        setProp(this, \"" + ma.first + "\", " + ma.second + ");\n";
         wire += crossConnects;   // live child-alias connects (cross-object)
         for (auto &p : props) if (p.bound) wire += "        __rc_" + p.name + "();\n";
         // A state named by `state:` is applied AFTER the declarative bindings have run, which is
@@ -3053,9 +3056,11 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         // dumped the way the engine formats it: QColor as #rrggbb, which is what QVariant gives
         // on the oracle side. Comparing the struct text against that would fail on formatting
         // while the colours were in fact identical.
+        // A value-typed property is read back THROUGH the meta-object: QMetaType renders a
+        // QColor as #rrggbb, which is exactly what the oracle's QVariant gives. Reading the D
+        // field directly would print the raw struct and fail on formatting alone.
         if (s.second == "QColor") {
-            out.push_back({lab + s.first,
-                           acc + s.first + ".name(QColor.NameFormat.HexRgb).toString()",
+            out.push_back({lab + s.first, "propStr(" + self + ", \"" + s.first + "\")",
                            "", self, s.first});
             continue;
         }
@@ -3270,11 +3275,11 @@ int main(int argc, char **argv) {
     std::string classes;
     if (!rootResolvedPath.empty()) g_resolving.insert(rootResolvedPath);
     ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first, rootD);
-    // A colour literal anywhere in the document pulls in QColor, from the same package the bound
-    // base comes from (that is the binding this document is compiled against). Added AFTER
-    // compiling, since that is when the flag is known — assembling imports first silently dropped
-    // it and the generated module failed on an undefined QColor.
-    if (g_needsColor && !bt.second.empty()) {
+    // A `property color` is a QColor FIELD, so the module declaring the type must be imported.
+    // Only the CONVERSION is unnecessary: a colour literal is written through the meta-object and
+    // QMetaType turns the string into a QColor, so nothing calls QColor.fromString. Emitted after
+    // compiling, since that is when the document is known to mention one.
+    if (classes.find("QColor ") != std::string::npos && !bt.second.empty()) {
         std::string pkg = bt.second.substr(0, bt.second.rfind('.'));
         std::string imp = "import " + pkg + ".qcolor;\n";
         if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
