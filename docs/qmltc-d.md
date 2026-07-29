@@ -864,3 +864,37 @@ writes. They fail because the CHILD did not compile — DropShadowBase, SceneEff
 types from modules nobody bound, so the alias has nothing to point at. Unbound type is one cause
 wearing three hats (alias + root type + default child ~ 467 lines), and much of it is in modules
 that are not targets anyway (QtQuick3D.designer, Qt5Compat, HelperWidgets, WebEngine delegates).
+
+
+## What Qt's qmltc actually does — and why "it compiled, we did not" was misleading
+
+Comparing our PARTIAL against Qt's qmltc is the right instinct, and doing it produced a result
+worth stating plainly: **Qt's qmltc does not translate bindings at all.**
+
+Ided.qml from this corpus has three bindings — `y: root.x + 1`, `z: root.y * 2`,
+`label: root.tag + "!"`. Qt's qmltc emits, for each:
+
+    bindableY().setBinding(QQmlCppBinding::createBindingForBindable(
+        QQmlEnginePrivate::get(engine)->compilationUnitFromUrl(docUrl), this, 0, this, 2, -1, "y"));
+
+That is a handle into the document's COMPILATION UNIT — the bytecode — evaluated by the QML
+runtime. Same for a grouped binding (`anchors.fill: parent` becomes
+`createBindingForNonBindable(..., anchors(), 16, -1, "fill")`).
+
+So qmltc generates the STRUCTURE — classes, properties, child objects, connections — and defers
+every EXPRESSION to the interpreter. Its "compiled" QML still needs the engine and the bytecode at
+run time. That is what "falls back to AOT" means concretely, and it is the norm rather than the
+exception path.
+
+Consequences for how the numbers in this file should be read:
+
+- "Qt's qmltc compiles X of these and we compile Y" compares different things. It compiles
+  practically everything because delegating always succeeds. Our PARTIAL means an expression we
+  declined to TRANSLATE.
+- Translating expressions into D — which is what this compiler does — is a stronger claim than
+  the reference implementation makes. The differential against a live engine is what keeps that
+  claim honest.
+- The constructs Qt's qmltc "handles" that we refuse (Behavior, Component, Keys attached, grouped
+  anchors, enum properties) are handled BY DELEGATION. Matching it there means either translating
+  them properly or building the same fallback — not a small distinction, and worth choosing
+  deliberately.
