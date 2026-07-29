@@ -3869,6 +3869,55 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         node.valueGroupProps.push_back({ga.first, mt->second});
     }
 
+    // Wire a GROUP assignment's dependencies, the way a base-property binding is wired: without
+    // this a grouped write is a one-shot that goes stale silently (`border.width: bw + 1` kept its
+    // first value when bw changed). Mirrors the logic the base-property loop has inline; the two
+    // must agree, which is why this is a named helper rather than a fourth copy.
+    auto wireGroupDeps = [&](ExpressionNode *expr, const std::string &slot,
+                             const std::string &assign, const std::string &what) {
+        std::vector<std::string> deps;
+        collectIds(expr, deps);
+        std::set<std::string> seen;
+        std::string conns;
+        for (auto &d : deps) {
+            if (!seen.insert(d).second) continue;
+            if (d.rfind("__outer.", 0) == 0) {
+                std::string obj, mem, sig; const OuterFrame *fr = nullptr;
+                if (!splitOuterDep(d, obj, mem, &fr)) continue;
+                if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
+                    sig = mem + "Changed()";
+                    g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
+                } else if (auto qn = g_qmlNotify.find(fr->qmlType); qn != g_qmlNotify.end()) {
+                    auto nt = qn->second.find(mem);
+                    if (nt != qn->second.end()) sig = nt->second;
+                }
+                if (!sig.empty()) conns += "        connectMeta(" + obj + ", \"" + sig + "\", this, \""
+                                         + slot + "()\");\n";
+                continue;
+            }
+            if (isProp(d)) {
+                if (std::find(needsNotify.begin(), needsNotify.end(), d) == needsNotify.end())
+                    needsNotify.push_back(d);
+                conns += "        connectMeta(this, \"" + d + "Changed()\", this, \"" + slot + "()\");\n";
+                continue;
+            }
+            std::string sig;
+            if (auto qn = g_qmlNotify.find(g_selfQmlType); qn != g_qmlNotify.end()) {
+                auto nt = qn->second.find(d);
+                if (nt != qn->second.end()) sig = nt->second;
+            }
+            if (!sig.empty()) { conns += "        connectMeta(this, \"" + sig + "\", this, \"" + slot + "()\");\n"; continue; }
+            if (g_valueLists.count(d) || g_singletons.count(d)) continue;
+            std::fprintf(stderr, "qmltc-d: %s: %s in %s depends on '%s', which has no known notify "
+                         "— it would not update (later phase)\n", inPath, what.c_str(), cls.c_str(), d.c_str());
+            ++partial;
+        }
+        if (!conns.empty()) {
+            handlerSlots += "    @Slot void " + slot + "() {\n    " + assign + "    }\n";
+            handlerWire += conns;
+        }
+    };
+
     // Grouped assignment on a plain Q_GADGET value: read-modify-write of the whole value.
     for (auto &ga : rawBaseVGroupAssigns) {
         auto dot = ga.first.find('.');
@@ -3881,7 +3930,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
             ++partial; continue;
         }
-        baseWire += "        setVgroup(this, \"" + gname + "\", \"" + mem + "\", " + val + ");\n";
+        std::string st = "        setVgroup(this, \"" + gname + "\", \"" + mem + "\", " + val + ");\n";
+        baseWire += st;
+        wireGroupDeps(ga.second, "__rcv_" + gname + "_" + mem, st, "value-group member '" + ga.first + "'");
         node.valueGroupProps.push_back({ga.first, vty});
     }
 
@@ -3950,7 +4001,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
             ++partial; continue;
         }
-        baseWire += "        setProp(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + val + ");\n";
+        std::string st = "        setProp(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + val + ");\n";
+        baseWire += st;
+        wireGroupDeps(ga.second, "__rco_" + gname + "_" + mem, st, "object-group member '" + ga.first + "'");
         node.groupProps.push_back({ga.first, vty});
     }
 

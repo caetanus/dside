@@ -142,7 +142,10 @@ through an `id`), which is exactly the guard we want.
      are right. The ORACLE is what blocks these: an attached path is not reachable by walking
      properties, and QQmlProperty does not resolve it either, under the bare name or the document's
      own `T.Overlay`. Shipping what the differential cannot compare is how false green happens.
-- **Object groups**: `border.width: 3` on a Rectangle. `border` holds an OBJECT (QQuickPen*), not
+- **Object groups**: `border.width: 3` on a Rectangle. A grouped write whose value READS something
+  is a BINDING and is wired like any other — both group paths shipped as ONE-SHOTS at first, because
+  both were tested with literals, which have no dependency to go stale. The wiring is a named helper
+  shared by both, not a third copy of the base-property logic. `border` holds an OBJECT (QQuickPen*), not
   a value, so the write is a plain property write on what the group holds — reached with propObj.
   The distinction is NOT recoverable from the type name (QQuickScaleGrid and QFont look alike): the
   registry marks it with `isPointer`, which the generator now records in the property table as a
