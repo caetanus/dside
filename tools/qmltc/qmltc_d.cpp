@@ -159,6 +159,17 @@ static std::string qname(UiQualifiedId *id) {
     return s;
 }
 
+// Qt5's parser spells two things differently, and both are mechanical: a parameter's type is a
+// UiQualifiedId (which has no toString(); qname walks it), and isDefaultMember is a data member
+// rather than an accessor. Naming them here keeps the version check out of the walking code.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+static QString paramTypeName(UiParameterList *p) { return p->type->toString(); }
+static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember(); }
+#else
+static QString paramTypeName(UiParameterList *p) { return QString::fromStdString(qname(p->type)); }
+static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember; }
+#endif
+
 // `import QtQuick.Templates as T` writes the root as `T.Button`. The qualifier names an IMPORT,
 // not a scope of the type: the type is still `Button`. Stripped only when the prefix is a
 // DECLARED alias, so a genuinely dotted name (`QtQuick.Item` style, or a grouped path) is left
@@ -682,7 +693,7 @@ static void prescanChildIds(UiObjectInitializer *init) {
                 std::vector<std::pair<std::string, std::string>> ps;
                 bool ok = true;
                 for (auto *pp = cp->parameters; pp; pp = pp->next) {
-                    const char *dt = pp->type ? dtypeOf(pp->type->toString()) : "";
+                    const char *dt = pp->type ? dtypeOf(paramTypeName(pp)) : "";
                     if (!dt[0]) { ok = false; break; }
                     ps.push_back({qs(pp->name.toString()), dt});
                 }
@@ -2324,7 +2335,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::vector<std::pair<std::string, std::string>> ps;
             bool ok = true;
             for (auto *p = pub->parameters; p; p = p->next) {
-                const char *dt = p->type ? dtypeOf(p->type->toString()) : "";
+                const char *dt = p->type ? dtypeOf(paramTypeName(p)) : "";
                 if (!dt[0]) { ok = false; break; }
                 ps.push_back({qs(p->name.toString()), dt});
             }
@@ -2780,7 +2791,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // that list rather than the object's QObject children; whether that breaks our `@N` =
             // children()[N] dump model depends on there being bare children, which we only know after
             // the scan — record it and decide below.
-            if (pub->isDefaultMember()) {
+            if (isDefaultMem(pub)) {
                 hasCustomDefaultProp = true;
                 defaultPropName = name;
                 // `list<QtObject>` keeps `list` in typeModifier and `QtObject` as the member
@@ -2822,7 +2833,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             // `property list<int> nums: [...]` — a list of a VALUE type. Held as a plain D array
             // field so bindings can read it (see g_valueLists for why it is not an @Property).
-            if (dt[0] && pub->typeModifier == QLatin1String("list") && !pub->isDefaultMember()) {
+            if (dt[0] && pub->typeModifier == QLatin1String("list") && !isDefaultMem(pub)) {
                 std::string init = "[]";
                 if (es && !compileExpr(es->expression, qmlType, init)) {
                     std::fprintf(stderr, "qmltc-d: %s: list property '%s' has an unsupported initialiser"

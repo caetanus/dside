@@ -9,10 +9,11 @@
 // AND dmd (parity); Qt5 and Qt6 where applicable. See reggae/qtd_build.d.
 import reggae;
 import qtd_build;
+import std.conv : to;
 import std.file : getcwd, exists, dirEntries, SpanMode, readText;
 import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
 import std.array : array, replace, join, split;
-import std.algorithm : map, filter, sort;
+import std.algorithm : map, filter, sort, any, startsWith;
 import std.process : execute;
 import std.string : strip;
 
@@ -130,8 +131,19 @@ Build reggaeBuild() {
                                 "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, ctrl, buildPath(root, "tests", "qmltc", "controls"), "c");
     }
-    if (haveQt5())
-        qmlSuite(qtdBinding(root, "spec_cxx_qml_qt5.json", ["Qt5Qml", "Qt5Gui"]), "-qt5");
+    if (haveQt5()) {
+        // qmltc-d on Qt5: Qt ships no qmltc there at all, so this combination is ONLY covered by
+        // us — and it was covered by nothing until the audit, which is how two Qt6-only APIs in
+        // the oracle went unnoticed.
+        auto qml5 = qtdBinding(root, "spec_cxx_qml_qt5.json", ["Qt5Qml", "Qt5Gui"]);
+        qmlSuite(qml5, "-qt5");
+        // qmltc-d on Qt5 is NOT wired yet, deliberately. The compiler builds against Qt5's parser
+        // and emits byte-identical D (verified), the generated D compiles and RUNS there, and the
+        // oracle now compiles — but the oracle ABORTS at runtime on Qt5 (uncaught exception inside
+        // qtd_qmlvalues_main). Wiring the targets before that is fixed would put 130 red targets in
+        // the build, and a differential whose verifier does not run proves nothing.
+        //   all ~= qmltcTargets(root, qml5, buildPath(root, "tests", "qmltc", "corpus"), "5");
+    }
 
     // --- lupdate-d extraction, in the build of record: run the D-aware extractor on a fixture
     //     and diff its .ts against the checked-in golden (module context + tr/UFCS/translate forms).
@@ -376,11 +388,16 @@ private Target[string] _qmltcTools;
 Target qmltcTool(string root, QtdBinding bind) {
     if (auto p = bind.bdir in _qmltcTools) return *p;
     auto toolCpp = buildPath(root, "tools", "qmltc", "qmltc_d.cpp");
-    // qmltc-d frontend needs the QQmlJS PRIVATE headers (QtQml + QtCore private subdirs).
-    auto toolFlags = pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2 "
-        ~ (modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")
-           ~ modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")).join(" ");
-    auto toolLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Core"]).output.strip;
+    // qmltc-d frontend needs the QQmlJS PRIVATE headers (QtQml + QtCore private subdirs), from
+    // the SAME Qt the binding was generated for: the parser lives in both, the tool compiles
+    // against both (two spelling differences, see paramTypeName/isDefaultMem), and Qt5 has no
+    // qmltc of its own — so building the tool there is the only way that combination is covered.
+    auto q = bind.mods.any!(m => m.startsWith("Qt5")) ? "Qt5" : "Qt6";
+    auto qml = q ~ "Qml", core = q ~ "Core";
+    auto toolFlags = pkgCflags([qml, core]) ~ " -std=c++17 -fPIC -O2 "
+        ~ (modulePrivateFlags(pkgCflags([qml]), "QtQml")
+           ~ modulePrivateFlags(pkgCflags([core]), "QtCore")).join(" ");
+    auto toolLibs = execute(["pkg-config", "--libs", qml, core]).output.strip;
     // Shared by every qmltc differential target -> guard it (see `guarded`): a concurrent
     // re-schedule of this one node otherwise links over a binary another target is executing.
     auto toolBin = buildPath(bind.bdir, "qmltc-d");
@@ -411,8 +428,13 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     auto oracleFlags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
     auto oracleLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip;
     auto oracleBin = buildPath(bind.bdir, "qmlvalues");
-    auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
-        "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o " ~ oracleBin ~ " " ~ oracleLibs,
+    // guardedLink, not guarded: this binary is SHARED by every differential in the suite, so a
+    // rebuild of it races with runs already using it — writing straight to the final path leaves a
+    // window where the file exists and is not yet executable, and a concurrent run dies with
+    // EACCES. guardedLink's own comment documents that exact failure; the oracle was the last
+    // binary still linking the unsafe way, and it surfaced the moment its source changed.
+    auto oracle = Target(oracleBin, guardedLink(oracleBin ~ ".lock",
+        "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o $out " ~ oracleLibs,
         oracleBin, [oracleCpp]), [Target(oracleCpp)]);
 
     // A bound visual root (Text) touches the font DB on property-set and fatals without a

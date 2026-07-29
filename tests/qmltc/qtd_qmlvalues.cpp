@@ -17,6 +17,19 @@
 #include <QQmlComponent>
 #include <QQmlListReference>
 #include <QMetaProperty>
+
+// Qt5 spells the same three questions differently: a QVariant's type id, whether it holds a
+// QObject*, and the meta-object of a gadget value. Naming them keeps the version check out of the
+// walking code, which is identical on both.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+static int vTypeId(const QVariant &v)            { return v.typeId(); }
+static bool vIsQObject(const QVariant &v)        { return v.metaType().flags() & QMetaType::PointerToQObject; }
+static const QMetaObject *vGadgetMeta(const QVariant &v) { return v.metaType().metaObject(); }
+#else
+static int vTypeId(const QVariant &v)            { return v.userType(); }
+static bool vIsQObject(const QVariant &v)        { return QMetaType::typeFlags(v.userType()) & QMetaType::PointerToQObject; }
+static const QMetaObject *vGadgetMeta(const QVariant &v) { return QMetaType::metaObjectForType(v.userType()); }
+#endif
 #include <QVariant>
 #include <QByteArray>
 #include <algorithm>
@@ -35,7 +48,7 @@ static void enumPaths(QObject *obj, const std::string &prefix, std::vector<std::
 static std::string qs(const QString &s) { return s.toStdString(); }
 
 static std::string fmt(const QVariant &v) {
-    switch (v.typeId()) {
+    switch (vTypeId(v)) {
     case QMetaType::Bool:   return v.toBool() ? "true" : "false";
     case QMetaType::Int:
     case QMetaType::LongLong: return std::to_string(v.toLongLong());
@@ -50,7 +63,7 @@ static std::string fmt(const QVariant &v) {
         // A `list<int>`-style value list has no useful toString (it yields ""), which would have
         // silently matched an empty D side. Serialize the elements joined by "," — the same shape
         // the compiled D side prints — so the comparison is real.
-        if (v.canConvert<QVariantList>() && v.typeId() != QMetaType::QString) {
+        if (v.canConvert<QVariantList>() && vTypeId(v) != QMetaType::QString) {
             const QVariantList l = v.toList();
             std::string out;
             for (const QVariant &e : l) { if (!out.empty()) out += ","; out += fmt(e); }
@@ -155,8 +168,8 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
             if (owner) {
                 QByteArray gname = parts[parts.size() - 2].toUtf8();
                 QVariant gv = owner->property(gname.constData());
-                if (gv.isValid() && !gv.metaType().flags().testFlag(QMetaType::PointerToQObject)) {
-                    if (const QMetaObject *gmo = gv.metaType().metaObject()) {
+                if (gv.isValid() && !vIsQObject(gv)) {
+                    if (const QMetaObject *gmo = vGadgetMeta(gv)) {
                         int gi = gmo->indexOfProperty(parts.last().toUtf8().constData());
                         if (gi >= 0) {
                             gmo->property(gi).writeOnGadget(gv.data(), QVariant(a.mid(eq + 1)));
@@ -228,8 +241,8 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                 }
                 if (owner) {
                     QVariant gv = owner->property(parts[parts.size() - 2].toUtf8().constData());
-                    if (gv.isValid() && !gv.metaType().flags().testFlag(QMetaType::PointerToQObject)) {
-                        if (const QMetaObject *gmo = gv.metaType().metaObject()) {
+                    if (gv.isValid() && !vIsQObject(gv)) {
+                        if (const QMetaObject *gmo = vGadgetMeta(gv)) {
                             int gi = gmo->indexOfProperty(parts.last().toUtf8().constData());
                             if (gi >= 0) {
                                 lines.push_back(label + "\t"
@@ -301,7 +314,7 @@ static void enumPaths(QObject *obj, const std::string &prefix, std::vector<std::
         QMetaProperty p = mo->property(i);
         std::string path = prefix + p.name();
         QVariant v = p.read(obj);
-        if (v.metaType().flags() & QMetaType::PointerToQObject) {
+        if (vIsQObject(v)) {
             // An object-valued property carries no scalar of its own; recurse for its members.
             enumPaths(v.value<QObject *>(), path + ".", out, depth + 1);
             continue;
@@ -336,7 +349,7 @@ void dumpObj(QObject *obj, const std::string &prefix, std::vector<std::string> &
     for (int i = mo->propertyOffset(); i < mo->propertyCount(); ++i) {
         QMetaProperty p = mo->property(i);
         QVariant v = p.read(obj);
-        if (v.metaType().flags() & QMetaType::PointerToQObject) {
+        if (vIsQObject(v)) {
             if (auto *child = v.value<QObject *>()) dumpObj(child, prefix + p.name() + ".", lines);
         } else {
             lines.push_back(prefix + std::string(p.name()) + "\t" + fmt(v));
