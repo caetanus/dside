@@ -868,8 +868,9 @@ that are not targets anyway (QtQuick3D.designer, Qt5Compat, HelperWidgets, WebEn
 
 ## What Qt's qmltc actually does — and why "it compiled, we did not" was misleading
 
-Comparing our PARTIAL against Qt's qmltc is the right instinct, and doing it produced a result
-worth stating plainly: **Qt's qmltc does not translate bindings at all.**
+Comparing our PARTIAL against Qt's qmltc is the right instinct. My first conclusion from it —
+"Qt's qmltc does not translate bindings at all" — was WRONG, and the correction matters: I had
+looked at only half the pipeline.
 
 Ided.qml from this corpus has three bindings — `y: root.x + 1`, `z: root.y * 2`,
 `label: root.tag + "!"`. Qt's qmltc emits, for each:
@@ -881,19 +882,29 @@ That is a handle into the document's COMPILATION UNIT — the bytecode — evalu
 runtime. Same for a grouped binding (`anchors.fill: parent` becomes
 `createBindingForNonBindable(..., anchors(), 16, -1, "fill")`).
 
-So qmltc generates the STRUCTURE — classes, properties, child objects, connections — and defers
-every EXPRESSION to the interpreter. Its "compiled" QML still needs the engine and the bytecode at
-run time. That is what "falls back to AOT" means concretely, and it is the norm rather than the
-exception path.
+So qmltc generates the STRUCTURE — classes, properties, child objects, connections — and points
+every EXPRESSION at the compilation unit. But that unit is not merely bytecode: qmlcachegen
+AOT-COMPILES those expressions to native code when it can type them. Qt's pipeline is two tools,
+and the translation lives in the second one.
+
+Measured with `qmlcachegen --dump-aot-stats` on the same Ided.qml — all three bindings compiled:
+
+    {"functionName": "y",     "codegenResult": 0, "message": ""}
+    {"functionName": "z",     "codegenResult": 0, "message": ""}
+    {"functionName": "label", "codegenResult": 0, "message": ""}
+
+So Qt DOES translate expressions; qmltc just is not where it happens. `codegenResult` per
+function is Qt's own coverage metric, and it is the fair basis for comparison: what it declines
+to AOT-compile is what falls back to the interpreter.
 
 Consequences for how the numbers in this file should be read:
 
-- "Qt's qmltc compiles X of these and we compile Y" compares different things. It compiles
-  practically everything because delegating always succeeds. Our PARTIAL means an expression we
-  declined to TRANSLATE.
-- Translating expressions into D — which is what this compiler does — is a stronger claim than
-  the reference implementation makes. The differential against a live engine is what keeps that
-  claim honest.
+- "Qt's qmltc compiles X of these and we compile Y" still compares different things: qmltc
+  succeeds by pointing at the unit, whether or not the expression inside it was AOT-compiled.
+  The comparable number is qmlcachegen's per-function codegenResult against our PARTIAL.
+- What this compiler does differently is emit the expression as D IN THE GENERATED SOURCE, with
+  no compilation unit and no engine needed to evaluate it. Same ambition as Qt's AOT, different
+  output, and the differential against a live engine is what keeps it honest.
 - The constructs Qt's qmltc "handles" that we refuse (Behavior, Component, Keys attached, grouped
   anchors, enum properties) are handled BY DELEGATION. Matching it there means either translating
   them properly or building the same fallback — not a small distinction, and worth choosing
