@@ -59,10 +59,16 @@ through an `id`), which is exactly the guard we want.
 - **Signal handlers**: `on<Prop>Changed: <stmt>` becomes an `@Slot` connected to the source
   property's change signal; the body may be a single statement or a brace block.
 - **`Component.onCompleted`**: its body runs at construction (tail of `__qmltcWire`).
-- **`function`s** with a **type-inference layer**: a QML function becomes a D method. Numeric
-  parameters are typed `double` (JS number semantics), string params are detected from concat use;
-  the return type is inferred bottom-up (`function times2(n){return n*2}` -> `double times2(double
-  n){return (n*2.0);}`). A call in a binding is coerced to the target property (`property int d:
+- **`function`s** with a **type-inference layer**: a QML function becomes a D method. A
+  parameter's type must **reduce to a definite type** — from body evidence (a concatenation makes
+  it `string`), or from its **call sites** (`function times2(n){return n*2}` with `times2(base)`
+  and `property int base` gives `int times2(int n)`). Where nothing reduces it, the function is
+  **refused with a diagnostic**, not guessed: `f(x,y){return x+y}` was previously emitted as
+  `double f(double,double)`, which is simply wrong for `f("a","b")` — QML concatenates there and
+  the generated D would add. Call sites that disagree poison the slot and refuse for the same
+  reason. Qt declines the identical shape ("Functions without type annotations won't be
+  compiled"); being incomplete is recoverable, being silently wrong is not. The return type is
+  inferred bottom-up from the parameter types once they are known. A call in a binding is coerced to the target property (`property int d:
   half()` -> `cast(int)(half())`) and is reactive through its arguments. Void functions
   (assignments/calls) and `return`-bodied functions are both supported.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string

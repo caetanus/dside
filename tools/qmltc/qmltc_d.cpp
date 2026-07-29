@@ -1228,6 +1228,31 @@ static std::string paramTypeFromBody(const std::string &p, Node *n,
 }
 
 // (name, D type) for each formal parameter of a function.
+// A CALL SITE reduces the type graph just as a typed body does: `times2(base)` where `base` is
+// `property int base` pins the parameter, and no guess is involved. Collected per class before
+// the functions are emitted; a parameter with conflicting call sites keeps an empty set and is
+// refused, since picking one of two observed types would be the same guess in a new place.
+static std::map<std::string, std::vector<std::set<std::string>>> g_callArgs;
+
+struct CallArgScan : Visitor {
+    const std::map<std::string, std::string> *pt = nullptr;
+    void throwRecursionDepthError() override {}
+    bool visit(CallExpression *c) override {
+        if (auto *fnId = cast<IdentifierExpression *>(c->base)) {
+            std::string n = qs(fnId->name.toString());
+            size_t i = 0;
+            for (auto *a = c->arguments; a; a = a->next, ++i) {
+                std::string t = inferType(a->expression, *pt);
+                auto &v = g_callArgs[n];
+                if (v.size() <= i) v.resize(i + 1);
+                if (t == "int" || t == "double" || t == "string" || t == "bool") v[i].insert(t);
+                else v[i].insert("");   // an un-inferable argument poisons the slot
+            }
+        }
+        return true;
+    }
+};
+
 static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpression *fn, const std::map<std::string, std::string> &pt0) {
     ExpressionNode *ret = nullptr;
     if (fn->body && !fn->body->next) if (auto *r = cast<ReturnStatement *>(fn->body->statement)) ret = r->expression;
@@ -1238,7 +1263,20 @@ static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpre
             std::string ty;
             for (auto *st = fn->body; st && ty.empty(); st = st->next)
                 ty = paramTypeFromBody(pn, st->statement, pt0);   // body evidence wins
-            if (ty.empty()) ty = (ret && paramIsString(pn, ret, pt0)) ? "string" : "double";
+            // Inference is only sound when the type graph REDUCES to a definite type: the body
+            // uses the parameter with something typed, or the return expression does. With no
+            // such evidence, `double` was a GUESS — and a wrong one for `f("a","b")`, where QML
+            // concatenates and the generated D would add. Qt refuses these outright
+            // ("Functions without type annotations won't be compiled"); an empty type here means
+            // the same, and the caller reports it.
+            if (ty.empty() && ret && paramIsString(pn, ret, pt0)) ty = "string";
+            if (ty.empty()) {   // no body evidence: the call sites may still pin it
+                auto ca = g_callArgs.find(qs(fn->name.toString()));
+                if (ca != g_callArgs.end() && ps.size() < ca->second.size()) {
+                    auto &slot = ca->second[ps.size()];
+                    if (slot.size() == 1 && !slot.begin()->empty()) ty = *slot.begin();
+                }
+            }
             ps.push_back({pn, ty});
         }
     return ps;
@@ -1790,6 +1828,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         g_baseProps[hid] = ty;
                 }
             }
+        // Call sites first: funcParams consults them when the body gives no evidence.
+        g_callArgs.clear();
+        { CallArgScan scan; scan.pt = &pt0;
+          for (auto *m = init ? init->members : nullptr; m; m = m->next) m->member->accept(&scan); }
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *se = cast<UiSourceElement *>(m->member))
                 if (auto *fn = se->sourceElement->asFunctionDefinition())
@@ -2827,6 +2869,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto *fn : functions) {
             std::string name = qs(fn->name.toString());
             auto params = funcParams(fn, pt0);
+            // A parameter whose type the graph does not reduce to something definite: refuse the
+            // function rather than pick one. Guessing `double` compiled `f(x, y) { return x + y }`
+            // into numeric addition, which is wrong the moment it is called with strings — QML
+            // concatenates there. Qt declines the same shape ("Functions without type annotations
+            // won't be compiled"), and being wrong is worse than being incomplete.
+            {
+                bool untyped = false;
+                for (auto &pp : params) if (pp.second.empty()) untyped = true;
+                if (untyped) {
+                    std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has a parameter whose type "
+                                 "cannot be determined from its use — skipped rather than guessed "
+                                 "(later phase)\n", inPath, qs(fn->name.toString()).c_str(), cls.c_str());
+                    ++partial; continue;
+                }
+            }
             std::string sig;   // "double n, string s"
             auto ptWithParams = ptype;
             ScopeGuard sg;   // params (and any `var` locals) are in scope for this body only
