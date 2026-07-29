@@ -150,15 +150,19 @@ through an `id`), which is exactly the guard we want.
   QMetaEnum) and the member's key is its own name — so the comparison is done on keys, needing no
   table of enum values. An enum member is also a CONSTANT, so the type name in `Text.AlignHCenter`
   is no longer recorded as a dependency (it reported a dead dependency on an object called `Text`).
-- **NOT supported: `control.indicator.width`** — a scalar reached THROUGH an object-valued
-  property. The read itself is easy (`propDouble(propObj(obj, "indicator"), "width")`) and was
-  implemented, then reverted: the binding cannot be made to REACT. Its dependency is the OBJECT,
-  so it connects to `indicatorChanged()`, which fires when the indicator is replaced and not when
-  its width changes; and connecting to the inner object's own notify at wire time is impossible
-  because a Control creates its indicator after construction. An under-reactive binding that looks
-  live is worse than a partial. It needs a late-wire phase that runs once the tree is complete —
-  which would also let `parent` use the real visual parent instead of the enclosing-object
-  assumption.
+- **The LATE phase**, and `control.indicator.width` with it. A scalar reached through an
+  object-valued property cannot connect at wire time: the object does not exist yet (a Control
+  creates its indicator during completion), and connecting to `indicatorChanged()` instead would
+  only fire when the indicator is REPLACED — an under-reactive binding that looks live. Each class
+  now emits `__qmltcLate()` holding the connects that need a finished tree, every level forwards it
+  to its children, and the ROOT fires it at the end of its own wire — the one point where the whole
+  tree is constructed and every componentComplete has run. Emitted only where there is work to do.
+- **Property-bound children are ASSIGNED to their property.** `contentItem: Label {}` created the
+  object and gave it a Qt parent but never set `contentItem`, so the Control's own contentItem
+  stayed NULL and anything Qt computes from it was computed from nothing. The differential missed
+  it because it reads OUR D field while the engine reads ITS object — both configured identically —
+  instead of asking the control. Found only because a deep read through `control.indicator` came
+  back null.
 - **KNOWN GAP — `visible`**: a binding on `visible` does not reproduce the engine. With an
   identical binding, `clip` recomputes correctly and `visible` ends false where the engine says
   true. QQuickItem's `visible` is effective-visibility recalculated at completion, and our

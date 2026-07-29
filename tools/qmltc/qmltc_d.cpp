@@ -192,6 +192,27 @@ static int g_outerHopsNeeded = -1;   // deepest hop this object used; drained by
 // rest one hop further up.
 static std::vector<std::pair<int, std::string>> g_outerNeedsNotify;
 
+// Reads made THROUGH an object-valued property (`control.indicator.width`): (object expression,
+// inner property, member, the inner object's QML type). The object does not exist while the wire
+// runs — a Control creates its indicator during completion — so the connect for these is deferred
+// to the LATE phase, which the root triggers once the whole tree is complete. Drained by whichever
+// binding compiled the expression.
+struct DeepRead { std::string obj, inner, member, innerQmlType; };
+static std::vector<DeepRead> g_deepReads;
+
+// The document's ROOT class. Only the root triggers the late pass — it is the only object whose
+// wire finishes with the whole tree constructed and completed.
+static std::string g_rootClass;
+
+// The QML type name backing a C++ class ("QQuickItem" -> "Item"), so the inner object's own
+// property table can type the member.
+static std::string qmlNameOfCxx(const std::string &cxx) {
+    std::string bare = cxx;
+    while (!bare.empty() && (bare.back() == '*' || bare.back() == ' ')) bare.pop_back();
+    for (auto &kv : g_qmlMap) if (kv.second.first == bare) return kv.first;
+    return "";
+}
+
 // The `__outer.` prefix that reaches the enclosing object whose id is `name`, and the frame it
 // found. Returns false when no enclosing level declares that id.
 // Splits a dependency tagged by collectIds ("__outer.__outer.gap") into the object expression and
@@ -715,6 +736,14 @@ static std::map<std::string, std::pair<std::string, std::string>> g_aliasWrite;
 // Scoped per object, saved/restored across compileObject recursion like the other maps.
 static std::set<std::string> g_scope;
 
+// True when `n` names a property of the object's BOUND type (so it lives in the meta-object)
+// rather than a property the document declares (a plain D field).
+static bool isBoundObjectProp(const std::string &n) {
+    if (g_propType.count(n) || g_scope.count(n)) return false;
+    if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) return qc->second.count(n) > 0;
+    return false;
+}
+
 // Widens g_scope for the duration of one body compile (a function's params, a handler's signal
 // args, `var` locals declared inside), then restores the object-level scope.
 struct ScopeGuard {
@@ -989,16 +1018,44 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 return false;   // unknown member of that enclosing object: refused, not guessed
             }
         }
-        // NOT supported: `control.indicator.width` — a scalar reached THROUGH an object-valued
-        // property. The READ is easy (propDouble(propObj(obj, "indicator"), "width")) and it was
-        // implemented, then reverted: the binding cannot be made to REACT. Its dependency is
-        // recorded as the object (`indicator`), so it connects to indicatorChanged() — which fires
-        // when the indicator is REPLACED, not when its width changes. Connecting to the inner
-        // object's own notify at wire time is not possible either: a Control creates its indicator
-        // after construction, so propObj is null while the wire runs (the same ordering that makes
-        // `parent` resolve to the back-reference instead). An under-reactive binding that looks
-        // live is the exact failure this project keeps removing, so the partial stands until there
-        // is a late-wire phase that runs once the tree is complete.
+        // `control.indicator.width` — a scalar reached THROUGH an object-valued property. The
+        // object is fetched with propObj at runtime and its TYPE comes from the owner's C++ type
+        // column, mapped back to a QML name so that type's table can say what `width` is. The
+        // read is recorded so the binding can connect to the INNER object's notify in the late
+        // phase: connecting here would be wrong (the dependency would be indicatorChanged, which
+        // fires when the indicator is REPLACED) and impossible (the indicator does not exist yet).
+        if (auto *fmb = cast<FieldMemberExpression *>(fm->base)) {
+            if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
+                std::string bn = qs(b1->name.toString()), inner = qs(fmb->name.toString());
+                std::string mem = qs(fm->name.toString()), obj, ownerType, pre;
+                const OuterFrame *fr = nullptr;
+                if (outerHop(bn, pre, &fr)) { obj = pre.substr(0, pre.size() - 1); ownerType = fr->qmlType; }
+                else if (!g_selfId.empty() && bn == g_selfId) { obj = "this"; ownerType = g_selfQmlType; }
+                if (!obj.empty() && !ownerType.empty() && !g_vgroups.count(inner)) {
+                    std::string innerCxx;
+                    if (auto qc = g_qmlCxxType.find(ownerType); qc != g_qmlCxxType.end()) {
+                        auto it = qc->second.find(inner);
+                        if (it != qc->second.end()) innerCxx = it->second;
+                    }
+                    std::string innerQml = innerCxx.empty() ? "" : qmlNameOfCxx(innerCxx);
+                    if (!innerQml.empty())
+                        if (auto qp = g_qmlProps.find(innerQml); qp != g_qmlProps.end()) {
+                            auto t = qp->second.find(mem);
+                            if (t != qp->second.end()) {
+                                const std::string &ty = t->second;
+                                if (ty == "string" || ty == "double" || ty == "bool" || ty == "int") {
+                                    const char *rd = ty == "string" ? "propStr(" : ty == "double" ? "propDouble("
+                                                   : ty == "bool" ? "propBool(" : "propInt(";
+                                    out = rd + std::string("propObj(") + obj + ", \"" + inner + "\"), \""
+                                        + mem + "\")";
+                                    g_deepReads.push_back({obj, inner, mem, innerQml});
+                                    return true;
+                                }
+                            }
+                        }
+                }
+            }
+        }
         // `parent.<prop>` — QQuickItem exposes `parent` as a Q_PROPERTY, so the OBJECT is fetched
         // through the meta-object at runtime and nothing static is assumed about it. Only the
         // member's TYPE is taken from the enclosing frame, which is sound because a child's visual
@@ -1393,7 +1450,8 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (auto *b = cast<BinaryExpression *>(e)) { collectIds(b->left, ids); collectIds(b->right, ids); return; }
 }
 
-struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string> deps; };
+struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string> deps;
+              std::vector<DeepRead> deep; };   // reads through an object property -> late connects
 
 // Compile a signal-handler body (a JS statement) to D. Supports a single assignment
 // `prop = <expr>` or a brace block of them; the LHS must be a known property (its type drives the
@@ -1904,6 +1962,7 @@ struct ObjNode {
     std::vector<std::string> notified;                          // props that carry a NOTIFY signal
     bool usesOuter = false;   // reads its enclosing object -> needs the __outer back-reference
     int outerHops = -1;       // deepest enclosing level it reached (0 = immediate parent)
+    bool hasLate = false;     // it (or a descendant) has late-phase work
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
     // Children attached to a member of a GROUPED property. Unlike `kids`, the D FIELD and the QML
     // PATH differ (field `_g_group_object`, path `group.object`), so both are carried. (A struct
@@ -2595,7 +2654,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 } else props.push_back({name, dt, expr, false, {}});
             } else if (dt[0] && es && compileExpr(es->expression, effType, expr)) {
                 std::vector<std::string> ids; collectIds(es->expression, ids);
-                props.push_back({name, dt, expr, true, ids});
+                props.push_back({name, dt, expr, true, ids, g_deepReads});
+                g_deepReads.clear();
             } else {
                 std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — skipped (later phase)\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
@@ -2666,7 +2726,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    + "        " + cb.field + " = "
                    + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + cb.field + ", this);\n"
-                   + ""
+                   // ...and ACTUALLY ASSIGN it to the property. Creating and parenting the object
+                   // is not the same as `contentItem: Label {}`: without this the Control's own
+                   // contentItem/indicator stayed NULL, so anything Qt computes from them (an
+                   // implicitContentWidth, a layout) was computed from nothing. The differential
+                   // did not catch it because it reads OUR D field and the engine reads ITS
+                   // object — both configured identically — rather than asking the control.
+                   // Only a property of the BOUND type goes through the meta-object; a declared
+                   // `property Item foo: Rectangle {}` is a plain D field.
+                   + (isBoundObjectProp(cb.field)
+                        ? "        setPropObj(this, \"" + cb.field + "\", " + cb.field + ");\n" : "")
                    + "        classBegin(" + cb.field + ");\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
@@ -3008,6 +3077,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Base C++ property assignments (`objectName: "hi"`) -> set through the meta-object in
     // __qmltcWire, and record for the dump (read back through the meta-object). int/string only.
     std::string baseWire;
+    // Statements that must run only once the WHOLE tree is complete: connects to objects a Control
+    // creates during its own completion (indicator/contentItem/background). The root triggers the
+    // pass; every level forwards it to its children.
+    std::string lateWire;
     for (auto &ba : rawBaseAssigns) {
         // `aliasName: <expr>` assigns THROUGH the alias — QML aliases are references, so this
         // writes the target rather than declaring anything of our own.
@@ -3232,9 +3305,30 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              inPath, ba.first.c_str(), cls.c_str(), d.c_str());
                 ++partial;
             }
-            if (!conns.empty()) {
+            // A read through an object-valued property connects in the LATE phase, to the inner
+            // object's own notify — by then the Control has created it. The recompute is called
+            // once there too, since the value read at wire time came from a null object.
+            std::string lateConns;
+            for (auto &dr : g_deepReads) {
+                std::string sig;
+                if (auto qn = g_qmlNotify.find(dr.innerQmlType); qn != g_qmlNotify.end()) {
+                    auto nt = qn->second.find(dr.member);
+                    if (nt != qn->second.end()) sig = nt->second;
+                }
+                if (sig.empty()) {
+                    std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s reads '%s.%s' whose "
+                                 "notify is unknown — it would not update (later phase)\n",
+                                 inPath, ba.first.c_str(), cls.c_str(), dr.inner.c_str(), dr.member.c_str());
+                    ++partial; lateConns.clear(); break;
+                }
+                lateConns += "        connectMeta(propObj(" + dr.obj + ", \"" + dr.inner + "\"), \""
+                           + sig + "\", this, \"__rcb_" + ba.first + "()\");\n";
+            }
+            g_deepReads.clear();
+            if (!conns.empty() || !lateConns.empty()) {
                 handlerSlots += "    @Slot void __rcb_" + ba.first + "() {\n" + "    " + assign + "    }\n";
                 handlerWire += conns;
+                if (!lateConns.empty()) lateWire += lateConns + "        __rcb_" + ba.first + "();\n";
             }
         }
         node.baseProps.push_back({ba.first, ty});
@@ -3637,7 +3731,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // A property initialised from a LITERAL is assigned in its field initialiser and emits
         // nothing, so none of this makes handlers fire on init.
         wire += handlerWire;
-        for (auto &p : props) if (p.bound)
+        for (auto &p : props) if (p.bound) {
+            for (auto &dr : p.deep) {   // reads through an object property connect in the late phase
+                std::string sig;
+                if (auto qn = g_qmlNotify.find(dr.innerQmlType); qn != g_qmlNotify.end()) {
+                    auto nt = qn->second.find(dr.member);
+                    if (nt != qn->second.end()) sig = nt->second;
+                }
+                if (sig.empty()) {
+                    std::fprintf(stderr, "qmltc-d: %s: binding '%s' in %s reads '%s.%s' whose notify "
+                                 "is unknown — it would not update (later phase)\n",
+                                 inPath, p.name.c_str(), cls.c_str(), dr.inner.c_str(), dr.member.c_str());
+                    ++partial; continue;
+                }
+                lateWire += "        connectMeta(propObj(" + dr.obj + ", \"" + dr.inner + "\"), \""
+                          + sig + "\", this, \"__rc_" + p.name + "()\");\n"
+                          + "        __rc_" + p.name + "();\n";
+            }
             for (auto &d : p.deps) {
                 if (isProp(d)) {   // a property of THIS object: qmltc-d named its notify <p>Changed
                     wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
@@ -3747,6 +3857,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string sig = sg != dBase->signalSig.end() ? sg->second : (n->second + "()");
                 wire += "        connectMeta(this, \"" + sig + "\", this, \"__rc_" + p.name + "()\");\n";
             }
+        }
         // Entering a state OVERRIDES properties; leaving it must put the previous values BACK,
         // which the engine does on exit. The base values are captured when a state is entered
         // (not at compile time — a binding may have changed them since), so switching states
@@ -3840,7 +3951,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire.insert(wire.find("classBegin(this);\n") + 18,
                     "        __outer = cast(" + g_outerClass + ") __qmltcOuter;\n");
     node.usesOuter = g_outerUsed && !g_outerClass.empty();
-    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods
+    // The late pass: this object's deferred connects, then every child's. Emitted only where
+    // there is something to do, so the common object is unchanged.
+    std::string lateKids;
+    for (auto &k : node.kids)        if (k.second.hasLate) lateKids += "        " + k.first + ".__qmltcLate();\n";
+    for (auto &dk : node.defaultKids) if (dk.second.hasLate) lateKids += "        " + dk.first + ".__qmltcLate();\n";
+    for (auto &gk : node.groupKids)  if (gk.second.hasLate) lateKids += "        " + gk.first + ".__qmltcLate();\n";
+    node.hasLate = !lateWire.empty() || !lateKids.empty();
+    // Only the root fires it: at the end of ITS wire the whole tree exists and every
+    // componentComplete has run, which is exactly when a Control has created its indicator.
+    if (node.hasLate && cls == g_rootClass) {
+        auto pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
+        if (pos != std::string::npos) wire.insert(pos, "        __qmltcLate();\n");
+    }
+    std::string lateMethod = node.hasLate
+        ? "    void __qmltcLate() {\n" + lateWire + lateKids + "    }\n" : "";
+    classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + lateMethod + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods
              + childFields + methods + recompute + handlerSlots + groupHandlerSlots
              + attachedHandlerSlots + wire + "}\n";
     g_selfId = savedId;
@@ -4114,6 +4240,7 @@ int main(int argc, char **argv) {
     std::string classes;
     if (!rootResolvedPath.empty()) g_resolving.insert(rootResolvedPath);
     g_selfQmlType = rootType;   // so base-property notifies resolve in g_qmlNotify
+    g_rootClass = qs(cls);
     ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first, rootD);
     // A `property color` is a QColor FIELD, so the module declaring the type must be imported.
     // Only the CONVERSION is unnecessary: a colour literal is written through the meta-object and
