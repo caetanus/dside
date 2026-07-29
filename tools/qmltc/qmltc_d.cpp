@@ -36,6 +36,10 @@ static std::string qs(const QString &s) { return s.toStdString(); }
 // resolves to the property `x`. Set once in main before any expression is compiled.
 static std::string g_selfId;
 
+// Set when a compiled document needs QColor, so the generated module imports it. Per-document:
+// importing it unconditionally would break a document whose binding has no QColor at all.
+static bool g_needsColor = false;
+
 // Return types of this object's no-arg functions (name -> "int"/"double"/"string"/"bool"), so a
 // call `f()` in a binding can be coerced to the target property's type. Scoped per object.
 static std::map<std::string, std::string> g_funcRet;
@@ -592,6 +596,9 @@ static std::string cppTypeOf(const std::string &dtype) {
 // QML declared type -> D type. Only the scalar literal types Phase 1 emits; anything else
 // returns "" so the caller reports it as unsupported rather than guessing.
 static const char *dtypeOf(const QString &qmlType) {
+    // QML's `color` is a QColor. The meta-object takes it by type name (the moc is generic), so a
+    // declared `property color c` is a real QColor field rather than a stringly-typed stand-in.
+    if (qmlType == "color")  return "QColor";
     if (qmlType == "int")    return "int";
     if (qmlType == "bool")   return "bool";
     if (qmlType == "string") return "string";
@@ -633,7 +640,17 @@ static bool literalOf(Statement *st, const QString &dtype, std::string &out) {
     if (auto *u = cast<UnaryMinusExpression *>(e)) { neg = true; e = u->expression; }
     if (auto *num = cast<NumericLiteral *>(e)) { out = dnum(num->value, dtype == "int", neg); return true; }
     if (neg) return false;
-    if (auto *str = cast<StringLiteral *>(e)) { out = dstr(str->value.toString()); return true; }
+    if (auto *str = cast<StringLiteral *>(e)) {
+        // A colour literal is a STRING in the document ("tomato", "#5692c4") but a QColor in the
+        // property, so it is converted where it is written rather than carried around as text.
+        if (dtype == "color" || dtype == "QColor") {
+            g_needsColor = true;
+            out = "QColor.fromString(" + dstr(str->value.toString()) + ")";
+            return true;
+        }
+        out = dstr(str->value.toString());
+        return true;
+    }
     if (cast<TrueLiteral *>(e))  { out = "true";  return true; }
     if (cast<FalseLiteral *>(e)) { out = "false"; return true; }
     return false;
@@ -930,7 +947,17 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         }
         return false;
     }
-    if (auto *str = cast<StringLiteral *>(e)) { out = dstr(str->value.toString()); return true; }
+    if (auto *str = cast<StringLiteral *>(e)) {
+        // A colour literal is a STRING in the document ("tomato", "#5692c4") but a QColor in the
+        // property, so it is converted where it is written rather than carried around as text.
+        if (dtype == "color" || dtype == "QColor") {
+            g_needsColor = true;
+            out = "QColor.fromString(" + dstr(str->value.toString()) + ")";
+            return true;
+        }
+        out = dstr(str->value.toString());
+        return true;
+    }
     if (auto *num = cast<NumericLiteral *>(e)) { out = dnum(num->value, dtype == "int", false); return true; }
     if (cast<TrueLiteral *>(e))  { out = "true";  return true; }
     if (cast<FalseLiteral *>(e)) { out = "false"; return true; }
@@ -2117,7 +2144,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // double literal into an int field.
             QString effType = varInferred.empty() ? qmlType : QString::fromStdString(varInferred);
             if (dt[0] && pub->statement && literalOf(pub->statement, effType, expr)) {
-                props.push_back({name, dt, expr, false, {}});
+                // A scalar literal becomes a FIELD INITIALISER, which D evaluates at compile time.
+                // A value type cannot: QColor.fromString is a C++ call with no CTFE body, so the
+                // initialiser fails to compile. Those are assigned in the wire instead, by
+                // marking the property bound — the expression is constant, so it settles in one
+                // pass and nothing observes an intermediate value.
+                bool scalar = !std::strcmp(dt, "int") || !std::strcmp(dt, "bool")
+                           || !std::strcmp(dt, "double") || !std::strcmp(dt, "string");
+                props.push_back({name, dt, expr, !scalar, {}});
             } else if (dt[0] && es && compileExpr(es->expression, effType, expr)) {
                 std::vector<std::string> ids; collectIds(es->expression, ids);
                 props.push_back({name, dt, expr, true, ids});
@@ -3014,7 +3048,19 @@ struct DumpLine { std::string label, access, dtype, setObj, setProp; bool vgroup
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
                         std::vector<DumpLine> &out) {
     std::string self = acc.substr(0, acc.size() - 1);
-    for (auto &s : n.scalars) out.push_back({lab + s.first, acc + s.first, s.second, self, s.first});
+    for (auto &s : n.scalars) {
+        // A value type has no meaningful default text (a QColor prints its raw struct), so it is
+        // dumped the way the engine formats it: QColor as #rrggbb, which is what QVariant gives
+        // on the oracle side. Comparing the struct text against that would fail on formatting
+        // while the colours were in fact identical.
+        if (s.second == "QColor") {
+            out.push_back({lab + s.first,
+                           acc + s.first + ".name(QColor.NameFormat.HexRgb).toString()",
+                           "", self, s.first});
+            continue;
+        }
+        out.push_back({lab + s.first, acc + s.first, s.second, self, s.first});
+    }
     // "" dtype keeps it out of the mutation block below (a list is not settable from a token).
     for (auto &s : n.valueLists)
         out.push_back({lab + s.first,
@@ -3224,6 +3270,15 @@ int main(int argc, char **argv) {
     std::string classes;
     if (!rootResolvedPath.empty()) g_resolving.insert(rootResolvedPath);
     ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first, rootD);
+    // A colour literal anywhere in the document pulls in QColor, from the same package the bound
+    // base comes from (that is the binding this document is compiled against). Added AFTER
+    // compiling, since that is when the flag is known — assembling imports first silently dropped
+    // it and the generated module failed on an undefined QColor.
+    if (g_needsColor && !bt.second.empty()) {
+        std::string pkg = bt.second.substr(0, bt.second.rfind('.'));
+        std::string imp = "import " + pkg + ".qcolor;\n";
+        if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+    }
     if (!rootResolvedPath.empty()) g_resolving.erase(rootResolvedPath);
 
     // --labels: print the sorted dump labels (property paths) for the oracle's --props mode.
