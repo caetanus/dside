@@ -768,3 +768,31 @@ link QtGui (the file documents why an __has_include probe cannot decide this). P
 a build define, or normalising through the binding's own QColor in generated code, are both real
 options; neither is a one-liner, and doing it as a string field would leave the meta-object
 claiming QString where the engine says QColor.
+
+
+## `list<T>` should be a real property — measured, not yet implemented
+
+`property list<int> nums` is currently compiled as a plain D array field, OUTSIDE the
+meta-object. That was a workaround, and it is the wrong shape: lists are metatypes like anything
+else (QAbstractItemModel is the same idea taken further).
+
+Measured on Qt 6.11:
+
+| type name | resolves by name? |
+|---|---|
+| `QList<int>` | NO by default — but the ENGINE registers it (id 65538, above QMetaType::User) when a document declares `property list<int>` |
+| `QVariantList` | yes (builtin, id 9) |
+| `QStringList` / `QList<QString>` | yes (builtin, id 11) |
+| `QQmlListProperty<QObject>` | no — needs registration |
+
+And for a document the engine builds, `QMetaProperty::typeName()` is literally `QList<int>`, the
+metatype is valid, and the value `canConvert<QVariantList>()`.
+
+So the correct implementation is: register `QList<T>` (qRegisterMetaType) and declare the
+property with that type name — the generic type-name pair added in the audit batch then reaches
+it with no list-specific code at all. What is missing on our side is the D type: the generator
+emits `QList<T>` only for the `T` that appear in bound signatures, and `int` is not among them.
+
+Consequence of the current workaround, and why it matters beyond tidiness: a value list has no
+notify, so a binding reading it can never update, and the dead-dependency diagnostic has to
+exempt it by name. As a real property it would notify like everything else.
