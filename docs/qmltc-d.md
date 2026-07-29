@@ -169,6 +169,13 @@ through an `id`), which is exactly the guard we want.
   the private-symbol link failure recorded there. Those files account for 21% of the remaining
   diagnostics, which is worth knowing before anyone tries to close that fraction by writing
   features: there is no feature to write.
+- **Refusals carry `line:col`**, so they can be JOINED with what `qmlcachegen --dump-aot-stats`
+  reports per function — which is what the planned cachegen fallback has to decide per expression.
+  First measurement over Qt's 69 Controls files, 968 expression sites the AOT knows about:
+  749 covered by both, **121 only by us** (the AOT cannot compile them), **68 only by the AOT**
+  (we refuse — these are the fallback's actual candidates), 30 by neither. The join is by LINE, and
+  "not refused" is a proxy for "translated", so treat 749 as an upper bound; the two small buckets
+  are the ones that matter and they are the ones that are precise.
 - **Measured ceiling: ~250 declared properties per object.** Past it the GENERATED D stops
   compiling with "more than 65535 symbols with name `s`" — a D limit hit by a `static foreach` over
   signalMembers in qtmoc.d, which grows quadratically with the signal count. Verified: 250 compiles,

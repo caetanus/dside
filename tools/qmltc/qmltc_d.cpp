@@ -194,6 +194,17 @@ static QString g_srcText;
 // text was wrong the moment a local type was loaded: the offsets belong to another document, and
 // the bounds check blanked 78 of the snippets rather than quoting the wrong file.
 // The source snippet an AST node came from, single-lined and clipped.
+// "line:col" of a node in the document being compiled. The refusals need to be JOINABLE with what
+// qmlcachegen's --dump-aot-stats reports per function (which is keyed by line and column), because
+// the fallback decision is per EXPRESSION: we translate it, the AOT can compile it, or neither.
+// A snippet alone cannot be matched up.
+static std::string posOf(Node *n) {
+    if (!n) return "";
+    auto a = n->firstSourceLocation();
+    if (!a.isValid()) return "";
+    return std::to_string(a.startLine) + ":" + std::to_string(a.startColumn);
+}
+
 static std::string srcOf(Node *n) {
     if (!n) return "";
     auto a = n->firstSourceLocation(), b = n->lastSourceLocation();
@@ -3524,8 +3535,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
             // problem as an EXPRESSION we can't compile into a type we do route.
-            std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported: %s '%s' [%s] — skipped (later phase)\n",
-                         inPath, ba.first.c_str(), cls.c_str(),
+            std::fprintf(stderr, "qmltc-d: %s:%s: base property '%s' in %s not yet supported: %s '%s' [%s] — skipped (later phase)\n",
+                         inPath, posOf(ba.second).c_str(), ba.first.c_str(), cls.c_str(),
                          scalar ? "expression for" : "declared type", ty.empty() ? "?" : ty.c_str(),
                          srcOf(ba.second).c_str());
             ++partial; continue;
