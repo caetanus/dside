@@ -130,10 +130,14 @@ through an `id`), which is exactly the guard we want.
   it used to be dropped, so every grouped child became a bare QObject and `implicitWidth` failed at
   runtime on what should have been a QQuickRectangle subclass.
 - **STILL REFUSED: attached properties of bound types** (`Overlay.modal`, `ScrollBar.vertical`,
-  `TableView.editDelegate`). The import alias is stripped from these paths now, so the diagnostic
-  names the real type instead of `T`, but reaching the attached object needs its QML module URI
-  and the property table does not carry one yet. That is the next data field to plumb through,
-  in the same way `isPointer` and `extension` were.
+  `TableView.editDelegate`) — but no longer for the reason first recorded here. The missing data
+  WAS the QML module URI, and the property table now carries it (a 4th column in qmlmap.tsv), so
+  `attachedObj(this, "QtQuick.Templates", "Overlay")` is emitted correctly and our side produces
+  the right values. What blocks it is the ORACLE: an attached path is not reachable by walking
+  properties (`Overlay` is a property of nothing), and QQmlProperty does not resolve it either —
+  neither under the bare name nor under the document's own `T.Overlay`. Shipping a feature the
+  differential cannot compare is how false green happens, so it stays refused until the oracle can
+  read the path back.
 - **Object groups**: `border.width: 3` on a Rectangle. `border` holds an OBJECT (QQuickPen*), not
   a value, so the write is a plain property write on what the group holds — reached with propObj.
   The distinction is NOT recoverable from the type name (QQuickScaleGrid and QFont look alike): the

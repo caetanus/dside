@@ -61,6 +61,9 @@ static std::string g_extraImports;
 // the classes it subclasses) — NOT a hand-coded map. `--qmlmap <file>` populates it; without it,
 // only QtObject/local types compile (no bound visual types).
 static std::map<std::string, std::pair<std::string, std::string>> g_qmlMap;
+// QML name -> its module URI, which is what attachedObj needs to resolve an ATTACHED type of a
+// bound module (`Overlay.modal` lives in QtQuick.Templates, not in this document's own uri).
+static std::map<std::string, std::string> g_qmlTypeUri;
 
 // Scalar properties of each bound QML type, and each one's notify signature, from qmlprops.tsv
 // (written next to qmlmap.tsv by the same generator pass, so the two cannot drift). qmlmap says
@@ -104,7 +107,12 @@ static void loadQmlMap(const char *path) {
         if (t1 == std::string::npos || t2 == std::string::npos) continue;
         std::string qml = line.substr(0, t1);
         std::string cpp = line.substr(t1 + 1, t2 - t1 - 1);
-        std::string mod = line.substr(t2 + 1);
+        // A 4th column carries the QML module URI ("QtQuick.Templates"). Reading the module to
+        // end-of-line swallowed it and emitted `import qt.controls.qquickbutton QtQuick.Templates;`.
+        auto t3 = line.find('\t', t2 + 1);
+        std::string mod = t3 == std::string::npos ? line.substr(t2 + 1)
+                                                  : line.substr(t2 + 1, t3 - t2 - 1);
+        if (t3 != std::string::npos) g_qmlTypeUri[qml] = line.substr(t3 + 1);
         // A QML name can export more than one C++ class across import versions (e.g. TextEdit ->
         // QQuickTextEdit and the legacy QQuickPre64TextEdit). `import QtQuick` (latest) resolves to
         // the modern one, so prefer a non-"Pre64" class when a name repeats.
@@ -928,6 +936,11 @@ static bool g_needsModuleRegistration;
 // True while compiling a root whose members were merged in from a local `.qml` base type.
 static bool g_localMerged;
 static std::string attachedExpr(const std::string &typeName) {
+    // A type from a BOUND module carries its own URI (Overlay lives in QtQuick.Templates); only a
+    // type this document itself registers falls back to the document's uri — and only that case
+    // needs the generated module registration.
+    if (auto it = g_qmlTypeUri.find(typeName); it != g_qmlTypeUri.end())
+        return "attachedObj(this, \"" + it->second + "\", \"" + typeName + "\")";
     g_needsModuleRegistration = true;
     return "attachedObj(this, \"" + g_qmlUri + "\", \"" + typeName + "\")";
 }
@@ -2464,7 +2477,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // then failed at runtime: "no writable property implicitWidth").
     struct GroupKid { std::string path; UiObjectInitializer *init; std::string type; };
     std::vector<GroupKid> groupKidBindings;
-    std::vector<std::pair<std::string, UiObjectInitializer *>> attachedKidBindings; // ("Type.member", init)
+    // ("Type.member", init, child QML type) — the type is needed for the same reason grouped
+    // children need it: without it the child is a bare QObject and a write to any property of its
+    // real type throws at construction.
+    struct AttachedKid { std::string path; UiObjectInitializer *init; std::string type, label; };
+    std::vector<AttachedKid> attachedKidBindings;
     struct ArrayElem { std::string prop; int idx; UiObjectDefinition *def; };
     std::vector<ArrayElem> arrayBindings;                                        // `listProp: [ … ]`
     std::vector<UiObjectDefinition *> defaultKids;                               // bare `Type { }` children
@@ -2617,13 +2634,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // `T.Overlay.modal: Rectangle {}` — the path is QUALIFIED by an import alias, so
                 // splitting at the first dot yields `T`, which names no type at all. The alias
                 // names the import, exactly as it does for a type name, so it is dropped here too.
+                std::string qidAsWritten = qid;   // the label must use the name the DOCUMENT uses:
+                // the engine resolves `T.Overlay.modal`, not `Overlay.modal`, and the oracle reads
+                // the label through QQmlProperty against the document's own context.
                 if (auto d0 = qid.find('.'); d0 != std::string::npos
                         && g_importAliases.count(qid.substr(0, d0)))
                     qid = qid.substr(d0 + 1);
                 auto dot = qid.find('.');
                 if (dot != std::string::npos) {
+                    // NOT extended to attached types of BOUND modules (`T.Overlay.modal:
+                    // Rectangle {}`). The compiler side works — the property table now carries each
+                    // type's module URI, so attachedObj resolves Overlay in QtQuick.Templates — but
+                    // the ORACLE cannot read such a path back: walking properties never reaches
+                    // `Overlay`, and QQmlProperty does not resolve it either, under the bare name or
+                    // the document's own `T.Overlay`. An unverifiable feature is not worth shipping,
+                    // so this stays refused until the oracle can compare it.
                     if (g_attached.count(qid.substr(0, dot))) {
-                        attachedKidBindings.push_back({qid, ob->initializer});
+                        attachedKidBindings.push_back({qid, ob->initializer,
+                                                       ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : "",
+                                                       qidAsWritten});
                         continue;
                     }
                     // A group of the BOUND type (`up.indicator: Rectangle {}` on a SpinBox) is
@@ -3622,11 +3651,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A child object bound to an ATTACHED member: built in D, then attached through the attached
     // object. Same field-vs-path split as a group child — the D field can't be the dotted path.
     for (auto &ak : attachedKidBindings) {
-        auto dot = ak.first.find('.');
-        std::string tn = ak.first.substr(0, dot), mem = ak.first.substr(dot + 1);
+        auto dot = ak.path.find('.');
+        std::string tn = ak.path.substr(0, dot), mem = ak.path.substr(dot + 1);
         std::string field = "_a_" + tn + "_" + mem;
         std::string childCls = cls + "_" + tn + "_" + mem;
-        ObjNode kid = compileObject(ak.second, childCls, classes, partial, inPath);
+        auto akt = boundTypeFor(ak.type);   // a bound child type makes this a SUBCLASS
+        if (!akt.first.empty() && !akt.second.empty()) {
+            std::string imp = "import " + akt.second + ";\n";
+            if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+            std::string vimp = "import " + akt.second.substr(0, akt.second.rfind('.')) + ".qtvirt;\n";
+            if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
+        }
+        ObjNode kid = compileObject(ak.init, childCls, classes, partial, inPath, akt.first, nullptr, ak.type);
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -3647,12 +3683,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
-                   + "        " + field + " = newQObject!" + childCls + "();\n"
-                   + "        setQtParent(" + field + ", this);\n"
-                   + "";
+                   + "        " + field + " = " + (akt.first.empty() ? "newQObject!" + childCls + "()"
+                                                                       : "new " + childCls + "()") + ";\n"
+                   + "        setQtParent(" + field + ", this);\n";
         childWire += "        setPropObj(" + attachedExpr(tn) + ", \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
-        node.groupKidPaths.push_back(ak.first);
+        node.groupKidPaths.push_back(ak.label.empty() ? ak.path : ak.label);
     }
 
     // Use-site override: merging a local type's members in front of this file's can leave two
@@ -4638,7 +4674,11 @@ int main(int argc, char **argv) {
                                 l.setObj.c_str(), l.setObj.c_str(), parentExpr.c_str(),
                                 l.label.c_str(), parentExpr.c_str());
                 } else if (seg.find('[') == std::string::npos && parentExpr == "o"
+                           && path.find('.') == std::string::npos
                            && isBoundObjectProp2(rootType, seg)) {
+                    // Single-segment paths only. `Overlay.modal.x` names a property of the ATTACHED
+                    // object, not of the root, so asking the root for `modal` fails for a reason
+                    // that is not a linkage bug — the check must not claim what it cannot verify.
                     // Only a property of the ROOT's BOUND type: a declared `property QtObject kid:
                     // QtObject {}` is a plain D field and is not in the meta-object at all, so
                     // asking Qt for it would fail for a reason that is not a linkage bug.

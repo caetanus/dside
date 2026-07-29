@@ -240,6 +240,10 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                     }
                 }
             }
+            // An ATTACHED path (`Overlay.modal.implicitWidth`) is not reachable by walking
+            // properties: `Overlay` is not a property of anything. QQmlProperty resolves it by
+            // NAME against the engine's context, which is public API and is how the engine itself
+            // reads such a path — without this the oracle simply could not verify the family.
             QObject *cur = walk(obj, parts);
             // A label the engine cannot resolve used to be OMITTED, which makes a mismatch look
             // like agreement whenever the other side also prints nothing — and an unchecked leaf

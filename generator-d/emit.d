@@ -443,7 +443,9 @@ void main(string[] args) {
         import std.array : join;
         auto reName = regex(`\n {8}name: "([^"]+)"`);
         auto reExp  = regex(`exports: \[([^\]]*)\]`);
-        auto reQml  = regex(`"[^"/]+/([A-Za-z0-9_]+) `);
+        // "QtQuick.Templates/Overlay 2.3" — the URI is as much a part of the export as the name,
+        // and reaching an ATTACHED type needs it (attachedObj resolves by uri + type at runtime).
+        auto reQml  = regex(`"([^"/]+)/([A-Za-z0-9_]+) `);
         auto rePrototype = regex(`\n {8}prototype: "([A-Za-z0-9_:]+)"`);
         // One level of nesting: a Signal block contains Parameter blocks, so `[^}]*` would stop at
         // the first inner `}` and every notify would come out parameterless.
@@ -488,8 +490,8 @@ void main(string[] args) {
                 if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
                 auto qn = ex[1].matchFirst(reQml);
                 if (qn.empty) continue;
-                qmap ~= qn[1] ~ "\t" ~ cpp ~ "\t" ~ dpkg ~ "." ~ cpp.toLower ~ "\n"; rows2++;
-                qmlOf[cpp] = qn[1];
+                qmap ~= qn[2] ~ "\t" ~ cpp ~ "\t" ~ dpkg ~ "." ~ cpp.toLower ~ "\t" ~ qn[1] ~ "\n"; rows2++;
+                qmlOf[cpp] = qn[2];
             }
         }
         // …and each QML name's scalar PROPERTIES. qmlmap says which class backs a name, which is
