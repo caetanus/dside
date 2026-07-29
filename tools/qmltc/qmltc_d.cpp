@@ -797,7 +797,26 @@ static bool readName(const std::string &n, std::string &out) {
         out = rd + n + "\")"; return true;
     }
     if (g_valueLists.count(n)) { out = n; return true; }
-    if (!g_scope.count(n)) return false;
+    // A base property that this document only READS is not in g_baseProps — that map records what
+    // the document ASSIGNS. But the property table knows the type, so the read is perfectly
+    // routable through the meta-object, exactly like an assigned one. Without this,
+    // `implicitWidth: Math.max(implicitContentWidth + leftPadding, ...)` — the single most common
+    // shape in Qt's own Controls — failed on its operands, not on Math.
+    if (!g_scope.count(n)) {
+        if (auto qp = g_qmlProps.find(g_selfQmlType); qp != g_qmlProps.end()) {
+            auto pt = qp->second.find(n);
+            if (pt != qp->second.end()) {
+                const std::string &ty = pt->second;
+                if (ty == "string" || ty == "double" || ty == "bool" || ty == "int") {
+                    if (g_baseIsD) { out = n; return true; }
+                    const char *rd = ty == "string" ? "propStr(this, \"" : ty == "double" ? "propDouble(this, \""
+                                   : ty == "bool" ? "propBool(this, \"" : "propInt(this, \"";
+                    out = rd + n + "\")"; return true;
+                }
+            }
+        }
+        return false;
+    }
     out = n; return true;
 }
 
@@ -2696,14 +2715,65 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string ty = g_baseProps.count(ba.first) ? g_baseProps[ba.first]
                                                      : inferType(ba.second, ptype);
         std::string val;
-        if ((ty != "int" && ty != "string" && ty != "double" && ty != "bool") || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
-            std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported — skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
+        bool scalar = (ty == "int" || ty == "string" || ty == "double" || ty == "bool");
+        if (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
+            // Two very different gaps used to share one message, which made the cluster
+            // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
+            // problem as an EXPRESSION we can't compile into a type we do route.
+            std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported: %s '%s' — skipped (later phase)\n",
+                         inPath, ba.first.c_str(), cls.c_str(),
+                         scalar ? "expression for" : "declared type", ty.empty() ? "?" : ty.c_str());
             ++partial; continue;
         }
         // A D base's property is an inherited FIELD -> assign it; a bound C++ base's is a
         // Q_PROPERTY reachable only through the meta-object.
-        baseWire += g_baseIsD ? ("        " + ba.first + " = " + val + ";\n")
-                              : ("        setProp(this, \"" + ba.first + "\", " + val + ");\n");
+        std::string assign = g_baseIsD ? ("        " + ba.first + " = " + val + ";\n")
+                                       : ("        setProp(this, \"" + ba.first + "\", " + val + ");\n");
+        baseWire += assign;
+        // ...and if the expression READS anything, it is a BINDING, not an assignment: it has to
+        // recompute when a dependency changes. This was emitted as a one-shot with no connect and
+        // no diagnostic, so `width: pad * 10` kept its first value forever and looked correct
+        // (QBaseReactive pins it: after pad=7 the engine says 70, the one-shot said 40). The
+        // declared-property direction was already wired; this is the same wire, the other way.
+        {
+            std::vector<std::string> deps;
+            collectIds(ba.second, deps);
+            std::set<std::string> seen;
+            std::string conns;
+            for (auto &d : deps) {
+                if (d == ba.first || !seen.insert(d).second) continue;   // self-reference is not a dep
+                if (isProp(d)) {
+                    // The dependency must actually CARRY a notify: needsNotify is what makes
+                    // qmltc-d emit the `Signal!() <d>Changed` field. Connecting without this
+                    // threw at wire time ("no such signal padChanged()"), because nothing else
+                    // in the document happened to depend on that property.
+                    if (std::find(needsNotify.begin(), needsNotify.end(), d) == needsNotify.end())
+                        needsNotify.push_back(d);
+                    conns += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rcb_"
+                           + ba.first + "()\");\n";
+                    continue;
+                }
+                std::string sig;
+                if (auto qn = g_qmlNotify.find(g_selfQmlType); qn != g_qmlNotify.end()) {
+                    auto nt = qn->second.find(d);
+                    if (nt != qn->second.end() && !nt->second.empty()) sig = nt->second;
+                }
+                if (!sig.empty()) {
+                    conns += "        connectMeta(this, \"" + sig + "\", this, \"__rcb_"
+                           + ba.first + "()\");\n";
+                    continue;
+                }
+                if (g_valueLists.count(d) || g_singletons.count(d)) continue;   // nothing mutates these
+                std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s depends on '%s', which has "
+                             "no known notify — it would not update (later phase)\n",
+                             inPath, ba.first.c_str(), cls.c_str(), d.c_str());
+                ++partial;
+            }
+            if (!conns.empty()) {
+                handlerSlots += "    @Slot void __rcb_" + ba.first + "() {\n" + "    " + assign + "    }\n";
+                handlerWire += conns;
+            }
+        }
         node.baseProps.push_back({ba.first, ty});
     }
 

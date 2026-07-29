@@ -76,6 +76,18 @@ through an `id`), which is exactly the guard we want.
   but only when the prefix is a DECLARED alias, leaving genuinely dotted names alone. This is how
   every one of Qt's own `QtQuick/Controls/Basic/*.qml` is written: without it all 69 fail at the
   root and no other feature in those files is ever exercised (69 unresolved roots -> 4).
+- **Base-property bindings are reactive**: `width: pad * 10` on a bound base is a BINDING, not an
+  assignment. It used to emit a one-shot `setProp` with no connect and no diagnostic, so it kept
+  its first value forever while looking correct — the declared-property direction (`inner: width -
+  pad`, pinned by QItem) was wired, the reverse was not. It now emits an `__rcb_<prop>` recompute
+  slot connected to each dependency's notify, and registers that dependency in needsNotify so the
+  signal it connects to actually exists. QBaseReactive pins it: after `pad=7` the engine says
+  `width=70`, and the one-shot said `40`.
+- **Read-only base properties**: a base property the document only READS was not routable, because
+  the map of base properties records only what the document ASSIGNS. The property table knows the
+  type either way, so the read now goes through the meta-object like any other. This is what
+  `implicitWidth: Math.max(implicitContentWidth + leftPadding, ...)` — the commonest shape in Qt's
+  own Controls — was failing on: the operands, not `Math`.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
