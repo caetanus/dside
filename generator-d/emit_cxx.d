@@ -793,6 +793,15 @@ bool nonTriviallyCopyable(CXType t) {
 
 // A D type with a trivial ABI for an extern(C) shim: scalar or pointer (incl. const(char)*).
 // (by-value/ref would need marshaling — out of scope for a ctor shim.)
+// An ENUM is int-sized and passes through an extern(C) shim exactly like an int; rejecting it
+// dropped whole CONSTRUCTORS in wrapper mode (QSpacerItem(int, int, QSizePolicy::Policy,
+// QSizePolicy::Policy) is inline, so it needs a shim, and `new QSpacerItem(w, h, p, p)` simply did
+// not exist). The raw path never had this restriction.
+bool abiSimpleParam(CXType t, string pd) {
+    if (simpleAbiType(pd)) return true;
+    return clang_getCanonicalType(t).kind == CXType_Enum;
+}
+
 bool simpleAbiType(string pd) {
     static immutable scalars = ["bool", "byte", "ubyte", "short", "ushort", "int", "uint",
         "long", "ulong", "float", "double", "real", "char", "wchar", "dchar", "size_t"];
@@ -1422,6 +1431,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         bool[string] seenInlineFb;   // dedup fallback D signatures (collapsed inline overloads)
         bool[string] seenF;
         int opIdx;
+        int ptrConvIdx;   // unique names for the wrapper->C++ forwarders
+        bool[string] seenPtrConv;
         collectValueFields(cur, fields, seenF);   // base fields flattened in first (layout order)
         // A value type whose ONLY data member is an anonymous union / bitfield struct
         // (e.g. QSizePolicy's `union { Bits bits; quint32 data; }`) yields NO nameable
@@ -1502,12 +1513,21 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         inFwd ~= ""; inDecl ~= ""; inShim ~= MethodShim.init;
                     }
                 } else {
-                    string[] ps, pds;
+                    string[] ps, pds, psPub, pcall; bool needsPtrConv;
                     foreach (i; 0 .. na) {
                         auto a = clang_Cursor_getArgument(c, i);
                         string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
                         if (pimp.length) impSet[pimp] = true;
-                        ps ~= format("%s a%d", pd, i);
+                        // WRAPPER mode: an object param is a D wrapper whose pointer is NOT the C++
+                        // object. Declaring it straight on a pragma(mangle) symbol handed C++ the
+                        // wrapper's address — QMetaObject.connectSlotsByName(root) crashed inside Qt
+                        // for exactly that. ABI slot becomes void*, public signature keeps the class.
+                        auto pwr = WRAPPER ? wrapperTypeOf(clang_getCursorType(a)) : "";
+                        ps ~= format("%s a%d", pwr.length ? "void*" : pd, i);
+                        psPub ~= format("%s a%d", pd, i);
+                        if (pwr.length) needsPtrConv = true;
+                        pcall ~= pwr.length ? format("(a%d is null ? null : a%d.ptr())", i, i)
+                                            : format("a%d", i);
                         pds ~= pd;
                     }
                     auto mg = clang_Cursor_getMangling(c).str;
@@ -1522,6 +1542,21 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         opIdx++;
                         continue;
                     }
+                    if (needsPtrConv) {
+                        // Two C++ overloads can collapse to ONE D signature (a `T*` and a
+                        // `const T*` param both map to the wrapper class): the forwarder is a
+                        // DEFINITION, so the second would clash. Keep the first, exactly as the
+                        // guarded path already dedups.
+                        auto pcKey = dname(mn) ~ "|" ~ psPub.join(",") ~ "|" ~ cst ~ kw;
+                        if (pcKey in seenPtrConv) continue;
+                        seenPtrConv[pcKey] = true;
+                        auto rawn = format("__pc_%s_%d", name, ptrConvIdx++);
+                        rawDecls ~= format("    private pragma(mangle, \"%s\") %s%s %s(%s)%s;",
+                            mg, kw, retD, rawn, ps.join(", "), cst);
+                        auto rk = retD == "void" ? "" : "return ";
+                        rawDecls ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
+                            kw, retD, dname(mn), psPub.join(", "), cst, rk, rawn, pcall.join(", "));
+                    } else
                     rawDecls ~= format("    pragma(mangle, \"%s\") %s%s %s(%s)%s;",
                         mg, kw, retD, dname(mn), ps.join(", "), cst);
                     auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
@@ -1659,13 +1694,28 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 if (isSignal(c)) sigNameCountW[nm]++;
             }
         int wi;
+        bool[string] seenStrOvW;   // dedup for the wrapper-mode `string` convenience overloads
+        bool[string] aliasNamesW;  // base overloads to un-hide with `alias Base.m = ...`
         // one method: build the module-level self-taking decl + the delegating wrapper method
         void emitWrapMethod(CXCursor c) {
             auto mn = clang_getCursorSpelling(c).str;
             // qt_* are MOC/Q_GADGET internals (qt_metacast, qt_metacall,
             // qt_check_for_QGADGET_macro) — never user-callable, and some reference
             // symbols Qt doesn't export (ldc dead-strips them; dmd whole-program breaks).
-            if (mn.startsWith("operator") || mn.startsWith("qt_") || mn in baseM) return;
+            if (mn.startsWith("operator") || mn.startsWith("qt_")) return;
+            // Skipping by NAME dropped every overload a derived class ADDS to a base-class name:
+            // QGridLayout::addWidget(w, row, col, span...) vanished because QLayout declares an
+            // `addWidget`, so `layout.addWidget(w, 0, 1)` did not compile in wrapper mode at all.
+            // Qt distinguishes methods by SIGNATURE, so only a real override/redeclaration may be
+            // skipped — and the base's overloads it would otherwise HIDE in D get re-aliased,
+            // exactly as the raw path already did.
+            if ((clang_CXXMethod_isVirtual(c) != 0 && (mn in baseM) !is null)
+                    || (clang_getCursorDisplayName(c).str in baseSig)
+                    || (canonSig(c) in baseSig)) return;
+            if ((mn in baseM) !is null && (mn in baseAliasable) !is null) {
+                aliasNamesW[mn] = true;
+                impSet[aliasBase[mn]] = true;   // the aliased base type must be imported
+            }
             // Qt signal -> a connect<Signal>(delegate) method (object args wrapped by the tramp).
             if (isSignal(c)) {
                 if (sigNameCountW.get(mn, 0) == 1 && allNameCountW.get(mn, 0) == 1 && mn !in seenSigW) {
@@ -1704,6 +1754,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 string imp; auto retD = mapCxxType(rrt, imp); if (imp.length) impSet[imp] = true;
                 auto retW = wrapperTypeOf(rrt);
                 string[] wps, declps, callargs, wrapArgs, cppPs, anames;
+                string[] wpds;   // just the D param TYPES, for the `string` convenience overload
                 auto na = clang_Cursor_getNumArguments(c);
                 foreach (i; 0 .. na) {
                     auto a = clang_Cursor_getArgument(c, i);
@@ -1715,6 +1766,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
                     if (inl && cpps.canFind("(*")) return;   // fn-ptr param can't be a shim decl
                     wps ~= format("%s a%d", pd, i);
+                    wpds ~= pd;
                     declps ~= format("%s a%d", pw.length ? "void*" : pd, i);
                     cppPs ~= format("%s a%d", cpps, i);
                     anames ~= format("a%d", i);
@@ -1761,6 +1813,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         : retW.length ? format("return %s.wrap(%s);", retW, callE) : format("return %s;", callE);
                 }
                 wm ~= format("    %s%s %s(%s) { %s }", kw, retD, dname(mn), wps.join(", "), body_);
+                // ...and the `string` convenience overload the RAW mode already had. Without it
+                // `w.setObjectName("x")` and `e.setPlainText("hi")` stop compiling the moment a
+                // binding switches to wrapper mode, which is what blocked making it the default:
+                // every call site would have to build a QString/QAnyStringView by hand.
+                auto sov = strOverload(mn, retD, kw, "", wpds, seenStrOvW);
+                if (sov.length) wm ~= sov;
                 wi++;
             } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
         }
@@ -1778,7 +1836,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
                     if (pimp.length) impSet[pimp] = true;
                     auto pw = wrapperTypeOf(clang_getCursorType(a));
-                    if (!simpleAbiType(pd) && pw.length == 0) allSimple = false;
+                    if (!abiSimpleParam(clang_getCursorType(a), pd) && pw.length == 0) allSimple = false;
                     auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
                     if (cpps.canFind("(*")) allSimple = false;
                     cppPs ~= format("%s a%d", cpps, i);
@@ -1834,6 +1892,16 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         auto ctorBody = format("    this(void* c) @nogc nothrow { %s; }\n"
             ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(p)); }",
             ctorSuper, name, name, name);
+        // Un-hide the base overloads a same-named derived method would shadow in D. The
+        // `static if (hasMember)` guard is the same safety net the raw path uses: the base may
+        // have skipped that method for an unmappable type, in which case there is nothing to alias.
+        foreach (an; aliasNamesW.byKey)
+            wm ~= format("    static if (__traits(hasMember, %s, \"%s\")) alias %s = %s.%s;",
+                aliasBase[an], dname(an), dname(an), aliasBase[an], dname(an));
+        // The module-scope `Class_Value` aliases too: the 2-part `.ui` form (QLineEdit::Password)
+        // resolves through them, and only the raw emitter had them — so uicheck stopped compiling
+        // the moment the binding became wrapper mode.
+        wd ~= nestedEnumAliases(cur, name);
         auto body_ = ([ctorBody] ~ wctors ~ nestedEnumLines(cur) ~ wm ~ miMethods).join("\n");
         return format("%s\nmodule %s.%s;\n%s\n\nenum __%s_size = %d;\nclass %s : %s {\n%s\n}\n\n%s\n",
             manifest, dpkg, modBase(name), impLines, name, clang_Type_getSizeOf(clang_getCursorType(cur)),
@@ -2043,6 +2111,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             auto retD = mapCxxType(clang_getCursorResultType(c), imp);
             if (imp.length) impSet[imp] = true;
             string[] ps, pds, cppTypes;   // cppTypes: canonical C++ param types (for the guard)
+            string[] psPub, pcall;        // public signature, and the call args (wrapper -> .ptr())
+            bool needsPtrConv;            // any object param needs the wrapper -> C++ conversion
             bool guardable = EXCEPTIONS;
             auto na = clang_Cursor_getNumArguments(c);
             foreach (i; 0 .. na) {
@@ -2051,13 +2121,26 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 if (containerParam(clang_getCursorType(a), helper, idiom)) {
                     impSet["qtcontainers"] = true;      // raw takes the container ptr as void*
                     ps ~= format("void* a%d", i);
+                    psPub ~= format("void* a%d", i);
+                    pcall ~= format("a%d", i);
                     pds ~= "C:" ~ helper ~ ":" ~ idiom;
                     guardable = false;                  // container-param methods stay direct
                 } else {
                     string pimp;
                     auto pd = mapCxxType(clang_getCursorType(a), pimp);
                     if (pimp.length) impSet[pimp] = true;
-                    ps ~= format("%s a%d", pd, i);
+                    // In WRAPPER mode an object param arrives as the D WRAPPER, whose pointer is
+                    // NOT the C++ object: passing it straight to a pragma(mangle) declaration fed
+                    // C++ the wrapper's address. `QMetaObject.connectSlotsByName(root)` segfaulted
+                    // inside Qt for exactly that reason — 64 declarations in the QtWidgets binding
+                    // had the same shape, every one a latent crash. The ABI slot becomes void* and
+                    // the public signature keeps the class, converting at the call.
+                    auto pwr = WRAPPER ? wrapperTypeOf(clang_getCursorType(a)) : "";
+                    ps ~= format("%s a%d", pwr.length ? "void*" : pd, i);
+                    psPub ~= format("%s a%d", pd, i);
+                    if (pwr.length) needsPtrConv = true;
+                    pcall ~= pwr.length ? format("(a%d is null ? null : a%d.ptr())", i, i)
+                                        : format("a%d", i);
                     pds ~= pd;
                     auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
                     if (cpps.canFind("(*")) guardable = false;   // fn-ptr param: can't reinterpret cleanly
@@ -2102,16 +2185,31 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 //     Qt symbol): pass &sym + self + args to the guard, which try/catches.
                 string[] callArgs = ["cast(void*)&" ~ raw];
                 if (!isStat) callArgs ~= "cast(void*) this";
-                foreach (i; 0 .. na) callArgs ~= format("a%d", i);
+                foreach (i; 0 .. na) callArgs ~= pcall[i];
                 auto retkw = retD == "void" ? "" : "return ";
                 // extern(D): the forwarder is a D-only method — without it, an extern(C++)
                 // member mangles to the very Qt symbol __raw points at (collision + it would
                 // redefine the C++ method).
                 methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
-                    kw, retD, dname(mn), ps.join(", "), cst, retkw, gn, callArgs.join(", "));
+                    kw, retD, dname(mn), psPub.join(", "), cst, retkw, gn, callArgs.join(", "));
             } else {
                 // pragma(mangle) with clang's exact symbol -> identical on ldc & dmd
                 // (D's own extern(C++) mangling diverges on Itanium substitutions).
+                if (needsPtrConv) {
+                    // Same reason as the guarded path: the declaration must carry the ABI types
+                    // (void* for an object) while the callable signature keeps the wrapper class.
+                    auto rawn = format("__ptr_%s_%d", name, guardRawIdx++);
+                    shimDecls ~= format("private pragma(mangle, \"%s\") extern(C++) %s%s %s(%s%s)%s;",
+                        mg, kw.canFind("static") ? "" : "", retD, rawn,
+                        kw.canFind("static") ? "" : (ps.length ? "void* self, " : "void* self"),
+                        ps.join(", "), cst);
+                    auto retkw2 = retD == "void" ? "" : "return ";
+                    string[] ca2;
+                    if (!kw.canFind("static")) ca2 ~= "cast(void*) this";
+                    foreach (i; 0 .. na) ca2 ~= pcall[i];
+                    methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
+                        kw, retD, dname(mn), psPub.join(", "), cst, retkw2, rawn, ca2.join(", "));
+                } else
                 methodLines ~= format("    pragma(mangle, \"%s\") %s%s %s(%s)%s;",
                     mg, kw, retD, dname(mn), ps.join(", "), cst);
             }

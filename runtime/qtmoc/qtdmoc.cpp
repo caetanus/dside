@@ -412,6 +412,9 @@ extern "C" int qtd_list_append(void* ownerV, const char* prop, void* childV) {
 }
 
 #ifdef QTD_HAVE_QML
+// Guarded because this SAME unit is compiled for bindings with no QtQml at all (QtWidgets,
+// libsample): an unguarded QQmlEngine here broke the default build, which is a feature-isolation
+// defect, not a QML one. qtd_probe_noqml.cpp compiles this file without QtQml so it cannot recur.
 static QQmlEngine* qtd_qml_engine();   // defined with the QQmlContext helpers below
 #endif
 
@@ -494,11 +497,13 @@ extern "C" int qtd_connect_notify(void* ownerV, const char* prop, void* recvV, c
 // contentItem is a ListView: that is the crash). Qt's own qmltc takes a QQmlEngine* in every
 // generated constructor for exactly this reason; the win is not parsing QML, not doing without an
 // engine. This engine parses nothing -- it exists so those internals have a context to reach.
+#ifdef QTD_HAVE_QML
 static QQmlEngine* qtd_qml_engine() {
     static QQmlEngine* eng = nullptr;
     if (!eng) eng = new QQmlEngine;   // leaked on purpose: it outlives every object pointing at it
     return eng;
 }
+#endif
 extern "C" void qtd_attach_context(void* o) {
 #ifdef QTD_HAVE_QML
     if (!o) return;

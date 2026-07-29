@@ -13,7 +13,7 @@ import std.conv : to;
 import std.file : getcwd, exists, dirEntries, SpanMode, readText;
 import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
 import std.array : array, replace, join, split;
-import std.algorithm : map, filter, sort, any, startsWith, canFind;
+import std.algorithm : map, filter, sort, any, startsWith, canFind, all;
 import std.process : execute;
 import std.string : strip;
 
@@ -103,6 +103,7 @@ Build reggaeBuild() {
         }
         all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
     }
+    all ~= qtmocProbeTargets(root);   // the shared runtime must compile with AND without QtQml
     auto qml = qtdBinding(root, "spec_cxx_qml.json", ["Qt6Qml", "Qt6Gui"]);
     qmlSuite(qml, "");
     all ~= qmlAotTargets(root, qml);   // qmlcachegen (Qt6 unit/loader format); Qt5 AOT is a follow-up
@@ -432,6 +433,32 @@ Target qmltcTool(string root, QtdBinding bind) {
 // Qt's OWN shipped Controls QML, built and constructed. Not a differential: the bar here is that
 // the object exists at all, which is the step every compile-time metric skips. Skipped silently
 // when Qt's Basic style is not installed, so the suite still runs on a machine without it.
+// The shared moc runtime is compiled into EVERY binding, including ones with no QtQml at all
+// (QtWidgets, libsample). A QML-only helper that escaped its #ifdef broke the whole default build,
+// and nothing in the matrix would have caught it: every qmltc target links QtQml by construction.
+// These probes compile the unit in each configuration the project actually ships, so a
+// feature-isolation slip fails HERE rather than in an unrelated binding.
+Target[] qtmocProbeTargets(string root) {
+    auto src = buildPath(root, "runtime", "qtmoc", "qtdmoc.cpp");
+    if (!exists(src)) return [];
+    Target[] ts;
+    auto mk = (string name, string[] mods, bool qml, string qmlMod) {
+        if (!mods.all!(m => execute(["pkg-config", "--exists", m]).status == 0)) return;
+        auto cf = pkgCflags(mods);
+        auto flags = cf ~ " -std=c++17 -fPIC " ~ mocPrivateFlags(cf).join(" ")
+                   ~ (qml ? " " ~ modulePrivateFlags(pkgCflags([qmlMod]), "QtQml").join(" ")
+                            ~ " -DQTD_ENABLE_QML" : "");
+        auto obj = buildPath(root, ".build", "probe-" ~ name ~ ".o");
+        ts ~= Target.phony("qtmoc-probe-" ~ name,
+                           "clang++ " ~ flags ~ " -c " ~ src ~ " -o " ~ obj, [Target(src)]);
+    };
+    // No QtQml in sight: the configuration that broke.
+    mk("noqml", ["Qt6Core"], false, "");
+    mk("qml6", ["Qt6Qml", "Qt6Core"], true, "Qt6Qml");
+    mk("qml5", ["Qt5Qml", "Qt5Core"], true, "Qt5Qml");
+    return ts;
+}
+
 Target[] qmltcControlsRuntimeTargets(string root, QtdBinding bind) {
     auto dir = "/usr/lib/qt6/qml/QtQuick/Controls/Basic";
     if (!exists(dir)) return [];
