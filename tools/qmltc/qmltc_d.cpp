@@ -989,6 +989,16 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 return false;   // unknown member of that enclosing object: refused, not guessed
             }
         }
+        // NOT supported: `control.indicator.width` — a scalar reached THROUGH an object-valued
+        // property. The READ is easy (propDouble(propObj(obj, "indicator"), "width")) and it was
+        // implemented, then reverted: the binding cannot be made to REACT. Its dependency is
+        // recorded as the object (`indicator`), so it connects to indicatorChanged() — which fires
+        // when the indicator is REPLACED, not when its width changes. Connecting to the inner
+        // object's own notify at wire time is not possible either: a Control creates its indicator
+        // after construction, so propObj is null while the wire runs (the same ordering that makes
+        // `parent` resolve to the back-reference instead). An under-reactive binding that looks
+        // live is the exact failure this project keeps removing, so the partial stands until there
+        // is a late-wire phase that runs once the tree is complete.
         // `parent.<prop>` — QQuickItem exposes `parent` as a Q_PROPERTY, so the OBJECT is fetched
         // through the meta-object at runtime and nothing static is assumed about it. Only the
         // member's TYPE is taken from the enclosing frame, which is sound because a child's visual
