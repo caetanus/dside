@@ -712,6 +712,15 @@ mixin template QtdWidget(Base) {
     }
 }
 
+// The object currently being constructed AS A PARENT, handed to the child qmltc-d generates.
+// A generated child reads its enclosing object (`control.width` in QML) through a back-reference,
+// but the mixin runs __qmltcWire at the END OF THE CONSTRUCTOR — so a field assigned after `new`
+// is assigned too late and the wire dereferences null. The parent publishes itself here
+// immediately before `new Child()`, and the child's wire takes it as its first statement, before
+// it constructs any children of its own. Thread-local (D default) and only live across a
+// synchronous construction, which is how an object tree is built.
+void* __qmltcOuter;
+
 // ---- properties (access by name via QVariant) -------------------------------
 /// Reads an int property by name (custom @Property or built-in).
 private extern(C) void* qtd_attached_obj(void*, const(char)*, const(char)*);

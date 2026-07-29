@@ -90,6 +90,19 @@ through an `id`), which is exactly the guard we want.
   type either way, so the read now goes through the meta-object like any other. This is what
   `implicitWidth: Math.max(implicitContentWidth + leftPadding, ...)` — the commonest shape in Qt's
   own Controls — was failing on: the operands, not `Math`.
+- **The enclosing object (`control.<prop>`)**: Qt's own Controls are written `id: control` on the
+  root and then `contentItem: Text { color: control.palette.text }`. A child is a separate D class,
+  so it reaches its parent through a generated `__outer` back-reference: a DECLARED property of the
+  outer is a typed field (`__outer.gap`), a property of the outer's bound base goes through the
+  meta-object (`propDouble(__outer, "width")`) — reading the latter as a field does not compile.
+  Bindings that read the outer are wired to ITS notify, and because the parent's emission is what
+  creates that signal, the child propagates the requirement up. The back-reference is handed over
+  at construction (`__qmltcOuter`) rather than assigned after `new`, because the mixin runs
+  `__qmltcWire` at the END of the constructor — assigning afterwards dereferenced null (SIGSEGV,
+  confirmed under gdb). Measured on Qt's Controls: expression failures 349 -> 182.
+- **Per-object property tables**: the object's own QML type drives every table lookup. It used to
+  be set once at the root, so inside a child every lookup consulted the ROOT's table — a Rectangle
+  inside an Item resolved its properties against Item.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
