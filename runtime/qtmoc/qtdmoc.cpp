@@ -34,6 +34,7 @@
 #  include <QtQml/qqmlparserstatus.h>
 #  include <QtQml/QQmlEngine>
 #  include <QtQml/QQmlContext>
+#  include <QtQml/QQmlComponent>
 #  if QT_VERSION >= 0x060000
 #    include <QtQml/private/qqmlmetatype_p.h>
 #    include <QtQml/qqml.h>
@@ -391,6 +392,50 @@ extern "C" int qtd_prop_get_var(void* o, const char* n, const char* typeName, vo
     QMetaType::construct(id, out, v.constData());
 #endif
     return 1;
+}
+
+// ---- default children go through the type's DEFAULT PROPERTY -------------------------------
+// The engine appends a default child to the type's default list property, and each type decides
+// what that MEANS: QQuickItem's `data` sets the QObject parent and parentItem, QQuickFlickable's
+// `flickableData` reparents into the flickable's contentItem, QQuickPopup/Control's `contentData`
+// into theirs. Doing it by hand (setQtParent + parent) put the child somewhere the engine never
+// has it. QQmlListReference is the generic channel -- one call, every type's own rule.
+extern "C" int qtd_list_append(void* ownerV, const char* prop, void* childV) {
+#ifdef QTD_HAVE_QML
+    if (!ownerV || !childV || !prop) return 0;
+    QQmlListReference ref(static_cast<QObject*>(ownerV), prop);
+    if (!ref.isValid() || !ref.canAppend()) return 0;
+    return ref.append(static_cast<QObject*>(childV)) ? 1 : 0;
+#else
+    (void) ownerV; (void) prop; (void) childV; return 0;
+#endif
+}
+
+#ifdef QTD_HAVE_QML
+static QQmlEngine* qtd_qml_engine();   // defined with the QQmlContext helpers below
+#endif
+
+// ---- QML module bootstrap -------------------------------------------------------------------
+// A compiled Control reads its palette from the QQuickTheme the STYLE module installs, and that
+// module is only initialised when the engine IMPORTS it. Without it, Qt's own Pane.qml compiled
+// to `background.color = #efefef` where the engine gives #ffffff -- no diagnostic, no crash, just
+// a different colour. Measured: importing QtQuick.Templates or QtQuick.Controls does NOT do it;
+// the style module (QtQuick.Controls.Basic) does. Palette resolution is lazy, so a control built
+// BEFORE this still picks the theme up -- what matters is only that it precedes the first READ.
+// Cost: ~1.8 ms, once per module. The URI comes from the document's own qmldir, so nothing here
+// knows anything about Controls.
+extern "C" void qtd_ensure_module(const char* uri) {
+#ifdef QTD_HAVE_QML
+    if (!uri || !*uri || !QCoreApplication::instance()) return;
+    static std::unordered_map<std::string, bool> done;
+    if (!done.emplace(uri, true).second) return;
+    QQmlComponent c(qtd_qml_engine());
+    c.setData(QByteArray("import ") + uri + "\nimport QtQml\nQtObject {}",
+              QUrl(QStringLiteral("file:///qtd_module_bootstrap.qml")));
+    if (QObject* o = c.create()) delete o;
+#else
+    (void) uri;
+#endif
 }
 
 // ---- dependencies reached THROUGH an object property ------------------------------------------

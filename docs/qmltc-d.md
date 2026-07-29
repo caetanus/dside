@@ -1277,3 +1277,45 @@ bound: `qquickbasic*_p.h` declare their classes with no export macro and
 would link against nothing. `TumblerView` is the counter-example — it lives in
 `QtQuickControls2Impl`, is exported, and IS now bound, along with `Translate`/`Rotation`/`Scale`
 (reached by sweeping from `QQuickTransform`, not just `QQuickItem`). qmlmap: 110 -> 114 types.
+
+## Same VALUES as the interpreted document — Qt's Controls, second axis (2026-07-29)
+
+Construction is the floor; the criterion is behaviour. With 61 of Qt's Basic files producing an
+object, the oracle can be pointed at them and asked the real question: does the compiled object
+hold the same property values as the one the ENGINE builds? Two defects, both silent — clean
+files, constructing fine, disagreeing with the engine:
+
+| | before | after |
+|---|---|---|
+| CLEAN files whose values match the engine | 6 of 9 | **9 of 9** |
+| PARTIAL files whose values match | 8 | **24** |
+
+- **A compiled Control had no theme, so its palette was wrong.** `Label.color` came out `#000000`
+  against the engine's `#26282a`; `Pane.background.color` `#efefef` against `#ffffff`. A Control
+  reads its palette from the `QQuickTheme` that its STYLE module installs *on import*, and a
+  compiled program imports nothing. Measured which import does it: not `QtQuick.Templates`, not
+  `QtQuick.Controls` — the style module (`QtQuick.Controls.Basic`). Resolution is lazy, so a
+  control built BEFORE the import still picks the theme up; only the first READ has to come after.
+  The URI is not written anywhere in the compiler: it is read from the `qmldir` beside the
+  document, so the file gets exactly the module the engine gives it. ~1.8 ms, once per module.
+- **A bare child was placed by hand, and `data` is not always where it goes.** The registry
+  publishes `defaultProperty` per type: `contentData` for Pane/Popup/ScrollView (the child is held
+  by the contentItem), `flickableData` for Flickable, `data` for Item and — explicitly — ListView.
+  Proof that the old behaviour was wrong, from the engine itself on `Pane { Rectangle {} }`:
+  `contentData[0].objectName` is the Rectangle, while `data[0]` is a `QQuickContentItem` that has
+  no `color` at all. So the old label named a different object and the child was linked in the
+  wrong place. The property now comes from a 5th qmlmap column (resolved up the prototype chain by
+  the generator) and the child is APPENDED through it with `QQmlListReference` — one channel, each
+  type applying its own rule. Fixture: `CDefaultProp.qml`.
+- **...and no fallback.** 14 bound types (Action, FontLoader, Translate, Rotation, …) declare no
+  default property at all; assuming `data` for them invented a path neither side has. A bare child
+  under such a type is now REFUSED with a diagnostic.
+
+Still open on this corpus, recorded rather than hidden: 7 PARTIAL files the ORACLE cannot load or
+resolve. One cause is ours and is a LABEL problem, not a tree problem — the engine's ListView
+already holds an internal item at `data[0]`, so a declared child lands at `data[1]`, while a
+static label assumes the list starts empty (ComboBox). The rest are files the engine itself
+refuses standalone (TreeViewDelegate needs a TreeView).
+
+Method note: the suite runs in ONE `./build` invocation with all targets (472 green in ~4 min).
+Invoking `./build` once per target instead costs about an hour — the overhead is per invocation.

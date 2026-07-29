@@ -138,6 +138,16 @@ static void loadQmlSignals(const char *path) {
     }
 }
 
+// QML type -> its default property (5th qmlmap column). Empty for a type that declares none.
+static std::map<std::string, std::string> g_qmlDefaultProp;
+
+// The default property of the object being compiled, or "data" when the type declares none —
+// which is what QQuickItem itself uses, and the only sane fallback for a fresh @QObject.
+static std::string defaultPropOf(const std::string &qmlType) {
+    auto it = g_qmlDefaultProp.find(qmlType);
+    return it == g_qmlDefaultProp.end() ? std::string() : it->second;
+}
+
 static void loadQmlMap(const char *path) {
     std::ifstream f(path);
     std::string line;
@@ -152,7 +162,19 @@ static void loadQmlMap(const char *path) {
         auto t3 = line.find('\t', t2 + 1);
         std::string mod = t3 == std::string::npos ? line.substr(t2 + 1)
                                                   : line.substr(t2 + 1, t3 - t2 - 1);
-        if (t3 != std::string::npos) g_qmlTypeUri[qml] = line.substr(t3 + 1);
+        // 5th column: the type's DEFAULT property, resolved up the prototype chain by the
+        // generator. `data` for an Item, `flickableData` for a Flickable, `contentData` for a
+        // Control -- the engine appends default children THERE, and each type's rule differs.
+        if (t3 != std::string::npos) {
+            auto t4 = line.find('\t', t3 + 1);
+            g_qmlTypeUri[qml] = t4 == std::string::npos ? line.substr(t3 + 1)
+                                                        : line.substr(t3 + 1, t4 - t3 - 1);
+            if (t4 != std::string::npos) {
+                std::string dp = line.substr(t4 + 1);
+                while (!dp.empty() && (dp.back() == '\r' || dp.back() == '\n')) dp.pop_back();
+                if (!dp.empty()) g_qmlDefaultProp[qml] = dp;
+            }
+        }
         // A QML name can export more than one C++ class across import versions (e.g. TextEdit ->
         // QQuickTextEdit and the legacy QQuickPre64TextEdit). `import QtQuick` (latest) resolves to
         // the modern one, so prefer a non-"Pre64" class when a name repeats.
@@ -269,6 +291,22 @@ static std::vector<std::pair<int, std::string>> g_outerNeedsNotify;
 // binding compiled the expression.
 struct DeepRead { std::string obj, inner, member, innerQmlType; };
 static std::vector<DeepRead> g_deepReads;
+
+// The QML module this document BELONGS to, read from the qmldir beside it. Qt's Controls style
+// files are part of QtQuick.Controls.Basic, and a Control only gets its theme (hence its palette)
+// once that module has been imported -- so the compiled document must ask for it, exactly as the
+// engine does when it loads the file from that directory. Empty for an ordinary app document.
+static std::string g_docModule;
+
+static void loadDocModule(const char *inPath) {
+    QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
+    QFile f(dir + "/qmldir");
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    for (const QByteArray &ln : f.readAll().split('\n')) {
+        QByteArray t = ln.trimmed();
+        if (t.startsWith("module ")) { g_docModule = t.mid(7).trimmed().toStdString(); return; }
+    }
+}
 
 // The document's ROOT class. Only the root triggers the late pass — it is the only object whose
 // wire finishes with the whole tree constructed and completed.
@@ -3121,9 +3159,26 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A bound Qt base holds bare children in its own default property — `data` for anything
     // QQuickItem-derived — and that, not `children()[i]`, is the path the engine resolves. The
     // `@N` form is kept only for a plain @QObject root, which has no such property.
+    // ...and WHICH property that is comes from the registry, not from an assumption: a Flickable
+    // holds them in `flickableData` (reparented into its contentItem) and a Control in
+    // `contentData`. Labelling them `data[i]` named a path the ENGINE does not have, which is how
+    // the oracle refused ComboBox outright.
     if (defaultKidLabel.empty() && !boundBase.empty() && !defaultKids.empty()) {
-        defaultKidLabel = "data";
-        defaultKidIsList = true;
+        std::string dp = defaultPropOf(g_selfQmlType);
+        if (dp.empty()) dp = defaultPropOf(qmlNameOfCxx(boundBase));
+        if (dp.empty()) {
+            // No default property in the registry means the type CANNOT hold bare children --
+            // Action, FontLoader, Translate and 11 others declare none. Assuming `data` invented a
+            // path neither side has; refusing says so.
+            std::fprintf(stderr, "qmltc-d: %s: '%s' declares no default property, so the bare "
+                         "child(ren) in %s have nowhere to go — skipped (later phase)\n",
+                         inPath, g_selfQmlType.c_str(), cls.c_str());
+            partial += (int)defaultKids.size();
+            defaultKids.clear();
+        } else {
+            defaultKidLabel = dp;
+            defaultKidIsList = true;
+        }
     }
 
     // Default-property children: a bare `Type { }`. The child type is mapped to a bound Qt type
@@ -3220,17 +3275,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
-                   + "        setQtParent(" + field + ", this);\n"
-                   // ...and the ITEM parent, which is a different link: QQuickItem tracks visual
-                   // parentage through parentItem, and an item with none is not in a scene.
+                   // Append through the type's DEFAULT PROPERTY, which is how the engine places a
+                   // default child and lets each type apply its own rule (a Flickable reparents
+                   // into its contentItem, a Control into its). Hand-parenting is the fallback for
+                   // a type with no appendable list — a fresh @QObject, or a local .qml child.
                    // A LOCAL .qml child has no entry in the bound-type table, so its item-ness
                    // comes from the C++ base it resolved to. Missing that left `Greeter {}` — an
-                   // Item-derived local type — unparented, which is exactly what the new linkage
+                   // Item-derived local type — unparented, which is exactly what the linkage
                    // check caught.
+                   + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
+                        ? "        if (!listAppend(this, \"" + defaultKidLabel + "\", " + field + ")) {\n    "
+                        : "")
+                   + "        setQtParent(" + field + ", this);\n"
                    + (((isItemType(childType) || isItemType(qmlNameOfCxx(childBase)))
                         && isItemType(g_selfQmlType))
-                        ? "        setPropObj(" + field + ", \"parent\", this);\n" : "")
-                   + ""
+                        ? std::string(defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@' ? "    " : "")
+                          + "        setPropObj(" + field + ", \"parent\", this);\n" : "")
+                   + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
+                        ? "        }\n" : "")
                    + "        classBegin(" + field + ");\n";
         // A BARE child with an id is just as addressable as one bound to a property:
         // `property alias source: dps.source` where dps is a default child is the dominant shape
@@ -4312,6 +4374,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     if (anyBound || !handlerWire.empty() || !childWire.empty() || !onCompletedBody.empty()
             || !baseWire.empty() || (g_outerUsed && !g_outerClass.empty()) || g_isValueSource) {
         wire = "    void __qmltcWire() {\n";
+        // Before ANY property is read: a Control's palette comes from the theme its style module
+        // installs, and resolution is lazy, so this only has to precede the first read.
+        if (!g_docModule.empty())
+            wire += "        ensureModule(\"" + g_docModule + "\");\n";
         // classBegin() BEFORE any property is assigned, which is the order the engine uses: a
         // type implementing QQmlParserStatus may need to know it is being built from a document
         // (rather than constructed directly) before it sees its first assignment.
@@ -4757,6 +4823,7 @@ int main(int argc, char **argv) {
     const char *inPath = pos[0];
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
     g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name
+    loadDocModule(inPath);   // the module this document belongs to (its style/theme comes with it)
 
     Engine engine;
     Lexer lexer(&engine);

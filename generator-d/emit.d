@@ -447,6 +447,12 @@ void main(string[] args) {
         // and reaching an ATTACHED type needs it (attachedObj resolves by uri + type at runtime).
         auto reQml  = regex(`"([^"/]+)/([A-Za-z0-9_]+) `);
         auto rePrototype = regex(`\n {8}prototype: "([A-Za-z0-9_:]+)"`);
+        // The DEFAULT property is not always `data`: QQuickFlickable declares `flickableData`
+        // (children are reparented into the flickable's contentItem) and QQuickPopup/Control
+        // `contentData`. Placing a default child by hand as an item child of the type itself put
+        // it somewhere the ENGINE never has it -- the oracle refused the label path outright
+        // (ComboBox: popup.contentItem.data[0]). The registry publishes it; carry it.
+        auto reDefaultProp = regex(`\n {8}defaultProperty: "([A-Za-z0-9_]+)"`);
         // One level of nesting: a Signal block contains Parameter blocks, so `[^}]*` would stop at
         // the first inner `}` and every notify would come out parameterless.
         auto reSignal = regex(`Signal \{((?:[^{}]|\{[^{}]*\})*)\}`, "s");
@@ -482,13 +488,13 @@ void main(string[] args) {
         // QQuickIcon has none and IS the gadget. That is the difference between a grouped write
         // that works and one that throws at construction — and it is data, not a list of names.
         bool[string] extendedValueType;
-        string[string] protoOf, qmlOf;
+        string[string] protoOf, qmlOf, defPropOf;
         // Signals per class, kept rather than discarded after the notify lookup: a handler for a
         // BOUND type's own signal (`onClicked`) needs the name AND the full signature to connect,
         // and 226 of the 373 handlers in the QML Qt ships are exactly that shape — against 147
         // notify handlers, which were the only ones reachable while this table did not exist.
         string[string][string] ownProps, ownNotify, ownSignals;
-        string qmap, qprops; int rows2, rows3;
+        string qmap, qprops; int rows2, rows3; string[][] qmapRows;
         foreach (qtj; qt.array) {
             if (!exists(qtj.str)) continue;
             foreach (blk; readText(qtj.str).split("Component {")) {
@@ -499,7 +505,7 @@ void main(string[] args) {
                 if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
                 auto qn = ex[1].matchFirst(reQml);
                 if (qn.empty) continue;
-                qmap ~= qn[2] ~ "\t" ~ cpp ~ "\t" ~ dpkg ~ "." ~ cpp.toLower ~ "\t" ~ qn[1] ~ "\n"; rows2++;
+                qmapRows ~= [qn[2], cpp, dpkg ~ "." ~ cpp.toLower, qn[1]]; rows2++;
                 qmlOf[cpp] = qn[2];
             }
         }
@@ -515,6 +521,8 @@ void main(string[] args) {
                 if (nm.empty) continue;
                 auto pr = blk.matchFirst(rePrototype);
                 if (!pr.empty) protoOf[nm[1]] = pr[1];
+                auto dpm = blk.matchFirst(reDefaultProp);
+                if (!dpm.empty) defPropOf[nm[1]] = dpm[1];
                 string[string] sigOf;
                 foreach (sm; blk.matchAll(reSignal)) {
                     auto sn = sm[1].matchFirst(reName2);
@@ -577,6 +585,16 @@ void main(string[] args) {
                 auto nx = c in protoOf;
                 c = nx ? *nx : "";
             }
+        }
+        // 5th column: the default property, resolved UP the prototype chain (ListView does not
+        // declare one -- QQuickFlickable does). Empty when the type has none.
+        foreach (r; qmapRows) {
+            string dp, c = r[1];
+            while (c.length) {
+                if (auto d = c in defPropOf) { dp = *d; break; }
+                auto nx = c in protoOf; c = nx ? *nx : "";
+            }
+            qmap ~= r[0] ~ "\t" ~ r[1] ~ "\t" ~ r[2] ~ "\t" ~ r[3] ~ "\t" ~ dp ~ "\n";
         }
         std.file.write(buildPath(outDir, "qmlmap.tsv"), qmap);
         std.file.write(buildPath(outDir, "qmlprops.tsv"), qprops);

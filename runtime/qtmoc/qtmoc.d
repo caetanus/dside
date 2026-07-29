@@ -47,6 +47,8 @@ extern (C) nothrow {
     double qtd_vgroup_get_double(void*, const(char)*, const(char)*);
     void*  qtd_vgroup_get_qs(void*, const(char)*, const(char)*);
     void qtd_attach_context(void*);
+    void qtd_ensure_module(const char*);
+    int qtd_list_append(void*, const char*, void*);
     int qtd_bind_leaf(void*, const char*, const char*, void*, const char*);
     int qtd_connect_notify(void*, const char*, void*, const char*);
 void qtd_parser_status(void*, int);
@@ -848,6 +850,23 @@ void classBegin(T)(T o) { attachContext(o); qtd_parser_status(qobjOf(o), 0); }
 /// Give an object a QQmlContext. Anything that instantiates children through the engine (views,
 /// Loader, delegates) reads QQmlContext::engine() in componentComplete() and crashes without one.
 void attachContext(T)(T o) { qtd_attach_context(qobjOf(o)); }
+
+/// Append a default child through the type's own default list property. `data` on an Item,
+/// `flickableData` on a Flickable (which reparents into its contentItem), `contentData` on a
+/// Control -- one channel, and each type applies its own rule. Returns false if the property is
+/// not an appendable list, so the caller can fall back to plain parenting.
+bool listAppend(T, C)(T owner, string prop, C child) {
+    import std.string : toStringz;
+    return qtd_list_append(qobjOf(owner), prop.toStringz, qobjOf(child)) != 0;
+}
+
+/// Import a QML module once, so the types this document uses behave as they do under the engine.
+/// A Control's palette comes from the theme its STYLE module installs on import; without it the
+/// colours differ from the interpreted document with nothing to show for it.
+void ensureModule(string uri) {
+    import std.string : toStringz;
+    qtd_ensure_module(uri.toStringz);
+}
 
 /// Subscribe `recv.slot` to `sig` of the object currently held by `owner.prop`, replacing whatever
 /// this (recv, slot, prop, sig) was subscribed to before. Called from the binding's own slot, so a
