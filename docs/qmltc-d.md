@@ -796,3 +796,35 @@ emits `QList<T>` only for the `T` that appear in bound signatures, and `int` is 
 Consequence of the current workaround, and why it matters beyond tidiness: a value list has no
 notify, so a binding reading it can never update, and the dead-dependency diagnostic has to
 exempt it by name. As a real property it would notify like everything else.
+
+
+## Q_PROPERTY from the AST — viable, verified, not yet implemented
+
+The generator currently learns QML property types by regex-scraping `plugins.qmltypes`. That
+costs: a hand-written type map, a nesting hazard in the Signal regex (which silently made every
+notify parameterless until it was fixed), a fabricated `name + "()"` fallback when the signal is
+not found, and coverage limited to the 40 classes that appear in a registry.
+
+shiboken's annotation trick applies here and stays fully COMPILE-TIME. `Q_PROPERTY` expands to
+`QT_ANNOTATE_CLASS(qt_property, ...)`, which qtmetamacros.h leaves a no-op unless defined.
+Adding one flag to the parse the generator already runs:
+
+    -DQT_ANNOTATE_CLASS(type,...)=static_assert("qt_" #type, #__VA_ARGS__);
+
+puts the declaration in the AST verbatim. Verified on Qt 6.11 — a StaticAssert whose second
+StringLiteral is:
+
+    "int count READ count WRITE setCount NOTIFY countChanged"
+
+paired with a first literal of `"qt_qt_property"` identifying the kind. That single string carries
+name, type, READ, WRITE, NOTIFY **and** RESET (which the compiler wants and the .qmltypes table
+does not supply), for EVERY discovered class rather than the ones in a registry. The notify's real
+signature then comes from the signal cursor the generator already visits, so the type map, the
+regex and the guessed fallback all go away.
+
+libclang exposes these as CXCursor_StaticAssert; the work is reading them per class and mapping
+the string onto the existing property table. `qmlmap.tsv` still needs plugins.qmltypes — the QML
+ELEMENT NAME (Rectangle <- QQuickRectangle) genuinely lives only in the registry.
+
+Not started: it replaces the extraction layer wholesale, which is not something to begin at the
+tail of a session. The verification above is the part worth not losing.
