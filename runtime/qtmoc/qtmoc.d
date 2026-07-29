@@ -46,7 +46,10 @@ extern (C) nothrow {
     bool   qtd_vgroup_get_bool(void*, const(char)*, const(char)*);
     double qtd_vgroup_get_double(void*, const(char)*, const(char)*);
     void*  qtd_vgroup_get_qs(void*, const(char)*, const(char)*);
-    void qtd_parser_status(void*, int);
+    void qtd_attach_context(void*);
+    int qtd_bind_leaf(void*, const char*, const char*, void*, const char*);
+    int qtd_connect_notify(void*, const char*, void*, const char*);
+void qtd_parser_status(void*, int);
     int qtd_prop_set_var(void*, const(char)*, const(char)*, const(void)*);
     int qtd_prop_get_var(void*, const(char)*, const(char)*, void*);
     int qtd_vgroup_set_int(void*, const(char)*, const(char)*, int);
@@ -840,7 +843,26 @@ bool copyGroupProp(S, D)(S src, string group, string member, D dst, string dname
 /// Drives QQmlParserStatus on a bound type: `classBegin()` before its properties are set and
 /// `componentComplete()` once the tree is built, which is what the engine does. A type that does
 /// not implement the interface is left untouched.
-void classBegin(T)(T o) { qtd_parser_status(qobjOf(o), 0); }
+void classBegin(T)(T o) { attachContext(o); qtd_parser_status(qobjOf(o), 0); }
+
+/// Give an object a QQmlContext. Anything that instantiates children through the engine (views,
+/// Loader, delegates) reads QQmlContext::engine() in componentComplete() and crashes without one.
+void attachContext(T)(T o) { qtd_attach_context(qobjOf(o)); }
+
+/// Subscribe `recv.slot` to `sig` of the object currently held by `owner.prop`, replacing whatever
+/// this (recv, slot, prop, sig) was subscribed to before. Called from the binding's own slot, so a
+/// property that changes object re-subscribes instead of staying on the old one.
+void bindLeaf(T, R)(T owner, string prop, string sig, R recv, string slot) {
+    import std.string : toStringz;
+    qtd_bind_leaf(qobjOf(owner), prop.toStringz, sig.toStringz, qobjOf(recv), slot.toStringz);
+}
+
+/// Connect `owner.prop`'s NOTIFY to `recv.slot`, so a binding that reads through an object property
+/// re-evaluates when that property is assigned — a root's `parent` is null while its ctor runs.
+void connectNotify(T, R)(T owner, string prop, R recv, string slot) {
+    import std.string : toStringz;
+    qtd_connect_notify(qobjOf(owner), prop.toStringz, qobjOf(recv), slot.toStringz);
+}
 void componentComplete(T)(T o) { qtd_parser_status(qobjOf(o), 1); }
 
 // ---- value-type ("gadget") grouped properties --------------------------------

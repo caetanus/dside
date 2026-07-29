@@ -130,6 +130,10 @@ Build reggaeBuild() {
                                ["Qt6QuickControls2Impl", "Qt6QuickTemplates2", "Qt6Quick",
                                 "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, ctrl, buildPath(root, "tests", "qmltc", "controls"), "c");
+        // ...and the same compiler pointed at QML NOBODY HERE WROTE: Qt's own Basic style files,
+        // generated, linked and CONSTRUCTED. Six defects lived where compile-clean cannot see —
+        // they all build and then die (or silently build the wrong object) at construction.
+        all ~= qmltcControlsRuntimeTargets(root, ctrl);
     }
     if (haveQt5()) {
         // qmltc-d on Qt5: Qt ships no qmltc there at all, so this combination is ONLY covered by
@@ -425,6 +429,33 @@ Target qmltcTool(string root, QtdBinding bind) {
 // `skip` names corpus files the ENGINE of that Qt cannot parse, so a differential against it is
 // impossible by construction — not a gap in qmltc-d. Qt5 rejects `default property T x: T {}`
 // (Qt6-only syntax) at the same line and column our compiler reports it.
+// Qt's OWN shipped Controls QML, built and constructed. Not a differential: the bar here is that
+// the object exists at all, which is the step every compile-time metric skips. Skipped silently
+// when Qt's Basic style is not installed, so the suite still runs on a machine without it.
+Target[] qmltcControlsRuntimeTargets(string root, QtdBinding bind) {
+    auto dir = "/usr/lib/qt6/qml/QtQuick/Controls/Basic";
+    if (!exists(dir)) return [];
+    auto here = buildPath(root, "tests", "qmltc");
+    auto script = buildPath(here, "qtd_controls_runtime.sh");
+    auto tool = qmltcTool(root, bind);
+    auto toolBin = buildPath(bind.bdir, "qmltc-d");
+    auto appCpp = buildPath(here, "qtd_qmltc_app.cpp");
+    auto renderCpp = buildPath(here, "qtd_render.cpp");
+    Target[] ts;
+    foreach (dc; DCS) {
+        auto outDir = buildPath(bind.bdir, "ctlrt-" ~ dc);
+        auto cmd = "sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
+                 ~ " " ~ dir ~ " " ~ outDir ~ " " ~ dc ~ " " ~ bind.genDir ~ " " ~ appCpp
+                 ~ " " ~ renderCpp ~ " " ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
+                 ~ " " ~ buildPath(bind.bdir, "libshims.a")
+                 ~ " '" ~ pkgCflags(bind.mods ~ ["Qt6Core"]) ~ "' " ~ pkgLibs(bind.mods);
+        ts ~= Target.phony("qmltc-controls-runtime-" ~ dc, cmd,
+                           [tool, Target(script), Target(appCpp), Target(renderCpp),
+                            bind.gen, qtdBindLib(bind, dc), bind.shims]);
+    }
+    return ts;
+}
+
 Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag,
                       string[] skip = []) {
     if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];

@@ -2103,6 +2103,13 @@ static std::set<std::string> g_resolving;
 // it, returning its root object definition — the engine auto-imports same-directory .qml types and
 // we mirror that. Returns null (and leaves *outPath empty) if missing or already on the resolution
 // stack. Engine/Parser are leaked (process-lifetime) so the returned AST stays valid.
+// A child whose type we cannot bind must be REFUSED, not built as a bare @QObject: every property
+// the document sets on it is then written to an object that HAS no such property, which throws at
+// construction (Dial's `transform: [ Translate { y: ... } ]`) while the file looks compiled.
+// QtObject really is a bare QObject, and a local .qml type is resolved by the caller, so neither
+// counts as unbound here.
+static bool unboundChildType(const std::string &t, const std::string &bound, const char *inPath);
+
 static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
                                          std::string *outPath = nullptr, bool *isSingleton = nullptr) {
     QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
@@ -2130,6 +2137,10 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
                 if (pr->name.toString() == QLatin1String("Singleton")) { *isSingleton = true; break; }
     }
     return cast<UiObjectDefinition *>(program->members->member);
+}
+
+static bool unboundChildType(const std::string &t, const std::string &bound, const char *inPath) {
+    return bound.empty() && !t.empty() && t != "QtObject" && !loadLocalType(t, inPath, nullptr);
 }
 
 struct ObjNode {
@@ -2921,6 +2932,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                         od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : ""}); continue; }
             }
             if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
+            // `property string s` with NO value, and `required property string shortName` (whose
+            // value comes from the view's model), are ordinary declared properties: in QML they
+            // exist and hold the type's default. Refusing them left the name in scope with no
+            // field behind it, so any expression reading it emitted an undefined identifier and
+            // the generated D did not compile (DayOfWeekRow, WeekNumberColumn).
+            if (dt[0] && !pub->statement && !pub->binding) {
+                props.push_back({name, dt, "", false, {}});
+                continue;
+            }
             // The VALUE must compile as the inferred type too, or `property var n: 42` emits a
             // double literal into an int field.
             QString effType = varInferred.empty() ? qmlType : QString::fromStdString(varInferred);
@@ -2945,6 +2965,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — skipped (later phase)\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
                 ++partial;
+                // Nor may it stay in scope: a bare read would emit an identifier no field backs,
+                // and the generated D would not compile at all.
+                g_scope.erase(name);
+                // A refused property has no field and no notify, so it must stop being VISIBLE:
+                // a child reading `control.handleBorderColor` otherwise emitted a connect to
+                // handleBorderColorChanged() and threw at construction (RangeSlider). Erasing it
+                // here makes every dependent binding take the ordinary "no known notify" refusal.
+                g_propType.erase(name);
             }
             continue;
         }
@@ -3005,6 +3033,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
         }
         auto cbt = boundTypeFor(cb.type);
+        // An UNBOUND child type used to become a bare @QObject with no diagnostic, and then every
+        // property the document sets on it failed at RUNTIME ("no writable property
+        // implicitHeight") — while the file was reported CLEAN. `contentItem: ProgressBarImpl {}`
+        // in Qt's own ProgressBar.qml is exactly that: ProgressBarImpl is not a bound type here.
+        // QtObject legitimately IS a bare QObject, and a local .qml type is resolved further down,
+        // so neither is refused.
+        if (unboundChildType(cb.type, cbt.first, inPath)) {
+            std::fprintf(stderr, "qmltc-d: %s: '%s' in %s is bound to '%s', which is not a bound Qt "
+                         "type — building it as a bare object would drop every property set on it "
+                         "— skipped (later phase)\n",
+                         inPath, cb.field.c_str(), cls.c_str(), cb.type.c_str());
+            ++partial; continue;
+        }
         if (!cbt.first.empty() && !cbt.second.empty()) {
             std::string imp = "import " + cbt.second + ";\n";
             if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
@@ -3670,7 +3711,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // A read through an object-valued property connects in the LATE phase, to the inner
             // object's own notify — by then the Control has created it. The recompute is called
             // once there too, since the value read at wire time came from a null object.
-            std::string lateConns;
+            std::string lateConns, lateLeaf;
             for (auto &dr : g_deepReads) {
                 std::string sig;
                 if (auto qn = g_qmlNotify.find(dr.innerQmlType); qn != g_qmlNotify.end()) {
@@ -3681,14 +3722,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s reads '%s.%s' whose "
                                  "notify is unknown — it would not update (later phase)\n",
                                  inPath, ba.first.c_str(), cls.c_str(), dr.inner.c_str(), dr.member.c_str());
-                    ++partial; lateConns.clear(); break;
+                    ++partial; lateConns.clear(); lateLeaf.clear(); break;
                 }
-                lateConns += "        connectMeta(propObj(" + dr.obj + ", \"" + dr.inner + "\"), \""
-                           + sig + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                // Follow the PROPERTY, not the object it happens to hold right now: connect its
+                // notify so the binding re-runs when it is assigned, and re-subscribe to the leaf
+                // signal from inside the slot (a root's `parent` is still null in the LATE phase).
+                lateConns += "        connectNotify(" + dr.obj + ", \"" + dr.inner
+                           + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                lateLeaf  += "        bindLeaf(" + dr.obj + ", \"" + dr.inner + "\", \"" + sig
+                           + "\", this, \"__rcb_" + ba.first + "()\");\n";
             }
             g_deepReads.clear();
             if (!conns.empty() || !lateConns.empty()) {
-                handlerSlots += "    @Slot void __rcb_" + ba.first + "() {\n" + "    " + assign + "    }\n";
+                handlerSlots += "    @Slot void __rcb_" + ba.first + "() {\n" + lateLeaf
+                              + "    " + assign + "    }\n";
                 bindWire += conns;
                 if (!lateConns.empty()) lateWire += lateConns + "        __rcb_" + ba.first + "();\n";
             }
@@ -3749,6 +3796,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_" + ae.prop + "_" + std::to_string(ae.idx);
         std::string childType = ae.def->qualifiedTypeNameId ? typeName(ae.def->qualifiedTypeNameId) : "";
         auto cbt = boundTypeFor(childType);
+        if (unboundChildType(childType, cbt.first, inPath)) {
+            std::fprintf(stderr, "qmltc-d: %s: '%s[%d]' in %s is a '%s', which is not a bound Qt type "
+                         "— building it as a bare object would drop every property set on it — "
+                         "skipped (later phase)\n",
+                         inPath, ae.prop.c_str(), ae.idx, cls.c_str(), childType.c_str());
+            ++partial; continue;
+        }
         if (!cbt.first.empty()) g_extraImports += "import " + cbt.second + ";\n";
         ObjNode kid = compileObject(ae.def->initializer, childCls, classes, partial, inPath, cbt.first, nullptr, childType);
         {   // a child connects to <prop>Changed on us, or on someone above us
@@ -4251,7 +4305,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
 
     std::string wire;
-    if (anyBound || !handlerWire.empty() || !childWire.empty() || !onCompletedBody.empty() || !baseWire.empty()) {
+    // ...and an object that takes the `__outer` handoff (or drives a value source) needs a ctor
+    // body even when every one of its own members was refused: SpinBox's IntValidator child had
+    // all three bindings skipped, so the wire was empty, and inserting the handoff into it hit
+    // `npos + 18` == 17 and ABORTED the compiler on three of Qt's files.
+    if (anyBound || !handlerWire.empty() || !childWire.empty() || !onCompletedBody.empty()
+            || !baseWire.empty() || (g_outerUsed && !g_outerClass.empty()) || g_isValueSource) {
         wire = "    void __qmltcWire() {\n";
         // classBegin() BEFORE any property is assigned, which is the order the engine uses: a
         // type implementing QQmlParserStatus may need to know it is being built from a document
@@ -4279,6 +4338,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire += baseWire;    // set base C++ properties, with every BINDING already live
         wire += handlerWire; // ...and user handlers only after, so they do not see the initial pass
         for (auto &p : props) if (p.bound) {
+            std::string dleaf;   // re-subscription lines for this property's deep reads
             for (auto &dr : p.deep) {   // reads through an object property connect in the late phase
                 std::string sig;
                 if (auto qn = g_qmlNotify.find(dr.innerQmlType); qn != g_qmlNotify.end()) {
@@ -4291,9 +4351,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                  inPath, p.name.c_str(), cls.c_str(), dr.inner.c_str(), dr.member.c_str());
                     ++partial; continue;
                 }
-                lateWire += "        connectMeta(propObj(" + dr.obj + ", \"" + dr.inner + "\"), \""
-                          + sig + "\", this, \"__rc_" + p.name + "()\");\n"
-                          + "        __rc_" + p.name + "();\n";
+                // Follow the PROPERTY: its notify re-runs __rcd_, which re-subscribes to the leaf
+                // signal on whatever object it now holds. A one-shot connect to the object read at
+                // wire time connected to null for a root's `parent` (and for HeaderView.syncView).
+                lateWire += "        connectNotify(" + dr.obj + ", \"" + dr.inner
+                          + "\", this, \"__rcd_" + p.name + "()\");\n";
+                dleaf += "        bindLeaf(" + dr.obj + ", \"" + dr.inner + "\", \"" + sig
+                       + "\", this, \"__rc_" + p.name + "()\");\n";
+            }
+            if (!dleaf.empty()) {
+                recompute += "    @Slot void __rcd_" + p.name + "() {\n" + dleaf
+                           + "        __rc_" + p.name + "();\n    }\n";
+                lateWire += "        __rcd_" + p.name + "();\n";
             }
             for (auto &d : p.deps) {
                 if (isProp(d)) {   // a property of THIS object: qmltc-d named its notify <p>Changed
@@ -4495,15 +4564,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // The back-reference, declared only when the object actually reads its enclosing scope.
     std::string outerField = g_outerUsed && !g_outerClass.empty()
                            ? "    " + g_outerClass + " __outer;\n" : "";
+    // Insert right after classBegin(); a wire without one has no constructor body at all, and
+    // find() returning npos would wrap the offset instead of failing.
+    auto afterClassBegin = [&](const std::string &line) {
+        auto at = wire.find("classBegin(this);\n");
+        if (at != std::string::npos) wire.insert(at + 18, line);
+    };
     if (g_outerUsed && !g_outerClass.empty())   // taken BEFORE this object constructs its own kids
-        wire.insert(wire.find("classBegin(this);\n") + 18,
-                    "        __outer = cast(" + g_outerClass + ") __qmltcOuter;\n");
+        afterClassBegin("        __outer = cast(" + g_outerClass + ") __qmltcOuter;\n");
     // A value source must know the property it drives BEFORE its own `running: true` is applied
     // and before it completes — otherwise it starts with nothing to animate. Taken at the top of
     // the wire, exactly like __outer.
     if (g_isValueSource)
-        wire.insert(wire.find("classBegin(this);\n") + 18,
-                    "        attachValueSource(this, __qmltcVsTarget, __qmltcVsProp);\n");
+        afterClassBegin("        attachValueSource(this, __qmltcVsTarget, __qmltcVsProp);\n");
     node.usesOuter = g_outerUsed && !g_outerClass.empty();
     // The late pass: this object's deferred connects, then every child's. Emitted only where
     // there is something to do, so the common object is unchanged.
@@ -4793,10 +4866,11 @@ int main(int argc, char **argv) {
     // An unmapped root that is neither QtObject, a resolved local `.qml` type, nor a registered
     // D type is an app-defined type we have no registry for. Treating it as a fresh @QObject would
     // silently emit values the engine doesn't have, so flag PARTIAL.
+    bool rootUnbound = false;
     if (bt.first.empty() && rootType != "QtObject" && rootResolvedPath.empty() && !rootD) {
         std::fprintf(stderr, "qmltc-d: %s: root type '%s' is not a bound Qt type, QtObject, or local .qml type — skipped (later phase)\n",
                      inPath, rootType.c_str());
-        ++partial;
+        ++partial; rootUnbound = true;
     }
     std::string classes;
     if (!rootResolvedPath.empty()) g_resolving.insert(rootResolvedPath);
@@ -4847,7 +4921,10 @@ int main(int argc, char **argv) {
         std::printf("extern(C) int qtd_run_ms(void*, int);\n");
     }
 
-    if (dump) {
+    // ...but never a runnable entry point for a root we refused: `new IMonthGrid` would hand back a
+    // bare QObject standing in for AbstractMonthGrid, construct real QQuickText children under it,
+    // and look like a working program. The classes above are still emitted; main is not.
+    if (dump && !rootUnbound) {
         std::vector<DumpLine> lines;
         collectDump(rootNode, "o.", "", lines);
         std::sort(lines.begin(), lines.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });

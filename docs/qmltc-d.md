@@ -1197,3 +1197,83 @@ This is the concrete sense in which coverage here is ahead: not "we compile more
 qmltc always emits one), but "fewer expressions end up interpreted". It also marks where an AOT
 fallback would eventually belong — the untyped-closure and untyped-call cases are exactly what Qt
 gives up on, and would be the last resort rather than the first.
+
+## Does it RUN? Auditing Qt's Controls corpus at runtime (2026-07-29)
+
+"Compile-clean" is not the bar — *renders and behaves like the interpreted version* is. Applying
+that to Qt's own `QtQuick/Controls/Basic/*.qml` (69 files) meant, for each: generate, LINK, and
+**construct the object**. That single step found six defects that every compile-time metric missed,
+because each one produces D that compiles and then dies (or lies) at construction.
+
+| | before this round | after |
+|---|---|---|
+| files that produce a constructible object | 38 | **61** of 69 |
+| of those, constructing without error | 24 | **61** |
+| files reported clean that could not run | 1 (`ProgressBar`) | 0 |
+| files that ABORTED the compiler | 3 | 0 |
+
+The eight remaining emit no root at all — a root type we refuse, reported on stderr.
+The gate is a build target (`qmltc-controls-runtime-<dc>`), and it carries a FLOOR on the count:
+refusing every root would otherwise pass it.
+
+**What it found, all eight — six of them the same shape: something we could not bind became a bare `@QObject`,
+and every property the document set on it was written to an object that has no such property.**
+
+- **An unbound child TYPE was silently built as a bare object.** `contentItem: ProgressBarImpl {}`
+  in Qt's ProgressBar: `ProgressBarImpl` is not a bound type, so the child had no `implicitHeight`
+  and construction threw — while the file was reported CLEAN. Now refused with a diagnostic, on
+  the property-bound path AND the list path (`transform: [ Translate { y: … } ]` in Dial, which
+  was the same bug in a different position). One helper, `unboundChildType`, is used by both.
+- **No `QQmlContext` at all.** Anything that builds children THROUGH the engine —
+  `QQmlDelegateModel` behind every view, Loader, delegates — calls `QQmlContext::engine()` in
+  `componentComplete()` and segfaults on a null context (ComboBox's popup contentItem is a
+  ListView). Qt's own qmltc takes a `QQmlEngine*` in every generated constructor for this reason:
+  the win is not parsing QML, not doing without an engine. `classBegin` now attaches a context
+  from a lazily-created process-wide engine — **measured cost: 1.7 ms, once per process** — and
+  declines when there is no QCoreApplication, since a QQmlEngine qFatals rather than fail there.
+- **A dependency reached THROUGH an object property connected once, to null.** `x: (parent.width
+  - width) / 2` on a ROOT: `parent` is assigned by whoever instantiates it, after the wire runs,
+  so the connect threw (ToolTip; HeaderView's `syncView` likewise — 45 sites corpus-wide). QML
+  re-binds such a dependency when the property changes, and now so do we: `connectNotify` follows
+  the PROPERTY, and `bindLeaf` re-subscribes to the leaf signal from inside the slot, dropping the
+  previous subscription.
+- **A REFUSED property stayed visible to its dependents.** RangeSlider's `handleBorderColor` was
+  refused, so the class had no field and no notify — but a child still emitted
+  `connectMeta(__outer, "handleBorderColorChanged()")` and threw. A refusal now erases the name
+  from both the property table and the scope, so dependents take the ordinary refusal path.
+- **A declared property with NO value was refused** (`property string s`, and `required property
+  string shortName` whose value comes from the view's model). In QML it exists and holds the
+  type's default; refusing it left the name in scope with no field behind it, so the generated D
+  referenced an undefined identifier and did not compile at all (DayOfWeekRow, WeekNumberColumn).
+- **The compiler ABORTED on three files** (SpinBox, DoubleSpinBox, TableViewDelegate).
+  `wire.find("classBegin(this);\n") + 18` on a wire that has none: `npos + 18` wraps to 17, and
+  `insert` threw `out_of_range`. An object whose every member was refused had an empty wire and
+  still needed the `__outer` handoff — it now gets a constructor body for exactly that reason. The
+  suite could not see it because a crash and a PARTIAL are both "non-zero"; the gate now
+  distinguishes them (0 clean, 3 partial, anything else is the compiler failing).
+- **qmlmap advertised types the binding could not back.** `IntValidator`/`DoubleValidator` were in
+  the QML vocabulary, so `mixin QtdWidget!QQuickIntValidator` was emitted against an undefined
+  `__QQuickIntValidator_vnames`. A class the generator asked to subclass but then SKIPPED (no
+  overridable virtual with a marshalable signature) now leaves the subclass set, so the map
+  promises only what the binding delivers. qmlmap: 116 -> 114 types.
+- **A refused ROOT still emitted a runnable `main`.** `new IMonthGrid` handed back a bare QObject
+  standing in for `AbstractMonthGrid`, built real `QQuickText` children under it, and looked like
+  a working program. The classes are still emitted; the entry point is not.
+
+### The frame differential on this corpus, and why most of it is inapplicable
+
+Of 31 comparable files, **22 comparisons the comparator REFUSES** — 13 render 1×1 on the ENGINE
+side too and 9 are a single flat colour. Qt's style files are abstract templates: a `Control` with
+no content paints nothing, on either side. That is not a passing test and is not counted as one.
+The 9 measurable differences are all in PARTIAL files and every one is explained by a diagnostic
+that file already emits (`Qt.styleHints.*`, which is dynamic and out of scope by decision; `Math.max`
+on implicit sizes; `ContextMenu.menu`; `Color.blend`).
+
+### One ceiling, verified rather than assumed
+
+`QtQuick.Controls.Basic.impl` (`ProgressBarImpl`, `BusyIndicatorImpl`, `DialImpl`) **cannot** be
+bound: `qquickbasic*_p.h` declare their classes with no export macro and
+`libQt6QuickControls2BasicStyleImpl.so` exports zero symbols for them (`nm -D`), so a trampoline
+would link against nothing. `TumblerView` is the counter-example — it lives in
+`QtQuickControls2Impl`, is exported, and IS now bound, along with `Translate`/`Rotation`/`Scale`
+(reached by sweeping from `QQuickTransform`, not just `QQuickItem`). qmlmap: 110 -> 114 types.

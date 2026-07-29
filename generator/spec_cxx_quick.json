@@ -51,7 +51,8 @@
     "QtQuick/private/qquickanimatorjob_p.h",
     "QtQuick/private/qquicksmoothedanimation_p.h",
     "QtQuick/private/qquickspringanimation_p.h",
-    "QtQuick/private/qquickanimationcontroller_p.h"
+    "QtQuick/private/qquickanimationcontroller_p.h",
+    "QtQuick/private/qquicktranslate_p.h"
   ],
   "include_paths": [
     "/usr/include/qt6/QtQuick/6.11.1",
@@ -67,7 +68,8 @@
   ],
   "subclass_derived": [
     "QQuickAbstractAnimation",
-    "QQuickItem"
+    "QQuickItem",
+    "QQuickTransform"
   ],
   "qmltypes": [
     "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes"

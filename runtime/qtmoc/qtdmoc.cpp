@@ -32,6 +32,8 @@
 #  include <QtQml/qqmlprivate.h>
 #  include <QtQml/qqmllist.h>
 #  include <QtQml/qqmlparserstatus.h>
+#  include <QtQml/QQmlEngine>
+#  include <QtQml/QQmlContext>
 #  if QT_VERSION >= 0x060000
 #    include <QtQml/private/qqmlmetatype_p.h>
 #    include <QtQml/qqml.h>
@@ -389,6 +391,81 @@ extern "C" int qtd_prop_get_var(void* o, const char* n, const char* typeName, vo
     QMetaType::construct(id, out, v.constData());
 #endif
     return 1;
+}
+
+// ---- dependencies reached THROUGH an object property ------------------------------------------
+// `x: (parent.width - width) / 2` depends on an object our constructor cannot see: a root's
+// `parent` (and HeaderView's `syncView`) is assigned by whoever instantiates it, AFTER the wire
+// runs, so a one-shot connect to propObj(this,"parent") connected to null and threw. QML re-binds
+// such a dependency when the property changes, and that is what these two do:
+//   qtd_connect_notify  - follow the PROPERTY (parentChanged -> re-evaluate the binding)
+//   qtd_bind_leaf       - (re)subscribe to the leaf signal on whatever object it now holds
+// The slot calls bind_leaf on every run, so a new parent is subscribed and the old one dropped.
+static std::unordered_map<std::string, QMetaObject::Connection> g_leafConn;
+static std::mutex g_leafMx;
+
+static std::string qtd_leaf_key(void* recv, const char* slot, const char* prop, const char* sig) {
+    char b[32]; std::snprintf(b, sizeof b, "%p|", recv);
+    return std::string(b) + slot + "|" + prop + "|" + sig;
+}
+
+extern "C" int qtd_bind_leaf(void* ownerV, const char* prop, const char* sig, void* recvV,
+                             const char* slot) {
+    QObject* owner = static_cast<QObject*>(ownerV);
+    QObject* recv  = static_cast<QObject*>(recvV);
+    if (!owner || !recv) return 0;
+    int pi = owner->metaObject()->indexOfProperty(prop);
+    if (pi < 0) return 0;
+    QObject* cur = qvariant_cast<QObject*>(owner->metaObject()->property(pi).read(owner));
+    std::string k = qtd_leaf_key(recv, slot, prop, sig);
+    std::lock_guard<std::mutex> g(g_leafMx);
+    auto it = g_leafConn.find(k);
+    if (it != g_leafConn.end()) { QObject::disconnect(it->second); g_leafConn.erase(it); }
+    if (!cur) return 0;                       // not assigned yet: the notify connect will come back
+    std::string s = std::string("2") + sig, m = std::string("1") + slot;
+    auto c = QObject::connect(cur, s.c_str(), recv, m.c_str());
+    if (c) g_leafConn[k] = c;
+    return c ? 1 : 0;
+}
+
+extern "C" int qtd_connect_notify(void* ownerV, const char* prop, void* recvV, const char* slot) {
+    QObject* owner = static_cast<QObject*>(ownerV);
+    QObject* recv  = static_cast<QObject*>(recvV);
+    if (!owner || !recv) return 0;
+    int pi = owner->metaObject()->indexOfProperty(prop);
+    if (pi < 0) return 0;
+    QMetaProperty mp = owner->metaObject()->property(pi);
+    if (!mp.hasNotifySignal()) return 0;
+    std::string s = std::string("2") + mp.notifySignal().methodSignature().constData();
+    std::string m = std::string("1") + slot;
+    return QObject::connect(owner, s.c_str(), recv, m.c_str(),
+                            Qt::UniqueConnection) ? 1 : 0;
+}
+
+// ---- QQmlContext --------------------------------------------------------------------------
+// A compiled object still needs a QQmlContext. Types that build their children THROUGH the engine
+// -- QQmlDelegateModel behind every view, Loader, anything instantiating a QQmlComponent -- call
+// QQmlContext::engine() from componentComplete() and segfault on a null context (ComboBox's popup
+// contentItem is a ListView: that is the crash). Qt's own qmltc takes a QQmlEngine* in every
+// generated constructor for exactly this reason; the win is not parsing QML, not doing without an
+// engine. This engine parses nothing -- it exists so those internals have a context to reach.
+static QQmlEngine* qtd_qml_engine() {
+    static QQmlEngine* eng = nullptr;
+    if (!eng) eng = new QQmlEngine;   // leaked on purpose: it outlives every object pointing at it
+    return eng;
+}
+extern "C" void qtd_attach_context(void* o) {
+#ifdef QTD_HAVE_QML
+    if (!o) return;
+    QObject* obj = static_cast<QObject*>(o);
+    if (QQmlEngine::contextForObject(obj)) return;   // engine-created objects already have one
+    // A QQmlEngine cannot exist before the application object, and it qFatals rather than fail:
+    // a program with no QCoreApplication is one that cannot need a context anyway, so leave it be.
+    if (!QCoreApplication::instance()) return;
+    QQmlEngine::setContextForObject(obj, qtd_qml_engine()->rootContext());
+#else
+    (void) o;
+#endif
 }
 
 // ---- QQmlParserStatus ---------------------------------------------------------

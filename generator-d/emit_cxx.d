@@ -1401,7 +1401,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         if (buildable && !tvs.length)
             stderr.writefln("subclass %s skipped: no overridable virtual with a marshalable "
                             ~ "signature — a D subclass of it cannot be generated", name);
+        // A class with no trampoline must ALSO leave SUBCLASS: qmlmap.tsv is built from that set,
+        // so leaving it in advertises a QML type the binding cannot back, and qmltc-d emitted
+        // `mixin QtdWidget!QQuickIntValidator` against an undefined `__QQuickIntValidator_vnames`
+        // (SpinBox, DoubleSpinBox). The vocabulary must promise only what the binding delivers.
         if (buildable && tvs.length) TRAMPS ~= Trampoline(name, cppName, tvs);
+        else SUBCLASS.remove(name);
     }
 
     // ---- value type: ONE extern(C++) struct. Fields exposed (unwrapped); out-of-
