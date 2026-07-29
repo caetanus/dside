@@ -123,6 +123,12 @@ through an `id`), which is exactly the guard we want.
   QObject (`control.palette` is a QQuickPalette OBJECT), and the copy dispatches on what the
   QVariant actually holds: reading an object with readOnGadget reads through a pointer as if it
   were the value.
+- **Object groups**: `border.width: 3` on a Rectangle. `border` holds an OBJECT (QQuickPen*), not
+  a value, so the write is a plain property write on what the group holds — reached with propObj.
+  The distinction is NOT recoverable from the type name (QQuickScaleGrid and QFont look alike): the
+  registry marks it with `isPointer`, which the generator now records in the property table as a
+  trailing `*`. The member's type comes from the value and QMetaType converts; setProp throws if
+  the member does not exist, so a wrong name is loud rather than dropped.
 - **NOT supported: `font.pixelSize: 22` on a bound type.** It looks like it should work through
   the same channel — resolve the member by name at runtime, let QMetaType convert — but QFont is
   not a Q_GADGET: `QMetaType::metaObjectForType` finds nothing for it, because QML reaches font

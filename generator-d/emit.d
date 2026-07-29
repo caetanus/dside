@@ -516,7 +516,14 @@ void main(string[] args) {
                     // converts, which is how `color` already works. Record the row with an empty
                     // D type and the raw C++ type name, and let the consumer decide.
                     auto pty = dScalar(pt[1]);
-                    ownProps[nm[1]][pn[1]] = pty.length ? pty : ("\x01" ~ pt[1]);
+                    // `isPointer: true` marks a property that holds an OBJECT rather than a value.
+                    // That distinction is not recoverable from the type NAME (`QQuickScaleGrid`
+                    // and `QFont` look alike), and it decides how a grouped assignment must be
+                    // compiled: an object group is reached with propObj + setProp, a value group
+                    // needs a read-modify-write of the whole value. Recorded as a trailing `*`.
+                    auto isPtr = pm[1].canFind("isPointer: true");
+                    ownProps[nm[1]][pn[1]] = pty.length ? pty
+                                           : ("\x01" ~ pt[1] ~ (isPtr ? "*" : ""));
                     auto nt = pm[1].matchFirst(reNotify);
                     if (!nt.empty) {
                         auto sg = nt[1] in sigOf;

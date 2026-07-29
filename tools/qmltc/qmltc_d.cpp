@@ -2379,6 +2379,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
     std::vector<std::pair<std::string, ExpressionNode *>> rawGroupAssigns;        // `group.member: expr`
     std::vector<std::pair<std::string, ExpressionNode *>> rawValueGroupAssigns;   // `vgroup.member: expr`
+    // `<baseProp>.<member>: expr` where baseProp holds an OBJECT (border.width on a Rectangle).
+    std::vector<std::pair<std::string, ExpressionNode *>> rawObjGroupAssigns;
     std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
     std::vector<std::pair<std::string, ExpressionNode *>> rawAttachedAssigns;     // `Type.member: expr`
     std::vector<std::pair<std::string, Statement *>> rawAttachedHandlers;         // `Type.on<Sig>: body`
@@ -2449,6 +2451,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // table is needed: setVgroup resolves the member BY NAME through the gadget's
                     // meta-object at runtime and QMetaType converts the value. The compiler only
                     // has to know that `font` is a property whose type is not a scalar.
+                    // `border.width: 2` — a grouped assignment where the group is an OBJECT
+                    // (`isPointer` in the registry, recorded as a trailing `*`). That is a plain
+                    // property write on the object the group holds, which the meta-object reaches
+                    // with propObj. The member's type comes from the VALUE, since the group's own
+                    // type has no table here — QMetaType converts on write, and setProp throws if
+                    // the member does not exist, so a wrong name is loud.
+                    if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
+                        auto it = qc->second.find(head);
+                        if (it != qc->second.end() && !it->second.empty() && it->second.back() == '*') {
+                            rawObjGroupAssigns.push_back({hid, es->expression});
+                            continue;
+                        }
+                    }
                     // `font.pixelSize: 22` on a BOUND type stays unsupported, deliberately.
                     // Routing it through setVgroup looks right — the member would resolve by name
                     // at runtime — but QFont is NOT a Q_GADGET: QMetaType::metaObjectForType finds
@@ -2680,7 +2695,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             continue;
         }
-        std::fprintf(stderr, "qmltc-d: %s: a member of %s is not yet handled — skipped (later phase)\n", inPath, cls.c_str());
+        // Say WHAT was refused. This was the largest remaining cluster and carried no detail at
+        // all, so it could not be acted on — the same reason the expression diagnostics were made
+        // to quote their source.
+        std::fprintf(stderr, "qmltc-d: %s: a member of %s is not yet handled: %s [%s] — skipped (later phase)\n",
+                     inPath, cls.c_str(),
+                     cast<UiScriptBinding *>(m->member)     ? "script binding"
+                     : cast<UiObjectBinding *>(m->member)   ? "object binding"
+                     : cast<UiObjectDefinition *>(m->member)? "object definition"
+                     : cast<UiPublicMember *>(m->member)    ? "property/signal declaration"
+                     : cast<UiArrayBinding *>(m->member)    ? "array binding"
+                     : cast<UiSourceElement *>(m->member)   ? "source element"
+                     : "other",
+                     srcOf(m->member).c_str());
         ++partial;
     }
 
@@ -3596,6 +3623,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         baseWire += "        setVgroup(this, \"" + gname + "\", \"" + mem + "\", " + val + ");\n";
         node.valueGroupProps.push_back({ga.first, mt->second});
+    }
+
+    // Grouped assignment where the group is an OBJECT: a property write on what it holds.
+    for (auto &ga : rawObjGroupAssigns) {
+        auto dot = ga.first.find('.');
+        std::string gname = ga.first.substr(0, dot), mem = ga.first.substr(dot + 1);
+        std::string vty = inferType(ga.second, ptype), val;
+        if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
+                || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
+            std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s: value is not a scalar "
+                         "the channel can convert [%s] — skipped (later phase)\n",
+                         inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
+            ++partial; continue;
+        }
+        baseWire += "        setProp(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + val + ");\n";
+        node.groupProps.push_back({ga.first, vty});
     }
 
     // QML `function`s -> D methods (no-arg). A `return <expr>` body becomes a typed method whose
