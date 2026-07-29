@@ -147,12 +147,22 @@ static std::set<std::string> g_qualifiedTypes;
 // to a line picks the FIRST occurrence, which is the root's, even when the failure is in a child.
 static QString g_srcText;
 
+// Every document parsed so far, so a node from a local .qml is quoted from ITS file. One global
+// text was wrong the moment a local type was loaded: the offsets belong to another document, and
+// the bounds check blanked 78 of the snippets rather than quoting the wrong file.
+static std::vector<QString> g_allSrc;
+
 // The source snippet an AST node came from, single-lined and clipped.
 static std::string srcOf(Node *n) {
-    if (!n || g_srcText.isEmpty()) return "";
+    if (!n) return "";
     auto a = n->firstSourceLocation(), b = n->lastSourceLocation();
     int from = (int)a.offset, to = (int)(b.offset + b.length);
-    if (from < 0 || to <= from || to > g_srcText.size()) return "";
+    if (from < 0 || to <= from) return "";
+    const QString *src = nullptr;
+    if (to <= g_srcText.size()) src = &g_srcText;
+    else for (auto &t : g_allSrc) if (to <= t.size()) { src = &t; break; }
+    if (!src) return "";
+    const QString &g_srcText = *src;
     QString t = g_srcText.mid(from, to - from).simplified();
     if (t.size() > 90) t = t.left(87) + "...";
     return qs(t);
@@ -1737,7 +1747,8 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) return nullptr;
     QString code = QString::fromUtf8(f.readAll());
-    g_srcText = code;
+    g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
+    g_allSrc.push_back(code);
     auto *engine = new Engine();
     auto *lexer = new Lexer(engine);
     lexer->setCode(code, 1, /*qmlMode*/ true);
@@ -2936,22 +2947,49 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // needs the generator to know what a QFont is.
         if (!scalar) {
             std::string srcObj, srcProp, srcGroup;
+            // The source object is resolved through the SAME hop chain as a scalar read, so an
+            // enclosing id two levels up works here too.
+            auto resolveObj = [&](IdentifierExpression *b) -> std::string {
+                std::string bn = qs(b->name.toString()), pre;
+                const OuterFrame *fr = nullptr;
+                if (outerHop(bn, pre, &fr)) return pre.substr(0, pre.size() - 1);
+                if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) return ci->second.field;
+                if (!g_selfId.empty() && bn == g_selfId) return "this";
+                return "";
+            };
             if (auto *fmv = cast<FieldMemberExpression *>(ba.second)) {
                 if (auto *b0 = cast<IdentifierExpression *>(fmv->base)) {
-                    std::string bn = qs(b0->name.toString());
-                    if (!g_outerId.empty() && bn == g_outerId) { srcObj = "__outer"; srcProp = qs(fmv->name.toString()); g_outerUsed = true; }
-                    else if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) { srcObj = ci->second.field; srcProp = qs(fmv->name.toString()); }
-                    else if (!g_selfId.empty() && bn == g_selfId) { srcObj = "this"; srcProp = qs(fmv->name.toString()); }
+                    srcObj = resolveObj(b0);
+                    if (!srcObj.empty()) srcProp = qs(fmv->name.toString());
                 } else if (auto *fmb = cast<FieldMemberExpression *>(fmv->base)) {
                     // `control.palette.text` — a member of a value-typed group on another object.
                     if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
-                        std::string bn = qs(b1->name.toString());
-                        if (!g_outerId.empty() && bn == g_outerId) { srcObj = "__outer"; g_outerUsed = true; }
-                        else if (!g_selfId.empty() && bn == g_selfId) srcObj = "this";
+                        srcObj = resolveObj(b1);
                         if (!srcObj.empty()) { srcGroup = qs(fmb->name.toString()); srcProp = qs(fmv->name.toString()); }
                     }
                 }
             }
+            // `verticalAlignment: Text.AlignVCenter` — an ENUM member of a bound QML type. The
+            // meta-object converts a KEY STRING through QMetaEnum on write, so the numeric value
+            // never has to be known here.
+            if (srcObj.empty())
+                if (auto *fme = cast<FieldMemberExpression *>(ba.second))
+                    if (auto *tb = cast<IdentifierExpression *>(fme->base)) {
+                        std::string tn = qs(tb->name.toString()), mem = qs(fme->name.toString());
+                        if (resolveObj(tb).empty() && !g_singletons.count(tn) && !mem.empty()
+                                && std::isupper((unsigned char)mem[0]) && g_qmlCxxType.count(tn)) {
+                            baseWire += "        setProp(this, \"" + ba.first + "\", \"" + mem + "\");\n";
+                            node.baseProps.push_back({ba.first, "string"});
+                            continue;
+                        }
+                    }
+            // `color: defaultIconColor` — a value-typed property of THIS object, by bare name.
+            if (srcObj.empty())
+                if (auto *bi = cast<IdentifierExpression *>(ba.second)) {
+                    std::string n = qs(bi->name.toString());
+                    if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end())
+                        if (qc->second.count(n) && !g_scope.count(n)) { srcObj = "this"; srcProp = n; }
+                }
             if (!srcObj.empty()) {
                 copyAssign = srcGroup.empty()
                     ? "        copyProp(" + srcObj + ", \"" + srcProp + "\", this, \"" + ba.first + "\");\n"
@@ -3807,7 +3845,8 @@ int main(int argc, char **argv) {
     QFile f(pos[0]);
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", pos[0]); return 2; }
     QString code = QString::fromUtf8(f.readAll());
-    g_srcText = code;
+    g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
+    g_allSrc.push_back(code);
     const char *inPath = pos[0];
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
     g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name

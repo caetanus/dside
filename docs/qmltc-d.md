@@ -127,6 +127,14 @@ through an `id`), which is exactly the guard we want.
   Emitting the call converted a compile-time partial into a construction-time throw, so it stays
   refused. `setVgroup` now THROWS when the member does not resolve, rather than dropping the
   assignment and leaving a default that looks deliberate — which is how this was caught.
+- **Enum properties by KEY**: `verticalAlignment: Text.AlignVCenter` is written as the string
+  `"AlignVCenter"` and the meta-object converts it through QMetaEnum — the numeric value never has
+  to be known here, which is the same reason a QColor literal works. Recognised as `Type.Member`
+  where Type is a bound QML type that is not an object in scope, and Member is capitalised.
+- **Diagnostics quote the expression they refused.** Reading a cluster otherwise meant matching a
+  property name back to a source line, which picks the FIRST occurrence — the root's — even when
+  the failure is in a child. Snippets are resolved against the document the node came from, since
+  one global text is wrong the moment a local `.qml` is loaded.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
