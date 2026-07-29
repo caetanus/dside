@@ -909,3 +909,36 @@ Consequences for how the numbers in this file should be read:
   anchors, enum properties) are handled BY DELEGATION. Matching it there means either translating
   them properly or building the same fallback — not a small distinction, and worth choosing
   deliberately.
+
+
+## The comparable number: Qt's AOT codegenResult vs our PARTIAL, same documents
+
+`qmlcachegen --dump-aot-stats` reports, per function, whether Qt could compile it to native code
+(`codegenResult: 0`) or fell back to the interpreter, with the reason. That is Qt's own coverage
+metric and the honest basis for comparison — not "did qmltc emit a file", which succeeds either
+way because it can always point at the compilation unit.
+
+Measured over this project's QtQml corpus (46 documents):
+
+| | result |
+|---|---|
+| Qt AOT (qmlcachegen) | 84 functions compiled, **22 declined** |
+| qmltc-d | 46 documents complete, **0 partial** |
+
+Why Qt declined those 22 (its own messages):
+
+    7  Functions without type annotations won't be compiled
+    4  function without return type annotation returns double
+    3  Cannot access value for name SingletonFixture
+    2  Cannot generate efficient code for LoadClosure
+    2  Cannot generate efficient code for call to untyped JavaScript
+
+So on the same documents this compiler translates expressions Qt's AOT declines. Qt requires type
+ANNOTATIONS to compile a function; qmltc-d infers the type from the property being bound and from
+the declared types in the registry, which is why an unannotated `function f() { return a + b }`
+compiles here and falls back there.
+
+This is the concrete sense in which coverage here is ahead: not "we compile more documents" (Qt's
+qmltc always emits one), but "fewer expressions end up interpreted". It also marks where an AOT
+fallback would eventually belong — the untyped-closure and untyped-call cases are exactly what Qt
+gives up on, and would be the last resort rather than the first.
