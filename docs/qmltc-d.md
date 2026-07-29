@@ -155,6 +155,10 @@ through an `id`), which is exactly the guard we want.
   true. QQuickItem's `visible` is effective-visibility recalculated at completion, and our
   one-shot-then-notify order is not the engine's evaluate-at-completion order. Found while pinning
   the enum comparison and recorded rather than avoided.
+- **`Math.max`/`Math.min` are variadic**: three arguments (which Qt's Controls use) were refused,
+  and the two-argument form was emitted as `a > b ? a : b`, evaluating each operand TWICE — every
+  operand here being a meta-object read. Both now go through std.algorithm's variadic max/min,
+  imported under a private alias so a QML property named `max` cannot collide.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
