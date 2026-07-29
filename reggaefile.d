@@ -481,7 +481,8 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     // comparison can reach — a MouseArea whose handler never runs renders pixel-identically and
     // does nothing, which is exactly what happened before base-type signals were connectable.
     static struct Click { string name; int x, y; string prop; }
-    static immutable Click[] clickable = [Click("QClick", 30, 20, "hits")];
+    static immutable Click[] clickable = [Click("QClick", 30, 20, "hits"),
+                                         Click("CClick", 40, 15, "hits")];
 
     static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",
                                             "QText", "QTextEdit", "QTextInput", "QVarCopy",
