@@ -47,6 +47,8 @@ extern (C) nothrow {
     double qtd_vgroup_get_double(void*, const(char)*, const(char)*);
     void*  qtd_vgroup_get_qs(void*, const(char)*, const(char)*);
     void qtd_parser_status(void*, int);
+    int qtd_prop_set_var(void*, const(char)*, const(char)*, const(void)*);
+    int qtd_prop_get_var(void*, const(char)*, const(char)*, void*);
     int qtd_vgroup_set_int(void*, const(char)*, const(char)*, int);
     int qtd_vgroup_set_bool(void*, const(char)*, const(char)*, bool);
     int qtd_vgroup_set_double(void*, const(char)*, const(char)*, double);
@@ -758,6 +760,21 @@ string propStr(T)(T o, string name) {
 /// Writes a QString property by name (fires the notify, if any).
 void setProp(T)(T o, string name, string v) {
     qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length);
+}
+
+/// Reads/writes a property of ANY registered type through the meta-object, keyed by the type
+/// NAME that cppSig already computes. The typed helpers above only reach types with a QString
+/// conversion — QColor has one, QSize does not — so these are what make a value-typed property
+/// actually usable through the channel rather than only as a D field.
+bool setPropVar(T, V)(T o, string name, V v) {
+    return qtd_prop_set_var(qobjOf(o), (name ~ "\0").ptr,
+                            (cppSig!V ~ "\0").ptr, cast(const(void)*) &v) != 0;
+}
+/// Returns false when the property is absent or does not convert — which the typed readers
+/// cannot distinguish from a zero value.
+bool propVar(V, T)(T o, string name, ref V outv) {
+    return qtd_prop_get_var(qobjOf(o), (name ~ "\0").ptr,
+                            (cppSig!V ~ "\0").ptr, cast(void*) &outv) != 0;
 }
 
 /// Drives QQmlParserStatus on a bound type: `classBegin()` before its properties are set and

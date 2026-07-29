@@ -36,6 +36,11 @@ static std::string qs(const QString &s) { return s.toStdString(); }
 // resolves to the property `x`. Set once in main before any expression is compiled.
 static std::string g_selfId;
 
+// QML type name of the object being compiled (its BOUND type, e.g. "Item"), so a binding that
+// depends on a base property can find that property's real notify in g_qmlNotify. Saved/restored
+// across compileObject like the other per-object state.
+static std::string g_selfQmlType;
+
 // Return types of this object's no-arg functions (name -> "int"/"double"/"string"/"bool"), so a
 // call `f()` in a binding can be coerced to the target property's type. Scoped per object.
 static std::map<std::string, std::string> g_funcRet;
@@ -2915,9 +2920,39 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                           + "\", this, \"__rc_" + p.name + "()\");\n";
                     continue;
                 }
+                // A property of the BOUND base (width on an Item): its notify is in the property
+                // table the compiler already loads, with the FULL signature. Without this the
+                // binding was never connected — `property int inner: width - pad` recomputed on
+                // pad and silently ignored width, exit 0, no diagnostic.
+                if (!dBase) {
+                    auto qn = g_qmlNotify.find(g_selfQmlType);
+                    if (qn != g_qmlNotify.end()) {
+                        auto nt = qn->second.find(d);
+                        if (nt != qn->second.end() && !nt->second.empty()) {
+                            wire += "        connectMeta(this, \"" + nt->second
+                                  + "\", this, \"__rc_" + p.name + "()\");\n";
+                            continue;
+                        }
+                    }
+                    // A value list is a plain D field, not a meta-object property: it has no
+                    // notify by construction and nothing mutates it, so a binding reading it is
+                    // correct as a one-shot. Not a dead dependency.
+                    if (g_valueLists.count(d)) continue;
+                    // A SINGLETON name is an object, not a property — `number: Fixture.value`
+                    // records the singleton as the dependency. Reacting to a singleton's property
+                    // changing is a real gap, but it is a missing DEPENDENCY (the member is never
+                    // recorded), not a missing notify, so it does not belong to this diagnostic.
+                    if (g_singletons.count(d)) continue;
+                    // Anything else that can never fire is reported, not silently dropped: the
+                    // binding would look live and never update.
+                    std::fprintf(stderr, "qmltc-d: %s: binding '%s' depends on '%s', which has no "
+                                 "known notify — it would not update (later phase)\n",
+                                 inPath, p.name.c_str(), d.c_str());
+                    ++partial;
+                    continue;
+                }
                 // A property of a D BASE: its notify signal is whatever the type declared, which
                 // the registry records — don't assume the <prop>Changed spelling.
-                if (!dBase) continue;
                 auto n = dBase->propNotify.find(d);
                 if (n == dBase->propNotify.end()) continue;
                 // Use the signal's REAL signature — a NOTIFY may carry parameters
@@ -3274,6 +3309,7 @@ int main(int argc, char **argv) {
     }
     std::string classes;
     if (!rootResolvedPath.empty()) g_resolving.insert(rootResolvedPath);
+    g_selfQmlType = rootType;   // so base-property notifies resolve in g_qmlNotify
     ObjNode rootNode = compileObject(rootInit, qs(cls), classes, partial, inPath, bt.first, rootD);
     // A `property color` is a QColor FIELD, so the module declaring the type must be imported.
     // Only the CONVERSION is unnecessary: a colour literal is written through the meta-object and

@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QMetaProperty>
+#include <QMetaType>
 #include <QCoreApplication>
 #include <QTranslator>
 #include <QtCore/private/qmetaobjectbuilder_p.h>
@@ -325,6 +326,53 @@ void* qtd_prop_get_obj(void* o, const char* n) {
     if (!o) return nullptr;
     return static_cast<QObject*>(o)->property(n).value<QObject*>();
 }
+// ---- generic property access by TYPE NAME -------------------------------------
+// The typed helpers below (int/double/bool/QString) can only reach a value type that happens to
+// have a registered QString conversion: QColor does, QSize does not, so `@Property QSize` was
+// unreachable THROUGH the meta-object even though the property was registered correctly. The
+// meta-object records a property by type NAME and QMetaType resolves it, so one pair keyed by
+// that name serves every registered type — which is what principle 1 of the moc says.
+//
+// `data`/`out` point at the caller's value of that exact type; QVariant(QMetaType, const void*)
+// copies it in, and QMetaType::destruct/construct handle the lifetime.
+extern "C" int qtd_prop_set_var(void* o, const char* n, const char* typeName, const void* data) {
+    if (!o || !typeName) return 0;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QMetaType mt = QMetaType::fromName(typeName);
+    if (!mt.isValid()) return 0;
+    return static_cast<QObject*>(o)->setProperty(n, QVariant(mt, data)) ? 1 : 0;
+#else
+    // Qt5 names the same operations differently: QMetaType::type() for the id, and the
+    // (typeId, copy) QVariant constructor. The mechanism is identical.
+    int id = QMetaType::type(typeName);
+    if (id == QMetaType::UnknownType) return 0;
+    return static_cast<QObject*>(o)->setProperty(n, QVariant(id, data)) ? 1 : 0;
+#endif
+}
+
+// Reads into `out` (already default-constructed by the caller). Returns 0 when the property is
+// absent, or holds something that cannot convert to the requested type — both of which used to
+// be indistinguishable from a zero value.
+extern "C" int qtd_prop_get_var(void* o, const char* n, const char* typeName, void* out) {
+    if (!o || !typeName) return 0;
+    QVariant v = static_cast<QObject*>(o)->property(n);
+    if (!v.isValid()) return 0;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QMetaType mt = QMetaType::fromName(typeName);
+    if (!mt.isValid()) return 0;
+    if (v.metaType() != mt && !v.convert(mt)) return 0;
+    mt.destruct(out);
+    mt.construct(out, v.constData());
+#else
+    int id = QMetaType::type(typeName);
+    if (id == QMetaType::UnknownType) return 0;
+    if (v.userType() != id && !v.convert(id)) return 0;
+    QMetaType::destruct(id, out);
+    QMetaType::construct(id, out, v.constData());
+#endif
+    return 1;
+}
+
 // ---- QQmlParserStatus ---------------------------------------------------------
 // The engine calls classBegin() before setting a component's properties and componentComplete()
 // once the whole tree is built; a type that implements QQmlParserStatus does real initialisation
