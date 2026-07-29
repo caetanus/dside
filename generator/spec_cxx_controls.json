@@ -149,7 +149,10 @@
     "/usr/lib/qt6/qml/QtQuick/Controls/impl/plugins.qmltypes"
   ],
   "subclass": [
+    "QQuickAction",
+    "QQuickActionGroup",
     "QQuickBasePositioner",
+    "QQuickButtonGroup",
     "QQuickDoubleValidator",
     "QQuickFontLoader",
     "QQuickFontMetrics",
@@ -163,5 +166,6 @@
     "QQuickTextMetrics",
     "QQuickTransition"
   ],
-  "_excluded_headers_reason": "qquick{,double,abstract}spinbox: QQuickAbstractSpinBox<T> is a template whose INLINE handleComponentComplete() calls QQuickIndicatorButtonPrivate::executeIndicator, a private Qt symbol that is not exported. Instantiating it in a trampoline compiles and then fails at link. Nothing in the headers marks this, so it cannot be detected in the generator \u2014 it is excluded by name."
+  "_excluded_headers_reason": "qquick{,double,abstract}spinbox: QQuickAbstractSpinBox<T> is a template whose INLINE handleComponentComplete() calls QQuickIndicatorButtonPrivate::executeIndicator, a private Qt symbol that is not exported. Instantiating it in a trampoline compiles and then fails at link. Nothing in the headers marks this, so it cannot be detected in the generator \u2014 it is excluded by name.",
+  "_subclass_reason": "QQuickAction/ActionGroup/ButtonGroup are non-visual QObject types, so a QQuickItem/QQuickPopup-rooted subclass_derived sweep never reaches them; they are named here instead. QQuickCalendar/QQuickCalendarModel are NOT listed on purpose: they declare QML_NAMED_ELEMENT but carry no export macro, so a subclass could not link against them."
 }
