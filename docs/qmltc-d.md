@@ -161,6 +161,13 @@ through an `id`), which is exactly the guard we want.
 - **Value groups that are plain gadgets**: `icon.width: 24`. QQuickIcon has its own meta-object,
   so setVgroup does a read-modify-write through it. What made this safe to enable is telling it
   apart from the case below at COMPILE time — see the `^` marker.
+- **Measured ceiling: ~250 declared properties per object.** Past it the GENERATED D stops
+  compiling with "more than 65535 symbols with name `s`" — a D limit hit by a `static foreach` over
+  signalMembers in qtmoc.d, which grows quadratically with the signal count. Verified: 250 compiles,
+  300 does not. Left alone deliberately: no file in the QML Qt ships declares more than 58
+  properties, so raising the ceiling would be contorting the runtime for a case that does not
+  occur. Recorded so it is a known ceiling rather than a mystery if a generated document ever
+  approaches it.
 - **NOT supported: `font.pixelSize: 22` on a bound type.** It looks like it should work through
   the same channel — resolve the member by name at runtime, let QMetaType convert — but QFont is
   not a Q_GADGET: `QMetaType::metaObjectForType` finds nothing for it, because QML reaches font
