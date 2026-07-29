@@ -32,7 +32,7 @@ fi
 category() {
   case "$1" in
     sample_*) echo libsample ;;
-    wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*) echo lifetime ;;
+    wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*|noqml_helpers*) echo lifetime ;;
     cannon*) echo moc ;;
     uic-*|dialog-*|tabs-*|mainwin-*|hello-*|egroup-*|combo-*|spacer-*|icon-*|uicheck*|corpus-check*) echo uic ;;
     # The transpiler families, which are 472 of the 667 targets. `qml-*` never matched them (no

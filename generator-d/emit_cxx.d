@@ -725,6 +725,19 @@ void recordSym(string cppClass, string sym, string fate, CXCursor c) {
 }
 string wrapperTypeOf(CXType t) {
     auto ck = clang_getCanonicalType(t);
+    // A REFERENCE to a wrapped class needs the same treatment as a pointer: C++ wants the address
+    // of the C++ object, and in wrapper mode the D value is the WRAPPER. Only pointers were
+    // recognised, so `QPixmapCache::find(const QString&, QPixmap&)` passed a wrapper address to
+    // Qt — and, once the pointer overload started converting, the two collapsed to one D
+    // signature and stopped compiling. (Value records are excluded below either way: `ref
+    // const(QString)` IS the value and must stay.)
+    if (ck.kind == CXType_LValueReference) {
+        auto rt = clang_getPointeeType(ck);
+        if (!isRecord(rt) || nestedInClass(rt) || isValueRecord(rt)) return "";
+        auto rn = lastNs(canon(rt));
+        WRAPREFS[rn] = true;
+        return rn;
+    }
     if (ck.kind != CXType_Pointer) return "";
     auto pt = clang_getPointeeType(ck);
     if (!isRecord(pt) || nestedInClass(pt) || isValueRecord(pt)) return "";

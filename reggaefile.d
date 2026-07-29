@@ -40,6 +40,10 @@ Build reggaeBuild() {
             all ~= qtdTest("widget_test-" ~ dc ~ "-" ~ tag, t("wrapper", "widget_test.d"), b, dc);
             all ~= qtdTest("moc_test-" ~ dc ~ "-" ~ tag, t("wrapper", "moc_test.d"), b, dc);
             all ~= qtdTest("moclife_widget-" ~ dc ~ "-" ~ tag, t("wrapper", "moclife_widget.d"), b, dc);
+            // The transpiler's QML helpers live in the shared moc runtime that THIS (QtQml-free)
+            // binding also compiles: prove they link and no-op here, not just that the C++ unit
+            // compiles (qtmoc-probe-noqml covers that half).
+            all ~= qtdTest("noqml_helpers-" ~ dc ~ "-" ~ tag, t("wrapper", "noqml_helpers.d"), b, dc);
         }
     }
     widgets("spec_cxx_qtwidgets_wrap.json", ["Qt6Widgets"], "qt6");
