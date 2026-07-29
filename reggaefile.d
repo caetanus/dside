@@ -476,6 +476,13 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     // renders a 1-pixel window that would compare equal no matter what the compiler emitted. The
     // comparator enforces the same rule at runtime, so a file added here that turns out to be
     // blank fails loudly instead of quietly passing.
+    // BEHAVIOUR cases: (file, x, y, property). A real click is delivered to both sides and the
+    // resulting property compared. This is the half of the criterion no property dump and no frame
+    // comparison can reach — a MouseArea whose handler never runs renders pixel-identically and
+    // does nothing, which is exactly what happened before base-type signals were connectable.
+    static struct Click { string name; int x, y; string prop; }
+    static immutable Click[] clickable = [Click("QClick", 30, 20, "hits")];
+
     static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",
                                             "QText", "QTextEdit", "QTextInput", "QVarCopy",
                                             "QVarTernary"];
@@ -546,6 +553,22 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
             // and nothing here drew a pixel before this. Software backend so it is deterministic
             // and needs no GPU; the comparator refuses a frame with no area or a single colour,
             // so this cannot decay into a test that passes on emptiness.
+            // Behaviour: same click to both sides, compare the property it should have changed.
+            foreach (ck; clickable) if (ck.name == name && rndDep.length) {
+                auto renv2 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto ourOut = genD ~ ".click.ours", engOut = genD ~ ".click.eng";
+                auto ccmd = renv2 ~ appBin ~ " --click " ~ ck.x.to!string ~ " " ~ ck.y.to!string
+                          ~ " | grep '^" ~ ck.prop ~ "\t' > " ~ ourOut
+                          ~ " && " ~ renv2 ~ rndBin ~ " --click " ~ qmlFile ~ " " ~ ck.x.to!string
+                          ~ " " ~ ck.y.to!string ~ " " ~ ck.prop ~ " > " ~ engOut
+                          ~ " && diff " ~ engOut ~ " " ~ ourOut
+                          // ...and prove the click MATTERED: without it the value must differ, or
+                          // the test would pass on a document that ignores input entirely.
+                          ~ " && " ~ renv2 ~ appBin ~ " | grep '^" ~ ck.prop ~ "\t' > " ~ ourOut ~ ".noclick"
+                          ~ " && ! diff -q " ~ ourOut ~ " " ~ ourOut ~ ".noclick > /dev/null";
+                ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-click-" ~ dc, ccmd,
+                                   [app] ~ rndDep ~ [tool]);
+            }
             if (renderable.canFind(name) && rndDep.length) {
                 auto ourPng = genD ~ ".our.png", engPng = genD ~ ".eng.png";
                 auto renv = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";

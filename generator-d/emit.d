@@ -454,7 +454,12 @@ void main(string[] args) {
         auto reName2  = regex(`name: "([A-Za-z0-9_]+)"`);
         auto reType2  = regex(`type: "([A-Za-z0-9_:]+)"`);
         auto reNotify = regex(`notify: "([A-Za-z0-9_]+)"`);
-        auto reParamT = regex(`Parameter \{[^}]*type: "([A-Za-z0-9_:<> ]+)"`);
+        // A parameter carries `isPointer` just as a property does, and the meta-object signature
+        // Qt registers keeps the `*`: `clicked(QQuickMouseEvent*)`. Dropping it produced a
+        // signature that connectMeta could not find at RUNTIME — the compile was happy and the
+        // handler simply never fired, which is the failure mode this whole exercise is about.
+        auto reParam = regex(`Parameter \{([^}]*)\}`);
+        auto reParamT = regex(`type: "([A-Za-z0-9_:<> ]+)"`);
         static string dScalar(string t) {
             switch (t) {
                 case "int", "qint32", "uint": return "int";
@@ -478,7 +483,11 @@ void main(string[] args) {
         // that works and one that throws at construction — and it is data, not a list of names.
         bool[string] extendedValueType;
         string[string] protoOf, qmlOf;
-        string[string][string] ownProps, ownNotify;
+        // Signals per class, kept rather than discarded after the notify lookup: a handler for a
+        // BOUND type's own signal (`onClicked`) needs the name AND the full signature to connect,
+        // and 226 of the 373 handlers in the QML Qt ships are exactly that shape — against 147
+        // notify handlers, which were the only ones reachable while this table did not exist.
+        string[string][string] ownProps, ownNotify, ownSignals;
         string qmap, qprops; int rows2, rows3;
         foreach (qtj; qt.array) {
             if (!exists(qtj.str)) continue;
@@ -511,8 +520,13 @@ void main(string[] args) {
                     auto sn = sm[1].matchFirst(reName2);
                     if (sn.empty) continue;
                     string[] ptypes;
-                    foreach (par; sm[1].matchAll(reParamT)) ptypes ~= cxxParam(par[1]);
+                    foreach (par; sm[1].matchAll(reParam)) {
+                        auto pt2 = par[1].matchFirst(reParamT);
+                        if (pt2.empty) continue;
+                        ptypes ~= cxxParam(pt2[1]) ~ (par[1].canFind("isPointer: true") ? "*" : "");
+                    }
                     sigOf[sn[1]] = sn[1] ~ "(" ~ ptypes.join(",") ~ ")";
+                    ownSignals[nm[1]][sn[1]] = sigOf[sn[1]];
                 }
                 if (blk.canFind("accessSemantics: \"value\"") && blk.canFind("extension: \""))
                     extendedValueType[nm[1]] = true;
@@ -566,6 +580,21 @@ void main(string[] args) {
         }
         std.file.write(buildPath(outDir, "qmlmap.tsv"), qmap);
         std.file.write(buildPath(outDir, "qmlprops.tsv"), qprops);
+        // …and the signal table, walked up the prototype chain the same way, so a Button carries
+        // AbstractButton's `clicked`.
+        string qsigs; int rows4;
+        foreach (cpp, qmlName; qmlOf) {
+            bool[string] seenSig;
+            for (string c = cpp; c.length;) {
+                if (auto ss = c in ownSignals)
+                    foreach (sn, sig; *ss)
+                        if (sn !in seenSig) { seenSig[sn] = true; qsigs ~= qmlName ~ "\t" ~ sn ~ "\t" ~ sig ~ "\n"; rows4++; }
+                auto nx = c in protoOf;
+                c = nx ? *nx : "";
+            }
+        }
+        std.file.write(buildPath(outDir, "qmlsignals.tsv"), qsigs);
+        writefln("qmlsignals.tsv: %d signal rows", rows4);
         writefln("qmlmap: %d QML-name -> class rows -> qmlmap.tsv (%d property rows -> qmlprops.tsv)",
                  rows2, rows3);
     }

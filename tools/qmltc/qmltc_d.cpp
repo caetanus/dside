@@ -122,6 +122,22 @@ static void loadQmlProps(const char *path) {
     }
 }
 
+// Signals a bound QML type declares, with their FULL signature — what a handler for one of them
+// needs in order to connect. Without this table only notify handlers were reachable, which is 147
+// of the 373 handlers in the QML Qt ships; the other 226 are plain signals like `clicked`.
+static std::map<std::string, std::map<std::string, std::string>> g_qmlSignals;
+
+static void loadQmlSignals(const char *path) {
+    std::ifstream f(path);
+    std::string line;
+    while (std::getline(f, line)) {
+        auto t1 = line.find('\t');
+        auto t2 = line.find('\t', t1 + 1);
+        if (t1 == std::string::npos || t2 == std::string::npos) continue;
+        g_qmlSignals[line.substr(0, t1)][line.substr(t1 + 1, t2 - t1 - 1)] = line.substr(t2 + 1);
+    }
+}
+
 static void loadQmlMap(const char *path) {
     std::ifstream f(path);
     std::string line;
@@ -3320,6 +3336,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
             }
         }
+        // `onClicked` on a MouseArea: a signal the BOUND TYPE declares, which is neither a notify
+        // nor declared by this document. It was refused for want of a signature — the same shape
+        // as the notify case above, and the signal table now supplies it. This is the majority
+        // shape in real QML (226 of 373 handlers in the QML Qt ships), and the reason a compiled
+        // MouseArea rendered pixel-identically and did nothing when clicked.
+        if (!isCustom && !baseNotifyOk)
+            if (auto qs2 = g_qmlSignals.find(g_selfQmlType); qs2 != g_qmlSignals.end()) {
+                auto it = qs2->second.find(h.sig);
+                if (it != qs2->second.end() && !it->second.empty()) {
+                    baseNotifyOk = true;
+                    baseNotifySig = it->second;
+                    notifyProp.clear();   // not a property change: nothing to mark as notified
+                }
+            }
         if ((!isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp))) || !bodyOk) {
             std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
             ++partial; continue;
@@ -4565,6 +4595,9 @@ int main(int argc, char **argv) {
             auto slash = pp.find_last_of('/');
             pp = (slash == std::string::npos ? std::string() : pp.substr(0, slash + 1)) + "qmlprops.tsv";
             loadQmlProps(pp.c_str());
+            // …and the signal table, written by the same pass and beside it for the same reason.
+            std::string sp = pp.substr(0, pp.size() - std::strlen("qmlprops.tsv")) + "qmlsignals.tsv";
+            loadQmlSignals(sp.c_str());
         }
         // --dtypes <registry.qmltypes> <d-module>: app-defined QML types written in D. The registry
         // is the CTFE .qmltypes of those types; the module is where the D classes live (the
@@ -4741,7 +4774,10 @@ int main(int argc, char **argv) {
     if (!bt.first.empty()) std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
     // --render draws the object into a PNG; the helper lives in the test harness, so the
     // declaration is only emitted where the mode can actually be used.
-    if (isItemType(rootType)) std::printf("extern(C) int qtd_render_item(void*, const(char)*);\n");
+    if (isItemType(rootType)) {
+        std::printf("extern(C) int qtd_render_item(void*, const(char)*);\n");
+        std::printf("extern(C) int qtd_click_item(void*, int, int);\n");
+    }
 
     if (dump) {
         std::vector<DumpLine> lines;
@@ -4764,6 +4800,11 @@ int main(int argc, char **argv) {
         // is — and nothing here drew a pixel until this mode existed. Emitted only for an ITEM
         // root: anything else has nothing to draw, and comparing two empty frames is worse than
         // having no test at all.
+        // `--click <x> <y>` delivers a real click BEFORE the dump, so the value dump becomes a
+        // behaviour comparison: same document, same event, same resulting state — or not.
+        if (isItemType(rootType))
+            std::printf("    foreach (i, a; args) if (a == \"--click\" && i + 2 < args.length)\n"
+                        "        qtd_click_item(qobjOf(o), args[i + 1].to!int, args[i + 2].to!int);\n");
         if (isItemType(rootType))
             std::printf("    foreach (i, a; args) if (a == \"--render\" && i + 1 < args.length) {\n"
                         "        auto rc = qtd_render_item(qobjOf(o), (args[i + 1] ~ \"\\0\").ptr);\n"

@@ -229,6 +229,20 @@ through an `id`), which is exactly the guard we want.
   it because it reads OUR D field while the engine reads ITS object — both configured identically —
   instead of asking the control. Found only because a deep read through `control.indicator` came
   back null.
+- **Handlers for a BOUND TYPE's own signals** (`onClicked` on a MouseArea). Only notify handlers
+  and signals declared by the document were connectable, because a connect needs the full
+  signature and nothing carried it. The generator now emits `qmlsignals.tsv` (name -> signature,
+  walked up the prototype chain, so a Button carries AbstractButton's `clicked`). This is the
+  MAJORITY shape in real QML: 226 of the 373 handlers in the QML Qt ships are plain signals,
+  against 147 notify handlers.
+  The parameter's `isPointer` matters and cost a debugging round: Qt registers
+  `clicked(QQuickMouseEvent*)` and the registry spells the type without the `*`, so the first
+  version compiled cleanly and connectMeta failed at RUNTIME — the handler simply never fired.
+- **BEHAVIOUR differential.** A real click is delivered to both sides and the resulting property
+  compared. Nothing else in the suite can see this: a MouseArea whose handler never runs renders
+  PIXEL-IDENTICALLY and does nothing. The target also asserts the click MATTERED — it re-runs
+  without the click and requires a different value — so it cannot pass on a document that ignores
+  input.
 - **RENDER differential.** The bar is not "the property values match" — it is *renders and behaves
   like the interpreted version*, and until this existed nothing in the suite drew a pixel. Both
   sides are now rasterised headless (software backend, deterministic, no GPU) and compared frame to

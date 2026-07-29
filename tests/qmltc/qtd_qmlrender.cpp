@@ -14,7 +14,25 @@
 #include <QImage>
 #include <QSet>
 #include <QUrl>
+#include <QWindow>
+#include <QMouseEvent>
+#include <QCoreApplication>
 #include <cstdio>
+
+// Send a synthetic click at (x, y) to a window and let it be delivered. This is the BEHAVIOUR half
+// of the criterion: a document can render identically and still not react to input the same way —
+// a MouseArea whose handler never runs, a Button that never toggles. Posting real QMouseEvents (no
+// QtTest dependency) exercises the same delivery path the engine uses.
+static void clickAt(QWindow *w, int x, int y) {
+    const QPointF p(x, y);
+    QMouseEvent press(QEvent::MouseButtonPress, p, p, w->mapToGlobal(p.toPoint()),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, p, p, w->mapToGlobal(p.toPoint()),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &press);
+    QCoreApplication::sendEvent(w, &release);
+    QCoreApplication::processEvents();
+}
 
 static int compare(const QString &a, const QString &b) {
     QImage ia(a), ib(b);
@@ -53,6 +71,24 @@ int main(int argc, char **argv) {
     QGuiApplication app(argc, argv);
     if (argc == 4 && QString::fromUtf8(argv[1]) == "--compare")
         return compare(QString::fromUtf8(argv[2]), QString::fromUtf8(argv[3]));
+    // `--click <qml> <x> <y> <prop>`: load the document, deliver a click, print ONE property.
+    // Deliberately one property and one event to start: the value of this test is that it can
+    // fail for a reason no property dump or frame comparison can see.
+    if (argc == 6 && QString::fromUtf8(argv[1]) == "--click") {
+        QQuickView v;
+        v.setResizeMode(QQuickView::SizeViewToRootObject);
+        v.setSource(QUrl::fromLocalFile(QString::fromUtf8(argv[2])));
+        if (v.status() != QQuickView::Ready) { std::fprintf(stderr, "qmlrender: not ready\n"); return 3; }
+        v.show();
+        clickAt(&v, QString::fromUtf8(argv[3]).toInt(), QString::fromUtf8(argv[4]).toInt());
+        QObject *root = v.rootObject();
+        if (!root) { std::fprintf(stderr, "qmlrender: no root object\n"); return 4; }
+        const QByteArray prop = QString::fromUtf8(argv[5]).toUtf8();
+        const QVariant val = root->property(prop.constData());
+        if (!val.isValid()) { std::fprintf(stderr, "qmlrender: no property '%s'\n", prop.constData()); return 5; }
+        std::printf("%s\t%s\n", prop.constData(), qPrintable(val.toString()));
+        return 0;
+    }
     if (argc != 3) { std::fprintf(stderr, "usage: qmlrender <qml> <out.png> | --compare <a> <b>\n"); return 64; }
     QQuickView v;
     v.setResizeMode(QQuickView::SizeViewToRootObject);
