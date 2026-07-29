@@ -142,6 +142,22 @@ static std::set<std::string> g_importAliases;
 // local path is what the "not a bound type" check tests for.
 static std::set<std::string> g_qualifiedTypes;
 
+// The document's source text, so a diagnostic can quote the expression it refused. Reading a
+// cluster of "expression not supported" was guesswork without it: matching a property name back
+// to a line picks the FIRST occurrence, which is the root's, even when the failure is in a child.
+static QString g_srcText;
+
+// The source snippet an AST node came from, single-lined and clipped.
+static std::string srcOf(Node *n) {
+    if (!n || g_srcText.isEmpty()) return "";
+    auto a = n->firstSourceLocation(), b = n->lastSourceLocation();
+    int from = (int)a.offset, to = (int)(b.offset + b.length);
+    if (from < 0 || to <= from || to > g_srcText.size()) return "";
+    QString t = g_srcText.mid(from, to - from).simplified();
+    if (t.size() > 90) t = t.left(87) + "...";
+    return qs(t);
+}
+
 // The ENCLOSING object, as seen from inside a child. Qt's own Controls are written almost entirely
 // in this shape — `id: control` on the root, then `contentItem: Text { color: control.palette.text
 // }` — and a child is a separate D class, so it reaches its parent through a back-reference field
@@ -149,10 +165,50 @@ static std::set<std::string> g_qualifiedTypes;
 static std::string g_outerId, g_outerClass, g_outerQmlType, g_selfClass;
 static std::map<std::string, std::string> g_outerPropType, g_outerBaseProps;
 static bool g_outerUsed = false;
+// The chain of ENCLOSING objects, innermost first. `__outer` is always the IMMEDIATE parent, so an
+// id further up is reached by hopping: `__outer.__outer.gap`. Without this the field was declared
+// as the id-bearing ancestor's class while the value published was the immediate parent's — and
+// since `cast(T) someVoidPtr` in D is an unchecked reinterpret, that read a different object's
+// fields rather than failing. Qt's Controls nest two and three deep routinely.
+struct OuterFrame { std::string id, cls, qmlType;
+                    std::map<std::string, std::string> propType, baseProps; };
+static std::vector<OuterFrame> g_outerChain;
+static int g_outerHopsNeeded = -1;   // deepest hop this object used; drained by its parent
 // Out-channel: a child that connects to `__outer.<prop>` needs that property to CARRY a notify,
 // and only the parent's own emission can create the signal. The child records the name here and
 // the parent drains it immediately after compileObject returns.
-static std::vector<std::string> g_outerNeedsNotify;
+// (hops-still-to-travel, property). A child that connects to `__outer.__outer.gap` needs the
+// GRANDparent to carry gapChanged, so each level drains what is addressed to it and forwards the
+// rest one hop further up.
+static std::vector<std::pair<int, std::string>> g_outerNeedsNotify;
+
+// The `__outer.` prefix that reaches the enclosing object whose id is `name`, and the frame it
+// found. Returns false when no enclosing level declares that id.
+// Splits a dependency tagged by collectIds ("__outer.__outer.gap") into the object expression and
+// the member, and finds the frame it names.
+static bool splitOuterDep(const std::string &d, std::string &obj, std::string &mem,
+                          const OuterFrame **frame) {
+    size_t k = 0, pos = 0;
+    while (d.compare(pos, 8, "__outer.") == 0) { ++k; pos += 8; }
+    if (k == 0 || k > g_outerChain.size()) return false;
+    obj = d.substr(0, pos - 1);          // "__outer.__outer"
+    mem = d.substr(pos);
+    *frame = &g_outerChain[k - 1];
+    return true;
+}
+
+static bool outerHop(const std::string &name, std::string &prefix, const OuterFrame **frame) {
+    for (size_t k = 0; k < g_outerChain.size(); ++k)
+        if (!g_outerChain[k].id.empty() && g_outerChain[k].id == name) {
+            prefix.clear();
+            for (size_t i = 0; i <= k; ++i) prefix += "__outer.";
+            *frame = &g_outerChain[k];
+            g_outerUsed = true;
+            if ((int)k > g_outerHopsNeeded) g_outerHopsNeeded = (int)k;
+            return true;
+        }
+    return false;
+}
 
 static std::string typeName(UiQualifiedId *id) {
     std::string n = qname(id);
@@ -903,25 +959,25 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // `control.<prop>` from inside a child — the ENCLOSING object, reached through the
         // back-reference. A declared property is a typed D field on it; a property of its bound
         // base goes through the meta-object, exactly as it would on `this`.
-        if (base && !g_outerId.empty() && qs(base->name.toString()) == g_outerId) {
-            std::string mem = qs(fm->name.toString());
-            auto bp = g_outerBaseProps.find(mem);
-            if (bp == g_outerBaseProps.end()) {
-                auto pt = g_outerPropType.find(mem);
-                if (pt != g_outerPropType.end()) { g_outerUsed = true; out = "__outer." + mem; return true; }
-            }
-            if (auto qp = g_qmlProps.find(g_outerQmlType); qp != g_qmlProps.end()) {
-                auto t = qp->second.find(mem);
-                if (t != qp->second.end()) {
-                    const std::string &ty = t->second;
-                    if (ty == "string" || ty == "double" || ty == "bool" || ty == "int") {
-                        const char *rd = ty == "string" ? "propStr(__outer, \"" : ty == "double" ? "propDouble(__outer, \""
-                                       : ty == "bool" ? "propBool(__outer, \"" : "propInt(__outer, \"";
-                        g_outerUsed = true; out = rd + mem + "\")"; return true;
+        if (std::string pre; base) {
+            const OuterFrame *fr = nullptr;
+            if (outerHop(qs(base->name.toString()), pre, &fr)) {
+                std::string mem = qs(fm->name.toString());
+                std::string obj = pre.substr(0, pre.size() - 1);   // drop the trailing '.'
+                if (!fr->baseProps.count(mem) && fr->propType.count(mem)) { out = pre + mem; return true; }
+                if (auto qp = g_qmlProps.find(fr->qmlType); qp != g_qmlProps.end()) {
+                    auto t = qp->second.find(mem);
+                    if (t != qp->second.end()) {
+                        const std::string &ty = t->second;
+                        if (ty == "string" || ty == "double" || ty == "bool" || ty == "int") {
+                            const char *rd = ty == "string" ? "propStr(" : ty == "double" ? "propDouble("
+                                           : ty == "bool" ? "propBool(" : "propInt(";
+                            out = rd + obj + ", \"" + mem + "\")"; return true;
+                        }
                     }
                 }
+                return false;   // unknown member of that enclosing object: refused, not guessed
             }
-            return false;   // unknown member of the outer: refused, not guessed
         }
         // `TypeName.Green` -> the D enum member `Color.Green` (int-valued).
         if (base && qs(base->name.toString()) == g_className) {
@@ -1157,9 +1213,12 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         // A read off the enclosing object is a real dependency: record it tagged, so the wiring
         // connects to the OUTER's notify instead of treating the binding as a constant.
-        if (base && !g_outerId.empty() && qs(base->name.toString()) == g_outerId) {
-            ids.push_back("__outer." + qs(fm->name.toString()));
-            return;
+        if (std::string pre; base) {
+            const OuterFrame *fr = nullptr;
+            if (outerHop(qs(base->name.toString()), pre, &fr)) {
+                ids.push_back(pre + qs(fm->name.toString()));   // "__outer.__outer.gap"
+                return;
+            }
         }
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) ids.push_back(qs(fm->name.toString()));
         // `group.member` depends on that member OF THE GROUP OBJECT — kept dotted so the wire
@@ -1678,6 +1737,7 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) return nullptr;
     QString code = QString::fromUtf8(f.readAll());
+    g_srcText = code;
     auto *engine = new Engine();
     auto *lexer = new Lexer(engine);
     lexer->setCode(code, 1, /*qmlMode*/ true);
@@ -1707,6 +1767,7 @@ struct ObjNode {
     std::vector<std::pair<std::string, std::string>> attachedProps;// attached members set ("Type.member", dtype)
     std::vector<std::string> notified;                          // props that carry a NOTIFY signal
     bool usesOuter = false;   // reads its enclosing object -> needs the __outer back-reference
+    int outerHops = -1;       // deepest enclosing level it reached (0 = immediate parent)
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
     // Children attached to a member of a GROUPED property. Unlike `kids`, the D FIELD and the QML
     // PATH differ (field `_g_group_object`, path `group.object`), so both are carried. (A struct
@@ -1818,17 +1879,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedOuterPropType = g_outerPropType;
     auto savedOuterBaseProps = g_outerBaseProps;
     bool savedOuterUsed = g_outerUsed;
-    if (!savedId.empty()) {
-        g_outerId = savedId;
-        g_outerClass = g_selfClass;
-        g_outerQmlType = savedSelfQmlType;
-        g_outerPropType = g_propType;
-        // ...and its BASE properties separately: g_propType also carries base names the document
-        // assigns (`width: 100`), and those are Q_PROPERTYs on the C++ base, not D fields —
-        // reading them as `__outer.width` does not compile.
-        g_outerBaseProps = g_baseProps;
+    // Push the enclosing object onto the chain — WITH or WITHOUT an id, because an anonymous
+    // level still costs a hop. Its base properties are kept apart from the declared ones:
+    // g_propType also carries base names the document assigns (`width: 100`), and those are
+    // Q_PROPERTYs on the C++ base, not D fields — reading them as `__outer.width` won't compile.
+    auto savedOuterChain = g_outerChain;
+    if (!g_selfClass.empty())
+        g_outerChain.insert(g_outerChain.begin(),
+                            OuterFrame{savedId, g_selfClass, savedSelfQmlType, g_propType, g_baseProps});
+    if (!g_outerChain.empty()) {
+        g_outerId = g_outerChain[0].id;
+        g_outerClass = g_outerChain[0].cls;
+        g_outerQmlType = g_outerChain[0].qmlType;
+        g_outerPropType = g_outerChain[0].propType;
+        g_outerBaseProps = g_outerChain[0].baseProps;
     }
     g_outerUsed = false;
+    int savedHops = g_outerHopsNeeded;
+    g_outerHopsNeeded = -1;
     g_selfClass = cls;
     // Declared here rather than beside propNames: children are compiled BEFORE the property
     // emission and drain their `__outer.<prop>` notify requirements into it.
@@ -2437,10 +2505,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
         ObjNode kid = compileObject(cb.init, childCls, classes, partial, inPath, cbt.first, nullptr, cb.type);
-        for (auto &__on : g_outerNeedsNotify)   // a child connects to our <prop>Changed
-            if (std::find(needsNotify.begin(), needsNotify.end(), __on) == needsNotify.end())
-                needsNotify.push_back(__on);
-        g_outerNeedsNotify.clear();
+        {   // a child connects to <prop>Changed on us, or on someone above us
+            auto pending = g_outerNeedsNotify;
+            g_outerNeedsNotify.clear();
+            for (auto &__on : pending) {
+                if (__on.first == 0) {
+                    if (std::find(needsNotify.begin(), needsNotify.end(), __on.second) == needsNotify.end())
+                        needsNotify.push_back(__on.second);
+                } else {
+                    g_outerNeedsNotify.push_back({__on.first - 1, __on.second});   // forward it up
+                }
+            }
+        }
+        // A child that reached PAST us needs us to hold our own back-reference, since its hops
+        // are spelled `__outer.__outer...` and go through ours.
+        if (kid.outerHops >= 1) {
+            g_outerUsed = true;
+            if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
+        }
         if (auto qp = g_qmlProps.find(cb.type); qp != g_qmlProps.end() && !cbt.first.empty())
             for (auto &pp : qp->second) kid.boundProps.push_back({pp.first, pp.second});
         childFields += "    " + childCls + " " + cb.field + ";\n";
@@ -2555,10 +2637,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_dc" + std::to_string(di);
         if (!childResolvedPath.empty()) g_resolving.insert(childResolvedPath);
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
-        for (auto &__on : g_outerNeedsNotify)   // a child connects to our <prop>Changed
-            if (std::find(needsNotify.begin(), needsNotify.end(), __on) == needsNotify.end())
-                needsNotify.push_back(__on);
-        g_outerNeedsNotify.clear();
+        {   // a child connects to <prop>Changed on us, or on someone above us
+            auto pending = g_outerNeedsNotify;
+            g_outerNeedsNotify.clear();
+            for (auto &__on : pending) {
+                if (__on.first == 0) {
+                    if (std::find(needsNotify.begin(), needsNotify.end(), __on.second) == needsNotify.end())
+                        needsNotify.push_back(__on.second);
+                } else {
+                    g_outerNeedsNotify.push_back({__on.first - 1, __on.second});   // forward it up
+                }
+            }
+        }
+        // A child that reached PAST us needs us to hold our own back-reference, since its hops
+        // are spelled `__outer.__outer...` and go through ours.
+        if (kid.outerHops >= 1) {
+            g_outerUsed = true;
+            if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
+        }
         if (!childResolvedPath.empty()) g_resolving.erase(childResolvedPath);
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
@@ -2871,9 +2967,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
             // problem as an EXPRESSION we can't compile into a type we do route.
-            std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported: %s '%s' — skipped (later phase)\n",
+            std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported: %s '%s' [%s] — skipped (later phase)\n",
                          inPath, ba.first.c_str(), cls.c_str(),
-                         scalar ? "expression for" : "declared type", ty.empty() ? "?" : ty.c_str());
+                         scalar ? "expression for" : "declared type", ty.empty() ? "?" : ty.c_str(),
+                         srcOf(ba.second).c_str());
             ++partial; continue;
         }
         // A D base's property is an inherited FIELD -> assign it; a bound C++ base's is a
@@ -2897,18 +2994,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string conns;
             for (auto &d : deps) {
                 if (d == ba.first || !seen.insert(d).second) continue;   // self-reference is not a dep
-                if (d.rfind("__outer.", 0) == 0) {   // reads the enclosing object
-                    std::string mem = d.substr(8), sig;
-                    if (!g_outerBaseProps.count(mem) && g_outerPropType.count(mem)) {
+                if (d.rfind("__outer.", 0) == 0) {   // reads an enclosing object
+                    std::string obj, mem, sig; const OuterFrame *fr = nullptr;
+                    if (!splitOuterDep(d, obj, mem, &fr)) { ++partial; continue; }
+                    if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
                         sig = mem + "Changed()";
-                        g_outerNeedsNotify.push_back(mem);
+                        g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
                     }
-                    else if (auto qn = g_qmlNotify.find(g_outerQmlType); qn != g_qmlNotify.end()) {
+                    else if (auto qn = g_qmlNotify.find(fr->qmlType); qn != g_qmlNotify.end()) {
                         auto nt = qn->second.find(mem);
                         if (nt != qn->second.end()) sig = nt->second;
                     }
                     if (!sig.empty()) {
-                        conns += "        connectMeta(__outer, \"" + sig + "\", this, \"__rcb_"
+                        conns += "        connectMeta(" + obj + ", \"" + sig + "\", this, \"__rcb_"
                                + ba.first + "()\");\n";
                         continue;
                     }
@@ -2962,10 +3060,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string field = "_g_" + gname + "_" + mem;
         std::string childCls = cls + "_" + gname + "_" + mem;
         ObjNode kid = compileObject(gk.second, childCls, classes, partial, inPath);
-        for (auto &__on : g_outerNeedsNotify)   // a child connects to our <prop>Changed
-            if (std::find(needsNotify.begin(), needsNotify.end(), __on) == needsNotify.end())
-                needsNotify.push_back(__on);
-        g_outerNeedsNotify.clear();
+        {   // a child connects to <prop>Changed on us, or on someone above us
+            auto pending = g_outerNeedsNotify;
+            g_outerNeedsNotify.clear();
+            for (auto &__on : pending) {
+                if (__on.first == 0) {
+                    if (std::find(needsNotify.begin(), needsNotify.end(), __on.second) == needsNotify.end())
+                        needsNotify.push_back(__on.second);
+                } else {
+                    g_outerNeedsNotify.push_back({__on.first - 1, __on.second});   // forward it up
+                }
+            }
+        }
+        // A child that reached PAST us needs us to hold our own back-reference, since its hops
+        // are spelled `__outer.__outer...` and go through ours.
+        if (kid.outerHops >= 1) {
+            g_outerUsed = true;
+            if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
+        }
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = newQObject!" + childCls + "();\n"
@@ -2986,10 +3098,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         auto cbt = boundTypeFor(childType);
         if (!cbt.first.empty()) g_extraImports += "import " + cbt.second + ";\n";
         ObjNode kid = compileObject(ae.def->initializer, childCls, classes, partial, inPath, cbt.first, nullptr, childType);
-        for (auto &__on : g_outerNeedsNotify)   // a child connects to our <prop>Changed
-            if (std::find(needsNotify.begin(), needsNotify.end(), __on) == needsNotify.end())
-                needsNotify.push_back(__on);
-        g_outerNeedsNotify.clear();
+        {   // a child connects to <prop>Changed on us, or on someone above us
+            auto pending = g_outerNeedsNotify;
+            g_outerNeedsNotify.clear();
+            for (auto &__on : pending) {
+                if (__on.first == 0) {
+                    if (std::find(needsNotify.begin(), needsNotify.end(), __on.second) == needsNotify.end())
+                        needsNotify.push_back(__on.second);
+                } else {
+                    g_outerNeedsNotify.push_back({__on.first - 1, __on.second});   // forward it up
+                }
+            }
+        }
+        // A child that reached PAST us needs us to hold our own back-reference, since its hops
+        // are spelled `__outer.__outer...` and go through ours.
+        if (kid.outerHops >= 1) {
+            g_outerUsed = true;
+            if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
+        }
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (cbt.first.empty() ? "newQObject!" + childCls + "()"
@@ -3008,10 +3134,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string field = "_a_" + tn + "_" + mem;
         std::string childCls = cls + "_" + tn + "_" + mem;
         ObjNode kid = compileObject(ak.second, childCls, classes, partial, inPath);
-        for (auto &__on : g_outerNeedsNotify)   // a child connects to our <prop>Changed
-            if (std::find(needsNotify.begin(), needsNotify.end(), __on) == needsNotify.end())
-                needsNotify.push_back(__on);
-        g_outerNeedsNotify.clear();
+        {   // a child connects to <prop>Changed on us, or on someone above us
+            auto pending = g_outerNeedsNotify;
+            g_outerNeedsNotify.clear();
+            for (auto &__on : pending) {
+                if (__on.first == 0) {
+                    if (std::find(needsNotify.begin(), needsNotify.end(), __on.second) == needsNotify.end())
+                        needsNotify.push_back(__on.second);
+                } else {
+                    g_outerNeedsNotify.push_back({__on.first - 1, __on.second});   // forward it up
+                }
+            }
+        }
+        // A child that reached PAST us needs us to hold our own back-reference, since its hops
+        // are spelled `__outer.__outer...` and go through ours.
+        if (kid.outerHops >= 1) {
+            g_outerUsed = true;
+            if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
+        }
         childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = newQObject!" + childCls + "();\n"
@@ -3355,17 +3495,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // is made on __outer, not on this. Its notify comes from the outer's own table
                 // (declared properties spell it <prop>Changed; base ones carry a full signature).
                 if (d.rfind("__outer.", 0) == 0) {
-                    std::string mem = d.substr(8), sig;
-                    if (!g_outerBaseProps.count(mem) && g_outerPropType.count(mem)) {
+                    std::string obj, mem, sig; const OuterFrame *fr = nullptr;
+                    if (!splitOuterDep(d, obj, mem, &fr)) { ++partial; continue; }
+                    if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
                         sig = mem + "Changed()";
-                        g_outerNeedsNotify.push_back(mem);
+                        g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
                     }
-                    else if (auto qn = g_qmlNotify.find(g_outerQmlType); qn != g_qmlNotify.end()) {
+                    else if (auto qn = g_qmlNotify.find(fr->qmlType); qn != g_qmlNotify.end()) {
                         auto nt = qn->second.find(mem);
                         if (nt != qn->second.end()) sig = nt->second;
                     }
                     if (!sig.empty()) {
-                        wire += "        connectMeta(__outer, \"" + sig + "\", this, \"__rc_"
+                        wire += "        connectMeta(" + obj + ", \"" + sig + "\", this, \"__rc_"
                               + p.name + "()\");\n";
                         continue;
                     }
@@ -3517,6 +3658,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_outerId = savedOuterId; g_outerClass = savedOuterClass; g_outerQmlType = savedOuterQmlType;
     g_outerPropType = savedOuterPropType; g_outerBaseProps = savedOuterBaseProps;
     g_selfClass = savedSelfClass;
+    node.outerHops = g_outerHopsNeeded;
+    g_outerHopsNeeded = savedHops;
+    g_outerChain = savedOuterChain;
     g_outerUsed = savedOuterUsed;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
@@ -3663,6 +3807,7 @@ int main(int argc, char **argv) {
     QFile f(pos[0]);
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", pos[0]); return 2; }
     QString code = QString::fromUtf8(f.readAll());
+    g_srcText = code;
     const char *inPath = pos[0];
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
     g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name

@@ -99,7 +99,12 @@ through an `id`), which is exactly the guard we want.
   creates that signal, the child propagates the requirement up. The back-reference is handed over
   at construction (`__qmltcOuter`) rather than assigned after `new`, because the mixin runs
   `__qmltcWire` at the END of the constructor — assigning afterwards dereferenced null (SIGSEGV,
-  confirmed under gdb). Measured on Qt's Controls: expression failures 349 -> 182.
+  confirmed under gdb). `__outer` is always the IMMEDIATE parent; an id further up is reached by
+  HOPPING (`__outer.__outer.gap`), and each intermediate carries its own back-reference. Typing
+  the field as the id-bearing ancestor instead compiles and then reinterprets the parent as that
+  class — `cast(T) someVoidPtr` in D is unchecked, so it reads another object's fields rather than
+  failing. The notify requirement travels the same chain: a binding on `__outer.__outer.gap` needs
+  the GRANDparent to carry gapChanged. Measured on Qt's Controls: expression failures 349 -> 160.
 - **Per-object property tables**: the object's own QML type drives every table lookup. It used to
   be set once at the root, so inside a child every lookup consulted the ROOT's table — a Rectangle
   inside an Item resolved its properties against Item.
