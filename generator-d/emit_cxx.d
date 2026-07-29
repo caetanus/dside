@@ -1863,6 +1863,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             // base; re-emitting it here would illegally override that final method. Use the base's.
             if ((mn in baseM) !is null) { _fate = "inherited"; continue; }
             _fate = "signal";
+            // allNameCount is here because `&Class::sig` is ambiguous when another member shares
+            // the name (QProcess::error). The obvious fix — static_cast the pointer-to-member to
+            // the signal's signature — DOES NOT WORK for Qt signals: moc appends a QPrivateSignal
+            // parameter (the marker that stops outside code from emitting), and that type is
+            // PRIVATE, so it cannot be named in a cast from here. Tried and reverted; the compiler
+            // says "static_cast from void (QObject::*)(const QString &, QPrivateSignal) to
+            // void (QObject::*)(const QString &) is not allowed". Disambiguating these needs the
+            // signature-keyed path (QMetaObject::indexOfSignal), not a typed pointer.
             if (sigNameCount.get(mn, 0) == 1 && allNameCount.get(mn, 0) == 1 && mn !in seenSig) {
                 Signal s; s.dClass = name; s.cppClass = cppName; s.name = mn;
                 bool ok = true;
