@@ -3765,12 +3765,31 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // the destination: the type is carried by the variant, not known here.
             std::string so, sg, sp;
             resolveReadSrc(ga.second, so, sg, sp);
+            // `border.color: control.visualFocus ? control.palette.highlight : control.palette.dark`
+            // — a ternary BETWEEN two value reads, which a base property already supports. Doing
+            // it here too keeps the two positions consistent: the condition picks which copy runs.
+            std::string condExpr, so2, sg2, sp2;
+            if (so.empty())
+                if (auto *cnd = cast<ConditionalExpression *>(ga.second)) {
+                    std::string o1, g1, p1;
+                    resolveReadSrc(cnd->ok, o1, g1, p1);
+                    resolveReadSrc(cnd->ko, so2, sg2, sp2);
+                    if (!o1.empty() && !so2.empty() && compileExpr(cnd->expression, "bool", condExpr)) {
+                        so = o1; sg = g1; sp = p1;
+                    } else { condExpr.clear(); }
+                }
             if (!so.empty()) {
                 std::string dst = "propObj(this, \"" + gname + "\")";
-                std::string stmt = sg.empty()
-                    ? "        copyProp(" + so + ", \"" + sp + "\", " + dst + ", \"" + mem + "\");\n"
-                    : "        copyGroupProp(" + so + ", \"" + sg + "\", \"" + sp + "\", " + dst
-                      + ", \"" + mem + "\");\n";
+                auto one = [&](const std::string &o, const std::string &g, const std::string &pr) {
+                    return g.empty()
+                        ? "copyProp(" + o + ", \"" + pr + "\", " + dst + ", \"" + mem + "\");"
+                        : "copyGroupProp(" + o + ", \"" + g + "\", \"" + pr + "\", " + dst
+                          + ", \"" + mem + "\");";
+                };
+                std::string stmt = condExpr.empty()
+                    ? "        " + one(so, sg, sp) + "\n"
+                    : "        if (" + condExpr + ") " + one(so, sg, sp) + "\n"
+                      + "        else " + one(so2, sg2, sp2) + "\n";
                 // A BINDING, not a one-shot — and its first run belongs in the late phase: the
                 // child is constructed before its parent assigns anything, so a copy made during
                 // the wire necessarily reads a default (measured: #b8b8b8 where the engine had
