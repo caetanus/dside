@@ -986,7 +986,23 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         if (!compileExpr(nested->expression, dtype, inner)) return false;
         out = "(" + inner + ")"; return true;
     }
-    if (auto *id = cast<IdentifierExpression *>(e)) return readName(qs(id->name.toString()), out);
+    if (auto *id = cast<IdentifierExpression *>(e)) {
+        // `background ? a : b` — the bare form of the same null test. Qt's Controls write it both
+        // ways (`control.background` and plain `background`), and refusing one of them makes the
+        // support look arbitrary.
+        if (dtype == "bool") {
+            std::string n = qs(id->name.toString());
+            if (!g_scope.count(n) && !g_childIds.count(n))
+                if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
+                    auto it = qc->second.find(n);
+                    if (it != qc->second.end() && !it->second.empty() && it->second.back() == '*') {
+                        out = "(propObj(this, \"" + n + "\") !is null)";
+                        return true;
+                    }
+                }
+        }
+        return readName(qs(id->name.toString()), out);
+    }
     // `[3, 1, 4]` -> a D array literal. Element type comes from the property's declared type, so
     // the elements compile with the same rules as a scalar binding of that type.
     if (auto *arr = cast<ArrayPattern *>(e)) {
@@ -1118,6 +1134,34 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                         }
                 }
             }
+        }
+        // `background.implicitWidth` — the BARE form of a read through an object-valued property
+        // of THIS object. Same rule and same late connect as `control.indicator.width`; Qt's
+        // Controls use both spellings.
+        if (base) {
+            std::string inner = qs(base->name.toString()), mem = qs(fm->name.toString());
+            if (!g_scope.count(inner) && !g_childIds.count(inner) && !g_vgroups.count(inner)
+                    && (g_selfId.empty() || inner != g_selfId))
+                if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
+                    auto it = qc->second.find(inner);
+                    if (it != qc->second.end() && !it->second.empty() && it->second.back() == '*') {
+                        std::string innerQml = qmlNameOfCxx(it->second);
+                        if (!innerQml.empty())
+                            if (auto qp = g_qmlProps.find(innerQml); qp != g_qmlProps.end()) {
+                                auto t = qp->second.find(mem);
+                                if (t != qp->second.end()) {
+                                    const std::string &ty = t->second;
+                                    if (ty == "string" || ty == "double" || ty == "bool" || ty == "int") {
+                                        const char *rd = ty == "string" ? "propStr(" : ty == "double" ? "propDouble("
+                                                       : ty == "bool" ? "propBool(" : "propInt(";
+                                        out = rd + std::string("propObj(this, \"") + inner + "\"), \"" + mem + "\")";
+                                        g_deepReads.push_back({"this", inner, mem, innerQml});
+                                        return true;
+                                    }
+                                }
+                            }
+                    }
+                }
         }
         // `parent.<prop>` — QQuickItem exposes `parent` as a Q_PROPERTY, so the OBJECT is fetched
         // through the meta-object at runtime and nothing static is assumed about it. Only the

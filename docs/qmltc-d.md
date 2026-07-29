@@ -206,7 +206,10 @@ through an `id`), which is exactly the guard we want.
   so it needs no type knowledge — only that the property is a pointer, which the `*` marker says.
   Applies to a bool target only: as a value the expression would be the object itself. It has to be
   tried BEFORE the self-reference and enclosing-object reads, both of which resolve the member as a
-  scalar and fail first.
+  scalar and fail first. Both SPELLINGS work — `control.background` and plain `background` — as do
+  both spellings of a read THROUGH one (`control.indicator.width`, `background.implicitWidth`);
+  Qt's Controls use them interchangeably, and supporting only the dotted form made the feature look
+  arbitrary.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
