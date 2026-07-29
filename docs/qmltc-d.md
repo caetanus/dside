@@ -103,6 +103,15 @@ through an `id`), which is exactly the guard we want.
 - **Per-object property tables**: the object's own QML type drives every table lookup. It used to
   be set once at the root, so inside a child every lookup consulted the ROOT's table — a Rectangle
   inside an Item resolved its properties against Item.
+- **Value-typed properties copied through the channel**: `font: control.font`, `color:
+  control.palette.text` — the two commonest lines in Qt's own Controls. Neither needs the
+  generator to know what a QFont or QColor is: the source property is read as a QVariant, which
+  CARRIES the type, and QMetaType converts on write (`copyProp` / `copyGroupProp`, one C++ helper
+  each). It is emitted as a BINDING, not a one-shot, and that is load-bearing rather than merely
+  correct: children are constructed before the parent assigns its own properties, so the first
+  copy reads a default and the notify is what corrects it. Declared-type failures over Qt's
+  Controls: 263 -> 97. Only a plain property READ takes this path — an arbitrary expression of
+  value type is still refused rather than guessed.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 

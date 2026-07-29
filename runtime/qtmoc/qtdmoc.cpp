@@ -434,6 +434,17 @@ static bool gadgetProp(const QVariant& v, const char* member, QMetaProperty& out
     return true;
 }
 
+// Copy a property from one object to another WITHOUT naming its type. The QVariant carries the
+// type and QMetaType converts on write, so this reaches QColor, QFont, an enum, a model — every
+// value type at once. The typed helpers each need the D type spelled out, which is exactly what a
+// generated binding does not have for `font: control.font`.
+extern "C" int qtd_prop_copy(void* src, const char* sname, void* dst, const char* dname) {
+    if (!src || !dst) return 0;
+    QVariant v = static_cast<QObject*>(src)->property(sname);
+    if (!v.isValid()) return 0;
+    return qtd_prop_write(dst, dname, v);
+}
+
 // Reads <obj>.<group>.<member> into a QVariant. Returns an invalid QVariant when anything in the
 // chain is absent, which the typed wrappers below turn into the type's default.
 static QVariant qtd_valuegroup_read(void* o, const char* group, const char* member) {
@@ -456,6 +467,14 @@ static int qtd_valuegroup_write(void* o, const char* group, const char* member, 
 }
 
 extern "C" {
+// ...and the same copy for a member of a value-typed GROUP: `color: control.palette.text`.
+extern "C" int qtd_prop_copy_group(void* src, const char* g, const char* m, void* dst, const char* dname) {
+    if (!src || !dst) return 0;
+    QVariant v = qtd_valuegroup_read(src, g, m);
+    if (!v.isValid()) return 0;
+    return qtd_prop_write(dst, dname, v);
+}
+
 int  qtd_vgroup_get_int(void* o, const char* g, const char* m)    { return qtd_valuegroup_read(o, g, m).toInt(); }
 bool qtd_vgroup_get_bool(void* o, const char* g, const char* m)   { return qtd_valuegroup_read(o, g, m).toBool(); }
 double qtd_vgroup_get_double(void* o, const char* g, const char* m){ return qtd_valuegroup_read(o, g, m).toDouble(); }

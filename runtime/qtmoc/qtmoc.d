@@ -802,6 +802,21 @@ bool propVar(V, T)(T o, string name, ref V outv) {
                             (cppSig!V ~ "\0").ptr, cast(void*) &outv) != 0;
 }
 
+private extern(C) int qtd_prop_copy(void*, const(char)*, void*, const(char)*);
+private extern(C) int qtd_prop_copy_group(void*, const(char)*, const(char)*, void*, const(char)*);
+
+/// Copies a property between objects through the meta-object without naming its type: the
+/// QVariant carries it and QMetaType converts on write. This is what makes `font: control.font`
+/// or `color: control.palette.text` compile without the generator knowing QFont or QColor.
+bool copyProp(S, D)(S src, string sname, D dst, string dname) {
+    return qtd_prop_copy(qobjOf(src), (sname ~ "\0").ptr, qobjOf(dst), (dname ~ "\0").ptr) != 0;
+}
+/// Same, for a member of a value-typed grouped property (`palette.text`).
+bool copyGroupProp(S, D)(S src, string group, string member, D dst, string dname) {
+    return qtd_prop_copy_group(qobjOf(src), (group ~ "\0").ptr, (member ~ "\0").ptr,
+                               qobjOf(dst), (dname ~ "\0").ptr) != 0;
+}
+
 /// Drives QQmlParserStatus on a bound type: `classBegin()` before its properties are set and
 /// `componentComplete()` once the tree is built, which is what the engine does. A type that does
 /// not implement the interface is left untouched.

@@ -2819,8 +2819,43 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (pt != qp->second.end() && !pt->second.empty()) ty = pt->second;
             }
         std::string val;
+        std::string copyAssign;   // set when the value is a plain property read (a QVariant copy)
         bool scalar = (ty == "int" || ty == "string" || ty == "double" || ty == "bool");
-        if (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
+        // A property we cannot type as a D scalar (QColor, QFont, an enum, a model) is still
+        // perfectly reachable when the VALUE is just another property: the QVariant carries the
+        // type and QMetaType converts on write. `font: control.font` and `color:
+        // control.palette.text` are the two commonest lines in Qt's own Controls, and neither
+        // needs the generator to know what a QFont is.
+        if (!scalar) {
+            std::string srcObj, srcProp, srcGroup;
+            if (auto *fmv = cast<FieldMemberExpression *>(ba.second)) {
+                if (auto *b0 = cast<IdentifierExpression *>(fmv->base)) {
+                    std::string bn = qs(b0->name.toString());
+                    if (!g_outerId.empty() && bn == g_outerId) { srcObj = "__outer"; srcProp = qs(fmv->name.toString()); g_outerUsed = true; }
+                    else if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) { srcObj = ci->second.field; srcProp = qs(fmv->name.toString()); }
+                    else if (!g_selfId.empty() && bn == g_selfId) { srcObj = "this"; srcProp = qs(fmv->name.toString()); }
+                } else if (auto *fmb = cast<FieldMemberExpression *>(fmv->base)) {
+                    // `control.palette.text` — a member of a value-typed group on another object.
+                    if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
+                        std::string bn = qs(b1->name.toString());
+                        if (!g_outerId.empty() && bn == g_outerId) { srcObj = "__outer"; g_outerUsed = true; }
+                        else if (!g_selfId.empty() && bn == g_selfId) srcObj = "this";
+                        if (!srcObj.empty()) { srcGroup = qs(fmb->name.toString()); srcProp = qs(fmv->name.toString()); }
+                    }
+                }
+            }
+            if (!srcObj.empty()) {
+                copyAssign = srcGroup.empty()
+                    ? "        copyProp(" + srcObj + ", \"" + srcProp + "\", this, \"" + ba.first + "\");\n"
+                    : "        copyGroupProp(" + srcObj + ", \"" + srcGroup + "\", \"" + srcProp
+                      + "\", this, \"" + ba.first + "\");\n";
+                // Recorded as a STRING for the dump: QMetaType renders a QColor as #rrggbb and a
+                // QFont as its descriptor, which is exactly what the oracle prints from the same
+                // QVariant. An empty type made the dump fall back to an int read and print 0.
+                ty = "string";
+            }
+        }
+        if (copyAssign.empty() && (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val))) {
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
             // problem as an EXPRESSION we can't compile into a type we do route.
@@ -2831,7 +2866,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         // A D base's property is an inherited FIELD -> assign it; a bound C++ base's is a
         // Q_PROPERTY reachable only through the meta-object.
-        std::string assign = g_baseIsD ? ("        " + ba.first + " = " + val + ";\n")
+        // The copy is a BINDING like any other: it goes through the same recompute+connect path
+        // below, which also fixes ordering — children are constructed before the parent assigns
+        // its own properties, so the first copy reads a default and the notify corrects it.
+        std::string assign = !copyAssign.empty() ? copyAssign
+                           : g_baseIsD ? ("        " + ba.first + " = " + val + ";\n")
                                        : ("        setProp(this, \"" + ba.first + "\", " + val + ");\n");
         baseWire += assign;
         // ...and if the expression READS anything, it is a BINDING, not an assignment: it has to
