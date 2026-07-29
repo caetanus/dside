@@ -989,6 +989,37 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 return false;   // unknown member of that enclosing object: refused, not guessed
             }
         }
+        // `parent.<prop>` — QQuickItem exposes `parent` as a Q_PROPERTY, so the OBJECT is fetched
+        // through the meta-object at runtime and nothing static is assumed about it. Only the
+        // member's TYPE is taken from the enclosing frame, which is sound because a child's visual
+        // parent IS the enclosing object (Qt reparents contentItem/background to the control too),
+        // and a mismatch would still convert through the QVariant rather than misread memory.
+        if (base && qs(base->name.toString()) == "parent" && !g_scope.count("parent")
+                && !g_childIds.count("parent")) {
+            // Fetching the object with propObj(this, "parent") reads null: Qt sets the parent
+            // AFTER construction and the wire runs inside the constructor. A child's visual parent
+            // IS its enclosing object here — Qt reparents contentItem/background to the control
+            // too — so `parent` resolves to the same back-reference as an enclosing id, which is
+            // already correct about ordering, hops and notifies. (A child reparented at runtime,
+            // or one built by a Repeater, is not compiled at all, so this cannot silently drift.)
+            if (g_outerChain.empty()) return false;
+            std::string mem = qs(fm->name.toString()), ty;
+            const OuterFrame &fr = g_outerChain[0];
+            g_outerUsed = true;
+            if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;
+            if (!fr.baseProps.count(mem) && fr.propType.count(mem)) { out = "__outer." + mem; return true; }
+            if (auto qp = g_qmlProps.find(fr.qmlType); qp != g_qmlProps.end()) {
+                auto t = qp->second.find(mem);
+                if (t != qp->second.end()) ty = t->second;
+            }
+            if (ty == "string" || ty == "double" || ty == "bool" || ty == "int") {
+                const char *rd = ty == "string" ? "propStr(" : ty == "double" ? "propDouble("
+                               : ty == "bool" ? "propBool(" : "propInt(";
+                out = rd + std::string("__outer, \"") + mem + "\")";
+                return true;
+            }
+            return false;
+        }
         // `TypeName.Green` -> the D enum member `Color.Green` (int-valued).
         if (base && qs(base->name.toString()) == g_className) {
             auto it = g_enumMember.find(qs(fm->name.toString()));
@@ -1223,6 +1254,15 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         // A read off the enclosing object is a real dependency: record it tagged, so the wiring
         // connects to the OUTER's notify instead of treating the binding as a constant.
+        if (base && qs(base->name.toString()) == "parent" && !g_scope.count("parent")
+                && !g_childIds.count("parent")) {
+            if (!g_outerChain.empty()) {
+                g_outerUsed = true;
+                if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;
+                ids.push_back("__outer." + qs(fm->name.toString()));
+            }
+            return;
+        }
         if (std::string pre; base) {
             const OuterFrame *fr = nullptr;
             if (outerHop(qs(base->name.toString()), pre, &fr)) {

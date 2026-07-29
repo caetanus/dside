@@ -135,6 +135,13 @@ through an `id`), which is exactly the guard we want.
   property name back to a source line, which picks the FIRST occurrence — the root's — even when
   the failure is in a child. Snippets are resolved against the document the node came from, since
   one global text is wrong the moment a local `.qml` is loaded.
+- **`parent.<prop>`**: the centring idiom (`x: (parent.width - width) / 2`). It resolves to the
+  same back-reference an enclosing id uses, NOT to `propObj(this, "parent")` — Qt sets the parent
+  after construction while the wire runs inside the constructor, so fetching it there reads null.
+  A child's visual parent is its enclosing object (Qt reparents contentItem/background to the
+  control too), and routing it this way inherits the ordering, hop and notify handling that is
+  already correct. A child reparented at runtime, or built by a Repeater, is not compiled at all,
+  so the assumption cannot silently drift.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
