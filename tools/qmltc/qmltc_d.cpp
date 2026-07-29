@@ -2381,6 +2381,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::pair<std::string, ExpressionNode *>> rawValueGroupAssigns;   // `vgroup.member: expr`
     // `<baseProp>.<member>: expr` where baseProp holds an OBJECT (border.width on a Rectangle).
     std::vector<std::pair<std::string, ExpressionNode *>> rawObjGroupAssigns;
+    // `<baseProp>.<member>: expr` where baseProp is a plain Q_GADGET value (icon.width).
+    std::vector<std::pair<std::string, ExpressionNode *>> rawBaseVGroupAssigns;
     std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
     std::vector<std::pair<std::string, ExpressionNode *>> rawAttachedAssigns;     // `Type.member: expr`
     std::vector<std::pair<std::string, Statement *>> rawAttachedHandlers;         // `Type.on<Sig>: body`
@@ -2461,6 +2463,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         auto it = qc->second.find(head);
                         if (it != qc->second.end() && !it->second.empty() && it->second.back() == '*') {
                             rawObjGroupAssigns.push_back({hid, es->expression});
+                            continue;
+                        }
+                    }
+                    // `icon.width: 24` — a VALUE group that is a plain Q_GADGET: setVgroup does a
+                    // read-modify-write through its own meta-object, which QQuickIcon has. A value
+                    // type marked `^` is reached through an EXTENSION (QFont -> QQuickFontValueType)
+                    // and has no meta-object of its own, so it stays refused — that distinction is
+                    // what made this safe to enable at all.
+                    if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
+                        auto it = qc->second.find(head);
+                        if (it != qc->second.end() && !it->second.empty()
+                                && it->second.back() != '*' && it->second.back() != '^') {
+                            rawBaseVGroupAssigns.push_back({hid, es->expression});
                             continue;
                         }
                     }
@@ -3623,6 +3638,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         baseWire += "        setVgroup(this, \"" + gname + "\", \"" + mem + "\", " + val + ");\n";
         node.valueGroupProps.push_back({ga.first, mt->second});
+    }
+
+    // Grouped assignment on a plain Q_GADGET value: read-modify-write of the whole value.
+    for (auto &ga : rawBaseVGroupAssigns) {
+        auto dot = ga.first.find('.');
+        std::string gname = ga.first.substr(0, dot), mem = ga.first.substr(dot + 1);
+        std::string vty = inferType(ga.second, ptype), val;
+        if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
+                || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
+            std::fprintf(stderr, "qmltc-d: %s: value-group member '%s' in %s: value is not a scalar "
+                         "the channel can convert [%s] — skipped (later phase)\n",
+                         inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
+            ++partial; continue;
+        }
+        baseWire += "        setVgroup(this, \"" + gname + "\", \"" + mem + "\", " + val + ");\n";
+        node.valueGroupProps.push_back({ga.first, vty});
     }
 
     // Grouped assignment where the group is an OBJECT: a property write on what it holds.

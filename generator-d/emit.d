@@ -469,6 +469,12 @@ void main(string[] args) {
                 default: return t;
             }
         }
+        // A value type whose QML-visible members come from an EXTENSION (`extension:` in the
+        // registry) is NOT writable through the plain meta-object channel: QFont carries
+        // `extension: "QQuickFontValueType"` and has no gadget meta-object of its own, while
+        // QQuickIcon has none and IS the gadget. That is the difference between a grouped write
+        // that works and one that throws at construction — and it is data, not a list of names.
+        bool[string] extendedValueType;
         string[string] protoOf, qmlOf;
         string[string][string] ownProps, ownNotify;
         string qmap, qprops; int rows2, rows3;
@@ -506,6 +512,8 @@ void main(string[] args) {
                     foreach (par; sm[1].matchAll(reParamT)) ptypes ~= cxxParam(par[1]);
                     sigOf[sn[1]] = sn[1] ~ "(" ~ ptypes.join(",") ~ ")";
                 }
+                if (blk.canFind("accessSemantics: \"value\"") && blk.canFind("extension: \""))
+                    extendedValueType[nm[1]] = true;
                 foreach (pm; blk.matchAll(rePropBlock)) {
                     auto pn = pm[1].matchFirst(reName2);
                     auto pt = pm[1].matchFirst(reType2);
@@ -544,6 +552,9 @@ void main(string[] args) {
                             // dtype is empty for a non-scalar; the raw C++ name follows it.
                             string dty = pty, cxx = pty;
                             if (pty.length && pty[0] == '\x01') { dty = ""; cxx = pty[1 .. $]; }
+                            // `^` marks a value type reached through an extension: its members are
+                            // not writable through the plain channel (see extendedValueType).
+                            if (cxx.length && cxx[$ - 1] != '*' && cxx in extendedValueType) cxx ~= "^";
                             qprops ~= qmlName ~ "\t" ~ pn ~ "\t" ~ dty ~ "\t" ~ nsig
                                     ~ "\t" ~ cxx ~ "\n"; rows3++;
                         }

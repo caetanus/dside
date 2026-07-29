@@ -129,12 +129,17 @@ through an `id`), which is exactly the guard we want.
   registry marks it with `isPointer`, which the generator now records in the property table as a
   trailing `*`. The member's type comes from the value and QMetaType converts; setProp throws if
   the member does not exist, so a wrong name is loud rather than dropped.
+- **Value groups that are plain gadgets**: `icon.width: 24`. QQuickIcon has its own meta-object,
+  so setVgroup does a read-modify-write through it. What made this safe to enable is telling it
+  apart from the case below at COMPILE time — see the `^` marker.
 - **NOT supported: `font.pixelSize: 22` on a bound type.** It looks like it should work through
   the same channel — resolve the member by name at runtime, let QMetaType convert — but QFont is
   not a Q_GADGET: `QMetaType::metaObjectForType` finds nothing for it, because QML reaches font
   members through a FOREIGN value-type wrapper (QQuickFontValueType), not the plain meta-object.
   Emitting the call converted a compile-time partial into a construction-time throw, so it stays
-  refused. `setVgroup` now THROWS when the member does not resolve, rather than dropping the
+  refused — and it is now refused BY DATA rather than by guesswork: the registry says
+  `extension: "QQuickFontValueType"` on QFont and says nothing on QQuickIcon, so the generator
+  records a `^` on extension-backed value types and qmltc-d routes on it. `setVgroup` now THROWS when the member does not resolve, rather than dropping the
   assignment and leaving a default that looks deliberate — which is how this was caught.
 - **Enum properties by KEY**: `verticalAlignment: Text.AlignVCenter` is written as the string
   `"AlignVCenter"` and the meta-object converts it through QMetaEnum — the numeric value never has
