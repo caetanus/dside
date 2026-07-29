@@ -66,6 +66,9 @@ static std::map<std::string, std::pair<std::string, std::string>> g_qmlMap;
 // (written next to qmlmap.tsv by the same generator pass, so the two cannot drift). qmlmap says
 // which class backs a name — enough to CONSTRUCT one; this is what lets a member be read.
 static std::map<std::string, std::map<std::string, std::string>> g_qmlProps, g_qmlNotify;
+// Raw C++ type name of every property, including those with no D scalar mapping — so a
+// diagnostic can say WHICH type is unsupported instead of just "unsupported".
+static std::map<std::string, std::map<std::string, std::string>> g_qmlCxxType;
 
 static void loadQmlProps(const char *path) {
     std::ifstream f(path);
@@ -77,8 +80,18 @@ static void loadQmlProps(const char *path) {
         auto t3 = line.find('\t', t2 + 1);
         std::string qml = line.substr(0, t1), prop = line.substr(t1 + 1, t2 - t1 - 1);
         if (t3 == std::string::npos) { g_qmlProps[qml][prop] = line.substr(t2 + 1); continue; }
-        g_qmlProps[qml][prop] = line.substr(t2 + 1, t3 - t2 - 1);
-        g_qmlNotify[qml][prop] = line.substr(t3 + 1);
+        std::string dty = line.substr(t2 + 1, t3 - t2 - 1);
+        auto t4 = line.find('\t', t3 + 1);
+        std::string nsig = t4 == std::string::npos ? line.substr(t3 + 1)
+                                                   : line.substr(t3 + 1, t4 - t3 - 1);
+        // The D type is EMPTY for a property whose C++ type has no scalar mapping (QColor,
+        // QQuickPen, an enum). Those rows used to be dropped by the generator, taking their
+        // notify with them — which is why a binding on such a property could not react and a
+        // handler on its notify was refused. The notify is recorded for every property now;
+        // only the D-typed ones enter g_qmlProps, since that table types a FIELD.
+        if (!dty.empty()) g_qmlProps[qml][prop] = dty;
+        if (!nsig.empty()) g_qmlNotify[qml][prop] = nsig;
+        if (t4 != std::string::npos) g_qmlCxxType[qml][prop] = line.substr(t4 + 1);
     }
 }
 
@@ -2465,11 +2478,29 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             bodyOk = fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(h.stmt, ptype, hbody);
         }
-        if ((!isCustom && (notifyProp.empty() || !isProp(notifyProp))) || !bodyOk) {
+        // `onWidthChanged` on an Item: width belongs to the BOUND BASE, not to this document, so
+        // isProp() says no. The notify table knows it (and knows its real signature), which is
+        // what makes the handler connectable — refusing it was a gap, not a rule.
+        bool baseNotifyOk = false;
+        std::string baseNotifySig;
+        if (!isCustom && !notifyProp.empty()) {
+            auto qn = g_qmlNotify.find(g_selfQmlType);
+            if (qn != g_qmlNotify.end()) {
+                auto nt = qn->second.find(notifyProp);
+                if (nt != qn->second.end() && !nt->second.empty()) {
+                    baseNotifyOk = true;
+                    baseNotifySig = nt->second;
+                }
+            }
+        }
+        if ((!isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp))) || !bodyOk) {
             std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
             ++partial; continue;
         }
-        if (!notifyProp.empty() && std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
+        // A base property's notify is Qt's, not one we synthesise, so it must NOT go on
+        // needsNotify (that list makes qmltc-d emit a Signal! field of its own).
+        if (!baseNotifyOk && !notifyProp.empty()
+                && std::find(needsNotify.begin(), needsNotify.end(), notifyProp) == needsNotify.end())
             needsNotify.push_back(notifyProp);
         // A custom signal handler takes the signal's parameters (accessible by name in the body);
         // param NAMES come from the handler function's formals when present, TYPES from the signal.
@@ -2489,7 +2520,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string sndr = h.sender.empty() ? "this" : h.sender;
         std::string slotName = "__h_" + (h.sender.empty() ? "" : h.sender + "_") + h.sig;
         handlerSlots += "    @Slot void " + slotName + "(" + dparams + ") {\n" + hbody + "    }\n";
-        handlerWire += "        connectMeta(" + sndr + ", \"" + h.sig + "(" + cppsig + ")\", this, \""
+        // Connect with the base notify's REAL signature when that is what this handler is on.
+        std::string connSig = baseNotifyOk ? baseNotifySig : (h.sig + "(" + cppsig + ")");
+        handlerWire += "        connectMeta(" + sndr + ", \"" + connSig + "\", this, \""
                      + slotName + "(" + cppsig + ")\");\n";
     }
     // Component.onCompleted runs once at construction — emit its body at the tail of __qmltcWire

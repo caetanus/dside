@@ -508,9 +508,13 @@ void main(string[] args) {
                     auto pn = pm[1].matchFirst(reName2);
                     auto pt = pm[1].matchFirst(reType2);
                     if (pn.empty || pt.empty) continue;
+                    // A property whose C++ type has no D scalar mapping used to be DROPPED here,
+                    // taking its notify with it — 194 of 458 declared properties across the bound
+                    // QtQuick types, 26 of them QColor. They are not unreachable: QVariant
+                    // converts, which is how `color` already works. Record the row with an empty
+                    // D type and the raw C++ type name, and let the consumer decide.
                     auto pty = dScalar(pt[1]);
-                    if (!pty.length) continue;
-                    ownProps[nm[1]][pn[1]] = pty;
+                    ownProps[nm[1]][pn[1]] = pty.length ? pty : ("\x01" ~ pt[1]);
                     auto nt = pm[1].matchFirst(reNotify);
                     if (!nt.empty) {
                         auto sg = nt[1] in sigOf;
@@ -528,7 +532,11 @@ void main(string[] args) {
                             emitted[pn] = true;
                             string nsig;
                             if (auto nm2 = c in ownNotify) if (auto x = pn in *nm2) nsig = *x;
-                            qprops ~= qmlName ~ "\t" ~ pn ~ "\t" ~ pty ~ "\t" ~ nsig ~ "\n"; rows3++;
+                            // dtype is empty for a non-scalar; the raw C++ name follows it.
+                            string dty = pty, cxx = pty;
+                            if (pty.length && pty[0] == '\x01') { dty = ""; cxx = pty[1 .. $]; }
+                            qprops ~= qmlName ~ "\t" ~ pn ~ "\t" ~ dty ~ "\t" ~ nsig
+                                    ~ "\t" ~ cxx ~ "\n"; rows3++;
                         }
                 auto nx = c in protoOf;
                 c = nx ? *nx : "";
