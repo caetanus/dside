@@ -127,6 +127,30 @@ static std::string qname(UiQualifiedId *id) {
     return s;
 }
 
+// `import QtQuick.Templates as T` writes the root as `T.Button`. The qualifier names an IMPORT,
+// not a scope of the type: the type is still `Button`. Stripped only when the prefix is a
+// DECLARED alias, so a genuinely dotted name (`QtQuick.Item` style, or a grouped path) is left
+// alone. Qt's own QtQuick.Controls are written this way — without this, all 69 of them fail at
+// the root and nothing else in the file is even reached.
+static std::set<std::string> g_importAliases;
+
+static std::string typeName(UiQualifiedId *id) {
+    std::string n = qname(id);
+    auto dot = n.find('.');
+    if (dot != std::string::npos && g_importAliases.count(n.substr(0, dot)))
+        return n.substr(dot + 1);
+    return n;
+}
+
+// Records `as X` aliases from a document's import headers.
+static void collectImportAliases(UiProgram *program) {
+    for (auto *h = program ? program->headers : nullptr; h; h = h->next)
+        if (auto *imp = cast<UiImport *>(h->headerItem)) {
+            std::string a = qs(imp->importId.toString());
+            if (!a.empty()) g_importAliases.insert(a);
+        }
+}
+
 // ---- app-defined D QML types ------------------------------------------------------------------
 // A QML type does not have to come from C++: `@QObject` + qmlRegisterType!T exports a D class as a
 // QML element, and the engine sees a meta-object either way. So qmltc-d can compile a .qml rooted
@@ -214,11 +238,12 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
     auto *parser = new Parser(engine);
     if (!parser->parse()) { std::fprintf(stderr, "qmltc-d: %s is not a parseable .qmltypes\n", path); return false; }
     auto *program = cast<UiProgram *>(parser->ast());
+    collectImportAliases(program);   // `import ... as T` -> `T.Button` is `Button`
     auto *mod = program && program->members ? cast<UiObjectDefinition *>(program->members->member) : nullptr;
     if (!mod) { std::fprintf(stderr, "qmltc-d: %s has no Module block\n", path); return false; }
     for (auto *m = mod->initializer ? mod->initializer->members : nullptr; m; m = m->next) {
         auto *comp = cast<UiObjectDefinition *>(m->member);
-        if (!comp || qname(comp->qualifiedTypeNameId) != "Component") continue;
+        if (!comp || typeName(comp->qualifiedTypeNameId) != "Component") continue;
         DType dt;
         std::string uri;
         dt.bound = bound;
@@ -245,19 +270,19 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
             }
             auto *sub = cast<UiObjectDefinition *>(c->member);
             if (!sub) continue;
-            if (qname(sub->qualifiedTypeNameId) == "Signal") {
+            if (typeName(sub->qualifiedTypeNameId) == "Signal") {
                 std::string sn = qmltypesField(sub->initializer, "name");
                 std::string ps;
                 for (auto *pm = sub->initializer ? sub->initializer->members : nullptr; pm; pm = pm->next)
                     if (auto *par = cast<UiObjectDefinition *>(pm->member);
-                            par && qname(par->qualifiedTypeNameId) == "Parameter") {
+                            par && typeName(par->qualifiedTypeNameId) == "Parameter") {
                         std::string pt = qmltypesField(par->initializer, "type");
                         if (!pt.empty()) ps += (ps.empty() ? "" : ",") + pt;
                     }
                 if (!sn.empty()) dt.signalSig[sn] = sn + "(" + ps + ")";
                 continue;
             }
-            if (qname(sub->qualifiedTypeNameId) != "Property") continue;
+            if (typeName(sub->qualifiedTypeNameId) != "Property") continue;
             std::string pn = qmltypesField(sub->initializer, "name");
             const char *pd = dtypeOfCxx(qmltypesField(sub->initializer, "type"));
             if (pn.empty()) continue;
@@ -488,9 +513,9 @@ static void prescanChildIds(UiObjectInitializer *init) {
         {
             std::string ctype;
             if (auto *ob2 = cast<UiObjectBinding *>(pub->binding); ob2 && ob2->qualifiedTypeNameId)
-                ctype = qname(ob2->qualifiedTypeNameId);
+                ctype = typeName(ob2->qualifiedTypeNameId);
             else if (auto *od2 = cast<UiObjectDefinition *>(pub->binding); od2 && od2->qualifiedTypeNameId)
-                ctype = qname(od2->qualifiedTypeNameId);
+                ctype = typeName(od2->qualifiedTypeNameId);
             if (auto qp = g_qmlProps.find(ctype); qp != g_qmlProps.end())
                 for (auto &pp : qp->second) bps[pp.first] = pp.second;
             if (auto qn2 = g_qmlNotify.find(ctype); qn2 != g_qmlNotify.end())
@@ -1588,6 +1613,7 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     auto *parser = new Parser(engine);
     if (!parser->parse()) return nullptr;
     auto *program = cast<UiProgram *>(parser->ast());
+    collectImportAliases(program);   // `import ... as T` -> `T.Button` is `Button`
     if (!program || !program->members || !program->members->member) return nullptr;
     if (isSingleton) {
         *isSingleton = false;
@@ -1656,12 +1682,12 @@ struct StateEntry { std::string name; std::vector<StateOverride> overrides; };
 static bool collectStates(UiObjectMember *binding, std::vector<StateEntry> &out) {
     std::vector<UiObjectInitializer *> stateInits;
     if (auto *ob = cast<UiObjectBinding *>(binding)) {
-        if (!ob->qualifiedTypeNameId || qname(ob->qualifiedTypeNameId) != "State") return false;
+        if (!ob->qualifiedTypeNameId || typeName(ob->qualifiedTypeNameId) != "State") return false;
         stateInits.push_back(ob->initializer);
     } else if (auto *arr = cast<UiArrayBinding *>(binding)) {
         for (auto *m = arr->members; m; m = m->next)
             if (auto *od = cast<UiObjectDefinition *>(m->member)) {
-                if (!od->qualifiedTypeNameId || qname(od->qualifiedTypeNameId) != "State") return false;
+                if (!od->qualifiedTypeNameId || typeName(od->qualifiedTypeNameId) != "State") return false;
                 stateInits.push_back(od->initializer);
             }
     } else return false;
@@ -1678,7 +1704,7 @@ static bool collectStates(UiObjectMember *binding, std::vector<StateEntry> &out)
                 continue;
             }
             auto *od = cast<UiObjectDefinition *>(m->member);
-            if (!od || !od->qualifiedTypeNameId || qname(od->qualifiedTypeNameId) != "PropertyChanges")
+            if (!od || !od->qualifiedTypeNameId || typeName(od->qualifiedTypeNameId) != "PropertyChanges")
                 return false;
             for (auto *pm = od->initializer ? od->initializer->members : nullptr; pm; pm = pm->next) {
                 auto *psb = cast<UiScriptBinding *>(pm->member);
@@ -2061,7 +2087,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // so flag PARTIAL — treating it as a `<prop>: Type{}` child would emit a wrong dump.
             if (ob->hasOnToken) {
                 std::fprintf(stderr, "qmltc-d: %s: '%s on %s' value source in %s not yet supported — skipped (later phase)\n",
-                             inPath, qname(ob->qualifiedTypeNameId).c_str(), qname(ob->qualifiedId).c_str(), cls.c_str());
+                             inPath, typeName(ob->qualifiedTypeNameId).c_str(), qname(ob->qualifiedId).c_str(), cls.c_str());
                 ++partial; continue;
             }
             // A DOTTED target (`group.object: QtObject { … }`) binds a child to a member of a
@@ -2099,7 +2125,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 continue;
             }
             childBindings.push_back({qname(ob->qualifiedId), ob->initializer,
-                                         ob->qualifiedTypeNameId ? qname(ob->qualifiedTypeNameId) : ""});
+                                         ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : ""});
             continue;
         }
         // `listProp: [ Type { … }, Type { … } ]` — an array binding fills a `list<>` property.
@@ -2208,7 +2234,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
             if (pub->binding) {
                 if (auto *ob = cast<UiObjectBinding *>(pub->binding);
-                        ob && ob->qualifiedTypeNameId && isComponentType(qname(ob->qualifiedTypeNameId))) {
+                        ob && ob->qualifiedTypeNameId && isComponentType(typeName(ob->qualifiedTypeNameId))) {
                     std::fprintf(stderr, "qmltc-d: %s: `Component` (property '%s') is a template, not an "
                                  "object — compiling it would instantiate its contents eagerly; skipped "
                                  "(later phase)\n", inPath, name.c_str());
@@ -2217,7 +2243,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (auto *ob = cast<UiObjectBinding *>(pub->binding)) {
                     // `property QtObject c: Connections { ... }` — the only spelling available on a
                     // QtObject root, which has no default property to hold a bare child.
-                    if (ob->qualifiedTypeNameId && qname(ob->qualifiedTypeNameId) == "Connections") {
+                    if (ob->qualifiedTypeNameId && typeName(ob->qualifiedTypeNameId) == "Connections") {
                         if (!connectionsHandlers(ob->initializer, rawHandlers)) {
                             std::fprintf(stderr, "qmltc-d: %s: Connections '%s' in %s needs `target: <this"
                                          " object's id>` and `function on<Signal>(...)` members — skipped"
@@ -2227,10 +2253,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         continue;
                     }
                     childBindings.push_back({name, ob->initializer,
-                                             ob->qualifiedTypeNameId ? qname(ob->qualifiedTypeNameId) : ""}); continue;
+                                             ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : ""}); continue;
                 }
                 if (auto *od = cast<UiObjectDefinition *>(pub->binding)) { childBindings.push_back({name, od->initializer,
-                                        od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : ""}); continue; }
+                                        od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : ""}); continue; }
             }
             if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
             // The VALUE must compile as the inferred type too, or `property var n: 42` emits a
@@ -2350,7 +2376,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto &childTypeMap = childType;
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
-        std::string childType = od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : "";
+        std::string childType = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
         if (isComponentType(childType)) {
             std::fprintf(stderr, "qmltc-d: %s: `Component` in %s is a template, not an object — "
                          "compiling it would instantiate its contents eagerly; skipped (later "
@@ -2379,7 +2405,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              inPath, childType.c_str(), cls.c_str());
                 ++partial; continue;
             }
-            std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
+            std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
             childBase = boundTypeFor(ltRoot).first;
             childBaseImport = boundTypeFor(ltRoot).second;
             childInit = lt->initializer;
@@ -2705,7 +2731,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (auto &ae : arrayBindings) {
         std::string field = "_al_" + ae.prop + "_" + std::to_string(ae.idx);
         std::string childCls = cls + "_" + ae.prop + "_" + std::to_string(ae.idx);
-        std::string childType = ae.def->qualifiedTypeNameId ? qname(ae.def->qualifiedTypeNameId) : "";
+        std::string childType = ae.def->qualifiedTypeNameId ? typeName(ae.def->qualifiedTypeNameId) : "";
         auto cbt = boundTypeFor(childType);
         if (!cbt.first.empty()) g_extraImports += "import " + cbt.second + ";\n";
         ObjNode kid = compileObject(ae.def->initializer, childCls, classes, partial, inPath, cbt.first);
@@ -3353,6 +3379,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     auto *program = cast<UiProgram *>(parser.ast());
+    collectImportAliases(program);   // `import ... as T` -> `T.Button` is `Button`
     if (!program || !program->members || !program->members->member) {
         std::fprintf(stderr, "qmltc-d: %s has no root object\n", inPath); return 1;
     }
@@ -3361,7 +3388,7 @@ int main(int argc, char **argv) {
 
     // Map the root's QML type: a bound Qt type (e.g. Item -> QQuickItem) makes qmltc-d emit a D
     // SUBCLASS of it (via the QtdWidget mixin); QtObject/unmapped stays a fresh @QObject.
-    std::string rootType = root->qualifiedTypeNameId ? qname(root->qualifiedTypeNameId) : "";
+    std::string rootType = root->qualifiedTypeNameId ? typeName(root->qualifiedTypeNameId) : "";
     auto bt = boundTypeFor(rootType);
     UiObjectInitializer *rootInit = root->initializer;
     std::string rootResolvedPath;
@@ -3370,7 +3397,7 @@ int main(int argc, char **argv) {
         // definition's base and MERGE this file's use-site members onto the local definition's.
         if (UiObjectDefinition *lt = loadLocalType(rootType, inPath, &rootResolvedPath)) {
             g_localMerged = true;
-            std::string ltRoot = lt->qualifiedTypeNameId ? qname(lt->qualifiedTypeNameId) : "";
+            std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
             bt = boundTypeFor(ltRoot);
             rootInit = lt->initializer ? lt->initializer : root->initializer;
             if (lt->initializer && root->initializer && root->initializer->members) {

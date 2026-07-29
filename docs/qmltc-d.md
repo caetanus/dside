@@ -71,6 +71,11 @@ through an `id`), which is exactly the guard we want.
   inferred bottom-up from the parameter types once they are known. A call in a binding is coerced to the target property (`property int d:
   half()` -> `cast(int)(half())`) and is reactive through its arguments. Void functions
   (assignments/calls) and `return`-bodied functions are both supported.
+- **Qualified imports**: `import QtQuick.Templates as T` makes the type `T.Button`. The qualifier
+  names the IMPORT, not a scope of the type, so it is stripped wherever a type name is read —
+  but only when the prefix is a DECLARED alias, leaving genuinely dotted names alone. This is how
+  every one of Qt's own `QtQuick/Controls/Basic/*.qml` is written: without it all 69 fail at the
+  root and no other feature in those files is ever exercised (69 unresolved roots -> 4).
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
