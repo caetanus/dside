@@ -148,7 +148,8 @@ through an `id`), which is exactly the guard we want.
   `extension: "QQuickFontValueType"` on QFont and says nothing on QQuickIcon, so the generator
   records a `^` on extension-backed value types and qmltc-d routes on it. `setVgroup` now THROWS when the member does not resolve, rather than dropping the
   assignment and leaving a default that looks deliberate — which is how this was caught.
-- **Enum properties by KEY**: `verticalAlignment: Text.AlignVCenter` is written as the string
+- **Enum properties by KEY**, directly or as a TERNARY between two members (`alignment: cond ?
+  Qt.AlignCenter : Qt.AlignLeft`): `verticalAlignment: Text.AlignVCenter` is written as the string
   `"AlignVCenter"` and the meta-object converts it through QMetaEnum — the numeric value never has
   to be known here, which is the same reason a QColor literal works. Recognised as `Type.Member`
   where Type is a bound QML type that is not an object in scope, and Member is capitalised.

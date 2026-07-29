@@ -3355,24 +3355,39 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         ty = "string";
                     }
                 }
-            // `verticalAlignment: Text.AlignVCenter` — an ENUM member of a bound QML type. The
-            // meta-object converts a KEY STRING through QMetaEnum on write, so the numeric value
-            // never has to be known here.
+            // An ENUM member (`Text.AlignVCenter`, `Qt.AlignLeft`): the meta-object converts a KEY
+            // STRING through QMetaEnum on write, so the numeric value is never needed here. `Qt` is
+            // the namespace holder rather than a bound type, and the COMPARISON path accepts it, so
+            // this must too. Returns the key, or empty when the expression is not an enum member.
+            auto enumKeyOf = [&](ExpressionNode *x) -> std::string {
+                auto *fme = cast<FieldMemberExpression *>(x);
+                if (!fme) return "";
+                auto *tb = cast<IdentifierExpression *>(fme->base);
+                if (!tb) return "";
+                std::string tn = qs(tb->name.toString()), mem = qs(fme->name.toString());
+                if (!resolveObj(tb).empty() || g_singletons.count(tn) || mem.empty()
+                        || !std::isupper((unsigned char)mem[0])
+                        || (tn != "Qt" && !g_qmlCxxType.count(tn))) return "";
+                return mem;
+            };
             if (srcObj.empty())
-                if (auto *fme = cast<FieldMemberExpression *>(ba.second))
-                    if (auto *tb = cast<IdentifierExpression *>(fme->base)) {
-                        std::string tn = qs(tb->name.toString()), mem = qs(fme->name.toString());
-                        // `Qt` is the namespace enum holder, not a bound type — the COMPARISON
-                        // path already accepts it, and an assignment must agree or the same
-                        // `Qt.AlignLeft` compiles in one position and not the other.
-                        if (resolveObj(tb).empty() && !g_singletons.count(tn) && !mem.empty()
-                                && std::isupper((unsigned char)mem[0])
-                                && (tn == "Qt" || g_qmlCxxType.count(tn))) {
-                            baseWire += "        setProp(this, \"" + ba.first + "\", \"" + mem + "\");\n";
-                            node.baseProps.push_back({ba.first, "string"});
-                            continue;
-                        }
+                if (std::string k = enumKeyOf(ba.second); !k.empty()) {
+                    baseWire += "        setProp(this, \"" + ba.first + "\", \"" + k + "\");\n";
+                    node.baseProps.push_back({ba.first, "string"});
+                    continue;
+                }
+            // ...and a TERNARY between two enum members (`alignment: cond ? Qt.AlignCenter :
+            // Qt.AlignLeft`). The direct form was accepted and this one was not, which is the same
+            // asymmetry that kept turning up: one spelling compiles, the other does not.
+            if (srcObj.empty())
+                if (auto *cnd = cast<ConditionalExpression *>(ba.second)) {
+                    std::string k1 = enumKeyOf(cnd->ok), k2 = enumKeyOf(cnd->ko), ce;
+                    if (!k1.empty() && !k2.empty() && compileExpr(cnd->expression, "bool", ce)) {
+                        copyAssign = "        setProp(this, \"" + ba.first + "\", " + ce
+                                   + " ? \"" + k1 + "\" : \"" + k2 + "\");\n";
+                        ty = "string";
                     }
+                }
             // `color: defaultIconColor` — a value-typed property of THIS object, by bare name.
             if (srcObj.empty())
                 if (auto *bi = cast<IdentifierExpression *>(ba.second)) {
