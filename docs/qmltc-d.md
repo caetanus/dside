@@ -828,3 +828,39 @@ ELEMENT NAME (Rectangle <- QQuickRectangle) genuinely lives only in the registry
 
 Not started: it replaces the extraction layer wholesale, which is not something to begin at the
 tail of a session. The verification above is the part worth not losing.
+
+
+## The metric: correctness of what IS translated, not percentage translated
+
+Qt's own qmltc does not translate everything either — what it cannot compile falls back to the
+AOT/bytecode path. So "document fully translated" was never the bar, not even for the reference
+implementation, and measuring against it made every partial look like a failure.
+
+The bar that matters here:
+
+1. what IS translated must be CORRECT — verified against the engine, not against itself;
+2. what is NOT translated must be REPORTED (the PARTIAL exit and a named reason per member), so a
+   fallback can pick it up and so nothing silently does the wrong thing.
+
+That reframes the audit results. It found three defects of the first kind — a binding on a base
+property that never reacted, a base property typed from the assigned literal (int for a qreal),
+and property writes that could not fail — plus one test of mine that asserted on the D field and
+so would have passed with the meta-object broken. Those are the wins. The coverage numbers
+("4 of 944 complete") measure the wrong thing.
+
+Corrected measurement of omissions over Qt's own first 400 documents, after the audit
+(stderr captured to a file — earlier figures in this repo's history counted generated stdout
+lines by mistake and are not comparable):
+
+| cause | count |
+|---|---|
+| `alias` whose target is unsupported | 228 |
+| root type not a bound Qt type | 182 |
+| property with an unsupported binding/type | 111 |
+| unsupported default child | 57 |
+
+And the alias number is not an alias gap: `<id>.<member>` aliases work and are tested, including
+writes. They fail because the CHILD did not compile — DropShadowBase, SceneEffect, ssgiEffect are
+types from modules nobody bound, so the alias has nothing to point at. Unbound type is one cause
+wearing three hats (alias + root type + default child ~ 467 lines), and much of it is in modules
+that are not targets anyway (QtQuick3D.designer, Qt5Compat, HelperWidgets, WebEngine delegates).
