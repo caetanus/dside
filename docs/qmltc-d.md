@@ -161,6 +161,14 @@ through an `id`), which is exactly the guard we want.
 - **Value groups that are plain gadgets**: `icon.width: 24`. QQuickIcon has its own meta-object,
   so setVgroup does a read-modify-write through it. What made this safe to enable is telling it
   apart from the case below at COMPILE time — see the `^` marker.
+- **The 8 unresolved roots on Qt's Controls are all accounted for, and none is ours to fix.** Five
+  are Qt classes with NO export macro (QQuickDayOfWeekRow, QQuickMonthGrid, QQuickWeekNumberColumn,
+  QQuickCalendar, QQuickCalendarModel): a subclass references the base's ctor and staticMetaObject,
+  so unexported means unlinkable — the generator already refuses them for exactly that reason.
+  ApplicationWindow is a Window rather than an Item; the two spinboxes are excluded by the spec for
+  the private-symbol link failure recorded there. Those files account for 21% of the remaining
+  diagnostics, which is worth knowing before anyone tries to close that fraction by writing
+  features: there is no feature to write.
 - **Measured ceiling: ~250 declared properties per object.** Past it the GENERATED D stops
   compiling with "more than 65535 symbols with name `s`" — a D limit hit by a `static foreach` over
   signalMembers in qtmoc.d, which grows quadratically with the signal count. Verified: 250 compiles,
