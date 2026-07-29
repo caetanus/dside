@@ -1016,8 +1016,30 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 b && qs(fm->name.toString()) == "length" && g_valueLists.count(qs(b->name.toString()))) {
             out = "cast(int) " + qs(b->name.toString()) + ".length"; return true;
         }
-        // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
         auto *base = cast<IdentifierExpression *>(fm->base);
+        // `control.indicator && ...` — an OBJECT-valued property used as a truth value. In QML
+        // that is a null test, and the object is fetched through the meta-object, so it needs no
+        // type knowledge at all. Only for a bool target: as a value it would be the object.
+        if (dtype == "bool") {
+            std::string obj, ownerType, pre;
+            const OuterFrame *fr = nullptr;
+            std::string bn = base ? qs(base->name.toString()) : "";
+            if (!bn.empty()) {
+                if (outerHop(bn, pre, &fr)) { obj = pre.substr(0, pre.size() - 1); ownerType = fr->qmlType; }
+                else if (!g_selfId.empty() && bn == g_selfId) { obj = "this"; ownerType = g_selfQmlType; }
+            }
+            if (!obj.empty()) {
+                std::string mem = qs(fm->name.toString());
+                if (auto qc = g_qmlCxxType.find(ownerType); qc != g_qmlCxxType.end()) {
+                    auto it = qc->second.find(mem);
+                    if (it != qc->second.end() && !it->second.empty() && it->second.back() == '*') {
+                        out = "(propObj(" + obj + ", \"" + mem + "\") !is null)";
+                        return true;
+                    }
+                }
+            }
+        }
+        // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
         if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId)
             return readName(qs(fm->name.toString()), out);   // `self.x` reads x however x is stored
         // `<childId>.<prop>` -> the child object's D field. A child is a real @QObject field, so

@@ -201,6 +201,12 @@ through an `id`), which is exactly the guard we want.
   and the two-argument form was emitted as `a > b ? a : b`, evaluating each operand TWICE — every
   operand here being a meta-object read. Both now go through std.algorithm's variadic max/min,
   imported under a private alias so a QML property named `max` cannot collide.
+- **An object-valued property as a truth value**: `control.indicator ? a : b`, which Qt's Controls
+  use to guard padding. In QML that is a null test, and the object comes through the meta-object,
+  so it needs no type knowledge — only that the property is a pointer, which the `*` marker says.
+  Applies to a bool target only: as a value the expression would be the object itself. It has to be
+  tried BEFORE the self-reference and enclosing-object reads, both of which resolve the member as a
+  scalar and fail first.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 
