@@ -536,6 +536,13 @@ static void prescanChildIds(UiObjectInitializer *init) {
 // is desugared into ordinary handlers and reuses the connect machinery. Returns false when the
 // element uses a shape not handled yet (a target other than the enclosing object, or a member that
 // is not an on<Signal> function) — the caller reports that rather than wiring something wrong.
+// `Component { ... }` is a TEMPLATE, not an object: the engine instantiates nothing until
+// something asks (Loader.sourceComponent, createObject). Compiling it like an ordinary child
+// builds its contents eagerly, which is a different program — and silently, since the
+// differential only checks that everything the ENGINE has is covered, never that we built
+// something extra. Refused until it can be compiled as a factory.
+static bool isComponentType(const std::string &t) { return t == "Component"; }
+
 static bool connectionsHandlers(UiObjectInitializer *init, std::vector<RawHandler> &out) {
     std::vector<RawHandler> found;
     std::string sender;          // "" = this
@@ -2158,6 +2165,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
             if (pub->binding) {
+                if (auto *ob = cast<UiObjectBinding *>(pub->binding);
+                        ob && ob->qualifiedTypeNameId && isComponentType(qname(ob->qualifiedTypeNameId))) {
+                    std::fprintf(stderr, "qmltc-d: %s: `Component` (property '%s') is a template, not an "
+                                 "object — compiling it would instantiate its contents eagerly; skipped "
+                                 "(later phase)\n", inPath, name.c_str());
+                    ++partial; continue;
+                }
                 if (auto *ob = cast<UiObjectBinding *>(pub->binding)) {
                     // `property QtObject c: Connections { ... }` — the only spelling available on a
                     // QtObject root, which has no default property to hold a bare child.
@@ -2295,6 +2309,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
         std::string childType = od->qualifiedTypeNameId ? qname(od->qualifiedTypeNameId) : "";
+        if (isComponentType(childType)) {
+            std::fprintf(stderr, "qmltc-d: %s: `Component` in %s is a template, not an object — "
+                         "compiling it would instantiate its contents eagerly; skipped (later "
+                         "phase)\n", inPath, cls.c_str());
+            ++partial; continue;
+        }
         if (childType == "Connections") {
             if (!connectionsHandlers(od->initializer, rawHandlers)) {
                 std::fprintf(stderr, "qmltc-d: %s: Connections in %s needs `target: <this object's id>` and"
