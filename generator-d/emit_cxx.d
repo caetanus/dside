@@ -1339,7 +1339,13 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         }
         // Secondary bases: D can't multi-inherit, so reach each polymorphic secondary
         // base via a static_cast offset shim (qtmi) exposed as as<Base>().
-        foreach (b2; bases[1 .. $]) {
+        auto bspecs = baseSpecs(cur);   // parallel to `bases`, but keeps the access specifier
+        foreach (i, b2; bases[1 .. $]) {
+            // A non-PUBLIC base is not upcastable from outside the class, so a shim that
+            // static_casts to it is invalid C++ and fails the qtmi compile — which is what
+            // QQuickItemGroup (protected QQuickItemChangeListener) did to the whole binding.
+            if (i + 1 < bspecs.length && clang_getCXXAccessSpecifier(bspecs[i + 1]) != CX_CXXPublic)
+                continue;
             auto b2def = clang_getCursorDefinition(b2);
             if ((b2def.kind != CXCursor_ClassDecl && b2def.kind != CXCursor_StructDecl)
                 || !hasVirtualMethods(b2def)) continue;   // only polymorphic secondary bases

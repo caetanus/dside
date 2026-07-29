@@ -29,6 +29,9 @@ enum : int {
     CXCursor_CXXMethod = 21, CXCursor_Namespace = 22, CXCursor_Constructor = 24,
     CXCursor_TypeAliasDecl = 43,   // `using value_type = T;`
     CXCursor_Destructor = 25, CXCursor_CXXBaseSpecifier = 44,
+         // 70..73 are the invalid kinds (InvalidFile, NoDeclFound, NotImplemented, InvalidCode):
+         // clang_getCursorDefinition returns a null cursor in that range when there is no definition.
+         CXCursor_FirstInvalid = 70,
     // expression kinds start at 100 (used to detect default-arg values)
     CXCursor_FirstExpr = 100,
     CXCursor_AnnotateAttr = 406,   // __attribute__((annotate("qt_signal"))) on a signal

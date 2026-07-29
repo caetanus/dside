@@ -1,6 +1,6 @@
 {
   "qt_version": "6.11",
-  "pkg_config": "Qt6QuickTemplates2 Qt6Quick Qt6QmlModels Qt6Qml Qt6Gui Qt6Core",
+  "pkg_config": "Qt6QuickControls2Impl Qt6QuickTemplates2 Qt6Quick Qt6QmlModels Qt6Qml Qt6Gui Qt6Core",
   "out_dir": "../generated/qt-6.11/cxx-controls",
   "d_package": "qt.controls",
   "abi": "cxx",
@@ -67,9 +67,21 @@
     "QtQuick/private/qquicktextmetrics_p.h",
     "QtQuick/private/qquickvalidator_p.h",
     "QtQuick/private/qquickshortcut_p.h",
-    "QtQuick/private/qquickfontloader_p.h"
+    "QtQuick/private/qquickfontloader_p.h",
+    "QtQuickControls2Impl/private/qquickiconlabel_p.h",
+    "QtQuickControls2Impl/private/qquickchecklabel_p.h",
+    "QtQuickControls2Impl/private/qquickcolorimage_p.h",
+    "QtQuickControls2Impl/private/qquickiconimage_p.h",
+    "QtQuickControls2Impl/private/qquickclippedtext_p.h",
+    "QtQuickControls2Impl/private/qquickpaddedrectangle_p.h",
+    "QtQuickControls2Impl/private/qquickmnemoniclabel_p.h",
+    "QtQuickControls2Impl/private/qquickplaceholdertext_p.h",
+    "QtQuickControls2Impl/private/qquickitemgroup_p.h",
+    "QtQuickControls2Impl/private/qquickninepatchimage_p.h"
   ],
   "include_paths": [
+    "/usr/include/qt6/QtQuickControls2Impl/6.11.1/QtQuickControls2Impl",
+    "/usr/include/qt6/QtQuickControls2Impl/6.11.1",
     "/usr/include/qt6/QtQuickTemplates2/6.11.1",
     "/usr/include/qt6/QtQuickTemplates2/6.11.1/QtQuickTemplates2",
     "/usr/include/qt6/QtQuick/6.11.1",
@@ -88,7 +100,8 @@
   ],
   "qmltypes": [
     "/usr/lib/qt6/qml/QtQuick/Templates/plugins.qmltypes",
-    "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes"
+    "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes",
+    "/usr/lib/qt6/qml/QtQuick/Controls/impl/plugins.qmltypes"
   ],
   "subclass": [
     "QQuickBasePositioner",

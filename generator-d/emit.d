@@ -205,9 +205,11 @@ void main(string[] args) {
         if (auto sd = "subclass_derived" in spec.object) {
             int n0 = cast(int) SUBCLASS.length;
             foreach (baseJ; sd.array)
-                foreach (cur; targets)
+                foreach (cur; targets) {
+                    auto __n = clang_getCursorSpelling(cur).str;
                     if (derivesFrom(cur, baseJ.str) && isSubclassable(cur))
-                        SUBCLASS[clang_getCursorSpelling(cur).str] = true;
+                        SUBCLASS[__n] = true;
+                }
             writefln("subclass_derived: %d classes auto-subclassed", cast(int) SUBCLASS.length - n0);
         }
     } else {

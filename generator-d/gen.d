@@ -310,7 +310,26 @@ Param[] params(CXCursor cur) {
     return r;
 }
 
+// The base-SPECIFIER cursors, in declaration order and parallel to baseDecls(). baseDecls
+// resolves each to its type declaration, which loses the access specifier — and that specifier
+// decides whether an upcast to the base is even legal C++. QQuickItemGroup inherits
+// QQuickItemChangeListener protectedly; emitting a static_cast to it does not compile.
+CXCursor[] baseSpecs(CXCursor node) {
+    CXCursor[] r;
+    foreach (c; children(node))
+        if (c.kind == CXCursor_CXXBaseSpecifier)
+            r ~= c;
+    return r;
+}
+
 CXCursor[] baseDecls(CXCursor node) {
+    // Resolve to the DEFINITION first. A cursor that is only a declaration has no children, so a
+    // base reached that way came back with no bases of its own and the ancestry walk stopped one
+    // level in: QQuickCheckLabel -> QQuickText -> [] made derivesFrom(QQuickItem) false, and every
+    // QtQuick.Controls.impl type deriving through QQuickText was silently left unsubclassed (and
+    // so absent from qmlmap). isQObject and collectVirt walk the same chain and had the same hole.
+    auto def = clang_getCursorDefinition(node);
+    if (def.kind < CXCursor_FirstInvalid) node = def;
     CXCursor[] r;
     foreach (c; children(node))
         if (c.kind == CXCursor_CXXBaseSpecifier)

@@ -2714,6 +2714,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // declared type (taken from the property table); inferType is the fallback.
         std::string ty = g_baseProps.count(ba.first) ? g_baseProps[ba.first]
                                                      : inferType(ba.second, ptype);
+        // The table is authoritative and must be consulted before inferType's guess is accepted:
+        // g_baseProps only holds what the ROOT prescan recorded, so a child object's base
+        // property fell through to the literal — and to '?' whenever the value was not a literal.
+        // 74 of Qt's own Controls assignments were rejected this way on plain double/bool.
+        if (ty.empty() || !g_baseProps.count(ba.first))
+            if (auto qp = g_qmlProps.find(g_selfQmlType); qp != g_qmlProps.end()) {
+                auto pt = qp->second.find(ba.first);
+                if (pt != qp->second.end() && !pt->second.empty()) ty = pt->second;
+            }
         std::string val;
         bool scalar = (ty == "int" || ty == "string" || ty == "double" || ty == "bool");
         if (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
