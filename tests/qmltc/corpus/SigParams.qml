@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-10: a signal WITH parameters; the handler reads the argument.
 QtObject {
     signal valueChanged(int v)

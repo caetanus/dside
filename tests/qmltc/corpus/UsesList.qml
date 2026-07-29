@@ -1,5 +1,5 @@
 // Bare children land in the base type's list<> default property and are dumped at their index.
-import QtQml
+import QtQml 2.15
 ListHolder {
     property string hello: "parent"
     QtObject { property string hello: "item zero"; property int n: 0 }

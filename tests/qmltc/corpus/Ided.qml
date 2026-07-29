@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-5 fixture: an id and self member-access in bindings (root.x), incl. a transitive chain.
 QtObject {
     id: root

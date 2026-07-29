@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-10: local var declarations + multi-statement return functions.
 QtObject {
     id: root

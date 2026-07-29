@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-10: if/else control flow in a function + a handler.
 QtObject {
     property int x: 7

@@ -1,6 +1,6 @@
 // Calling a method on ANOTHER object through its id, and a Connections whose target is that
 // object rather than the enclosing one — the real shape of Connections.
-import QtQml
+import QtQml 2.15
 QtObject {
     id: root
     property int received: 0

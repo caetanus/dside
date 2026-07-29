@@ -1,6 +1,6 @@
 // `property alias` onto a BARE (default) child's property. The child is addressable by its id
 // exactly like one bound to a property is — this is the dominant alias shape in real QML.
-import QtQml
+import QtQml 2.15
 QtObject {
     id: root
     property alias inner: kid.value

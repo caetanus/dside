@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-6: mutate a CHILD property and see the child's binding AND a live child-alias update.
 QtObject {
     id: root

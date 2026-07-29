@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-6: string .length and Math.max/min/abs in bindings.
 QtObject {
     property string title: "hello"

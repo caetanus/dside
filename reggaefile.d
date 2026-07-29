@@ -13,7 +13,7 @@ import std.conv : to;
 import std.file : getcwd, exists, dirEntries, SpanMode, readText;
 import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
 import std.array : array, replace, join, split;
-import std.algorithm : map, filter, sort, any, startsWith;
+import std.algorithm : map, filter, sort, any, startsWith, canFind;
 import std.process : execute;
 import std.string : strip;
 
@@ -137,12 +137,18 @@ Build reggaeBuild() {
         // the oracle went unnoticed.
         auto qml5 = qtdBinding(root, "spec_cxx_qml_qt5.json", ["Qt5Qml", "Qt5Gui"]);
         qmlSuite(qml5, "-qt5");
-        // qmltc-d on Qt5 is NOT wired yet, deliberately. The compiler builds against Qt5's parser
-        // and emits byte-identical D (verified), the generated D compiles and RUNS there, and the
-        // oracle now compiles — but the oracle ABORTS at runtime on Qt5 (uncaught exception inside
-        // qtd_qmlvalues_main). Wiring the targets before that is fixed would put 130 red targets in
-        // the build, and a differential whose verifier does not run proves nothing.
-        //   all ~= qmltcTargets(root, qml5, buildPath(root, "tests", "qmltc", "corpus"), "5");
+        // qmltc-d on Qt5. Qt ships no qmltc there at all, so this combination is covered by
+        // nothing else — and it was covered by nothing here either until the audit.
+        // AliasBare uses `default property QtObject content: QtObject {}` — Qt6-only syntax that
+        // Qt5's OWN engine rejects at 8:49, exactly where qmltc-d reports it. Nothing to compare.
+        // The skip list is what Qt5's OWN ENGINE cannot load, established by running it over the
+        // corpus rather than guessed: AliasBare uses `default property T x: T {}` and ListInt uses
+        // `list<int>`, both Qt6-only syntax that Qt5 rejects at the same line and column qmltc-d
+        // reports. SingletonFixture is a `pragma Singleton` FIXTURE (the UsesSingleton test imports it);
+        // Qt5's QQmlComponent refuses to instantiate such a file directly, so there is nothing to
+        // compare against — Qt6 tolerates it, which is why this only shows here.
+        all ~= qmltcTargets(root, qml5, buildPath(root, "tests", "qmltc", "corpus"), "5",
+                            ["AliasBare", "ListInt", "SingletonFixture"]);
     }
 
     // --- lupdate-d extraction, in the build of record: run the D-aware extractor on a fixture
@@ -416,7 +422,11 @@ Target qmltcTool(string root, QtdBinding bind) {
 // generate <Name>.d, link it against the qml binding, run it and the oracle, diff. All artifact
 // paths are absolute (under the qml binding's bdir) so reggae keeps them where we reference them.
 // PHASE 1 corpus is literal-scalar roots; bindings/children come in later phases.
-Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag) {
+// `skip` names corpus files the ENGINE of that Qt cannot parse, so a differential against it is
+// impossible by construction — not a gap in qmltc-d. Qt5 rejects `default property T x: T {}`
+// (Qt6-only syntax) at the same line and column our compiler reports it.
+Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag,
+                      string[] skip = []) {
     if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
     auto here = buildPath(root, "tests", "qmltc");
     if (!exists(corpusDir)) return [];
@@ -425,8 +435,14 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     auto toolBin = buildPath(bind.bdir, "qmltc-d");
 
     // oracle uses only the PUBLIC QML API (QQmlComponent) + Gui (QGuiApplication); loads QtQuick at runtime.
-    auto oracleFlags = pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
-    auto oracleLibs = execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip;
+    // From the SAME Qt the binding was generated for. Hardcoding Qt6 here built a Qt6 oracle into
+    // the qt-5.15 build dir, which then loaded libQt6Core alongside a Qt5 binding and crashed in
+    // QObject::property — diagnosed as "the oracle aborts on Qt5" until the backtrace named the
+    // library. The tool had the same bug and was fixed one commit earlier; this is its twin.
+    auto oq = bind.mods.any!(m => m.startsWith("Qt5")) ? "Qt5" : "Qt6";
+    auto oracleMods = [oq ~ "Qml", oq ~ "Gui", oq ~ "Core"];
+    auto oracleFlags = pkgCflags(oracleMods) ~ " -std=c++17 -fPIC -O2";
+    auto oracleLibs = execute(["pkg-config", "--libs"] ~ oracleMods).output.strip;
     auto oracleBin = buildPath(bind.bdir, "qmlvalues");
     // guardedLink, not guarded: this binary is SHARED by every differential in the suite, so a
     // rebuild of it races with runs already using it — writing straight to the final path leaves a
@@ -450,6 +466,7 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     corpus.sort();
     foreach (qmlFile; corpus) {
         auto name = baseName(qmlFile).stripExtension;
+        if (skip.canFind(name)) continue;
         foreach (dc; DCS) {
             // qmlmap.tsv (QML-name -> bound C++ class) is a build output of the binding's gend run;
             // the tool reads it so its bound-type vocabulary is DATA, not hard-coded. Absent (e.g.

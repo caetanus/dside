@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-9: a declared param-less signal, emitted from a function, observed by a handler.
 QtObject {
     signal ping()

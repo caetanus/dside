@@ -1,7 +1,7 @@
 // `Qt.binding(...)` INSTALLS a new binding at runtime; assigning a plain value REMOVES the
 // binding altogether. Both are compiled as a selector on the property: every recompute is
 // connected up front and only the active one acts, so nothing has to be disconnected at runtime.
-import QtQml
+import QtQml 2.15
 QtObject {
     property int p1: 1
     property int p2: p1 + 1

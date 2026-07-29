@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-3 seed: comparisons (bool), ternary, modulo, and int/double division coercion.
 QtObject {
     property int a: 6

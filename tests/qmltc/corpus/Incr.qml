@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-10: increment/decrement operators in functions and handlers.
 QtObject {
     property int count: 0

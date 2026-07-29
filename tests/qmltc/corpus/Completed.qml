@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-6: Component.onCompleted runs an init block at construction.
 QtObject {
     property int x: 3

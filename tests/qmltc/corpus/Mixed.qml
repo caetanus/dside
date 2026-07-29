@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 QtObject {
     property int zero: 0
     property bool off: false

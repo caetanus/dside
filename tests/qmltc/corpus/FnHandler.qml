@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-10: function-expression handler bodies `on<Sig>: function(a,b){...}`.
 QtObject {
     property int hits: 0

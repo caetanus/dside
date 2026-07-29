@@ -7,7 +7,7 @@
 // it in `conn`, while the compiled D side builds no object at all — the element is desugared into
 // connections. That does not weaken the comparison: an object-valued property carries no scalar of
 // its own (--verify-props recurses into it), and Connections declares nothing in this document.
-import QtQml
+import QtQml 2.15
 QtObject {
     id: root
     signal ping(int n)

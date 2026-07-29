@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-5 fixture: self property aliases via the root id (reactive: mirror updates on change).
 QtObject {
     id: root

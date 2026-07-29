@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-3: logical &&, ||, ! over comparisons and bool properties.
 QtObject {
     property int a: 6

@@ -1,6 +1,6 @@
 // A child declares an id, and the PARENT's bindings read the child's properties through it.
 // Reactivity must follow: changing the child's property re-runs the parent's binding.
-import QtQml
+import QtQml 2.15
 QtObject {
     id: root
     property QtObject kid: QtObject {

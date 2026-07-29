@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-8: functions WITH parameters (numeric -> double, string param inferred from concat).
 QtObject {
     property int base: 4

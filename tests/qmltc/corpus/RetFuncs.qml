@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-8: no-arg functions with typed (inferred) return values, used in bindings.
 QtObject {
     property int base: 5

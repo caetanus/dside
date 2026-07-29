@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-6: a multi-statement (brace block) signal handler body.
 QtObject {
     property int count: 0

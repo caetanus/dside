@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-9: a QML enum used in bindings.
 QtObject {
     enum Color { Red, Green, Blue }

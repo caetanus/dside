@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-10: compound assignment (+= etc.) and console.log (no-op).
 QtObject {
     property int n: 5

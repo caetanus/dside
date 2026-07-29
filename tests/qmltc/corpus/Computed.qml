@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-2 fixture: numeric bindings over property refs + literals, and a string concat.
 QtObject {
     property int a: 6

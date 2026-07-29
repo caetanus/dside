@@ -1,4 +1,4 @@
-import QtQml
+import QtQml 2.15
 // Phase-6: alias to a CHILD object's property, via the child's id.
 QtObject {
     id: root
