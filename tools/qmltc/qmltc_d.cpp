@@ -3296,7 +3296,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 
     std::map<std::string, std::string> ptype;
     for (auto &p : props) ptype[p.name] = p.dtype;
-    std::string handlerSlots, handlerWire;
+    // Two different things used to share one stream, and the difference is semantic: a BINDING
+    // must be live before the initial assignments (its recompute is the value), while a user
+    // HANDLER must not see them at all — QML does not fire on<Signal> for assignments made while
+    // the object is being created. Merging them made `onWidthChanged` fire on `width: 100` and
+    // report seen=1 where the engine reports 0.
+    std::string handlerSlots, handlerWire, bindWire;
     for (auto &h : rawHandlers) {
         // `on<Prop>Changed` connects to a property's change signal (mark the prop notified);
         // `on<Signal>` connects to a declared signal directly.
@@ -3684,7 +3689,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             g_deepReads.clear();
             if (!conns.empty() || !lateConns.empty()) {
                 handlerSlots += "    @Slot void __rcb_" + ba.first + "() {\n" + "    " + assign + "    }\n";
-                handlerWire += conns;
+                bindWire += conns;
                 if (!lateConns.empty()) lateWire += lateConns + "        __rcb_" + ba.first + "();\n";
             }
         }
@@ -3988,7 +3993,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (!conns.empty()) {
             handlerSlots += "    @Slot void " + slot + "() {\n    " + assign + "    }\n";
-            handlerWire += conns;
+            bindWire += conns;
         }
     };
 
@@ -4090,7 +4095,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
                 handlerSlots += "    @Slot void " + slot + "() {\n    " + stmt + "    }\n";
                 if (!sig.empty())
-                    handlerWire += "        connectMeta(" + so + ", \"" + sig + "\", this, \""
+                    bindWire += "        connectMeta(" + so + ", \"" + sig + "\", this, \""
                                  + slot + "()\");\n";
                 lateWire += "        " + slot + "();\n";
                 node.groupProps.push_back({ga.first, "string"});
@@ -4240,7 +4245,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                        + (notified(rb.first) ? " " + rb.first + "Changed.emit();" : "") + " }\n    }\n";
             for (auto &d : b.deps)
                 if (isProp(d))
-                    handlerWire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_"
+                    bindWire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_"
                                  + rb.first + "_" + std::to_string(b.idx) + "()\");\n";
         }
     }
@@ -4253,7 +4258,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // (rather than constructed directly) before it sees its first assignment.
         wire += "        classBegin(this);\n";
         wire += childWire;   // build children first
-        wire += baseWire;    // set base C++ properties
         // Connect EVERYTHING before the initial binding pass. Two reasons:
         //  - a bound property's first evaluation IS a change (`property int p: dummy` goes
         //    0 -> 42) and QML's handler observes it; wiring handlers afterwards would miss it.
@@ -4265,7 +4269,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         //    settle instead of looping.
         // A property initialised from a LITERAL is assigned in its field initialiser and emits
         // nothing, so none of this makes handlers fire on init.
-        wire += handlerWire;
+        wire += bindWire;    // bindings live BEFORE anything is assigned
+        // ...and the SAME reasoning applies to base properties, which used to be assigned before
+        // any of this. `padding: 12` on a Pane fires leftPaddingChanged, which is what recomputes
+        // `implicitWidth: ... contentWidth + leftPadding + rightPadding ...` — but the connect was
+        // made afterwards, so the notification arrived with nobody listening and the Pane kept an
+        // implicit width of 0 forever. The engine draws it 24x24; we drew 1x1. Found by rendering
+        // a real Qt Controls file, which is the only kind of test that could see it.
+        wire += baseWire;    // set base C++ properties, with every BINDING already live
+        wire += handlerWire; // ...and user handlers only after, so they do not see the initial pass
         for (auto &p : props) if (p.bound) {
             for (auto &dr : p.deep) {   // reads through an object property connect in the late phase
                 std::string sig;

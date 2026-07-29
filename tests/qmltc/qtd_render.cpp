@@ -17,6 +17,12 @@
 extern "C" int qtd_render_item(void *item, const char *out) {
     auto *it = reinterpret_cast<QQuickItem *>(item);
     if (!it) return 1;
+    // SizeViewToRootObject sizes the root from its IMPLICIT size when it has no explicit one, and
+    // then sets the item to that size. A Control's whole geometry comes from there — reading
+    // width() alone gave 1x1 for a Pane the engine draws at 24x24, which reads as a render defect
+    // and is not one.
+    if (it->width() <= 0 && it->implicitWidth() > 0) it->setWidth(it->implicitWidth());
+    if (it->height() <= 0 && it->implicitHeight() > 0) it->setHeight(it->implicitHeight());
     QQuickWindow win;
     win.setWidth(qMax(1, int(it->width())));
     win.setHeight(qMax(1, int(it->height())));

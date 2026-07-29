@@ -257,6 +257,17 @@ through an `id`), which is exactly the guard we want.
   PIXEL-IDENTICALLY and does nothing. The target also asserts the click MATTERED — it re-runs
   without the click and requires a different value — so it cannot pass on a document that ignores
   input.
+- **Wire order: BINDINGS live before the initial assignments, USER HANDLERS after.** These are
+  different things and sharing one stream was a real bug. `padding: 12` on a Pane fires
+  leftPaddingChanged, which is what recomputes `implicitWidth: ... contentWidth + leftPadding +
+  rightPadding ...` — but the connect was made after the assignment, so the notification arrived
+  with nobody listening and the Pane kept an implicit width of 0 FOREVER. The engine draws it
+  24x24; we drew 1x1. Moving every connect earlier then broke the other half: QML does NOT fire
+  `on<Signal>` for assignments made while the object is being created, so `onWidthChanged` started
+  reporting seen=1 where the engine reports 0. A binding is not an observer — it IS the value —
+  and a handler is an observer of changes after creation. Found by rendering a real Qt Controls
+  file; no property comparison in the corpus could have shown it, because Pane is not in the
+  corpus.
 - **RENDER differential.** The bar is not "the property values match" — it is *renders and behaves
   like the interpreted version*, and until this existed nothing in the suite drew a pixel. Both
   sides are now rasterised headless (software backend, deterministic, no GPU) and compared frame to
