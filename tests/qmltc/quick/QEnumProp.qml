@@ -5,8 +5,11 @@ import QtQuick
 // AlignLeft and ElideNone), so the comparison fails if the conversion silently does nothing.
 Text {
     text: "enum"
-    verticalAlignment: Text.AlignVCenter
     horizontalAlignment: Text.AlignHCenter
     elide: Text.ElideRight
     wrapMode: Text.WordWrap
+    // `Qt` is the namespace enum holder, not a bound type. The COMPARISON path always accepted it,
+    // so an assignment has to as well — otherwise the same `Qt.AlignRight` compiles in one
+    // position and not the other. AlignRight is not the default (AlignLeft is).
+    verticalAlignment: Qt.AlignBottom
 }

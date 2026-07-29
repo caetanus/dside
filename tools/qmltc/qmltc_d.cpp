@@ -3318,8 +3318,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (auto *fme = cast<FieldMemberExpression *>(ba.second))
                     if (auto *tb = cast<IdentifierExpression *>(fme->base)) {
                         std::string tn = qs(tb->name.toString()), mem = qs(fme->name.toString());
+                        // `Qt` is the namespace enum holder, not a bound type — the COMPARISON
+                        // path already accepts it, and an assignment must agree or the same
+                        // `Qt.AlignLeft` compiles in one position and not the other.
                         if (resolveObj(tb).empty() && !g_singletons.count(tn) && !mem.empty()
-                                && std::isupper((unsigned char)mem[0]) && g_qmlCxxType.count(tn)) {
+                                && std::isupper((unsigned char)mem[0])
+                                && (tn == "Qt" || g_qmlCxxType.count(tn))) {
                             baseWire += "        setProp(this, \"" + ba.first + "\", \"" + mem + "\");\n";
                             node.baseProps.push_back({ba.first, "string"});
                             continue;
