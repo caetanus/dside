@@ -2997,18 +2997,45 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (!g_selfId.empty() && bn == g_selfId) return "this";
                 return "";
             };
-            if (auto *fmv = cast<FieldMemberExpression *>(ba.second)) {
+            // Resolves one property-read expression to (object, group, member); empty object
+            // means it is not a plain read and cannot be copied.
+            auto readSrc = [&](ExpressionNode *e, std::string &o, std::string &g, std::string &pr) {
+                o.clear(); g.clear(); pr.clear();
+                auto *fmv = cast<FieldMemberExpression *>(e);
+                if (!fmv) return;
                 if (auto *b0 = cast<IdentifierExpression *>(fmv->base)) {
-                    srcObj = resolveObj(b0);
-                    if (!srcObj.empty()) srcProp = qs(fmv->name.toString());
+                    o = resolveObj(b0);
+                    if (!o.empty()) pr = qs(fmv->name.toString());
                 } else if (auto *fmb = cast<FieldMemberExpression *>(fmv->base)) {
                     // `control.palette.text` — a member of a value-typed group on another object.
                     if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
-                        srcObj = resolveObj(b1);
-                        if (!srcObj.empty()) { srcGroup = qs(fmb->name.toString()); srcProp = qs(fmv->name.toString()); }
+                        o = resolveObj(b1);
+                        if (!o.empty()) { g = qs(fmb->name.toString()); pr = qs(fmv->name.toString()); }
                     }
                 }
-            }
+            };
+            auto copyStmt = [&](const std::string &o, const std::string &g, const std::string &pr) {
+                return g.empty()
+                    ? "copyProp(" + o + ", \"" + pr + "\", this, \"" + ba.first + "\");"
+                    : "copyGroupProp(" + o + ", \"" + g + "\", \"" + pr + "\", this, \""
+                      + ba.first + "\");";
+            };
+            readSrc(ba.second, srcObj, srcGroup, srcProp);
+            // `color: control.down ? control.palette.light : control.palette.base` — a ternary
+            // BETWEEN two value-typed reads. Neither branch can be compiled to a D expression
+            // (there is no D type for a QColor here), but each is a copy, so the condition picks
+            // which copy runs. Both branches' dependencies are collected as usual, so it reacts.
+            if (srcObj.empty())
+                if (auto *cond = cast<ConditionalExpression *>(ba.second)) {
+                    std::string o1, g1, p1, o2, g2, p2, cexpr;
+                    readSrc(cond->ok, o1, g1, p1);
+                    readSrc(cond->ko, o2, g2, p2);
+                    if (!o1.empty() && !o2.empty() && compileExpr(cond->expression, "bool", cexpr)) {
+                        copyAssign = "        if (" + cexpr + ") " + copyStmt(o1, g1, p1) + "\n"
+                                   + "        else " + copyStmt(o2, g2, p2) + "\n";
+                        ty = "string";
+                    }
+                }
             // `verticalAlignment: Text.AlignVCenter` — an ENUM member of a bound QML type. The
             // meta-object converts a KEY STRING through QMetaEnum on write, so the numeric value
             // never has to be known here.

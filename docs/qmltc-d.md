@@ -116,7 +116,10 @@ through an `id`), which is exactly the guard we want.
   correct: children are constructed before the parent assigns its own properties, so the first
   copy reads a default and the notify is what corrects it. Declared-type failures over Qt's
   Controls: 263 -> 97. Only a plain property READ takes this path — an arbitrary expression of
-  value type is still refused rather than guessed. A "group" is either a Q_GADGET value or a
+  value type is still refused rather than guessed — except a TERNARY between two such reads
+  (`color: control.down ? control.palette.light : control.palette.base`, how Qt's Controls pick a
+  colour): neither branch can become a D expression, but each is a copy, so the condition picks
+  which copy runs and both branches' dependencies are wired. A "group" is either a Q_GADGET value or a
   QObject (`control.palette` is a QQuickPalette OBJECT), and the copy dispatches on what the
   QVariant actually holds: reading an object with readOnGadget reads through a pointer as if it
   were the value.
