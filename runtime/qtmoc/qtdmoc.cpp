@@ -470,7 +470,19 @@ extern "C" {
 // ...and the same copy for a member of a value-typed GROUP: `color: control.palette.text`.
 extern "C" int qtd_prop_copy_group(void* src, const char* g, const char* m, void* dst, const char* dname) {
     if (!src || !dst) return 0;
-    QVariant v = qtd_valuegroup_read(src, g, m);
+    // A "group" is either a Q_GADGET VALUE (QFont -> readOnGadget) or a QObject (QQuickPalette,
+    // which is what `control.palette` actually is). Reading an object with readOnGadget reads
+    // through a pointer as if it were the value and yields nothing usable, so the object case is
+    // dispatched on what the QVariant really holds.
+    QVariant gv = static_cast<QObject*>(src)->property(g);
+    QVariant v;
+    if (gv.canConvert<QObject*>()) {
+        QObject* go = gv.value<QObject*>();
+        if (!go) return 0;
+        v = go->property(m);
+    } else {
+        v = qtd_valuegroup_read(src, g, m);
+    }
     if (!v.isValid()) return 0;
     return qtd_prop_write(dst, dname, v);
 }

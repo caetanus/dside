@@ -111,7 +111,17 @@ through an `id`), which is exactly the guard we want.
   correct: children are constructed before the parent assigns its own properties, so the first
   copy reads a default and the notify is what corrects it. Declared-type failures over Qt's
   Controls: 263 -> 97. Only a plain property READ takes this path — an arbitrary expression of
-  value type is still refused rather than guessed.
+  value type is still refused rather than guessed. A "group" is either a Q_GADGET value or a
+  QObject (`control.palette` is a QQuickPalette OBJECT), and the copy dispatches on what the
+  QVariant actually holds: reading an object with readOnGadget reads through a pointer as if it
+  were the value.
+- **NOT supported: `font.pixelSize: 22` on a bound type.** It looks like it should work through
+  the same channel — resolve the member by name at runtime, let QMetaType convert — but QFont is
+  not a Q_GADGET: `QMetaType::metaObjectForType` finds nothing for it, because QML reaches font
+  members through a FOREIGN value-type wrapper (QQuickFontValueType), not the plain meta-object.
+  Emitting the call converted a compile-time partial into a construction-time throw, so it stays
+  refused. `setVgroup` now THROWS when the member does not resolve, rather than dropping the
+  assignment and leaving a default that looks deliberate — which is how this was caught.
 - **Numeric coercion**: `inferType` follows JS/QML (division is always `double`, `+` with a string
   is concatenation), and narrowing to an `int` property inserts a `cast(int)`.
 

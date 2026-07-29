@@ -2164,6 +2164,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // `vgroup.member: <expr>` — same shape, but it must compile to a
                     // read-modify-write on the VALUE (see rawValueGroupAssigns below).
                     if (g_vgroups.count(head)) { rawValueGroupAssigns.push_back({hid, es->expression}); continue; }
+                    // `font.pixelSize: 22` on a BOUND type. g_vgroups is populated only for
+                    // D-registered types, so this was refused outright — but no compile-time
+                    // table is needed: setVgroup resolves the member BY NAME through the gadget's
+                    // meta-object at runtime and QMetaType converts the value. The compiler only
+                    // has to know that `font` is a property whose type is not a scalar.
+                    // `font.pixelSize: 22` on a BOUND type stays unsupported, deliberately.
+                    // Routing it through setVgroup looks right — the member would resolve by name
+                    // at runtime — but QFont is NOT a Q_GADGET: QMetaType::metaObjectForType finds
+                    // nothing for it, because QML reaches font members through a FOREIGN value-type
+                    // wrapper (QQuickFontValueType), not through the plain meta-object channel.
+                    // Emitting the call turned a compile-time partial into a construction-time
+                    // throw, which is strictly worse. Reaching it needs the value-type registry.
                 }
             }
         }

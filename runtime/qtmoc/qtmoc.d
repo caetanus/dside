@@ -841,17 +841,25 @@ string vgroupStr(T)(T o, string g, string m) {
     auto qs = qtd_vgroup_get_qs(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr);
     auto r = qsToD(qs); qtd_qs_free(qs); return r;
 }
+// The member is resolved BY NAME through the gadget's meta-object, so a name that does not exist
+// is not a compile error — it has to fail loudly here, or the assignment is silently dropped and
+// the object keeps a default that looks deliberate.
+private void __vgroupWriteFailed(string g, string m) {
+    throw new Exception("setVgroup failed: no member \"" ~ m ~ "\" on value group \"" ~ g
+                        ~ "\" (or it does not convert)");
+}
 void setVgroup(T)(T o, string g, string m, int v) {
-    qtd_vgroup_set_int(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v);
+    if (!qtd_vgroup_set_int(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v)) __vgroupWriteFailed(g, m);
 }
 void setVgroup(T)(T o, string g, string m, double v) {
-    qtd_vgroup_set_double(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v);
+    if (!qtd_vgroup_set_double(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v)) __vgroupWriteFailed(g, m);
 }
 void setVgroup(T)(T o, string g, string m, bool v) {
-    qtd_vgroup_set_bool(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v);
+    if (!qtd_vgroup_set_bool(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v)) __vgroupWriteFailed(g, m);
 }
 void setVgroup(T)(T o, string g, string m, string v) {
-    qtd_vgroup_set_qs(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v.ptr, cast(int) v.length);
+    if (!qtd_vgroup_set_qs(qobjOf(o), (g ~ "\0").ptr, (m ~ "\0").ptr, v.ptr, cast(int) v.length))
+        __vgroupWriteFailed(g, m);
 }
 
 // ---- connection -------------------------------------------------------------
