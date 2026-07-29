@@ -104,6 +104,15 @@ Build reggaeBuild() {
         all ~= qmlTrTargets(root, b, tag);   // runtime tr() via lrelease .qm round-trip
     }
     all ~= qtmocProbeTargets(root);   // the shared runtime must compile with AND without QtQml
+    // The report derives category/compiler/Qt from target NAMES in a second system, so it can stop
+    // describing what the build runs without anything failing: it called 472 of 667 targets
+    // `other` and 122 Qt5 targets Qt6 while every one of them executed correctly. Its self-test is
+    // a build target so that drift is a RED BUILD, not a wrong artifact.
+    {
+        auto rep = buildPath(root, "tools", "test-report.sh");
+        if (exists(rep))
+            all ~= Target.phony("report-selftest", "bash " ~ rep ~ " --self-test", [Target(rep)]);
+    }
     auto qml = qtdBinding(root, "spec_cxx_qml.json", ["Qt6Qml", "Qt6Gui"]);
     qmlSuite(qml, "");
     all ~= qmlAotTargets(root, qml);   // qmlcachegen (Qt6 unit/loader format); Qt5 AOT is a follow-up

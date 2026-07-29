@@ -8,6 +8,7 @@
 #   tools/test-report.sh [glob] > report.tsv
 set -uo pipefail
 cd "$(dirname "$0")/.."
+selftest=no; [ "${1:-}" = "--self-test" ] && { selftest=yes; shift; }
 filter="${1:-*}"
 logdir=".build/report-logs"; mkdir -p "$logdir"
 
@@ -22,9 +23,11 @@ ldcv=$(ldc2 --version 2>/dev/null | grep -oE 'LDC.*\([0-9.]+\)' | head -1 || ech
 have() { command -v "$1" >/dev/null 2>&1 || [ -x "/usr/lib/qt6/$1" ] || [ -x "/usr/lib/qt6/bin/$1" ]; }
 caps="qmlcachegen=$(have qmlcachegen && echo y || echo n) Qt6QmlCompiler=$(pkg-config --exists Qt6QmlCompiler 2>/dev/null && echo y || echo n) lrelease=$(command -v lrelease >/dev/null && echo y || echo n)"
 
+if [ "$selftest" = no ]; then
 printf '# qt-dlang-gen report — commit %s (%s) — %s\n' "$commit" "$dirty" "$(uname -sm)"
 printf '# Qt6=%s Qt5=%s | dmd=%s ldc2=%s | caps: %s\n' "$qt6v" "$qt5v" "$dmdv" "$ldcv" "$caps"
 printf 'target\tcategory\tcompiler\tqt\toptional\tstatus\tms\tlog\n'
+fi
 
 category() {
   case "$1" in
@@ -32,7 +35,15 @@ category() {
     wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*) echo lifetime ;;
     cannon*) echo moc ;;
     uic-*|dialog-*|tabs-*|mainwin-*|hello-*|egroup-*|combo-*|spacer-*|icon-*|uicheck*|corpus-check*) echo uic ;;
+    # The transpiler families, which are 472 of the 667 targets. `qml-*` never matched them (no
+    # hyphen after `qml`), so the report called the MAJORITY of what it ran `other` — the run was
+    # right and the artifact told a wrong story about it. Kept ahead of the qml rule, since
+    # `qmltc*` would otherwise have to out-specific it.
+    qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*) echo qmltc ;;
     qml-*|qmlreg-*|qmlaot-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
+    reglife-*|valuetypeprop-*) echo qml ;;
+    slotoverload-*) echo moc ;;
+    qtmoc-probe-*|report-selftest) echo gate ;;
     tr-*|lupdate-check) echo i18n ;;
     manifest-gate-*|expected-fails-lint) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
@@ -45,10 +56,62 @@ compiler() { case "$1" in *-ldc2*) echo ldc2 ;; *-dmd*) echo dmd ;; *) echo - ;;
 qtaxis() {
   case "$1" in
     *-qt5*) echo qt5 ;;
-    manifest-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*) echo - ;;
+    # The Qt5 transpiler suite spells its version in the FAMILY, not as a `-qt5` suffix, so 122
+    # Qt5 targets were being reported as Qt6 — the one axis the report exists to get right.
+    qmltc5-*|qtmoc-probe-qml5) echo qt5 ;;
+    manifest-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*|report-selftest) echo - ;;
     *) echo qt6 ;;
   esac
 }
+
+# --self-test: the axes are derived from NAMES by a second system, so they can silently stop
+# describing what the build actually runs — the report called 472 of 667 targets `other` and 122
+# Qt5 targets Qt6 while every one of them executed correctly. Canaries pin one real target name per
+# family, and the last check is the invariant that matters: NOTHING may fall through to `other`.
+if [ "$selftest" = yes ]; then
+  st_fail=0
+  ck() {   # name expected-category expected-qt expected-compiler
+    local c q x; c=$(category "$1"); q=$(qtaxis "$1"); x=$(compiler "$1")
+    if [ "$c" != "$2" ] || [ "$q" != "$3" ] || [ "$x" != "$4" ]; then
+      printf 'self-test FAIL %s -> %s/%s/%s (want %s/%s/%s)\n' "$1" "$c" "$q" "$x" "$2" "$3" "$4"
+      st_fail=1
+    fi
+  }
+  ck qmltc-AliasBare-ldc2            qmltc     qt6 ldc2
+  ck qmltc5-AliasProp-dmd            qmltc     qt5 dmd
+  ck qmltcq-QAnim-render-ldc2        qmltc     qt6 ldc2
+  ck qmltcc-CButton-ldc2             qmltc     qt6 ldc2
+  ck qmltcd-DProp-dmd                qmltc     qt6 dmd
+  ck qmltc-controls-runtime-ldc2     qmltc     qt6 ldc2
+  ck uicheck-ldc2                    uic       qt6 ldc2
+  ck qml-ldc2                        qml       qt6 ldc2
+  ck reglife-ldc2                    qml       qt6 ldc2
+  ck valuetypeprop-ldc2              qml       qt6 ldc2
+  ck slotoverload-dmd                moc       qt6 dmd
+  ck cannon-ldc2                     moc       qt6 ldc2
+  ck widget_test-ldc2-qt5            lifetime  qt5 ldc2
+  ck sample_cornercases-ldc2         libsample -   ldc2
+  ck qtmoc-probe-noqml               gate      qt6 -
+  ck qtmoc-probe-qml5                gate      qt5 -
+  ck manifest-gate-qml               gate      -   -
+  ck report-selftest                 gate      -   -
+  ck tr-ldc2                         i18n      qt6 ldc2
+  ck qrc-ldc2                        misc      qt6 ldc2
+  # ...and no target the build actually offers may be unclassified.
+  if list=$(./build --list 2>/dev/null | sed 's/^- //' | grep -v '^List'); then
+    n_other=0
+    while read -r t; do [ -n "$t" ] && [ "$(category "$t")" = other ] && {
+      printf 'self-test FAIL unclassified target: %s\n' "$t"; n_other=$((n_other+1)); }
+    done <<< "$list"
+    [ "$n_other" -eq 0 ] || st_fail=1
+    printf 'report self-test: %s targets classified, %s unclassified\n' "$(wc -l <<< "$list")" "$n_other"
+  else
+    printf 'report self-test: canaries only (./build --list unavailable)\n'
+  fi
+  [ "$st_fail" -eq 0 ] && printf 'report self-test: OK\n'
+  exit "$st_fail"
+fi
+
 
 pass=0 fail=0 skip=0
 # Only the DEFAULT (mandatory) targets: `- name`. Optional targets print as `- name (optional)`
