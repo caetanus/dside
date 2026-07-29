@@ -33,4 +33,18 @@ static assert(!__traits(compiles, newQObject!BadNotifySig()),
 static assert(__traits(compiles, newQObject!Good()),
     "valid @Slot/@Property/NOTIFY shapes must still compile");
 
-void main() { printf("metacontract: slot-return + NOTIFY rules enforced at compile time OK\n"); }
+// A property write must REPORT a miss. QObject::setProperty returns false for an undeclared name
+// and then creates a DYNAMIC property, so the write appears to succeed while nothing the
+// meta-object knows about changed — invisible across ~1400 generated call sites until it was made
+// to throw.
+@QObject class Writable { @Property int good; }
+
+void main() {
+    auto w = newQObject!Writable();
+    setProp(w, "good", 7);
+    assert(propInt(w, "good") == 7, "a declared write must land");
+    bool threw = false;
+    try setProp(w, "nosuch", 1); catch (Exception) { threw = true; }
+    assert(threw, "writing an undeclared name must throw rather than create a dynamic property");
+
+    printf("metacontract: slot-return + NOTIFY rules enforced at compile time OK\n"); }

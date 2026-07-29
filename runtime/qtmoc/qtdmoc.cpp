@@ -220,18 +220,19 @@ int qtd_moc_metacall(void* self, int c, int id, void** a) {
     MocInfo& mi = it->second;
     if (c == QMetaObject::InvokeMetaMethod) {
         if (id < mi.nsig) QMetaObject::activate(static_cast<QObject*>(self), mi.mo, id, a);
-        else mi.slotcb(mi.dobj, id - mi.nsig, a);
+        // Guarded exactly like QtdMocObject::qt_metacall above: a QML instance whose D
+        // constructor threw has no backing object, and dispatching into it crashes (r8 #5). This
+        // copy was missing both guards while the other had them — the two had drifted, which is
+        // the hazard of keeping two demuxes. They stay separate on purpose (that one reads the
+        // object's own fields on the hot path; this one serves trampolines, which have none), so
+        // ANY change to one belongs in the other.
+        else if (mi.slotcb && mi.dobj) mi.slotcb(mi.dobj, id - mi.nsig, a);
         id -= (mi.nsig + mi.nslot);
     } else if (c == QMetaObject::ReadProperty || c == QMetaObject::WriteProperty) {
-        if (mi.propcb && id < mi.nprop) mi.propcb(mi.dobj, id, c == QMetaObject::WriteProperty, a);
+        if (mi.propcb && mi.dobj && id < mi.nprop) mi.propcb(mi.dobj, id, c == QMetaObject::WriteProperty, a);
         id -= mi.nprop;
     }
     return id;
-}
-// emits signal index `idx` of an attached trampoline.
-void qtd_moc_activate2(void* self, int idx, void** a) {
-    auto it = g_moAttach.find(self);
-    if (it != g_moAttach.end()) QMetaObject::activate(static_cast<QObject*>(self), it->second.mo, idx, a);
 }
 
 // D registers here (once, at module init) the callback that clears the D registry on destruction.
@@ -314,11 +315,24 @@ bool qtd_install_translator(const char* qmBase) {
 // null whenever a property does not actually hold an object; a null there must be a visible
 // no-op/zero, never a crash inside QObject::setProperty.
 int  qtd_prop_get_int(void* o, const char* n) { return o ? static_cast<QObject*>(o)->property(n).toInt() : 0; }
-void qtd_prop_set_int(void* o, const char* n, int v) { if (!o) return; static_cast<QObject*>(o)->setProperty(n, v); }
+// A property write REPORTS whether it landed. QObject::setProperty returns false both when the
+// name is not a declared Q_PROPERTY (it then creates a DYNAMIC property, so the write "succeeds"
+// while nothing the meta-object knows about changed) and when the QVariant conversion fails.
+// Both were indistinguishable from success across ~1400 generated call sites — the same silent
+// failure connectMeta was fixed for. The declared-property test comes first so that creating a
+// dynamic property is reported as the miss it is.
+static int qtd_prop_write(void* o, const char* n, const QVariant& v) {
+    if (!o) return 0;
+    auto* obj = static_cast<QObject*>(o);
+    if (obj->metaObject()->indexOfProperty(n) < 0) return 0;
+    return obj->setProperty(n, v) ? 1 : 0;
+}
+
+int qtd_prop_set_int(void* o, const char* n, int v) { return qtd_prop_write(o, n, v); }
 double qtd_prop_get_double(void* o, const char* n) { if (!o) return 0; return static_cast<QObject*>(o)->property(n).toDouble(); }
-void qtd_prop_set_double(void* o, const char* n, double v) { if (!o) return; static_cast<QObject*>(o)->setProperty(n, v); }
+int qtd_prop_set_double(void* o, const char* n, double v) { return qtd_prop_write(o, n, v); }
 bool qtd_prop_get_bool(void* o, const char* n) { if (!o) return false; return static_cast<QObject*>(o)->property(n).toBool(); }
-void qtd_prop_set_bool(void* o, const char* n, bool v) { if (!o) return; static_cast<QObject*>(o)->setProperty(n, v); }
+int qtd_prop_set_bool(void* o, const char* n, bool v) { return qtd_prop_write(o, n, v); }
 // A QObject*-valued property — a GROUPED property (`group.count: 42` in QML) is one of these:
 // the group is a real child object reached through the parent's meta-object, and its members are
 // ordinary properties on it. Returns null if the property is absent or not an object.
@@ -514,9 +528,8 @@ bool qtd_invoke0(void* o, const char* member) {
     return QMetaObject::invokeMethod(static_cast<QObject*>(o), member, Qt::DirectConnection);
 }
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(o ? static_cast<QObject*>(o)->property(n).toString() : QString()); }
-void qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
-    if (!o) return;
-    static_cast<QObject*>(o)->setProperty(n, QString::fromUtf8(p, len));
+int qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
+    return qtd_prop_write(o, n, QString::fromUtf8(p, len));
 }
 
 // connects signal->slot by signature (works for custom AND built-in: both have a

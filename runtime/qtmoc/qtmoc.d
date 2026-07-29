@@ -66,13 +66,13 @@ extern (C) nothrow {
     void  qtd_qs_utf8(void*, char*);
     // property access by name (via QVariant)
     int    qtd_prop_get_int(void*, const(char)*);
-    void   qtd_prop_set_int(void*, const(char)*, int);
+    int    qtd_prop_set_int(void*, const(char)*, int);
     double qtd_prop_get_double(void*, const(char)*);
-    void   qtd_prop_set_double(void*, const(char)*, double);
+    int    qtd_prop_set_double(void*, const(char)*, double);
     bool   qtd_prop_get_bool(void*, const(char)*);
-    void   qtd_prop_set_bool(void*, const(char)*, bool);
+    int    qtd_prop_set_bool(void*, const(char)*, bool);
     void* qtd_prop_get_qs(void*, const(char)*);
-    void  qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
+    int    qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
 }
 
 // ---- callback error policy (round-4 #6: silence is not acceptable) ----------
@@ -743,15 +743,25 @@ private extern(C) void* qtd_prop_get_obj(void*, const(char)*);
 void* propObj(T)(T o, string name) { return qtd_prop_get_obj(qobjOf(o), (name ~ "\0").ptr); }
 int propInt(T)(T o, string name) { return qtd_prop_get_int(qobjOf(o), (name ~ "\0").ptr); }
 /// Writes an int property by name (fires the notify, if any).
-void setProp(T)(T o, string name, int v) { qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v); }
+/// Writes a property and THROWS when the write did not land: an undeclared name (which would
+/// quietly become a DYNAMIC property, changing nothing the meta-object knows about) or a value the
+/// meta-type cannot convert. Generated code writes properties by name in the thousands, and a
+/// typo there used to be invisible — the same silent failure connectMeta was fixed for.
+void setProp(T)(T o, string name, int v) {
+    if (!qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "int");
+}
 /// Reads a real (double) property by name.
 double propDouble(T)(T o, string name) { return qtd_prop_get_double(qobjOf(o), (name ~ "\0").ptr); }
 /// Writes a real (double) property by name (fires the notify, if any).
-void setProp(T)(T o, string name, double v) { qtd_prop_set_double(qobjOf(o), (name ~ "\0").ptr, v); }
+void setProp(T)(T o, string name, double v) {
+    if (!qtd_prop_set_double(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "double");
+}
 /// Reads a bool property by name.
 bool propBool(T)(T o, string name) { return qtd_prop_get_bool(qobjOf(o), (name ~ "\0").ptr); }
 /// Writes a bool property by name (fires the notify, if any).
-void setProp(T)(T o, string name, bool v) { qtd_prop_set_bool(qobjOf(o), (name ~ "\0").ptr, v); }
+void setProp(T)(T o, string name, bool v) {
+    if (!qtd_prop_set_bool(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "bool");
+}
 /// Reads a QString property by name as a D string.
 string propStr(T)(T o, string name) {
     auto qs = qtd_prop_get_qs(qobjOf(o), (name ~ "\0").ptr);
@@ -759,7 +769,13 @@ string propStr(T)(T o, string name) {
 }
 /// Writes a QString property by name (fires the notify, if any).
 void setProp(T)(T o, string name, string v) {
-    qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length);
+    if (!qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length))
+        __propWriteFailed(name, "string");
+}
+
+private void __propWriteFailed(string name, string ty) {
+    throw new Exception("setProp failed: no writable property \"" ~ name ~ "\" taking a " ~ ty
+                        ~ " (an undeclared name would silently have become a dynamic property)");
 }
 
 /// Reads/writes a property of ANY registered type through the meta-object, keyed by the type
