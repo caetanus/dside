@@ -77,7 +77,51 @@
     "QtQuickControls2Impl/private/qquickmnemoniclabel_p.h",
     "QtQuickControls2Impl/private/qquickplaceholdertext_p.h",
     "QtQuickControls2Impl/private/qquickitemgroup_p.h",
-    "QtQuickControls2Impl/private/qquickninepatchimage_p.h"
+    "QtQuickControls2Impl/private/qquickninepatchimage_p.h",
+    "QtQuickTemplates2/private/qquickaction_p.h",
+    "QtQuickTemplates2/private/qquickactiongroup_p.h",
+    "QtQuickTemplates2/private/qquickapplicationwindow_p.h",
+    "QtQuickTemplates2/private/qquickbuttongroup_p.h",
+    "QtQuickTemplates2/private/qquickcalendar_p.h",
+    "QtQuickTemplates2/private/qquickcalendarmodel_p.h",
+    "QtQuickTemplates2/private/qquickcheckdelegate_p.h",
+    "QtQuickTemplates2/private/qquickcontainer_p.h",
+    "QtQuickTemplates2/private/qquickcontextmenu_p.h",
+    "QtQuickTemplates2/private/qquickdayofweekrow_p.h",
+    "QtQuickTemplates2/private/qquickdelaybutton_p.h",
+    "QtQuickTemplates2/private/qquickdialog_p.h",
+    "QtQuickTemplates2/private/qquickdialogbuttonbox_p.h",
+    "QtQuickTemplates2/private/qquickdrawer_p.h",
+    "QtQuickTemplates2/private/qquickheaderview_p.h",
+    "QtQuickTemplates2/private/qquickheaderviewdelegate_p.h",
+    "QtQuickTemplates2/private/qquickmenu_p.h",
+    "QtQuickTemplates2/private/qquickmenubar_p.h",
+    "QtQuickTemplates2/private/qquickmenubaritem_p.h",
+    "QtQuickTemplates2/private/qquickmenuitem_p.h",
+    "QtQuickTemplates2/private/qquickmenuseparator_p.h",
+    "QtQuickTemplates2/private/qquickmonthgrid_p.h",
+    "QtQuickTemplates2/private/qquickoverlay_p.h",
+    "QtQuickTemplates2/private/qquickpageindicator_p.h",
+    "QtQuickTemplates2/private/qquickpopup_p.h",
+    "QtQuickTemplates2/private/qquickradiodelegate_p.h",
+    "QtQuickTemplates2/private/qquickrangeslider_p.h",
+    "QtQuickTemplates2/private/qquickroundbutton_p.h",
+    "QtQuickTemplates2/private/qquickscrollindicator_p.h",
+    "QtQuickTemplates2/private/qquickscrollview_p.h",
+    "QtQuickTemplates2/private/qquicksearchfield_p.h",
+    "QtQuickTemplates2/private/qquickselectionrectangle_p.h",
+    "QtQuickTemplates2/private/qquicksplitview_p.h",
+    "QtQuickTemplates2/private/qquickstackview_p.h",
+    "QtQuickTemplates2/private/qquickswipedelegate_p.h",
+    "QtQuickTemplates2/private/qquickswipeview_p.h",
+    "QtQuickTemplates2/private/qquickswitchdelegate_p.h",
+    "QtQuickTemplates2/private/qquicktabbar_p.h",
+    "QtQuickTemplates2/private/qquicktableviewdelegate_p.h",
+    "QtQuickTemplates2/private/qquicktoolbar_p.h",
+    "QtQuickTemplates2/private/qquicktooltip_p.h",
+    "QtQuickTemplates2/private/qquicktreeviewdelegate_p.h",
+    "QtQuickTemplates2/private/qquicktumbler_p.h",
+    "QtQuickTemplates2/private/qquickweeknumbercolumn_p.h"
   ],
   "include_paths": [
     "/usr/include/qt6/QtQuickControls2Impl/6.11.1/QtQuickControls2Impl",
@@ -96,7 +140,8 @@
     "/usr/include/qt6/QtGui/6.11.1/QtGui"
   ],
   "subclass_derived": [
-    "QQuickItem"
+    "QQuickItem",
+    "QQuickPopup"
   ],
   "qmltypes": [
     "/usr/lib/qt6/qml/QtQuick/Templates/plugins.qmltypes",
@@ -117,5 +162,6 @@
     "QQuickSystemPalette",
     "QQuickTextMetrics",
     "QQuickTransition"
-  ]
+  ],
+  "_excluded_headers_reason": "qquick{,double,abstract}spinbox: QQuickAbstractSpinBox<T> is a template whose INLINE handleComponentComplete() calls QQuickIndicatorButtonPrivate::executeIndicator, a private Qt symbol that is not exported. Instantiating it in a trampoline compiles and then fails at link. Nothing in the headers marks this, so it cannot be detected in the generator \u2014 it is excluded by name."
 }

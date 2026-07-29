@@ -1194,6 +1194,16 @@ void verifyInlinesBatched(string outDir, string dpkg) {
 // `aliasable[name]` + `aliasBase[name]` = the nearest base that declares `name` as an
 // emittable method (not pure-virtual/inline/operator, so it has a linkable D symbol) —
 // the target for the un-hiding alias.
+// A method's identity for "is this the same function as the base's?": its name plus the CANONICAL
+// spelling of its type. clang_getCursorDisplayName renders the parameter as the surrounding scope
+// saw it — QWindow spells its own inner enum `Visibility`, a derived class spells it
+// `QWindow::Visibility` — so comparing display names let QQuickWindowQmlImpl::setVisibility look
+// like a NEW overload and be re-emitted, which D rejects as overriding a `final` base method.
+string canonSig(CXCursor c) {
+    return clang_getCursorSpelling(c).str ~ "|"
+         ~ clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(c))).str;
+}
+
 void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] sigs,
                      ref bool[string] aliasable, ref string[string] aliasBase, ref bool[string] seen) {
     foreach (b0; baseDecls(node)) {
@@ -1206,6 +1216,7 @@ void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] sig
                 auto sp = clang_getCursorSpelling(c).str;
                 names[sp] = true;
                 sigs[clang_getCursorDisplayName(c).str] = true;
+                sigs[canonSig(c)] = true;
                 if (sp !in aliasable && !clang_CXXMethod_isPureVirtual(c) && !isInline(c)
                         && !sp.startsWith("operator")) {
                     aliasable[sp] = true;
@@ -1902,7 +1913,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // base decl. A method merely SHARING a base name is a NEW overload: emit it, and
         // re-alias the base's (emittable) overloads it would otherwise hide in D.
         if ((clang_CXXMethod_isVirtual(c) != 0 && (mn in baseM) !is null)
-                || (clang_getCursorDisplayName(c).str in baseSig)) { _fate = "inherited"; continue; }
+                || (clang_getCursorDisplayName(c).str in baseSig)
+                || (canonSig(c) in baseSig)) { _fate = "inherited"; continue; }
         if ((mn in baseM) !is null && (mn in baseAliasable) !is null) {
             aliasNames[mn] = true;
             impSet[aliasBase[mn]] = true;   // the aliased base type must be imported

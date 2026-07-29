@@ -72,10 +72,12 @@ through an `id`), which is exactly the guard we want.
   half()` -> `cast(int)(half())`) and is reactive through its arguments. Void functions
   (assignments/calls) and `return`-bodied functions are both supported.
 - **Qualified imports**: `import QtQuick.Templates as T` makes the type `T.Button`. The qualifier
-  names the IMPORT, not a scope of the type, so it is stripped wherever a type name is read —
-  but only when the prefix is a DECLARED alias, leaving genuinely dotted names alone. This is how
-  every one of Qt's own `QtQuick/Controls/Basic/*.qml` is written: without it all 69 fail at the
-  root and no other feature in those files is ever exercised (69 unresolved roots -> 4).
+  names the IMPORT, not a scope of the type, so it is stripped wherever a type name is read — but
+  only when the prefix is a DECLARED alias. Critically, a name that arrived QUALIFIED must never
+  then resolve to a local `.qml` file: Qt's own Controls put `Basic/CheckDelegate.qml` right next
+  to a root written `T.CheckDelegate`, and resolving that locally gave the root NO Qt base at all
+  while also suppressing the "unbound root" diagnostic (a resolved local path is what that check
+  tests). Stripping without this guard reported 4 unresolved roots where 46 was the truth.
 - **Base-property bindings are reactive**: `width: pad * 10` on a bound base is a BINDING, not an
   assignment. It used to emit a one-shot `setProp` with no connect and no diagnostic, so it kept
   its first value forever while looking correct — the declared-property direction (`inner: width -

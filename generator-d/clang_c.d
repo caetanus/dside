@@ -57,6 +57,9 @@ uint clang_visitChildren(CXCursor parent, CXCursorVisitor, CXClientData);
 CXString clang_getCursorSpelling(CXCursor);
 CXString clang_getCursorDisplayName(CXCursor);   // name + params, e.g. "addWidget(QWidget *, int, int)"
 CXType   clang_getCursorType(CXCursor);
+// The canonical type strips typedefs and spells nested names fully, so the SAME method compares
+// equal whether clang saw it from inside the declaring class or from a derived one.
+CXType   clang_getCanonicalType(CXType);
 CXType   clang_getCursorResultType(CXCursor);
 CXString clang_getTypeSpelling(CXType);
 CXType   clang_getCanonicalType(CXType);

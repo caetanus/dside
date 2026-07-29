@@ -134,11 +134,22 @@ static std::string qname(UiQualifiedId *id) {
 // the root and nothing else in the file is even reached.
 static std::set<std::string> g_importAliases;
 
+// Names that appeared IMPORT-QUALIFIED (`T.CheckDelegate`). A qualified name names a type in
+// that import's module and can never mean a .qml file sitting next to the document — but once
+// the qualifier is stripped it looks exactly like a local type, and in Qt's own Controls the
+// local file has the SAME name (Basic/CheckDelegate.qml alongside `T.CheckDelegate`). Resolving
+// it locally gave the root no Qt base at all AND suppressed the diagnostic, because a resolved
+// local path is what the "not a bound type" check tests for.
+static std::set<std::string> g_qualifiedTypes;
+
 static std::string typeName(UiQualifiedId *id) {
     std::string n = qname(id);
     auto dot = n.find('.');
-    if (dot != std::string::npos && g_importAliases.count(n.substr(0, dot)))
-        return n.substr(dot + 1);
+    if (dot != std::string::npos && g_importAliases.count(n.substr(0, dot))) {
+        std::string bare = n.substr(dot + 1);
+        g_qualifiedTypes.insert(bare);
+        return bare;
+    }
     return n;
 }
 
@@ -3474,7 +3485,8 @@ int main(int argc, char **argv) {
     if (bt.first.empty() && rootType != "QtObject") {
         // A local `.qml`-defined ROOT type (e.g. `LocallyImported { ... }`): take the local
         // definition's base and MERGE this file's use-site members onto the local definition's.
-        if (UiObjectDefinition *lt = loadLocalType(rootType, inPath, &rootResolvedPath)) {
+        if (UiObjectDefinition *lt = g_qualifiedTypes.count(rootType)
+                                        ? nullptr : loadLocalType(rootType, inPath, &rootResolvedPath)) {
             g_localMerged = true;
             std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
             bt = boundTypeFor(ltRoot);
