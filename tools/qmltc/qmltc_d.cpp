@@ -436,6 +436,16 @@ static std::map<std::string, std::string> g_valueLists;
 // set), or a `function onPing(n) { ... }` inside a Connections element (fn set). Both end up
 // connected the same way; `sender` is the D expression for the object whose signal is connected,
 // empty meaning `this`.
+// A binding's value is CONVERTED to the property's declared type by QML — `property int inner:
+// width - pad` on an Item is a double expression truncated into an int. D refuses that narrowing
+// implicitly, so the cast is emitted. Only for numeric targets: a string or a value type must not
+// be forced this way, and would be a compile error rather than a silent wrong value.
+static std::string coerceTo(const std::string &dtype, const std::string &expr) {
+    if (dtype == "int" || dtype == "double" || dtype == "float")
+        return "cast(" + dtype + ") (" + expr + ")";
+    return expr;
+}
+
 struct RawHandler { std::string sig; Statement *stmt; FunctionDeclaration *fn; std::string sender; };
 
 // A CHILD object's `id`, so the parent's bindings can read `<id>.<prop>`. The child is compiled
@@ -1322,7 +1332,9 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                 if (ty.empty() || !compileExpr(bin->right, QString::fromStdString(ty), val)) return false;
                 std::string lv;
                 if (!readName(nm, lv)) return false;
-                body += "        " + lv + " = " + val + ";\n";
+                // QML converts the value to the property's declared type; D will not narrow
+                // implicitly (`lastWidth = width` is int <- qreal on an Item).
+                body += "        " + lv + " = " + coerceTo(ty, val) + ";\n";
                 return true;
             }
     // `Type.member = <expr>` / `Type.member++` / `Type.<signal>()` on an ATTACHED object.
@@ -1472,7 +1484,10 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
             if (op == "+=" && it->second == "string") op = "~=";   // string concat-assign
             std::string rhs;
             if (!compileExpr(bin->right, QString::fromStdString(it->second), rhs)) return false;
-            body += "        " + name + " " + op + " " + rhs + ";\n";
+            // QML converts the value to the target's declared type; D refuses to narrow
+            // implicitly, and a qreal base property read (`lastWidth = width`) is exactly that.
+            body += "        " + name + " " + op + " "
+                  + (std::string(op) == "=" ? coerceTo(it->second, rhs) : rhs) + ";\n";
             return true;
         }
     }
@@ -1742,18 +1757,29 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property)
                 if (pub->memberType) { const char *dt = dtypeOf(pub->memberType->name.toString()); if (dt[0]) pt0[qs(pub->name.toString())] = dt; }
-        // Base C++ properties: a plain `<name>: <expr>` whose name isn't a declared property (nor an
-        // id/handler) sets a base Q_PROPERTY; record name -> value type so references resolve to a
-        // meta read. Only meaningful for a bound-type root, but harmless otherwise.
+        // Base C++ properties: the TYPE comes from the property table, which records what the
+        // type actually declares. Inferring it from the assigned literal was wrong and quietly so:
+        // `width: 120` on an Item made width an `int`, so it was read with propInt() and mutated
+        // with v.to!int — but Item::width is a qreal. It survived only because every literal in
+        // the corpus is integral; `width: 10.5` truncates and `width=10.5` throws. The literal is
+        // still the fallback for a type absent from the table.
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *sb = cast<UiScriptBinding *>(m->member)) {
                 std::string hid = qname(sb->qualifiedId);
                 if (hid == "id" || hid == "Component.onCompleted" || hid.find('.') != std::string::npos || pt0.count(hid)) continue;
                 if (hid.size() > 2 && hid[0] == 'o' && hid[1] == 'n' && std::isupper((unsigned char)hid[2])) continue;
                 if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+                    if (g_baseProps.count(hid)) continue;             // a declared type already won
+                    // The table first — it knows Item::width is a double.
+                    if (auto qp = g_qmlProps.find(g_selfQmlType); qp != g_qmlProps.end()) {
+                        auto pt = qp->second.find(hid);
+                        if (pt != qp->second.end() && !pt->second.empty()) {
+                            g_baseProps[hid] = pt->second;
+                            continue;
+                        }
+                    }
                     std::string ty = inferType(es->expression, pt0);
-                    if (!g_baseProps.count(hid)                       // a declared type already won
-                            && (ty == "int" || ty == "string" || ty == "double" || ty == "bool"))
+                    if (ty == "int" || ty == "string" || ty == "double" || ty == "bool")
                         g_baseProps[hid] = ty;
                 }
             }
@@ -2575,7 +2601,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             baseWire += call; continue;
         }
-        std::string ty = inferType(ba.second, ptype), val;
+        // The DECLARED type wins over what the literal looks like — `width: 120` on an Item is a
+        // qreal, and typing it from the literal made the dump read it with propInt and mutate it
+        // with to!int, so a fractional value truncated or threw. g_baseProps already holds the
+        // declared type (taken from the property table); inferType is the fallback.
+        std::string ty = g_baseProps.count(ba.first) ? g_baseProps[ba.first]
+                                                     : inferType(ba.second, ptype);
+        std::string val;
         if ((ty != "int" && ty != "string" && ty != "double" && ty != "bool") || !compileExpr(ba.second, QString::fromStdString(ty), val)) {
             std::fprintf(stderr, "qmltc-d: %s: base property '%s' in %s not yet supported — skipped (later phase)\n", inPath, ba.first.c_str(), cls.c_str());
             ++partial; continue;
@@ -2851,14 +2883,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 body += "    private int __bind_" + p.name + " = 0;\n";
                 recompute += "    @Slot void __rc_" + p.name + "() {\n"
                            + "        if (__bind_" + p.name + " != 0) return;\n"
-                           + "        auto _v = " + p.expr + ";\n"
+                           + "        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
                            + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
                            + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
                 anyBound = true;
                 continue;
             }
             recompute += "    @Slot void __rc_" + p.name + "() {\n"
-                       + "        auto _v = " + p.expr + ";\n"
+                       + "        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
                        + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
                        + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
             anyBound = true;
@@ -2878,7 +2910,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &b : rb.second) {
             recompute += "    @Slot void __rc_" + rb.first + "_" + std::to_string(b.idx) + "() {\n"
                        + "        if (__bind_" + rb.first + " != " + std::to_string(b.idx) + ") return;\n"
-                       + "        auto _v = " + b.expr + ";\n"
+                       + "        auto _v = " + coerceTo(pt, b.expr) + ";\n"
                        + "        if (" + rb.first + " != _v) { " + rb.first + " = _v;"
                        + (notified(rb.first) ? " " + rb.first + "Changed.emit();" : "") + " }\n    }\n";
             for (auto &d : b.deps)
