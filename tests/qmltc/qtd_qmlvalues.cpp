@@ -57,7 +57,9 @@ static std::string fmt(const QVariant &v) {
         // %.17g on both sides. The two shortest-round-trip renderings disagree on a value sitting
         // exactly between two 6-digit forms (3.765625 -> D 3.76562, Qt 3.76563), which surfaced as
         // a value mismatch on a font metric that was in fact identical.
-        return QString::asprintf("%.17g", v.toDouble()).toStdString();
+        // `+ 0.0` normalises a negative zero: -0 and 0 are the same value and differ only in
+        // how %.17g prints them. The generated dump does the same.
+        return QString::asprintf("%.17g", v.toDouble() + 0.0).toStdString();
     }
     default:
         // A `list<int>`-style value list has no useful toString (it yields ""), which would have

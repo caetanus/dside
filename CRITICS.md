@@ -1,5 +1,244 @@
 # CRITICS.md
 
+## Rodada 9: o qmltc-d virou teste de integração; as fronteiras do projeto não acompanharam
+
+Esta rodada corrige a régua da crítica anterior. O objeto principal continua sendo o
+**qt-dlang-gen como um todo**: generator, runtimes, tools, grafo, testes e CI. O
+`qmltc-d` é uma das tools — hoje a maior e a que mais pressiona o restante — mas está
+deliberadamente em aproximadamente **60% de feature completeness**.
+
+Portanto, uma construção QML ainda recusada, um tipo ainda não mapeado ou uma expressão
+ainda sem lowering **não são defeitos por si mesmos**. O contrato desta fase é:
+
+1. o que foi transpilado deve bater **1:1** com o documento interpretado;
+2. o que ainda não foi transpilado deve terminar em PARTIAL/refusal explícita;
+3. ampliar o corpus deve expor bugs no wrapper generator e no runtime, para então
+   corrigi-los com regressões focadas.
+
+Esse terceiro ponto explica corretamente por que o avanço do `qmltc-d` continua
+encontrando defeitos fora dele. Isso é uma função produtiva da tool, não evidência de
+que ela deveria parar até o restante do projeto estar perfeito.
+
+### Verificação desta rodada
+
+- Preservei as alterações preexistentes em `generator-d/emit.d`,
+  `tools/qmltc/qmltc_d.cpp` e `tests/qmltc/qtd_qmlvalues.cpp`.
+- `git diff --check` passou.
+- `./build --list` apresenta **665 targets default**.
+- **472 / 665** pertencem às famílias `qmltc`, `qmltc5`, `qmltcq`, `qmltcc` e
+  `qmltcd`.
+- A duração de aproximadamente **uma hora** para a matriz atual é esperada: os testes
+  novos exercitam construção, comportamento, passagem de tempo, eventos e render,
+  e não apenas geração/compilação. Não classifico essa duração, isoladamente, como
+  defeito do report ou da CI.
+- `./build` falhou ao compilar o `qtdmoc.cpp` do binding QtWidgets: o helper
+  `qtd_qml_engine()` usa `QQmlEngine` fora do guard de QML.
+- Uma execução focada que incluía `sample_cornercases-ldc2` reproduziu a mesma falha
+  no `qtdmoc.cpp` gerado para libsample. Portanto o alcance não é só o `qmltc-d`.
+
+### Correção explícita da crítica anterior
+
+Eu havia deixado o `qmltc-d` dominar o julgamento do repositório e tratei parte do
+backlog dos 40% restantes como distância de maturidade do projeto inteiro. Essa leitura
+estava errada.
+
+Também associei a execução longa principalmente ao modelo por-target do report. Esse
+diagnóstico não estava demonstrado: a matriz atual faz trabalho de runtime deliberadamente
+caro, especialmente nos diferenciais de comportamento. O modelo do report ainda tem
+problemas de classificação descritos abaixo, mas “leva uma hora” não prova que ele seja
+a causa.
+
+O julgamento corrigido é: o método do `qmltc-d` é uma das melhores ferramentas de
+validação do projeto. O risco está nas fronteiras e na governança que precisam absorver
+as descobertas dessa tool sem deixar um requisito QML contaminar bindings não-QML.
+
+### O que está forte de verdade
+
+1. **A régua 1:1 é a régua correta.** Dumps de propriedades, cobertura das propriedades
+   que o engine realmente criou, verificação de attachment, mutações, clique, passagem
+   de tempo e frame atacam classes diferentes de falso verde.
+
+2. **PARTIAL é um resultado válido nesta fase.** Recusar uma unidade que ainda não pode
+   ser traduzida é melhor do que emitir uma aproximação. A futura cadeia de fallback
+   pode consumir essa fronteira; escondê-la agora impediria medir o transpilador estático.
+
+3. **O `qmltc-d` está servindo como fuzzing semântico do binding.** Tipos reais de
+   Controls fizeram o generator atravessar herança, private APIs, value groups,
+   propriedades objeto/lista, completion e contexto. Encontrar bugs do wrapper generator
+   nesse processo é progresso mensurável.
+
+4. **As correções anteriores do runtime permaneceram conceitualmente certas.**
+   `qt_metacast`, identidade de registro, validação de slot/NOTIFY, falha observável de
+   factory e guard de owner thread transformaram violações silenciosas em contratos
+   testados.
+
+5. **As outras tools também avançaram.** O UIC passou a comparar a estrutura de layouts;
+   QRC verifica payload; casos libsample que eram no-op viraram asserts. O repositório não
+   ficou parado enquanto o `qmltc-d` cresceu.
+
+### Achado crítico
+
+#### 1. Um helper exclusivo de QML quebrou os consumidores não-QML do runtime compartilhado
+
+`runtime/qtmoc/qtdmoc.cpp` inclui `QQmlEngine` somente sob `QTD_ENABLE_QML`, mas define:
+
+```cpp
+static QQmlEngine* qtd_qml_engine() {
+    static QQmlEngine* eng = nullptr;
+    if (!eng) eng = new QQmlEngine;
+    return eng;
+}
+```
+
+fora de `#ifdef QTD_HAVE_QML`. O corpo de `qtd_attach_context` é guardado; a declaração
+do tipo e o helper que o retorna não são.
+
+O default build então tenta compilar esse arquivo também para QtWidgets e libsample,
+sem QtQml, e falha com:
+
+```text
+qtdmoc.cpp:497:8: error: unknown type name 'QQmlEngine'
+```
+
+Isto não invalida a estratégia de usar um contexto para objetos QML compilados. A
+descoberta em Controls é válida: vários tipos precisam de `QQmlContext` mesmo sem
+interpretar o documento. O defeito é de **feature isolation** no runtime compartilhado.
+
+**Critério de resolução:**
+
+- o helper inteiro fica sob o guard correto ou vai para uma unidade QML separada;
+- existe um probe que compila `qtdmoc.cpp` deliberadamente **sem** QtQml;
+- existem probes com QtQml em Qt5 e Qt6;
+- `./build` e `sample_cornercases-{ldc2,dmd}` voltam a passar.
+
+### Achados altos
+
+#### 2. `qtmoc` tornou-se uma fronteira larga demais
+
+O mesmo arquivo hoje concentra metaobjeto genérico, side-tables, registro/factory QML,
+helpers de property, context/engine, parser status, rebinding profundo e semântica
+necessária pelo `qmltc-d`.
+
+Macros condicionais são aceitáveis, mas o blast radius observado mostra que a fronteira
+não é forte: uma função específica do transpilador entrou no artefato de QtWidgets e no
+de libsample.
+
+Não é necessário fazer uma grande reescrita agora. É necessário impedir dependências
+impossíveis por construção.
+
+**Critério de resolução:**
+
+- separar ao menos `qtmoc-core` de `qtmoc-qml`, ou fazer o build selecionar fontes
+  distintas em vez de copiar sempre a mesma unidade;
+- um consumidor QtCore/QtWidgets não vê headers, símbolos nem link flags de QtQml;
+- o suporte específico de contexto do `qmltc-d` tem um teste de linkage independente.
+
+#### 3. O report não descreve a maior parte da matriz
+
+`tools/test-report.sh::category()` conhece `qml-*`, mas não as famílias `qmltc*`.
+Assim, os **472 targets** do transpilador caem em `other`. `qtaxis()` reconhece apenas
+o marcador `-qt5`; os targets `qmltc5-*` são registrados como Qt6.
+
+O teste pode executar corretamente e o artifact ainda contar uma história errada sobre
+qual categoria e qual Qt foram exercitados. Com 472 de 665 targets afetados, isso deixou
+de ser um detalhe de naming.
+
+**Critério de resolução:**
+
+- `qmltc`, `qmltc5`, `qmltcq`, `qmltcc`, `qmltcd` e os gates Controls ganham categoria
+  e eixo Qt corretos;
+- o parser do report tem um self-test sobre nomes canários de cada família;
+- preferencialmente, metadata de categoria/compiler/Qt nasce no target reggae, em vez
+  de ser reconstruída por padrões de string num segundo sistema.
+
+#### 4. O `qmltc-d` precisa de contexto explícito antes dos 40% finais
+
+`tools/qmltc/qmltc_d.cpp` tem mais de cinco mil linhas e mantém dezenas de estados
+globais: documento atual, imports, type registry, escopos, outer chain, aliases,
+dependencies, diagnostics e temporários de lowering. A recursão salva e restaura
+manualmente grandes conjuntos desses globais.
+
+Isto não é uma crítica a features ausentes nem uma exigência de reescrita antes de
+continuar. É um risco de completar o compilador: local types, imports qualificados,
+singletons e objetos aninhados já mostraram bugs de estado pertencente ao documento
+errado.
+
+**Critério de resolução:**
+
+- introduzir incrementalmente um `CompilationContext`/`DocumentContext`;
+- imports, source text, diagnostics e resolution stack deixam de depender de save/restore
+  manual;
+- um teste compila dois documentos locais com imports/aliases diferentes e prova que
+  nenhum estado atravessa a fronteira;
+- o lowering pode continuar textual por enquanto; uma IR completa não é precondição.
+
+### Achados estruturais que continuam válidos para o projeto inteiro
+
+#### 5. O melhor modelo de ownership ainda não é o default
+
+GC-wrapper tem identity map, invalidation, parenting pins e testes relevantes, mas
+bindings centrais ainda usam raw mode e `X_new`. Manter dois contratos de construção
+continua sendo dívida de produto, independentemente do estado do `qmltc-d`.
+
+**Critério de resolução:** wrapper mode vira default nos bindings suportados; os testes
+raw restantes são migrados; `X_new` deixa de ser API de uso normal.
+
+#### 6. O runtime moc continua limitado à owner thread
+
+Abortar em vez de permitir data race silenciosa foi a decisão segura. Ainda assim,
+worker QObjects, timers, networking e outros padrões Qt fora da GUI thread permanecem
+fora do contrato.
+
+**Critério de resolução:** tabelas sincronizadas ou ownership por thread, com construção,
+queued dispatch e destruição em worker cobertos. Até lá, a limitação deve continuar
+explícita e não ser confundida com a restrição de GUI thread dos widgets.
+
+#### 7. Generator IR, typesystem e manifests continuam incompletos
+
+O generator principal ainda mistura AST walk, política, emissão e recovery; `loadRules`
+continua sendo um subset regex; manifests ainda não cobrem Qt5, wrapper e webengine;
+expected-fails continua sendo linter, não runner.
+
+Esses pontos não foram criados pelo `qmltc-d`, mas ele aumenta a pressão sobre todos
+eles. A prioridade deve ser guiada pelos bugs que o diferencial 1:1 realmente encontra,
+não por uma tentativa abstrata de reproduzir todo o typesystem do PySide de uma vez.
+
+### Prioridade brutal da rodada 9
+
+1. **Restaurar o default build:** guardar/separar `qtd_qml_engine` e adicionar o probe
+   não-QML.
+2. **Isolar o runtime QML:** impedir que features do transpilador entrem em bindings
+   QtCore/QtWidgets/libsample.
+3. **Consertar a verdade do report:** 472 targets não podem ser `other`, e `qmltc5`
+   não pode aparecer como Qt6.
+4. **Continuar o diferencial 1:1:** tratar cada bug encontrado no wrapper/runtime como
+   resultado esperado da pressão, com regressão focada.
+5. **Introduzir `CompilationContext` incremental no `qmltc-d` antes do último 40%.**
+6. **Tornar GC-wrapper default.**
+7. **Evoluir o runtime de owner-thread-only para worker QObjects reais.**
+8. **Completar a governança restante:** expected-fail runner, manifests dos outros
+   modos e CI comprovadamente verde.
+9. **Introduzir IR no generator principal conforme as descobertas exigirem**, sem
+   bloquear artificialmente o trabalho semântico atual.
+
+### Veredito da rodada 9
+
+O `qmltc-d` estar em 60% não reduz o mérito do projeto nem constitui o problema
+principal. A tool está fazendo exatamente o trabalho mais útil nesta fase: comparar
+transpilado e interpretado, recusar o que ainda não sabe fazer e forçar o wrapper
+generator a atravessar casos reais que a suíte anterior não alcançava.
+
+O sinal preocupante não é “novos bugs apareceram”. Bugs novos devem aparecer quando o
+corpus ganha profundidade. O sinal preocupante é um requisito QML conseguir quebrar
+QtWidgets e libsample pela mesma unidade compartilhada, enquanto o report já não sabe
+classificar a maior parte da matriz que executa.
+
+Resumo brutal corrigido: **continuem usando o `qmltc-d` para quebrar o projeto** — essa
+é uma excelente estratégia de desenvolvimento. Mas cada quebra precisa terminar em uma
+fronteira mais forte, um probe cruzado e metadata de teste correta. A maturidade agora
+será medida não pela ausência de descobertas durante os 40% restantes, e sim pela
+capacidade do repositório de absorvê-las sem regressão lateral.
+
 ## Rodada 8: os gates aprenderam a falhar; o metaobjeto ainda mente
 
 Nesta rodada eu não reli apenas a resolução. Revisei os commits desde a rodada 7,

@@ -1319,3 +1319,30 @@ refuses standalone (TreeViewDelegate needs a TreeView).
 
 Method note: the suite runs in ONE `./build` invocation with all targets (472 green in ~4 min).
 Invoking `./build` once per target instead costs about an hour — the overhead is per invocation.
+
+### A bare name cannot come from an alias-only import (2026-07-29)
+
+Qt's Controls files write `import QtQuick.Templates as T`, so a BARE name in them is never a
+Templates type — `footer: DialogButtonBox {}` in Dialog.qml names the styled `.qml` file sitting
+next to the document. Resolving the bare name through the registry built an unstyled Templates
+control instead, and Dialog's footer came out with every padding, size and offset at ZERO against a
+fully built engine one, with no diagnostic saying anything. `boundTypeFor` now refuses a name whose
+module was imported only under an alias (the URI is the 4th qmlmap column; a name that arrived
+qualified stays exempt).
+
+That exposed two more, both invisible while the wrong resolution masked them:
+
+- **A property-bound child never resolved a local `.qml` type.** Only the default-child path did.
+  `header: Label {}` became a bare object instead of Basic/Label.qml's own root. Both paths now
+  resolve and splice identically.
+- **A use-site binding was APPENDED to the local definition's, not substituted for it.** `Label {
+  color: … }` over a definition that also binds `color` emitted two recompute slots with the same
+  name and the D did not compile (HorizontalHeaderViewDelegate). In QML the use site wins; one
+  `spliceUseSite` helper now serves both paths, so they cannot drift apart again.
+
+Result on Qt's own files: `Dialog` went from 16 differences in 155 compared properties to **0 in
+267** — the styled header/footer brought far more surface to compare AND agreed on all of it.
+
+Negative zero is normalised on both sides (`+ 0.0`): `-0.0 == 0.0`, and only `%.17g` distinguishes
+them, so comparing them as text reported a difference that does not exist. Any non-zero difference
+still shows. PARTIAL files whose values match the engine: 24 -> 28 of 46 measurable.

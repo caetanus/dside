@@ -97,6 +97,16 @@ static std::map<std::string, std::map<std::string, std::string>> g_qmlProps, g_q
 // diagnostic can say WHICH type is unsupported instead of just "unsupported".
 static std::map<std::string, std::map<std::string, std::string>> g_qmlCxxType;
 
+// Properties that hold a LIST (5th qmlprops column ends in `[]`). QML lets a single object be
+// assigned to one — `transitions: Transition {}` — and the engine appends it, so it lives at
+// index 0 and NOT at the property itself.
+static std::map<std::string, std::set<std::string>> g_qmlListProp;
+
+static bool isListProp(const std::string &qmlType, const std::string &prop) {
+    auto it = g_qmlListProp.find(qmlType);
+    return it != g_qmlListProp.end() && it->second.count(prop) > 0;
+}
+
 static void loadQmlProps(const char *path) {
     std::ifstream f(path);
     std::string line;
@@ -118,7 +128,17 @@ static void loadQmlProps(const char *path) {
         // only the D-typed ones enter g_qmlProps, since that table types a FIELD.
         if (!dty.empty()) g_qmlProps[qml][prop] = dty;
         if (!nsig.empty()) g_qmlNotify[qml][prop] = nsig;
-        if (t4 != std::string::npos) g_qmlCxxType[qml][prop] = line.substr(t4 + 1);
+        if (t4 != std::string::npos) {
+            std::string cxx = line.substr(t4 + 1);
+            while (!cxx.empty() && (cxx.back() == '\r' || cxx.back() == '\n')) cxx.pop_back();
+            // A trailing `[]` marks a LIST property (`transitions`, `states`): a child assigned to
+            // one is APPENDED, and the engine holds it at <prop>[0] — not at <prop>.
+            if (cxx.size() > 2 && cxx.compare(cxx.size() - 2, 2, "[]") == 0) {
+                g_qmlListProp[qml].insert(prop);
+                cxx.resize(cxx.size() - 2);
+            }
+            g_qmlCxxType[qml][prop] = cxx;
+        }
     }
 }
 
@@ -184,10 +204,25 @@ static void loadQmlMap(const char *path) {
     }
 }
 
+// Modules imported WITHOUT an alias, and names that ARRIVED qualified — both filled while the
+// document's headers are read, and both needed here (see boundTypeFor).
+static std::set<std::string> g_bareImports;
+static std::set<std::string> g_qualifiedTypes;
+
 // Empty D type = not a mapped bound type (a fresh @QObject / local type / unsupported).
 static std::pair<std::string, std::string> boundTypeFor(const std::string &qmlType) {
     auto it = g_qmlMap.find(qmlType);
-    return it != g_qmlMap.end() ? it->second : std::pair<std::string, std::string>{"", ""};
+    if (it == g_qmlMap.end()) return {"", ""};
+    // A module brought in only under an alias does NOT put its types in scope by bare name. Qt's
+    // Controls files write `import QtQuick.Templates as T`, so a bare `DialogButtonBox` there is
+    // the styled .qml next to the document — resolving it to the Templates type built an unstyled
+    // control whose every padding and size read zero, silently. A name that arrived qualified is
+    // exempt: typeName() strips the alias and records it, and that IS the imported type.
+    auto u = g_qmlTypeUri.find(qmlType);
+    if (u != g_qmlTypeUri.end() && !g_bareImports.count(u->second)
+            && !g_qualifiedTypes.count(qmlType))
+        return {"", ""};
+    return it->second;
 }
 
 // dotted name of a UiQualifiedId (e.g. a handler id `onCountChanged`, or `a.b.c`).
@@ -221,7 +256,6 @@ static std::set<std::string> g_importAliases;
 // local file has the SAME name (Basic/CheckDelegate.qml alongside `T.CheckDelegate`). Resolving
 // it locally gave the root no Qt base at all AND suppressed the diagnostic, because a resolved
 // local path is what the "not a bound type" check tests for.
-static std::set<std::string> g_qualifiedTypes;
 
 // The document's source text, so a diagnostic can quote the expression it refused. Reading a
 // cluster of "expression not supported" was guesswork without it: matching a property name back
@@ -360,12 +394,18 @@ static std::string typeName(UiQualifiedId *id) {
     return n;
 }
 
-// Records `as X` aliases from a document's import headers.
+// Records `as X` aliases from a document's import headers, and the modules imported WITHOUT one.
+// A module brought in only under an alias does not put its types in scope by bare name: Qt's own
+// Controls files write `import QtQuick.Templates as T`, so a bare `DialogButtonBox` in Dialog.qml
+// is the STYLED local file next to it, never the Templates type. Resolving the bare name to the
+// bound Templates type built an unstyled control -- Dialog's footer came out with every padding,
+// size and offset at zero against a fully built engine one, and no diagnostic said a word.
 static void collectImportAliases(UiProgram *program) {
     for (auto *h = program ? program->headers : nullptr; h; h = h->next)
         if (auto *imp = cast<UiImport *>(h->headerItem)) {
             std::string a = qs(imp->importId.toString());
             if (!a.empty()) g_importAliases.insert(a);
+            else if (imp->importUri) g_bareImports.insert(qname(imp->importUri));
         }
 }
 
@@ -2141,6 +2181,43 @@ static std::set<std::string> g_resolving;
 // it, returning its root object definition — the engine auto-imports same-directory .qml types and
 // we mirror that. Returns null (and leaves *outPath empty) if missing or already on the resolution
 // stack. Engine/Parser are leaked (process-lifetime) so the returned AST stays valid.
+// The name a member BINDS, for deciding what a use site overrides.
+static std::string memberBoundName(UiObjectMember *m) {
+    if (auto *pub = cast<UiPublicMember *>(m)) return qs(pub->name.toString());
+    if (auto *sb = cast<UiScriptBinding *>(m)) return qname(sb->qualifiedId);
+    if (auto *ob = cast<UiObjectBinding *>(m)) return qname(ob->qualifiedId);
+    if (auto *ab = cast<UiArrayBinding *>(m)) return qname(ab->qualifiedId);
+    return "";
+}
+
+// `Label { color: "red" }` on a local type whose OWN definition also binds `color`: in QML the use
+// site WINS, it does not add a second binding. Appending both emitted two recompute slots with the
+// same name and the generated D did not compile (HorizontalHeaderViewDelegate). Both child paths
+// splice through this, so the two cannot drift apart again.
+static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectInitializer *use) {
+    if (!use || !use->members) return defn;
+    if (!defn || !defn->members) return use;
+    std::set<std::string> overridden;
+    for (auto *m = use->members; m; m = m->next) {
+        std::string n = memberBoundName(m->member);
+        if (!n.empty()) overridden.insert(n);
+    }
+    UiObjectMemberList *first = nullptr, *last = nullptr;
+    for (auto *m = defn->members; m;) {
+        auto *nx = m->next;
+        std::string n = memberBoundName(m->member);
+        if (n.empty() || !overridden.count(n)) {
+            if (!first) first = m; else last->next = m;
+            last = m; last->next = nullptr;
+        }
+        m = nx;
+    }
+    if (!first) { defn->members = use->members; return defn; }
+    last->next = use->members;
+    defn->members = first;
+    return defn;
+}
+
 // A child whose type we cannot bind must be REFUSED, not built as a bare @QObject: every property
 // the document sets on it is then written to an object that HAS no such property, which throws at
 // construction (Dial's `transform: [ Translate { y: ... } ]`) while the file looks compiled.
@@ -2196,6 +2273,8 @@ struct ObjNode {
     int outerHops = -1;       // deepest enclosing level it reached (0 = immediate parent)
     bool hasLate = false;     // it (or a descendant) has late-phase work
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
+    std::set<std::string> listKids;   // ...of those, the ones whose property is a LIST: the engine
+                                      // holds them at <prop>[0], so that is the path to compare.
     // Value sources (`NumberAnimation on v`). They need completion like any object, but they are
     // NOT children in QML's object model — the engine has no `_vs0.duration` path, so dumping them
     // as children made the oracle fail on a path that cannot exist.
@@ -3084,13 +3163,33 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          inPath, cb.field.c_str(), cls.c_str(), cb.type.c_str());
             ++partial; continue;
         }
+        // A LOCAL `.qml` type here is compiled from its own root, exactly as a default child
+        // already was. Only the default-child path had this, and the asymmetry was invisible while
+        // a bare name still resolved through the registry: `footer: DialogButtonBox {}` in Qt's
+        // Dialog.qml names the STYLED file next to it, and building it as a bare object left every
+        // padding, size and offset at zero.
+        UiObjectInitializer *cbInit = cb.init;
+        std::string cbResolvedPath;
+        QString savedCbSrc = g_srcText;
+        auto savedBare = g_bareImports, savedQual = g_qualifiedTypes;
+        if (cbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
+            if (UiObjectDefinition *lt = loadLocalType(cb.type, inPath, &cbResolvedPath)) {
+                std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
+                cbt = boundTypeFor(ltRoot);
+                cbInit = spliceUseSite(lt->initializer, cb.init);
+            }
+        }
         if (!cbt.first.empty() && !cbt.second.empty()) {
             std::string imp = "import " + cbt.second + ";\n";
             if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
             std::string vimp = "import " + cbt.second.substr(0, cbt.second.rfind('.')) + ".qtvirt;\n";
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
-        ObjNode kid = compileObject(cb.init, childCls, classes, partial, inPath, cbt.first, nullptr, cb.type);
+        if (!cbResolvedPath.empty()) g_resolving.insert(cbResolvedPath);
+        ObjNode kid = compileObject(cbInit, childCls, classes, partial, inPath, cbt.first, nullptr, cb.type);
+        if (!cbResolvedPath.empty()) g_resolving.erase(cbResolvedPath);
+        // The imports (and what arrived qualified) belong to the DOCUMENT they were read from.
+        g_srcText = savedCbSrc; g_bareImports = savedBare; g_qualifiedTypes = savedQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -3124,7 +3223,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // object — both configured identically — rather than asking the control.
                    // Only a property of the BOUND type goes through the meta-object; a declared
                    // `property Item foo: Rectangle {}` is a plain D field.
-                   + (isBoundObjectProp(cb.field)
+                   // A LIST property takes an APPEND, not an assignment: QML allows a single
+                   // object there (`transitions: Transition {}`) and the engine holds it at
+                   // <prop>[0]. Assigning it as an object named a path the engine does not have.
+                   + (isListProp(g_selfQmlType, cb.field)
+                        ? "        listAppend(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n"
+                        : isBoundObjectProp(cb.field)
                         ? "        setPropObj(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n" : "")
                    + "        classBegin(" + dIdent(cb.field) + ");\n";
         if (!kid.id.empty()) {
@@ -3135,6 +3239,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             for (auto &n : kid.notified) childNotified[kid.id + "." + n] = true;
         }
         node.kids.push_back({cb.field, kid});
+        if (isListProp(g_selfQmlType, cb.field)) node.listKids.insert(cb.field);
     }
 
     // A custom `default property` redirects bare children into that list, not the object's QObject
@@ -3230,15 +3335,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // append the use-site member list onto the local definition's, so the merged class carries
             // both. lt is a fresh per-use parse (not shared), so splicing its list in place is safe;
             // both ASTs are leaked, so the cross-pool `next` link stays valid.
-            if (od->initializer && od->initializer->members) {
-                if (!childInit) childInit = od->initializer;
-                else if (!childInit->members) childInit->members = od->initializer->members;
-                else {
-                    auto *tail = childInit->members;
-                    while (tail->next) tail = tail->next;
-                    tail->next = od->initializer->members;
-                }
-            }
+            childInit = spliceUseSite(childInit, od->initializer);
         }
         // A bound child type (Rectangle/Text) needs ITS module imported too (the root's import
         // alone isn't enough); mirror the root's import + <pkg>.qtvirt, deduped.
@@ -4762,7 +4859,13 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
                        : (s.second == "bool") ? "propBool(" : "propInt(";
         out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second, self, s.first});
     }
-    for (auto &k : n.kids) collectDump(k.second, acc + dIdent(k.first) + ".", lab + k.first + ".", out);
+    for (auto &k : n.kids) {
+        // A child assigned to a LIST property is APPENDED: the engine resolves it at <prop>[0],
+        // and labelling it <prop> asked the oracle for a path that does not exist (ScrollBar's
+        // `transitions: Transition {}`).
+        std::string klab = k.first + (n.listKids.count(k.first) ? "[0]" : "");
+        collectDump(k.second, acc + dIdent(k.first) + ".", lab + klab + ".", out);
+    }
     // Group children: read through the D field, but label with the QML path the oracle walks.
     for (auto &a : n.attachedProps) {
         auto dot = a.first.find('.');
@@ -5091,7 +5194,10 @@ int main(int argc, char **argv) {
             // A double is printed with %.17g on BOTH sides: the default shortest forms disagree on
             // a value that sits exactly between two 6-digit renderings (3.765625 -> D 3.76562,
             // Qt 3.76563), which is a formatting artefact reported as a value mismatch.
-            std::printf(l.dtype == "double" ? "    writefln(\"%s\\t%%.17g\", %s);\n"
+            // `+ 0.0` turns a NEGATIVE zero into a positive one (IEEE): -0 and 0 are the same
+            // value and differ only in how %.17g prints them, so comparing them as text reported a
+            // difference where there is none. The oracle normalises the same way.
+            std::printf(l.dtype == "double" ? "    writefln(\"%s\\t%%.17g\", (%s) + 0.0);\n"
                                             : "    writefln(\"%s\\t%%s\", %s);\n",
                         l.label.c_str(), l.access.c_str());
         std::printf("}\n");

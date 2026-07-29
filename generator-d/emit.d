@@ -554,8 +554,13 @@ void main(string[] args) {
                     // compiled: an object group is reached with propObj + setProp, a value group
                     // needs a read-modify-write of the whole value. Recorded as a trailing `*`.
                     auto isPtr = pm[1].canFind("isPointer: true");
+                    // `isList: true` is a THIRD kind: `transitions: Transition {}` assigns one
+                    // object to a LIST property, and the engine holds it at transitions[0]. Compiled
+                    // as an object assignment it named a path the engine does not have (ScrollBar).
+                    // Recorded as a trailing `[]`, the same way isPointer is recorded as `*`.
+                    auto isList = pm[1].canFind("isList: true");
                     ownProps[nm[1]][pn[1]] = pty.length ? pty
-                                           : ("\x01" ~ pt[1] ~ (isPtr ? "*" : ""));
+                                           : ("\x01" ~ pt[1] ~ (isPtr ? "*" : "") ~ (isList ? "[]" : ""));
                     auto nt = pm[1].matchFirst(reNotify);
                     if (!nt.empty) {
                         auto sg = nt[1] in sigOf;
