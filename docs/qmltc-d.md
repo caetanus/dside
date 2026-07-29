@@ -152,8 +152,11 @@ through an `id`), which is exactly the guard we want.
   where Type is a bound QML type that is not an object in scope, and Member is capitalised.
 - **Diagnostics quote the expression they refused.** Reading a cluster otherwise meant matching a
   property name back to a source line, which picks the FIRST occurrence — the root's — even when
-  the failure is in a child. Snippets are resolved against the document the node came from, since
-  one global text is wrong the moment a local `.qml` is loaded.
+  the failure is in a child. The snippet comes from the document CURRENTLY being compiled and from
+  nothing else: two things repoint that text behind your back — loading a local type, and the
+  singleton prescan, which reads every `.qml` in the directory — and a "try every parsed file"
+  fallback produced plausible NONSENSE (`ocale.name`) rather than admitting it did not know. Both
+  now restore it; a wrong snippet in a diagnostic that exists to be read is worse than none.
 - **`parent.<prop>`**: the centring idiom (`x: (parent.width - width) / 2`). It resolves to the
   same back-reference an enclosing id uses, NOT to `propObj(this, "parent")` — Qt sets the parent
   after construction while the wire runs inside the constructor, so fetching it there reads null.

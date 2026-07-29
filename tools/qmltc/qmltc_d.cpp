@@ -150,19 +150,17 @@ static QString g_srcText;
 // Every document parsed so far, so a node from a local .qml is quoted from ITS file. One global
 // text was wrong the moment a local type was loaded: the offsets belong to another document, and
 // the bounds check blanked 78 of the snippets rather than quoting the wrong file.
-static std::vector<QString> g_allSrc;
-
 // The source snippet an AST node came from, single-lined and clipped.
 static std::string srcOf(Node *n) {
     if (!n) return "";
     auto a = n->firstSourceLocation(), b = n->lastSourceLocation();
     int from = (int)a.offset, to = (int)(b.offset + b.length);
     if (from < 0 || to <= from) return "";
-    const QString *src = nullptr;
-    if (to <= g_srcText.size()) src = &g_srcText;
-    else for (auto &t : g_allSrc) if (to <= t.size()) { src = &t; break; }
-    if (!src) return "";
-    const QString &g_srcText = *src;
+    // Only the document currently being compiled. A "try every parsed file" fallback quoted the
+    // WRONG one — the offsets are valid in several files at once, so the snippet came out as
+    // plausible nonsense ("ocale.name"), which is worse than no snippet in a diagnostic that
+    // exists to be read.
+    if (to > g_srcText.size()) return "";
     QString t = g_srcText.mid(from, to - from).simplified();
     if (t.size() > 90) t = t.left(87) + "...";
     return qs(t);
@@ -1974,7 +1972,6 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     if (!f.open(QIODevice::ReadOnly)) return nullptr;
     QString code = QString::fromUtf8(f.readAll());
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
-    g_allSrc.push_back(code);
     auto *engine = new Engine();
     auto *lexer = new Lexer(engine);
     lexer->setCode(code, 1, /*qmlMode*/ true);
@@ -2888,6 +2885,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
         std::string childBaseImport = cbt.second;           // its import module (for g_extraImports)
         std::string childResolvedPath;                       // local-type file path (for the cycle guard)
+        // Loading a local type parses ANOTHER file and repoints the text a diagnostic quotes from;
+        // without putting it back, this document's own diagnostics quote the child's file.
+        QString savedSrc = g_srcText;
         if (cbt.first.empty() && childType != "QtObject") {
             // A local `.qml`-defined type (HelloWorld { }): compile ITS OWN root as this child's
             // class, taking the local definition's base (QtObject -> fresh @QObject, Item -> bound).
@@ -2927,6 +2927,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_dc" + std::to_string(di);
         if (!childResolvedPath.empty()) g_resolving.insert(childResolvedPath);
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
+        g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -4284,7 +4285,6 @@ int main(int argc, char **argv) {
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", pos[0]); return 2; }
     QString code = QString::fromUtf8(f.readAll());
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
-    g_allSrc.push_back(code);
     const char *inPath = pos[0];
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
     g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name
@@ -4362,6 +4362,11 @@ int main(int argc, char **argv) {
     std::string singletonDecls;
     int partialSing = 0;
     {
+        // This scan loads EVERY .qml next to the document to find singletons, and each load
+        // repoints the text a diagnostic quotes from. Without putting it back, every later
+        // diagnostic about THIS document quotes whichever neighbour was read last.
+        QString savedSrc = g_srcText;
+        struct RestoreSrc { QString v; ~RestoreSrc() { g_srcText = v; } } __restore{savedSrc};
         QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
         for (const auto &fi : QDir(dir).entryInfoList(QStringList() << "*.qml", QDir::Files)) {
             std::string nm = qs(fi.completeBaseName());
