@@ -426,6 +426,13 @@ static bool splitOuterDep(const std::string &d, std::string &obj, std::string &m
 }
 
 static bool outerHop(const std::string &name, std::string &prefix, const OuterFrame **frame) {
+    // An id in the CURRENT scope shadows an enclosing one — every call site here consults the
+    // chain first, so an object whose own id collides with an enclosing object's resolved to the
+    // wrong one. Qt's own controls collide constantly: Dialog.qml's root is `id: control` and so
+    // is the root of the DialogButtonBox.qml it instantiates as its footer, and `control.count`
+    // inside the footer means the FOOTER's count. (Deeper frames still resolve by hops, and the
+    // walk returns the nearest match, so a child of the footer naming `control` still gets it.)
+    if (!g_selfId.empty() && name == g_selfId) return false;
     for (size_t k = 0; k < g_outerChain.size(); ++k)
         if (!g_outerChain[k].id.empty() && g_outerChain[k].id == name) {
             prefix.clear();
