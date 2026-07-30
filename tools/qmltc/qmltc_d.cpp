@@ -430,6 +430,13 @@ static bool splitOuterDep(const std::string &d, std::string &obj, std::string &m
     return true;
 }
 
+// The FILE a class is being compiled from, as a URL. The engine gives every component a context
+// whose baseUrl is its document, and that is what a relative URL inside it resolves against — a
+// compiled `source: "icon.png"` with no baseUrl resolves against the process's working directory
+// instead, which is a different file or none. Saved and restored exactly where g_srcText is,
+// because an inlined child comes from ITS OWN document and the engine gives it that one.
+static std::string g_docUrl;
+
 static bool knownTypeName(const std::string &n) {
     if (g_qmlCxxType.count(n)) return true;
     auto bm = g_qmlMap.find(n);
@@ -2494,6 +2501,7 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     if (!f.open(QIODevice::ReadOnly)) return nullptr;
     QString code = QString::fromUtf8(f.readAll());
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
+    g_docUrl = "file://" + QFileInfo(path).absoluteFilePath().toStdString();
     auto *engine = new Engine();
     auto *lexer = new Lexer(engine);
     lexer->setCode(code, 1, /*qmlMode*/ true);
@@ -3575,6 +3583,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Loading a local type parses ANOTHER file and repoints the text a diagnostic quotes from;
         // without putting it back, this document's own diagnostics quote the child's file.
         QString savedSrc = g_srcText;
+    std::string savedDocUrl = g_docUrl;
         if (cbt.first.empty() && childType != "QtObject") {
             // A local `.qml`-defined type (HelloWorld { }): compile ITS OWN root as this child's
             // class, taking the local definition's base (QtObject -> fresh @QObject, Item -> bound).
@@ -3607,6 +3616,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (!childResolvedPath.empty()) g_resolving.insert(childResolvedPath);
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
+        g_docUrl = savedDocUrl;   // ...and so a class emits ITS document's baseUrl, not ours
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -4819,6 +4829,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // classBegin() BEFORE any property is assigned, which is the order the engine uses: a
         // type implementing QQmlParserStatus may need to know it is being built from a document
         // (rather than constructed directly) before it sees its first assignment.
+        // ...with THIS class's document, so a relative URL inside it resolves the way the engine
+        // resolves it. Emitted as its own call BEFORE classBegin rather than as an argument to it:
+        // a later pass finds the literal `classBegin(this);` to splice the outer back-reference in
+        // after it, and changing that text silently dropped the splice — leaving __outer null and
+        // every connection through it failing at construction. classBegin attaches the root
+        // context only when the object has none, so this one wins.
+        wire += "        attachContext(this, \"" + g_docUrl + "\");\n";
         wire += "        classBegin(this);\n";
         wire += childWire;   // build children first
         // Connect EVERYTHING before the initial binding pass. Two reasons:
@@ -5268,6 +5285,7 @@ int main(int argc, char **argv) {
     QString code = QString::fromUtf8(f.readAll());
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
     const char *inPath = pos[0];
+    g_docUrl = "file://" + QFileInfo(inPath).absoluteFilePath().toStdString();
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
     g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name
     loadDocModule(inPath);   // the module this document belongs to (its style/theme comes with it)
@@ -5349,7 +5367,9 @@ int main(int argc, char **argv) {
         // repoints the text a diagnostic quotes from. Without putting it back, every later
         // diagnostic about THIS document quotes whichever neighbour was read last.
         QString savedSrc = g_srcText;
-        struct RestoreSrc { QString v; ~RestoreSrc() { g_srcText = v; } } __restore{savedSrc};
+        std::string savedDocUrl2 = g_docUrl;
+    struct RestoreSrc { QString v; std::string u; ~RestoreSrc() { g_srcText = v; g_docUrl = u; } }
+        __restore{savedSrc, savedDocUrl2};
         QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
         for (const auto &fi : QDir(dir).entryInfoList(QStringList() << "*.qml", QDir::Files)) {
             std::string nm = qs(fi.completeBaseName());

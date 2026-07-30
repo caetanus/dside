@@ -513,6 +513,31 @@ static QQmlEngine* qtd_qml_engine() {
     return eng;
 }
 #endif
+extern "C" void qtd_attach_context(void* o);
+// ...with the DOCUMENT the object was written in. The engine gives each component a context whose
+// baseUrl is its own document; sharing the engine's root context gave every compiled object an
+// empty baseUrl, so a relative `source:`/`font.source` resolved against the process's working
+// directory rather than against the .qml file. One context per document, cached: they are
+// long-lived by construction and there is one per file, not per object.
+extern "C" void qtd_attach_context_url(void* o, const char* docUrl) {
+#ifdef QTD_HAVE_QML
+    if (!o) return;
+    if (!docUrl || !*docUrl) { qtd_attach_context(o); return; }
+    QObject* obj = static_cast<QObject*>(o);
+    if (QQmlEngine::contextForObject(obj)) return;
+    if (!QCoreApplication::instance()) return;
+    static QHash<QString, QQmlContext*> cache;
+    QString key = QString::fromUtf8(docUrl);
+    QQmlContext*& ctx = cache[key];
+    if (!ctx) {
+        ctx = new QQmlContext(qtd_qml_engine()->rootContext(), qtd_qml_engine());
+        ctx->setBaseUrl(QUrl(key));
+    }
+    QQmlEngine::setContextForObject(obj, ctx);
+#else
+    (void) o; (void) docUrl;
+#endif
+}
 extern "C" void qtd_attach_context(void* o) {
 #ifdef QTD_HAVE_QML
     if (!o) return;

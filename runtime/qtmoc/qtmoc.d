@@ -47,6 +47,7 @@ extern (C) nothrow {
     double qtd_vgroup_get_double(void*, const(char)*, const(char)*);
     void*  qtd_vgroup_get_qs(void*, const(char)*, const(char)*);
     void qtd_attach_context(void*);
+    void qtd_attach_context_url(void*, const(char)*);
     void qtd_ensure_module(const char*);
     int qtd_list_append(void*, const char*, void*);
     int qtd_bind_leaf(void*, const char*, const char*, void*, const char*);
@@ -870,10 +871,16 @@ bool copyGroupProp(S, D)(S src, string group, string member, D dst, string dname
 /// `componentComplete()` once the tree is built, which is what the engine does. A type that does
 /// not implement the interface is left untouched.
 void classBegin(T)(T o) { attachContext(o); qtd_parser_status(qobjOf(o), 0); }
+/// ...and the form that carries the object's DOCUMENT, for a baseUrl a relative URL resolves against.
+void classBegin(T)(T o, string docUrl) { attachContext(o, docUrl); qtd_parser_status(qobjOf(o), 0); }
 
 /// Give an object a QQmlContext. Anything that instantiates children through the engine (views,
 /// Loader, delegates) reads QQmlContext::engine() in componentComplete() and crashes without one.
 void attachContext(T)(T o) { qtd_attach_context(qobjOf(o)); }
+/// ...with the document the object was written in, so its relative URLs resolve like the engine's.
+void attachContext(T)(T o, string docUrl) {
+    qtd_attach_context_url(qobjOf(o), docUrl.length ? (docUrl ~ "\0").ptr : null);
+}
 
 /// Append a default child through the type's own default list property. `data` on an Item,
 /// `flickableData` on a Flickable (which reparents into its contentItem), `contentData` on a
