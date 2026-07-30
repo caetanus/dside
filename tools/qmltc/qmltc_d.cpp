@@ -1330,7 +1330,15 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                         auto it = qc->second.find(inner);
                         if (it != qc->second.end()) innerCxx = it->second;
                     }
+                    // A helper type Qt does not export as a QML element (QQuickRangeSliderNode, the
+                    // type of `RangeSlider.first`) has no QML name, so the property table is keyed by
+                    // its C++ CLASS name instead. Fall back to that rather than refusing the read.
                     std::string innerQml = innerCxx.empty() ? "" : qmlNameOfCxx(innerCxx);
+                    if (innerQml.empty() && !innerCxx.empty()) {
+                        innerQml = innerCxx;
+                        while (!innerQml.empty() && (innerQml.back() == '*' || innerQml.back() == ' '))
+                            innerQml.pop_back();
+                    }
                     if (!innerQml.empty())
                         if (auto qp = g_qmlProps.find(innerQml); qp != g_qmlProps.end()) {
                             auto t = qp->second.find(mem);

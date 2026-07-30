@@ -512,6 +512,12 @@ void main(string[] args) {
             foreach (blk; readText(qtj.str).split("Component {")) {
                 auto nm = blk.matchFirst(reName);
                 auto ex = blk.matchFirst(reExp);
+                // A Component with NO exports is still reachable through a property: `RangeSlider.first`
+                // is a QQuickRangeSliderNode*, a grouped-property helper Qt does not export as an
+                // element, and `control.first.pressed` could not be typed because the property table
+                // covered exported types only. Record it keyed by the C++ CLASS name — which is exactly
+                // what the compiler holds at that point — before the export filter drops it.
+                if (!nm.empty && ex.empty) qmlOfAll[nm[1]] = nm[1];
                 if (nm.empty || ex.empty) continue;
                 auto cpp = nm[1];
                 // The URI of EVERY exported type, whether or not we bind it: an ATTACHED read
@@ -521,6 +527,12 @@ void main(string[] args) {
                 // yield a value that matches the engine BY ACCIDENT.
                 auto qn0 = ex[1].matchFirst(reQml);
                 if (!qn0.empty) { uriRows[qn0[2]] = qn0[1]; qmlOfAll[cpp] = qn0[2]; }
+                // A Component with NO export is still reachable: `RangeSlider.first` is a
+                // QQuickRangeSliderNode*, a grouped-property helper Qt does not export as an element,
+                // and a read through it (`control.first.pressed`) could not be typed because the
+                // property table only covered exported types. Key those rows by the C++ CLASS name,
+                // which is exactly what the compiler holds at that point.
+                else qmlOfAll[cpp] = cpp;   // exported but with no parsable QML name
                 auto at0 = blk.matchFirst(reAttachedT);
                 if (!at0.empty && !qn0.empty) attachedOf[qn0[2]] = at0[1];
                 if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
