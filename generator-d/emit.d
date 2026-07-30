@@ -496,6 +496,7 @@ void main(string[] args) {
         // notify handlers, which were the only ones reachable while this table did not exist.
         string[string][string] ownProps, ownNotify, ownSignals;
         string qmap, qprops; int rows2, rows3; string[][] qmapRows;
+        string[string] uriRows;   // QML name -> module URI, for EVERY exported type
         foreach (qtj; qt.array) {
             if (!exists(qtj.str)) continue;
             foreach (blk; readText(qtj.str).split("Component {")) {
@@ -503,6 +504,13 @@ void main(string[] args) {
                 auto ex = blk.matchFirst(reExp);
                 if (nm.empty || ex.empty) continue;
                 auto cpp = nm[1];
+                // The URI of EVERY exported type, whether or not we bind it: an ATTACHED read
+                // (`Window.window` in Qt's Menu.qml) needs the attached type's module to resolve at
+                // runtime, and Window is not a type we subclass. Without this the compiler had to
+                // guess the URI, which would make attachedObj fail, return null, and the expression
+                // yield a value that matches the engine BY ACCIDENT.
+                auto qn0 = ex[1].matchFirst(reQml);
+                if (!qn0.empty) uriRows[qn0[2]] = qn0[1];
                 if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
                 auto qn = ex[1].matchFirst(reQml);
                 if (qn.empty) continue;
@@ -603,6 +611,12 @@ void main(string[] args) {
             qmap ~= r[0] ~ "\t" ~ r[1] ~ "\t" ~ r[2] ~ "\t" ~ r[3] ~ "\t" ~ dp ~ "\n";
         }
         std.file.write(buildPath(outDir, "qmlmap.tsv"), qmap);
+        {
+            string u;
+            foreach (n2_, u2; uriRows) u ~= n2_ ~ "\t" ~ u2 ~ "\n";
+            std.file.write(buildPath(outDir, "qmluris.tsv"), u);
+            writefln("qmluris: %d QML-name -> module rows -> qmluris.tsv", uriRows.length);
+        }
         std.file.write(buildPath(outDir, "qmlprops.tsv"), qprops);
         // …and the signal table, walked up the prototype chain the same way, so a Button carries
         // AbstractButton's `clicked`.

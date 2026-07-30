@@ -168,6 +168,23 @@ static std::string defaultPropOf(const std::string &qmlType) {
     return it == g_qmlDefaultProp.end() ? std::string() : it->second;
 }
 
+// Module URIs for EVERY exported QML type, including ones we do not bind — an attached read needs the
+// attached type's module and `Window` is not a bound type. Loaded beside the qmlmap; a bound type keeps
+// the URI its own row carries.
+static void loadQmlUris(const std::string &mapPath) {
+    auto slash = mapPath.find_last_of('/');
+    std::string p = (slash == std::string::npos ? std::string() : mapPath.substr(0, slash + 1)) + "qmluris.tsv";
+    std::ifstream f(p);
+    std::string line;
+    while (std::getline(f, line)) {
+        auto t = line.find('\t');
+        if (t == std::string::npos) continue;
+        std::string name = line.substr(0, t), uri = line.substr(t + 1);
+        while (!uri.empty() && (uri.back() == '\r' || uri.back() == '\n')) uri.pop_back();
+        if (!name.empty() && !uri.empty()) g_qmlTypeUri.emplace(name, uri);
+    }
+}
+
 static void loadQmlMap(const char *path) {
     std::ifstream f(path);
     std::string line;
@@ -4898,6 +4915,7 @@ int main(int argc, char **argv) {
         else if (std::strcmp(argv[i], "--labels") == 0) labels = true;   // print the dump labels (for the oracle --props)
         else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) {
             loadQmlMap(argv[i + 1]);                       // QML-name -> class table
+            loadQmlUris(argv[i + 1]);                      // ...and every exported type's module URI
             // qmlprops.tsv sits beside it and is written by the same pass, so it is never given
             // separately and the two cannot be mismatched.
             std::string pp(argv[++i]);
