@@ -130,9 +130,14 @@ Build reggaeBuild() {
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
         // A bound VALUE TYPE as a @Property (QColor, QSize): needs the Quick binding, since that
         // is where those types live.
-        foreach (dc; DCS)
+        foreach (dc; DCS) {
             all ~= qtdTest("valuetypeprop-" ~ dc, buildPath(root, "tests", "qml", "valuetypeprop_test.d"),
                            quick, dc);
+            // Does Qt resolve a QtdWidget subclass as its BOUND C++ base? qobject_cast walks the
+            // meta-object chain, and Qt uses it to decide policy on objects handed to it.
+            all ~= qtdTest("subclasscast-" ~ dc, buildPath(root, "tests", "qml", "subclasscast_test.d"),
+                           quick, dc);
+        }
     }
     // QtQuick.Templates — the C++ side of QtQuick.Controls, and the vocabulary real QML documents
     // are written against (measured: Controls is what most of Qt's own .qml needs).

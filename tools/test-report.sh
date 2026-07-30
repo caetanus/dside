@@ -41,7 +41,7 @@ category() {
     # `qmltc*` would otherwise have to out-specific it.
     qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*) echo qmltc ;;
     qml-*|qmlreg-*|qmlaot-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
-    reglife-*|valuetypeprop-*) echo qml ;;
+    reglife-*|valuetypeprop-*|subclasscast-*) echo qml ;;
     slotoverload-*) echo moc ;;
     qtmoc-probe-*|report-selftest) echo gate ;;
     tr-*|lupdate-check) echo i18n ;;
