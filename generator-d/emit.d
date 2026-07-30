@@ -599,6 +599,15 @@ void main(string[] args) {
                         auto sg = nt[1] in sigOf;
                         ownNotify[nm[1]][pn[1]] = sg ? *sg : (nt[1] ~ "()");
                     }
+                    // A CONSTANT property (Q_PROPERTY ... CONSTANT, published here as
+                    // `isPropertyConstant`) has no notify BECAUSE IT NEVER CHANGES. Dropping that
+                    // fact made the two indistinguishable downstream, so a binding reading one
+                    // (`model: control.contentModel`) was refused as "would not update" — when it
+                    // is in fact complete and correct with no connection at all. Carried in the
+                    // notify column as `!const`: it inherits down the prototype chain with the
+                    // rest, which is where the reader needs it (TabBar reads Container's).
+                    else if (pm[1].canFind("isPropertyConstant: true"))
+                        ownNotify[nm[1]][pn[1]] = "!const";
                 }
             }
         }

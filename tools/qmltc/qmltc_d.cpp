@@ -93,6 +93,13 @@ static std::map<std::string, std::string> g_qmlTypeUri;
 // (written next to qmlmap.tsv by the same generator pass, so the two cannot drift). qmlmap says
 // which class backs a name — enough to CONSTRUCT one; this is what lets a member be read.
 static std::map<std::string, std::map<std::string, std::string>> g_qmlProps, g_qmlNotify;
+// Properties marked CONSTANT by the registry. A dependency on one is SATISFIED by the initial
+// read: it cannot change, so "no notify" is not a gap to report but the whole story.
+static std::map<std::string, std::set<std::string>> g_qmlConst;
+static bool isConstProp(const std::string &qmlType, const std::string &prop) {
+    auto it = g_qmlConst.find(qmlType);
+    return it != g_qmlConst.end() && it->second.count(prop) != 0;
+}
 // Raw C++ type name of every property, including those with no D scalar mapping — so a
 // diagnostic can say WHICH type is unsupported instead of just "unsupported".
 static std::map<std::string, std::map<std::string, std::string>> g_qmlCxxType;
@@ -127,7 +134,11 @@ static void loadQmlProps(const char *path) {
         // handler on its notify was refused. The notify is recorded for every property now;
         // only the D-typed ones enter g_qmlProps, since that table types a FIELD.
         if (!dty.empty()) g_qmlProps[qml][prop] = dty;
-        if (!nsig.empty()) g_qmlNotify[qml][prop] = nsig;
+        // `!const` is not a signature: it says the property is CONSTANT, so a binding that reads
+        // it needs no connection and is complete without one. Kept out of g_qmlNotify (there is
+        // nothing to connect to) and out of the refusals (there is nothing missing).
+        if (nsig == "!const") g_qmlConst[qml].insert(prop);
+        else if (!nsig.empty()) g_qmlNotify[qml][prop] = nsig;
         if (t4 != std::string::npos) {
             std::string cxx = line.substr(t4 + 1);
             while (!cxx.empty() && (cxx.back() == '\r' || cxx.back() == '\n')) cxx.pop_back();
@@ -1754,6 +1765,17 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                 }
             }
         }
+        // `<outerId>.<objectProp>.<member>` (Qt's RangeSlider: `control.first.pressed`) is already a
+        // DEEP READ: compileExpr records it in g_deepReads and the late phase wires it with
+        // connectNotify/bindLeaf, which is what follows an object property that does not exist yet.
+        // Recording a flat dep on `first` as well produced "depends on 'first', which has no known
+        // notify" — correctly, since the grouped node never changes — and marked the file partial for
+        // a dependency that IS handled. Say nothing here and let the deep-read path do it.
+        if (auto *fmb4 = cast<FieldMemberExpression *>(fm->base))
+            if (auto *b4 = cast<IdentifierExpression *>(fmb4->base)) {
+                std::string pre4; const OuterFrame *fr4 = nullptr;
+                if (outerHop(qs(b4->name.toString()), pre4, &fr4)) return;
+            }
         // `<AttachedType>.<group>.<member>` (SafeArea.margins.top): the dependency is the attached
         // GROUP, whose notify the attached table carries. Without this the read compiled and connected
         // to nothing — a binding that never updates AND no diagnostic saying so, which is worse than
@@ -3985,6 +4007,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                + ba.first + "()\");\n";
                         continue;
                     }
+                    // A CONSTANT dependency is complete without a connection — the value read at
+                    // construction is the only value there will ever be. Reporting it as partial
+                    // said a correct translation was incomplete.
+                    if (isConstProp(fr->qmlType, mem)) continue;
                     std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s depends on '%s' of the "
                                  "enclosing object, which has no known notify — it would not update "
                                  "(later phase)\n", inPath, ba.first.c_str(), cls.c_str(), mem.c_str());
