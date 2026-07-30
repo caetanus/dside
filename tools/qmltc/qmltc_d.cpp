@@ -1445,6 +1445,27 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 return true;
             }
         }
+        // `<AttachedType>.<group>.<member>` — Qt's Drawer reads `SafeArea.margins.top`. The attached
+        // object comes from the same machinery as `Window.window`, and its `margins` is a VALUE group
+        // (QMarginsF), so the member is extracted with the vgroup readers. Typed by the target, since
+        // the attached table records the group's C++ type but not each member's.
+        if (auto *fmb2 = cast<FieldMemberExpression *>(fm->base)) {
+            if (auto *b2 = cast<IdentifierExpression *>(fmb2->base)) {
+                std::string tn3 = qs(b2->name.toString()), grp = qs(fmb2->name.toString());
+                if (!g_scope.count(tn3) && !g_childIds.count(tn3)
+                        && std::isupper((unsigned char) tn3[0]) && g_qmlTypeUri.count(tn3)) {
+                    auto am2 = g_qmlAttachedCxx.find(tn3);
+                    if (am2 != g_qmlAttachedCxx.end() && am2->second.count(grp)) {
+                        std::string dt = dtype.toStdString();
+                        const char *rd2 = dt == "string" ? "vgroupStr(" : dt == "bool" ? "vgroupBool("
+                                        : dt == "int" ? "vgroupInt(" : "vgroupDouble(";
+                        out = rd2 + attachedExpr(tn3) + ", \"" + grp + "\", \""
+                            + qs(fm->name.toString()) + "\")";
+                        return true;
+                    }
+                }
+            }
+        }
         // `vgroup.member` -> a member of a VALUE-type group: no object to read through, so the
         // value is fetched and the member extracted from it.
         if (base) {
@@ -1725,6 +1746,20 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                 }
             }
         }
+        // `<AttachedType>.<group>.<member>` (SafeArea.margins.top): the dependency is the attached
+        // GROUP, whose notify the attached table carries. Without this the read compiled and connected
+        // to nothing — a binding that never updates AND no diagnostic saying so, which is worse than
+        // refusing it.
+        if (auto *fmb3 = cast<FieldMemberExpression *>(fm->base))
+            if (auto *b3 = cast<IdentifierExpression *>(fmb3->base)) {
+                std::string tn4 = qs(b3->name.toString()), grp4 = qs(fmb3->name.toString());
+                auto am4 = g_qmlAttachedCxx.find(tn4);
+                if (!g_scope.count(tn4) && !g_childIds.count(tn4) && am4 != g_qmlAttachedCxx.end()
+                        && am4->second.count(grp4)) {
+                    ids.push_back("@" + tn4 + "." + grp4);
+                    return;
+                }
+            }
         // A read off the enclosing object is a real dependency: record it tagged, so the wiring
         // connects to the OUTER's notify instead of treating the binding as a constant.
         if (base && qs(base->name.toString()) == "parent" && !g_scope.count("parent")
