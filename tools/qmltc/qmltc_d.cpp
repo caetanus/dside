@@ -175,6 +175,7 @@ static std::string defaultPropOf(const std::string &qmlType) {
 // -> {window: "QQuickWindow*"}. Separate from qmlprops because `Window`'s own rows are QQuickWindow's
 // instance properties, and an attached read is a different scope.
 static std::map<std::string, std::map<std::string, std::string>> g_qmlAttachedCxx;
+static std::map<std::string, std::map<std::string, std::string>> g_qmlAttachedNotify;
 
 static void loadQmlAttached(const std::string &mapPath) {
     auto slash = mapPath.find_last_of('/');
@@ -190,7 +191,10 @@ static void loadQmlAttached(const std::string &mapPath) {
         }
         if (f5.size() < 5) continue;
         while (!f5[4].empty() && (f5[4].back() == '\r' || f5[4].back() == '\n')) f5[4].pop_back();
-        if (!f5[0].empty() && !f5[1].empty()) g_qmlAttachedCxx[f5[0]][f5[1]] = f5[4];
+        if (!f5[0].empty() && !f5[1].empty()) {
+            g_qmlAttachedCxx[f5[0]][f5[1]] = f5[4];
+            if (!f5[3].empty()) g_qmlAttachedNotify[f5[0]][f5[1]] = f5[3];
+        }
     }
 }
 
@@ -1710,6 +1714,16 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
             if (!isObj && !mem.empty() && std::isupper((unsigned char)mem[0])
                     && (bn == "Qt" || g_qmlCxxType.count(bn)))
                 return;
+            // An ATTACHED read (`Window.window`) is a real dependency on the ATTACHED object, not on
+            // something named `Window` in scope. Tagged so the wiring connects to that object's own
+            // notify — which qmlattached.tsv carries (windowChanged()).
+            if (!isObj) {
+                auto am = g_qmlAttachedCxx.find(bn);
+                if (am != g_qmlAttachedCxx.end() && am->second.count(mem)) {
+                    ids.push_back("@" + bn + "." + mem);
+                    return;
+                }
+            }
         }
         // A read off the enclosing object is a real dependency: record it tagged, so the wiring
         // connects to the OUTER's notify instead of treating the binding as a constant.
@@ -3874,6 +3888,31 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string conns;
             for (auto &d : deps) {
                 if (d == ba.first || !seen.insert(d).second) continue;   // self-reference is not a dep
+                // `@Type.prop` — an ATTACHED read: connect to the attached object's own notify.
+                if (d.rfind("@", 0) == 0) {
+                    auto dot = d.find('.');
+                    std::string tn2 = d.substr(1, dot - 1), mem2 = d.substr(dot + 1);
+                    std::string sig2;
+                    if (auto an = g_qmlAttachedNotify.find(tn2); an != g_qmlAttachedNotify.end()) {
+                        auto nt2 = an->second.find(mem2);
+                        if (nt2 != an->second.end()) sig2 = nt2->second;
+                    }
+                    if (sig2.empty()) {
+                        std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s depends on the "
+                                     "attached '%s.%s', whose notify is unknown — it would not update "
+                                     "(later phase)\n", inPath, ba.first.c_str(), cls.c_str(),
+                                     tn2.c_str(), mem2.c_str());
+                        ++partial; continue;
+                    }
+                    // tryConnectMeta, not connectMeta: the ATTACHED object does not exist until the
+                    // item is in a window, so at construction the endpoint is legitimately null and a
+                    // throwing connect kills the object. The initial value is still right (a null
+                    // window is the `false` branch, which is what the engine reports); what is missing
+                    // is re-evaluation when the window arrives — recorded, not hidden.
+                    conns += "        tryConnectMeta(" + attachedExpr(tn2) + ", \"" + sig2
+                           + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                    continue;
+                }
                 if (d.rfind("__outer.", 0) == 0) {   // reads an enclosing object
                     std::string obj, mem, sig; const OuterFrame *fr = nullptr;
                     if (!splitOuterDep(d, obj, mem, &fr)) { ++partial; continue; }
