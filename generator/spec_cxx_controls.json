@@ -4,7 +4,7 @@
   "out_dir": "../generated/qt-6.11/cxx-controls",
   "d_package": "qt.controls",
   "abi": "cxx",
-  "wrapper": false,
+  "wrapper": true,
   "discover_module": "QtQuickTemplates2",
   "headers": [
     "QtQuickTemplates2/private/qquickabstractbutton_p.h",
