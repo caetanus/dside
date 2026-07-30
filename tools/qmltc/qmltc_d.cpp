@@ -819,15 +819,84 @@ static std::map<std::string, std::set<std::string>> g_forceNotify;
 
 // Collect `id:` and declared property types of every child object bound to a named property, so
 // `<id>.<prop>` resolves in this object's bindings.
+// Records one child's id, declared property types and BOUND-type members, under `field`.
+static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
+                             UiQualifiedId *typeId) {
+    std::string cid;
+    std::map<std::string, std::string> pts, bps, bns;
+    {
+        std::string ctype = typeId ? typeName(typeId) : std::string();
+        // The registry keys some types by their QML name and some by their C++ class (`Text` is
+        // published as QQuickText). A lookup by the document's spelling alone therefore came back
+        // EMPTY for those, and every `<id>.<prop>` read on such a child was refused — silently, as
+        // "expression not supported". qmlmap knows both names; ask it for the other one.
+        if (!g_qmlProps.count(ctype))
+            if (auto bm = g_qmlMap.find(ctype); bm != g_qmlMap.end() && g_qmlProps.count(bm->second.first))
+                ctype = bm->second.first;
+        if (auto qp = g_qmlProps.find(ctype); qp != g_qmlProps.end())
+            for (auto &pp : qp->second) bps[pp.first] = pp.second;
+        if (auto qn2 = g_qmlNotify.find(ctype); qn2 != g_qmlNotify.end())
+            for (auto &pp : qn2->second) bns[pp.first] = pp.second;
+    }
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> sigs;
+    std::set<std::string> meths;
+    for (auto *cm = ci->members; cm; cm = cm->next) {
+        if (auto *sb = cast<UiScriptBinding *>(cm->member)) {
+            if (qname(sb->qualifiedId) != "id") continue;
+            if (auto *es = cast<ExpressionStatement *>(sb->statement))
+                if (auto *idn = cast<IdentifierExpression *>(es->expression))
+                    cid = qs(idn->name.toString());
+            continue;
+        }
+        if (auto *cp = cast<UiPublicMember *>(cm->member);
+                cp && cp->type == UiPublicMember::Property && cp->memberType) {
+            const char *dt = dtypeOf(cp->memberType->name.toString());
+            if (dt[0]) pts[qs(cp->name.toString())] = dt;
+            continue;
+        }
+        if (auto *cp = cast<UiPublicMember *>(cm->member);
+                cp && cp->type == UiPublicMember::Signal) {
+            std::vector<std::pair<std::string, std::string>> ps;
+            bool ok = true;
+            for (auto *pp = cp->parameters; pp; pp = pp->next) {
+                const char *dt = pp->type ? dtypeOf(paramTypeName(pp)) : "";
+                if (!dt[0]) { ok = false; break; }
+                ps.push_back({qs(pp->name.toString()), dt});
+            }
+            if (ok) sigs[qs(cp->name.toString())] = ps;
+            continue;
+        }
+        if (auto *se = cast<UiSourceElement *>(cm->member))
+            if (auto *fd = cast<FunctionDeclaration *>(se->sourceElement))
+                if (!fd->formals) meths.insert(qs(fd->name.toString()));
+    }
+    if (!cid.empty()) g_childIds[cid] = {field, pts, bps, bns, sigs, meths};
+}
+
 static void prescanChildIds(UiObjectInitializer *init) {
+    // A DEFAULT child (`Text { id: placeholder }` written bare) is a child with an id like any
+    // other, and Qt's own controls read one constantly: TextField sizes itself from
+    // `placeholder.implicitHeight`. Only property-bound children were pre-scanned, so every such
+    // read was refused — and the refusal left implicitWidth/implicitHeight at 0 where the engine
+    // computes 200x40. Counted the same way the compiler names them (`_dc<n>`, source order, only
+    // bare object definitions) so the field the pre-scan promises is the field that gets emitted.
+    int dcn = 0;
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         auto *pub = cast<UiPublicMember *>(m->member);
-        if (!pub || pub->type != UiPublicMember::Property || !pub->binding) continue;
         UiObjectInitializer *ci = nullptr;
+        std::string field, cid;
+        if (auto *dod = cast<UiObjectDefinition *>(m->member)) {
+            ci = dod->initializer;
+            field = "_dc" + std::to_string(dcn++);
+            if (!ci) continue;
+            prescanChildBody(ci, field, dod->qualifiedTypeNameId);
+            continue;
+        }
+        if (!pub || pub->type != UiPublicMember::Property || !pub->binding) continue;
         if (auto *ob = cast<UiObjectBinding *>(pub->binding)) ci = ob->initializer;
         else if (auto *od = cast<UiObjectDefinition *>(pub->binding)) ci = od->initializer;
         if (!ci) continue;
-        std::string field = qs(pub->name.toString()), cid;
+        field = qs(pub->name.toString());
         std::map<std::string, std::string> pts, bps, bns;
         // Seed from the child's bound type (its own properties), then let QML-declared ones win.
         {
@@ -1733,6 +1802,18 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         case QSOperator::NotEqual:
         case QSOperator::StrictNotEqual: op = "!=";  cmp = true; break;
         default: return false;   // logical/bitwise/in/instanceof -> later
+        }
+        // A logical operator in a NUMERIC target is not a bool operation: JS yields one of the
+        // operands. Compiling `a || b` as `(bool || bool)` would assign 1 or 0 to a width — and in
+        // practice it did not even compile, so the binding was refused and the property kept its
+        // default of 0 while the engine computed 200.
+        if (logical && (dtype == "double" || dtype == "int")) {
+            std::string l2, r2;
+            if (compileExpr(bin->left, dtype, l2) && compileExpr(bin->right, dtype, r2)) {
+                out = std::string(bin->op == QSOperator::Or ? "__qmltcOr(" : "__qmltcAnd(")
+                    + l2 + ", " + r2 + ")";
+                return true;
+            }
         }
         QString sub = logical ? QString("bool") : (cmp ? QString("") : dtype);
         std::string l, r;
@@ -4058,6 +4139,27 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            + ba.first + "()\");\n";
                     continue;
                 }
+                // `<childId>.<prop>` — the binding reads ANOTHER object of this document through
+                // its id (Qt's TextField sizes itself from `placeholder.implicitHeight`). The
+                // notify belongs to THAT object, so the connection is made to it; connecting to
+                // ourselves would compile and never fire.
+                if (auto dot = d.find('.'); dot != std::string::npos) {
+                    auto ci = g_childIds.find(d.substr(0, dot));
+                    if (ci != g_childIds.end()) {
+                        std::string mem = d.substr(dot + 1), csig;
+                        if (auto bn2 = ci->second.baseNotify.find(mem); bn2 != ci->second.baseNotify.end())
+                            csig = bn2->second;
+                        else if (ci->second.propType.count(mem)) {
+                            csig = mem + "Changed()";
+                            g_forceNotify[d.substr(0, dot)].insert(mem);
+                        }
+                        if (!csig.empty()) {
+                            conns += "        connectMeta(" + ci->second.field + ", \"" + csig
+                                   + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                            continue;
+                        }
+                    }
+                }
                 std::string sig;
                 if (auto qn = g_qmlNotify.find(g_selfQmlType); qn != g_qmlNotify.end()) {
                     auto nt = qn->second.find(d);
@@ -4399,6 +4501,27 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     needsNotify.push_back(d);
                 conns += "        connectMeta(this, \"" + d + "Changed()\", this, \"" + slot + "()\");\n";
                 continue;
+            }
+            // `<childId>.<prop>` — the binding reads ANOTHER object of this document through its
+            // id. The notify belongs to that object, so the connection is made to IT: connecting to
+            // ourselves would compile and never fire. A property the child DECLARES has no notify
+            // until someone asks for one, which is what g_forceNotify records.
+            if (auto dot = d.find('.'); dot != std::string::npos) {
+                auto ci = g_childIds.find(d.substr(0, dot));
+                if (ci != g_childIds.end()) {
+                    std::string mem = d.substr(dot + 1), csig;
+                    if (auto bn = ci->second.baseNotify.find(mem); bn != ci->second.baseNotify.end())
+                        csig = bn->second;
+                    else if (ci->second.propType.count(mem)) {
+                        csig = mem + "Changed()";
+                        g_forceNotify[d.substr(0, dot)].insert(mem);
+                    }
+                    if (!csig.empty()) {
+                        conns += "        connectMeta(" + ci->second.field + ", \"" + csig
+                               + "\", this, \"" + slot + "()\");\n";
+                        continue;
+                    }
+                }
             }
             std::string sig;
             if (auto qn = g_qmlNotify.find(g_selfQmlType); qn != g_qmlNotify.end()) {

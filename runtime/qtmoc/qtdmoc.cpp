@@ -11,9 +11,12 @@
 #include <QMetaProperty>
 #include <QMetaEnum>
 #ifdef QT_GUI_LIB
+// QGuiApplication alone: the result is handed out as an opaque void* and every member below it is
+// reached through the meta-object, so neither QStyleHints nor QAccessibilityHints needs to be a
+// complete type here. Including them would also have pinned this file to Qt 6.10+, where
+// qaccessibilityhints.h first exists — Qt5 has no such header and the whole binding stopped
+// compiling.
 #  include <QGuiApplication>
-#  include <QStyleHints>
-#  include <QtGui/qaccessibilityhints.h>
 #endif
 #include <QMetaType>
 #include <QCoreApplication>
@@ -754,7 +757,7 @@ extern "C" void qtd_dump_object(void* o, const char* path) {
         if (mp.isEnumType()) {
             const char* k = mp.enumerator().valueToKey(v.toInt());
             out = k ? QString::fromUtf8(k) : QString::number(v.toInt());
-        } else if (v.metaType().flags() & QMetaType::PointerToQObject) {
+        } else if (v.canConvert<QObject *>()) {   // Qt5 has no QVariant::metaType()
             // The ADDRESS differs between the two runs by construction; what is comparable is
             // whether the slot is filled at all.
             out = v.value<QObject*>() ? QStringLiteral("<object>") : QStringLiteral("<null>");

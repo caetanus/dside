@@ -788,6 +788,14 @@ string propStr(T)(T o, string name) {
     auto qs = qtd_prop_get_qs(qobjOf(o), (name ~ "\0").ptr);
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
 }
+/// JS `||` and `&&` return an OPERAND, not a bool: `a || b` is `a` when `a` is truthy, else `b`.
+/// In a bool target that distinction is invisible, but `implicitWidth: a || b` (Qt's TextField)
+/// must yield a WIDTH — compiled as a bool comparison it would set 1 or 0. `lazy` keeps JS's
+/// short-circuit, and taking `a` by value evaluates it exactly once.
+T __qmltcOr(T)(T a, lazy T b) { return a != 0 ? a : b; }
+/// ...and its twin: `a && b` is `b` when `a` is truthy, else `a`.
+T __qmltcAnd(T)(T a, lazy T b) { return a != 0 ? b : a; }
+
 /// The QML global `Qt.styleHints`: an ordinary QObject, so every member below it is reachable
 /// with the ordinary propObj/propEnumKey channel. Null in a binding without QtGui.
 void* styleHintsObj() { return qtd_style_hints(); }

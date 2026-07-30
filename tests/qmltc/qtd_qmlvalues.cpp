@@ -183,7 +183,7 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                 if (mp.isEnumType()) {
                     const char *k = mp.enumerator().valueToKey(v.toInt());
                     outv = k ? QString::fromUtf8(k) : QString::number(v.toInt());
-                } else if (v.metaType().flags() & QMetaType::PointerToQObject) {
+                } else if (v.canConvert<QObject *>()) {   // Qt5 has no QVariant::metaType()
                     outv = v.value<QObject *>() ? QStringLiteral("<object>") : QStringLiteral("<null>");
                 } else if (v.canConvert<QString>()) {
                     outv = v.toString();
