@@ -1226,9 +1226,18 @@ string canonSig(CXCursor c) {
          ~ clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(c))).str;
 }
 
+// `primary` tracks whether we are still walking the FIRST base at every level. A D wrapper (and a
+// raw extern(C++) class) models only that chain, and its pointer IS the primary-base pointer — so a
+// method aliased in from a SECONDARY base would be called with a pointer that C++ would have
+// adjusted: `QLayout : QObject, QLayoutItem` reached QLayoutItem::setAlignment with a QLayout*.
+// The NAMES and SIGNATURES of every base still count (they decide what is an override), only the
+// aliases are restricted.
 void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] sigs,
-                     ref bool[string] aliasable, ref string[string] aliasBase, ref bool[string] seen) {
+                     ref bool[string] aliasable, ref string[string] aliasBase, ref bool[string] seen,
+                     bool primary = true) {
+    size_t __bi;
     foreach (b0; baseDecls(node)) {
+        bool isPrimary = primary && __bi++ == 0;
         auto b = clang_getCursorDefinition(b0);   // base decl -> its definition (has children)
         auto bn = clang_getCursorSpelling(b).str;
         auto k = clang_getCursorUSR(b).str;
@@ -1239,13 +1248,13 @@ void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] sig
                 names[sp] = true;
                 sigs[clang_getCursorDisplayName(c).str] = true;
                 sigs[canonSig(c)] = true;
-                if (sp !in aliasable && !clang_CXXMethod_isPureVirtual(c) && !isInline(c)
+                if (isPrimary && sp !in aliasable && !clang_CXXMethod_isPureVirtual(c) && !isInline(c)
                         && !sp.startsWith("operator")) {
                     aliasable[sp] = true;
                     aliasBase[sp] = bn;
                 }
             }
-        baseMethodNames(b, names, sigs, aliasable, aliasBase, seen);
+        baseMethodNames(b, names, sigs, aliasable, aliasBase, seen, isPrimary);
     }
 }
 
