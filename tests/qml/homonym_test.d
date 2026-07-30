@@ -16,7 +16,7 @@ void main() {
     qmlRegisterType!(a.Dup)("App", 1, 0, "AlphaDup");   // both T.stringof == "Dup"
     qmlRegisterType!(b.Dup)("App", 1, 0, "BetaDup");
 
-    auto engine = QQmlApplicationEngine_new();
+    auto engine = new QQmlApplicationEngine();
     engine.load("qrc:/homonym.qml");
 
     assert(a.a_hit == 5, "AlphaDup drove its own slot (distinct metaobject despite same class name)");

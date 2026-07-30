@@ -29,7 +29,7 @@ void main() {
     qmlRegisterType!Beta("App", 1, 0, "Beta");
     qmlRegisterType!Alpha("App", 1, 0, "Alpha");   // repeated registration must not corrupt anything
 
-    auto engine = QQmlApplicationEngine_new();
+    auto engine = new QQmlApplicationEngine();
     engine.load("qrc:/register_two.qml");   // instantiates BOTH Alpha and Beta
 
     // Alpha { av: 10; onCompleted: report(av*2) }  Beta { bv: 3; onCompleted: note(bv*2) }

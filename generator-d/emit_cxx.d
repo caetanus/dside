@@ -1833,6 +1833,9 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     anamesC ~= format("a%d", i);
                 }
                 if (!okc) { _fate = "unmapped-type"; return; }
+                auto qcKey = dname(mn) ~ "|qc|" ~ rpsC.join(",") ~ (clang_CXXMethod_isStatic(c) ? "s" : "");
+                if (qcKey in seenW) { _fate = "inherited"; return; }   // same collapse as the QList path
+                seenW[qcKey] = true;
                 auto selfA = clang_CXXMethod_isStatic(c) ? "" : (cargsC.length ? "this.ptr(), " : "this.ptr()");
                 auto declSelfC = clang_CXXMethod_isStatic(c) ? "" : (rpsC.length ? "void* self, " : "void* self");
                 string rawN;
@@ -1860,6 +1863,19 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             if (qtidR.length) {
                 auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
                 auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
+                // Two C++ overloads (const/non-const, or ref-qualified) collapse to ONE D method
+                // here, and this emits a DEFINITION: the second would clash. Qt5's
+                // QQmlApplicationEngine::rootObjects() is exactly that pair.
+                // The key must carry the PARAMETERS: `QGraphicsScene::items(...)` has several real
+                // overloads with distinct D signatures, and a name-only key dropped them.
+                string qlPs;
+                foreach (i; 0 .. clang_Cursor_getNumArguments(c)) {
+                    string _pi; try qlPs ~= mapCxxType(clang_getCursorType(
+                        clang_Cursor_getArgument(c, i)), _pi) ~ ","; catch (Unmappable) { qlPs ~= "?,"; }
+                }
+                auto qlKey = dname(mn) ~ "|ql|" ~ qlPs ~ (clang_CXXMethod_isStatic(c) ? "s" : "");
+                if (qlKey in seenW) { _fate = "inherited"; return; }
+                seenW[qlKey] = true;
                 auto pr = emitQListReturn(c, mn, qtidR, kw2, cst2, impSet, dpkg,
                                           clang_CXXMethod_isVirtual(c) != 0);
                 if (pr.length) { wd ~= pr[0]; wm ~= pr[1]; }   // raw -> module scope, idiom -> class

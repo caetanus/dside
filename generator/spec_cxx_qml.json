@@ -1,6 +1,9 @@
 {
-  "qt_version": "6.11", "pkg_config": "Qt6Qml Qt6Gui Qt6Core",
+  "qt_version": "6.11",
+  "pkg_config": "Qt6Qml Qt6Gui Qt6Core",
   "out_dir": "../generated/qt-6.11/cxx-qml",
-  "d_package": "qt.qml", "abi": "cxx", "wrapper": false,
+  "d_package": "qt.qml",
+  "abi": "cxx",
+  "wrapper": true,
   "discover_module": "QtQml"
 }

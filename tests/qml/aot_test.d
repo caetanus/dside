@@ -21,7 +21,7 @@ void main() {
 
     qmlRegisterType!Backend("App", 1, 0, "Backend");
 
-    auto engine = QQmlApplicationEngine_new();
+    auto engine = new QQmlApplicationEngine();
     engine.load("qrc:/register.qml");   // served by the linked AOT unit — no .qml source present
 
     assert(g_received == 42, "AOT: precompiled qml unit failed to drive the D round-trip");

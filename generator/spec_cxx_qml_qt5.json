@@ -1,6 +1,10 @@
 {
-  "qt_version": "5.15", "pkg_config": "Qt5Qml Qt5Gui Qt5Core", "qt_marker": "/qt/",
+  "qt_version": "5.15",
+  "pkg_config": "Qt5Qml Qt5Gui Qt5Core",
+  "qt_marker": "/qt/",
   "out_dir": "../generated/qt-5.15/cxx-qml",
-  "d_package": "qt.qml", "abi": "cxx", "wrapper": false,
+  "d_package": "qt.qml",
+  "abi": "cxx",
+  "wrapper": true,
   "discover_module": "QtQml"
 }

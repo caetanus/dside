@@ -23,7 +23,7 @@ void main() {
     qmlRegisterType!Boom("App", 1, 0, "Boom");
 
     immutable before = qtdCallbackErrors;
-    auto engine = QQmlApplicationEngine_new();
+    auto engine = new QQmlApplicationEngine();
     engine.load("qrc:/boom.qml");   // instantiates Boom -> factory throws -> recorded, no crash
 
     // The failure was OBSERVED, not swallowed: the factory recorded the throw.

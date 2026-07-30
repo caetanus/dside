@@ -23,8 +23,8 @@ void main() {
     __qcore_ctor(cast(void*) app, argc, argv.ptr, 0);
 
     auto backend = newQObject!Backend();
-    auto engine = QQmlApplicationEngine_new();
-    engine.rootContext().setContextProperty("backend", cast(cppq.QObject) qobjOf(backend));
+    auto engine = new QQmlApplicationEngine();
+    engine.rootContext().setContextProperty("backend", cppq.QObject.wrap(qobjOf(backend)));
     engine.load("qrc:/main.qml");
 
     // Component.onCompleted ran during load: fromQml(1).

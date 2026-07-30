@@ -24,7 +24,7 @@ void main() {
 
     qmlRegisterType!Backend("App", 1, 0, "Backend");   // now `import App 1.0; Backend {}` works
 
-    auto engine = QQmlApplicationEngine_new();
+    auto engine = new QQmlApplicationEngine();
     engine.load("qrc:/register.qml");
 
     // register.qml: Backend { inValue: 21; Component.onCompleted: fromQml(inValue*2) }
