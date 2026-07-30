@@ -1314,6 +1314,11 @@ static bool objPropQml(const std::string &owner, const std::string &prop, std::s
     outQml = (!qn.empty() && g_qmlCxxType.count(qn)) ? qn : cxx;
     return true;
 }
+// The same walk, driven by the dotted TEXT of a dependency instead of by the AST: the wiring
+// records deps as strings, and a path read has to be re-resolved there to know WHICH object
+// carries the notify. `searchIndicator` itself never changes — `implicitIndicatorHeight` on it
+// does — so connecting to the head is connecting to nothing.
+static bool objPathFromString(const std::string &dotted, std::string &objExpr, std::string &leafSig);
 static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
     if (auto *id = cast<IdentifierExpression *>(x)) {
         std::string n2 = qs(id->name.toString());
@@ -1351,6 +1356,56 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         return true;
     }
     return false;
+}
+
+static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq) {
+    if (g_scope.count(n2) || g_vgroups.count(n2)) return false;
+    if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
+    if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
+        if (ci2->second.qmlType.empty()) return false;
+        oe = ci2->second.field; oq = ci2->second.qmlType; return true;
+    }
+    std::string pre2; const OuterFrame *fr2 = nullptr;
+    if (outerHop(n2, pre2, &fr2)) { oe = pre2.substr(0, pre2.size() - 1); oq = fr2->qmlType; return true; }
+    if (objPropQml(g_selfQmlType, n2, oq)) { oe = "propObj(this, \"" + n2 + "\")"; return true; }
+    std::string pre3;
+    for (size_t k = 0; k < g_outerChain.size(); ++k) {
+        pre3 += "__outer.";
+        if (objPropQml(g_outerChain[k].qmlType, n2, oq)) {
+            g_outerUsed = true;
+            if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+            oe = "propObj(" + pre3.substr(0, pre3.size() - 1) + ", \"" + n2 + "\")";
+            return true;
+        }
+    }
+    return false;
+}
+static bool objPathFromString(const std::string &dotted, std::string &objExpr, std::string &leafSig) {
+    std::vector<std::string> parts;
+    for (size_t i = 0, j; i <= dotted.size(); i = j + 1) {
+        j = dotted.find('.', i);
+        if (j == std::string::npos) j = dotted.size();
+        parts.push_back(dotted.substr(i, j - i));
+        if (j == dotted.size()) break;
+    }
+    if (parts.size() < 2) return false;
+    std::string oe, oq;
+    if (!objPathHead(parts[0], oe, oq)) return false;
+    for (size_t k = 1; k + 1 < parts.size(); ++k) {
+        std::string nq;
+        if (!objPropQml(oq, parts[k], nq)) return false;
+        oe = "propObj(" + oe + ", \"" + parts[k] + "\")";
+        oq = nq;
+    }
+    std::string own = oq;
+    if (!g_qmlNotify.count(own))
+        if (auto bm = g_qmlMap.find(own); bm != g_qmlMap.end()) own = bm->second.first;
+    auto qn = g_qmlNotify.find(own);
+    if (qn == g_qmlNotify.end()) return false;
+    auto nt = qn->second.find(parts.back());
+    if (nt == qn->second.end() || nt->second.empty()) return false;
+    objExpr = oe; leafSig = nt->second;
+    return true;
 }
 
 static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &out) {
@@ -2076,6 +2131,13 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
         else if (auto an = attachedNameOf(fm->base); !an.empty())
             ids.push_back(an + "." + qs(fm->name.toString()));
         else if (base && qs(base->name.toString()) == g_className && g_enumMember.count(qs(fm->name.toString()))) { /* enum member: constant, no dep */ }
+        // An OBJECT PATH the registry can resolve: the dependency is the LEAF, on the object the
+        // path reaches. Recording only the head (`searchIndicator`) named something that never
+        // changes, so the binding was reported as unreactive for a member that has a notify.
+        else if (std::string oe5, sig5; objPathFromString(
+                     qs(base ? base->name.toString() : QString()) + "." + qs(fm->name.toString()),
+                     oe5, sig5))
+            ids.push_back(qs(base->name.toString()) + "." + qs(fm->name.toString()));
         else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
         return;
     }
@@ -4302,9 +4364,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         }
                     }
                 }
+                // ...or an object PATH the registry resolves: connect to the object the path
+                // reaches, on the leaf's own notify. tryConnectMeta because that object may not
+                // exist yet at wire time (a control builds its background in componentComplete),
+                // and a throwing connect would kill the object for a reactivity detail.
+                std::string dEff = d;
+                if (dEff.find('.') != std::string::npos) {
+                    std::string oe6, sig6;
+                    if (objPathFromString(dEff, oe6, sig6)) {
+                        conns += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                        continue;
+                    }
+                    // ...and when it does not resolve, depend on the HEAD, which is what this did
+                    // before the path was recorded at all. Reporting instead would turn a binding
+                    // that used to connect into a refusal — a regression dressed as honesty.
+                    dEff = dEff.substr(0, dEff.find('.'));
+                }
                 std::string sig;
                 if (auto qn = g_qmlNotify.find(g_selfQmlType); qn != g_qmlNotify.end()) {
-                    auto nt = qn->second.find(d);
+                    auto nt = qn->second.find(dEff);
                     if (nt != qn->second.end() && !nt->second.empty()) sig = nt->second;
                 }
                 if (!sig.empty()) {
@@ -4665,9 +4743,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     }
                 }
             }
+            // ...or an object PATH the registry resolves: connect to the object the path
+            // reaches, on the leaf's own notify. tryConnectMeta because that object may not
+            // exist yet at wire time (a control builds its background in componentComplete),
+            // and a throwing connect would kill the object for a reactivity detail.
+            std::string dEff = d;
+            if (dEff.find('.') != std::string::npos) {
+                std::string oe6, sig6;
+                if (objPathFromString(dEff, oe6, sig6)) {
+                    conns += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"" + slot + "()\");\n";
+                    continue;
+                }
+                dEff = dEff.substr(0, dEff.find('.'));   // as before: depend on the head
+            }
             std::string sig;
             if (auto qn = g_qmlNotify.find(g_selfQmlType); qn != g_qmlNotify.end()) {
-                auto nt = qn->second.find(d);
+                auto nt = qn->second.find(dEff);
                 if (nt != qn->second.end()) sig = nt->second;
             }
             if (!sig.empty()) { conns += "        connectMeta(this, \"" + sig + "\", this, \"" + slot + "()\");\n"; continue; }
@@ -5078,9 +5169,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // binding was never connected — `property int inner: width - pad` recomputed on
                 // pad and silently ignored width, exit 0, no diagnostic.
                 if (!dBase) {
+                    // An object PATH the registry resolves: connect to the object the path reaches,
+                    // on the leaf's own notify — the head of the path is typically a group that
+                    // never changes. When it does not resolve, depend on the head, as before.
+                    std::string dEff = d;
+                    if (dEff.find('.') != std::string::npos) {
+                        std::string oe7, sig7;
+                        if (objPathFromString(dEff, oe7, sig7)) {
+                            wire += "        tryConnectMeta(" + oe7 + ", \"" + sig7
+                                  + "\", this, \"__rc_" + p.name + "()\");\n";
+                            continue;
+                        }
+                        dEff = dEff.substr(0, dEff.find('.'));
+                    }
                     auto qn = g_qmlNotify.find(g_selfQmlType);
                     if (qn != g_qmlNotify.end()) {
-                        auto nt = qn->second.find(d);
+                        auto nt = qn->second.find(dEff);
                         if (nt != qn->second.end() && !nt->second.empty()) {
                             wire += "        connectMeta(this, \"" + nt->second
                                   + "\", this, \"__rc_" + p.name + "()\");\n";
@@ -5090,12 +5194,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // A value list is a plain D field, not a meta-object property: it has no
                     // notify by construction and nothing mutates it, so a binding reading it is
                     // correct as a one-shot. Not a dead dependency.
-                    if (g_valueLists.count(d)) continue;
+                    if (g_valueLists.count(dEff)) continue;
                     // A SINGLETON name is an object, not a property — `number: Fixture.value`
                     // records the singleton as the dependency. Reacting to a singleton's property
                     // changing is a real gap, but it is a missing DEPENDENCY (the member is never
                     // recorded), not a missing notify, so it does not belong to this diagnostic.
-                    if (g_singletons.count(d)) continue;
+                    if (g_singletons.count(dEff)) continue;
                     // Anything else that can never fire is reported, not silently dropped: the
                     // binding would look live and never update.
                     std::fprintf(stderr, "qmltc-d: %s: binding '%s' depends on '%s', which has no "
