@@ -9,6 +9,12 @@
 #endif
 #include <QString>
 #include <QMetaProperty>
+#include <QMetaEnum>
+#ifdef QT_GUI_LIB
+#  include <QGuiApplication>
+#  include <QStyleHints>
+#  include <QtGui/qaccessibilityhints.h>
+#endif
 #include <QMetaType>
 #include <QCoreApplication>
 #include <QTranslator>
@@ -718,6 +724,36 @@ void qtd_prop_set_obj(void* o, const char* n, void* v) {
 bool qtd_invoke0(void* o, const char* member) {
     if (!o) return false;
     return QMetaObject::invokeMethod(static_cast<QObject*>(o), member, Qt::DirectConnection);
+}
+// `Qt.styleHints` in QML is QGuiApplication::styleHints() — an ORDINARY QObject whose members
+// are ordinary properties (`accessibility` is a CONSTANT QObject property, `contrastPreference`
+// an enum one with a notify). So the generic channel already reaches all of it; the only thing
+// missing was the ROOT, which cannot be reached by name from any object we hold. Guarded on
+// QT_GUI_LIB — a define pkg-config supplies exactly when Gui is one of the binding's modules,
+// so a core-only binding neither compiles nor links QtGui for it (see the QTD_ENABLE_QML note).
+extern "C" void* qtd_style_hints() {
+#ifdef QT_GUI_LIB
+    return QGuiApplication::styleHints();
+#else
+    return nullptr;
+#endif
+}
+// Reads an ENUM property as its KEY — the same spelling the SETTER already takes, so a value
+// read here compares against the key a `Qt.HighContrast` literal compiles to. QVariant::toString
+// on an enum gives nothing useful; the key lives in the QMetaEnum, which the meta-object carries
+// for every registered enum property. Non-enum properties fall back to the string form rather
+// than reporting a failure the caller cannot act on.
+extern "C" void* qtd_prop_get_enum_key(void* o, const char* n) {
+    if (!o) return new QString();
+    QObject* q = static_cast<QObject*>(o);
+    const QMetaObject* mo = q->metaObject();
+    int i = mo->indexOfProperty(n);
+    if (i < 0) return new QString();
+    QMetaProperty mp = mo->property(i);
+    QVariant v = mp.read(q);
+    if (!mp.isEnumType()) return new QString(v.toString());
+    const char* k = mp.enumerator().valueToKey(v.toInt());
+    return new QString(k ? QString::fromUtf8(k) : QString());
 }
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(o ? static_cast<QObject*>(o)->property(n).toString() : QString()); }
 int qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {

@@ -1635,6 +1635,25 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         out = "(" + c + " ? " + a + " : " + b + ")"; return true;
     }
     if (auto *bin = cast<BinaryExpression *>(e)) {
+        // `Qt.styleHints` is the one object in these documents that no name in scope can reach: it
+        // is QGuiApplication::styleHints(), a plain QObject. Everything BELOW it is ordinary —
+        // `accessibility` is a QObject property, `contrastPreference` an enum one — so once the
+        // root is expressible the existing channel walks the rest with propObj, for any depth and
+        // any member, with no table of style-hint names anywhere.
+        std::function<std::string(ExpressionNode *)> qtGlobalObj = [&](ExpressionNode *x) -> std::string {
+            auto *f = cast<FieldMemberExpression *>(x);
+            if (!f) return "";
+            std::string mem = qs(f->name.toString());
+            if (auto *b = cast<IdentifierExpression *>(f->base)) {
+                std::string bn = qs(b->name.toString());
+                if (bn != "Qt" || g_childIds.count(bn) || g_singletons.count(bn)
+                        || (!g_selfId.empty() && bn == g_selfId)
+                        || (!g_outerId.empty() && bn == g_outerId)) return "";
+                return mem == "styleHints" ? "styleHintsObj()" : "";
+            }
+            std::string inner = qtGlobalObj(f->base);
+            return inner.empty() ? "" : "propObj(" + inner + ", \"" + mem + "\")";
+        };
         // `control.checkState === Qt.Checked` — comparing an ENUM property to an enum member. The
         // numeric value is not knowable here, but an enum property READ AS A STRING gives its KEY
         // (QVariant::toString goes through QMetaEnum), and the member's key is its own name. So
@@ -1662,6 +1681,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 std::string tmp;
                 auto *fm2 = cast<FieldMemberExpression *>(x);
                 if (!fm2) return false;
+                // ...or a member of a Qt global object, whose base is a CHAIN, not an identifier.
+                if (std::string go = qtGlobalObj(fm2->base); !go.empty()) {
+                    outRead = "propStr(" + go + ", \"" + qs(fm2->name.toString()) + "\")";
+                    return true;
+                }
                 auto *b2 = cast<IdentifierExpression *>(fm2->base);
                 if (!b2) return false;
                 std::string bn = qs(b2->name.toString()), mem = qs(fm2->name.toString()), pre;

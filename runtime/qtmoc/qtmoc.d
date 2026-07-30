@@ -77,6 +77,8 @@ void qtd_parser_status(void*, int);
     bool   qtd_prop_get_bool(void*, const(char)*);
     int    qtd_prop_set_bool(void*, const(char)*, bool);
     void* qtd_prop_get_qs(void*, const(char)*);
+void* qtd_style_hints();
+void* qtd_prop_get_enum_key(void*, const(char)*);
     int    qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
 }
 
@@ -784,6 +786,15 @@ void setProp(T)(T o, string name, bool v) {
 /// Reads a QString property by name as a D string.
 string propStr(T)(T o, string name) {
     auto qs = qtd_prop_get_qs(qobjOf(o), (name ~ "\0").ptr);
+    auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
+/// The QML global `Qt.styleHints`: an ordinary QObject, so every member below it is reachable
+/// with the ordinary propObj/propEnumKey channel. Null in a binding without QtGui.
+void* styleHintsObj() { return qtd_style_hints(); }
+/// Reads an enum property as its KEY string — the spelling `setProp(o, name, "AlignRight")`
+/// takes, so a read and a literal compare directly.
+string propEnumKey(T)(T o, string name) {
+    auto qs = qtd_prop_get_enum_key(qobjOf(o), (name ~ "\0").ptr);
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
 }
 /// Writes a QString property by name (fires the notify, if any).
