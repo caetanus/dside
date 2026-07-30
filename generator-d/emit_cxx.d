@@ -86,8 +86,12 @@ string tryQList(CXType t) {
 
 // Raw QList-returning decl + an idiomatic method returning `elem[]`. [] if a
 // param doesn't map. Registers the qlist_<tid> module import.
+// `viaShim`: a VIRTUAL method must be reached through the C++ trampoline, or pragma(mangle) on the
+// declaring class's symbol calls THAT implementation and bypasses the override. Every virtual
+// container-returning method (QAbstractItemModel::roleNames/mimeTypes,
+// QAbstractItemDelegate::paintingRoles, ...) needs it, and without the flag they had to be dropped.
 string[] emitQListReturn(CXCursor c, string mn, string qtid, string kw, string cst,
-                         ref bool[string] impSet, string dpkg) {
+                         ref bool[string] impSet, string dpkg, bool viaShim = false) {
     auto e = QLISTS[qtid];
     if (e.imp.length) impSet[e.imp] = true;
     impSet["qlist_" ~ qtid] = true;             // import dpkg.qlist_<tid>
@@ -104,14 +108,32 @@ string[] emitQListReturn(CXCursor c, string mn, string qtid, string kw, string c
         callargs ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
     }
     auto mg = clang_Cursor_getMangling(c).str;
-    auto rawName = "__" ~ dname(mn) ~ "_ql";
+    auto rawName = "__" ~ dname(mn) ~ "_ql";   // reassigned to the shim's name when viaShim
     auto fromRaw = e.fromRaw.replace("%s", "_l.at(_i)");   // Qt5/Qt6-agnostic access
     if (WRAPPER) {
         // raw: module-level free function taking void* self; idiom: a wrapper method.
         auto declSelf = kw.canFind("static") ? "" : (declps.length ? "void* self, " : "void* self");
         auto self = kw.canFind("static") ? "" : (callargs.length ? "this.ptr(), " : "this.ptr()");
-        auto raw = format("private pragma(mangle, \"%s\") extern(C++) QList_%s %s(%s%s);",
-            mg, qtid, rawName, declSelf, declps.join(", "));
+        string raw;
+        if (viaShim) {
+            // A C++ shim returning the container BY VALUE: same sret ABI the pragma(mangle) form
+            // already assumes, but `self->method()` so the vtable decides which body runs.
+            auto shimFn = format("qtd_ql_%s_%d", dname(mn), METHODSHIM.length);
+            string[] cppPs;
+            foreach (i; 0 .. na)
+                cppPs ~= format("%s a%d",
+                    clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(
+                        clang_Cursor_getArgument(c, i)))).str, i);
+            string[] anames;
+            foreach (i; 0 .. na) anames ~= format("a%d", i);
+            METHODSHIM ~= MethodShim(shimFn, clang_getCursorSpelling(clang_getCursorSemanticParent(c)).str,
+                clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str,
+                mn, cppPs, anames, kw.canFind("static") != 0, clang_CXXMethod_isConst(c) != 0);
+            raw = format("extern(C) private QList_%s %s(%s%s);", qtid, shimFn, declSelf, declps.join(", "));
+            rawName = shimFn;
+        } else
+            raw = format("private pragma(mangle, \"%s\") extern(C++) QList_%s %s(%s%s);",
+                mg, qtid, rawName, declSelf, declps.join(", "));
         auto idiom = format("    %s%s[] %s(%s) {\n"
             ~ "        auto _l = %s(%s%s);\n        %s[] _r; _r.length = cast(size_t) _l.length;\n"
             ~ "        foreach (_i; 0 .. _l.length) _r[_i] = %s;\n        return _r;\n    }",
@@ -1789,11 +1811,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             auto rrt = clang_getCursorResultType(c);
             string _a, _b, _cc;
             if (containerReturn(rrt, _a, _b, _cc)) { _fate = "unmapped-type"; return; }   // QHash/QMap: later step
-            auto qtidR = inl ? "" : tryQList(rrt);   // QList<T> return -> T[]; inline QList has no symbol -> skip
+            // An INLINE method has no symbol to mangle, so it can only be reached by shim; a VIRTUAL
+            // one must be. Both now take the same path instead of being dropped.
+            auto qtidR = (isInline(c) && !clang_CXXMethod_isVirtual(c)) ? "" : tryQList(rrt);
             if (qtidR.length) {
                 auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
                 auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
-                auto pr = emitQListReturn(c, mn, qtidR, kw2, cst2, impSet, dpkg);
+                auto pr = emitQListReturn(c, mn, qtidR, kw2, cst2, impSet, dpkg,
+                                          clang_CXXMethod_isVirtual(c) != 0);
                 if (pr.length) { wd ~= pr[0]; wm ~= pr[1]; }   // raw -> module scope, idiom -> class
                 return;
             }
