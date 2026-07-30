@@ -7,5 +7,11 @@ import QtQuick
 TextInput {
     width: 80; height: 24
     focus: true
-    text: ""
+    // A DECLARED property that mirrors the effect: `text` itself must not be bound (in the engine that
+    // binding fights the key insertion), and the dump only carries what the document mentions — so the
+    // observable is this one, reactive on text.
+    property int len: text.length
+    // NO `text:` binding on purpose: in the engine that is a BINDING, and it fights the key insertion
+    // (the compiled side assigns once, so typing sticks and the two would differ for a reason that is
+    // the fixture's, not the compiler's)
 }

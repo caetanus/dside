@@ -10,6 +10,9 @@
 // than a pass.
 #include <QGuiApplication>
 #include <QQuickView>
+#include <QQmlComponent>
+#include <QQmlEngine>
+#include <QQuickWindow>
 #include <QKeyEvent>
 #include <QQuickItem>
 #include <QImage>
@@ -108,23 +111,31 @@ int main(int argc, char **argv) {
     }
     // `--key <qml> <key> <prop>`: load the document, deliver a key press+release to the root, print ONE
     // property. The engine half of the keyboard axis; the compiled half is qtd_key_item.
+    // `--key <qml> <key> <prop>`: the ENGINE half of the keyboard axis. Built the same way the compiled
+    // half is (own QQuickWindow, root reparented into contentItem, activate, focus, send) — going
+    // through QQuickView instead left the view inactive and the key went nowhere, while the compiled
+    // side already received it. An asymmetric harness would have read that as a compiler defect.
     if (argc == 5 && QString::fromUtf8(argv[1]) == "--key") {
-        QQuickView v;
-        v.setResizeMode(QQuickView::SizeViewToRootObject);
-        v.setSource(QUrl::fromLocalFile(QString::fromUtf8(argv[2])));
-        if (v.status() != QQuickView::Ready) { std::fprintf(stderr, "qmlrender: not ready\n"); return 3; }
-        v.show();
-        QObject *root = v.rootObject();
-        if (!root) { std::fprintf(stderr, "qmlrender: no root object\n"); return 4; }
-        if (auto *ri = qobject_cast<QQuickItem *>(root)) ri->setFocus(true);
+        QQmlEngine eng;
+        QQmlComponent comp(&eng, QUrl::fromLocalFile(QString::fromUtf8(argv[2])));
+        QObject *root = comp.create();
+        if (!root) { std::fprintf(stderr, "qmlrender: %s\n", qPrintable(comp.errorString())); return 3; }
+        auto *item = qobject_cast<QQuickItem *>(root);
+        if (!item) { std::fprintf(stderr, "qmlrender: root is not an Item\n"); return 4; }
+        QQuickWindow win;
+        win.setWidth(qMax(1, int(item->width())));
+        win.setHeight(qMax(1, int(item->height())));
+        item->setParentItem(win.contentItem());
+        win.show();
+        win.requestActivate();
+        QCoreApplication::processEvents();
+        item->forceActiveFocus();
         const int key = QString::fromUtf8(argv[3]).toInt();
-        // The TEXT matters: QQuickTextInput inserts event->text(), not the key code, so a key event
-        // without it is delivered and does nothing — the test would pass on both sides doing nothing.
         const QString kt = QChar(key).toLower();
         QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier, kt);
         QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier, kt);
-        QCoreApplication::sendEvent(&v, &press);
-        QCoreApplication::sendEvent(&v, &release);
+        QCoreApplication::sendEvent(&win, &press);
+        QCoreApplication::sendEvent(&win, &release);
         QCoreApplication::processEvents();
         const QByteArray prop = QString::fromUtf8(argv[4]).toUtf8();
         const QVariant val = root->property(prop.constData());

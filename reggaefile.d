@@ -569,11 +569,18 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
 
     // Documents whose KEYBOARD behaviour is compared: send this key to both sides and diff the property.
 struct Keyed { string name; int key; string prop; }
-// EMPTY on purpose: the plumbing exists on both sides (qtd_key_item here, `--key` in the oracle) and
-// QKey.qml compiles clean, but under QT_QPA_PLATFORM=offscreen the window never becomes ACTIVE, so the
-// scene routes the key to nobody — measured: BOTH sides report an unchanged `text`, which is the
-// harness failing, not the compiler. Next step: requestActivate() + forceActiveFocus() before sending,
-// or a platform that grants activation. Registering a target now would just add a red one.
+// EMPTY on purpose, and the state is precise. Both halves are plumbed (qtd_key_item here, `--key` in
+// the oracle, `--key` in the generated main), QKey.qml compiles clean, and the observable works: a
+// declared `property int len: text.length`, because binding `text` itself makes the engine's binding
+// fight the key insertion, and the dump only carries what the document mentions.
+// With window activation + forceActiveFocus on BOTH sides, and the engine half rebuilt to construct
+// exactly like ours (own QQuickWindow, root reparented into contentItem), the measurement is:
+// OURS receives the key (len=1) and the ENGINE's object does not (len=0).
+// That is NOT "we behave better" — it means the harness is still not equivalent: an item created by
+// QQmlComponent needs something ours does not (activation timing, or being in a window before
+// completion). Until the engine half receives the key, this axis cannot judge the compiler, so no
+// target is registered. Next: find what makes the engine-created item accept the key (compare with
+// QQuickView + QTest::keyClick, which is how Qt's own tests do it).
 static immutable Keyed[] keyed = [];
 
 static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",

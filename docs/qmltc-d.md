@@ -1367,8 +1367,13 @@ wrong conclusions in a row here. A difference must be attributed to a cause befo
   same height (28), contentHeight (19), font, y, and the same `verticalAlignment` (AlignVCenter, 128,
   measured on both sides). 14.84375 is the font ascent: the engine's Text computed its baseline BEFORE
   the control resized the contentItem from 19 to 28 and never recomputed; ours computes it after, so it
-  carries the centring offset. Both are self-consistent. Which one is "right" is a decision, not a bug
-  to be silently matched, and it should be recorded as one.
+  carries the centring offset.
+  **This is OURS to fix, not a decision to weigh.** The contract of a transpiler is identity with the
+  interpreted document: whatever state the engine produces IS the specification, including a value that
+  looks stale and including a default that is merely configurable (QQuickMenu does not capture the
+  keyboard by default and can be told to — so that default is observable behaviour a translation must
+  reproduce, not an opinion). An earlier version of this section framed the baseline as "which one is
+  right is a decision". That was wrong: a difference from the engine is a defect on our side.
 
 After attribution, no silent defect remains proven in that corpus. The method matters more than the
 tally: match a difference to a cause, and when the cause is a refused member on ANOTHER object, expect

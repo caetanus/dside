@@ -70,7 +70,11 @@ extern "C" int qtd_key_item(void *item, int key, int modifiers) {
     win->setHeight(qMax(1, int(it->height())));
     it->setParentItem(win->contentItem());
     win->show();
-    it->setFocus(true);
+    // A key only reaches an item in an ACTIVE window with ACTIVE focus: show() alone leaves the scene
+    // routing to nobody, and both sides then "pass" having done nothing.
+    win->requestActivate();
+    QCoreApplication::processEvents();
+    it->forceActiveFocus();
     // The TEXT matters: QQuickTextInput inserts event->text(), not the key code, so a key event
     // without it is delivered and does nothing — the test would pass on both sides doing nothing.
     const QString kt = QChar(key).toLower();
