@@ -1759,7 +1759,15 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 return;
             }
             if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; return; }
-            bool inl = isInline(c);   // no symbol -> a qtd_m_ C++ trampoline shim (self->method)
+            // A VIRTUAL method must go through the shim too, and for a different reason than an
+            // inline one: pragma(mangle) on the base symbol calls the BASE implementation and
+            // BYPASSES the vtable. `QBoxLayout::spacing()/setSpacing()` are `override`s of
+            // QLayout's, so a wrapper bound to `_ZNK7QLayout7spacingEv` read and wrote QLayout's
+            // own field while Qt (virtual) saw the QBoxLayout one: our setSpacing(0) was invisible
+            // to the layout, which is what made 5 uic corpus files diverge. The RAW emitter has
+            // routed virtuals through the shim all along; only this path did not.
+            bool inl = isInline(c)
+                    || (clang_CXXMethod_isVirtual(c) != 0 && clang_CXXMethod_isStatic(c) == 0);
             auto rrt = clang_getCursorResultType(c);
             string _a, _b, _cc;
             if (containerReturn(rrt, _a, _b, _cc)) return;   // QHash/QMap: later step
