@@ -1346,3 +1346,30 @@ Result on Qt's own files: `Dialog` went from 16 differences in 155 compared prop
 Negative zero is normalised on both sides (`+ 0.0`): `-0.0 == 0.0`, and only `%.17g` distinguishes
 them, so comparing them as text reported a difference that does not exist. Any non-zero difference
 still shows. PARTIAL files whose values match the engine: 24 -> 28 of 46 measurable.
+
+### Attributing a difference to its CAUSE (2026-07-30)
+
+The value differential over Qt's own Controls leaves 18 PARTIAL files whose properties differ. Counting
+those differences is not the same as counting defects, and treating them as equivalent produced three
+wrong conclusions in a row here. A difference must be attributed to a cause before it is classified:
+
+- **Explained by a diagnostic on the same object.** Most are. `Menu`'s `contentItem.interactive` is
+  reported (`interactive: Window.window ? … : false` reads an attached property the compiler refuses),
+  and `keyNavigationEnabled` is a CONSEQUENCE — Qt couples it to `interactive`. Grepping for the leaf
+  name finds the consequence and not the cause, which reads as a silent defect and is not one.
+- **Explained arithmetically by a refused CHILD.** `BusyIndicator` has exactly one diagnostic (its
+  `contentItem` is `BusyIndicatorImpl`, a verified unexportable type) and exactly two differences: the
+  root's implicit size, 12x12 against 60x60. 12 is a Control with no contentItem, 60 is
+  BusyIndicatorImpl's own implicit size. `Dial` has the same shape. Path-matching cannot attribute these
+  — a root property has no segment to match against the child's diagnostic — but the numbers can.
+- **Explained by ORDER, not by a missing value.** `contentItem.baselineOffset` on CheckBox, RadioButton
+  and Switch is 19.34375 against the engine's 14.84375 — a constant 4.5 — with every input identical:
+  same height (28), contentHeight (19), font, y, and the same `verticalAlignment` (AlignVCenter, 128,
+  measured on both sides). 14.84375 is the font ascent: the engine's Text computed its baseline BEFORE
+  the control resized the contentItem from 19 to 28 and never recomputed; ours computes it after, so it
+  carries the centring offset. Both are self-consistent. Which one is "right" is a decision, not a bug
+  to be silently matched, and it should be recorded as one.
+
+After attribution, no silent defect remains proven in that corpus. The method matters more than the
+tally: match a difference to a cause, and when the cause is a refused member on ANOTHER object, expect
+to need arithmetic rather than a name.
