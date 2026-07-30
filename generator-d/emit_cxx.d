@@ -9,10 +9,45 @@ module emit_cxx;
 
 import clang_c, gen;
 import std.stdio, std.string, std.array, std.algorithm, std.conv, std.format;
+import std.file : exists;
 
 // Enums referenced in signatures this run — emitted as their own modules at the
 // end. D enums are ABI-identical to C++ (value AND, with extern(C++,ns), mangling).
 __gshared CXCursor[string] ENUMS;    // unqualified enum name -> decl cursor
+
+// Symbols the linked libraries actually DEFINE. A pragma(mangle) declaration naming a symbol Qt does
+// not export compiles fine and fails at LINK the moment anything calls it — which is invisible in raw
+// mode (nothing references the declaration and --gc-sections drops it) and fatal in wrapper mode,
+// where the wrapper method calls it: QQuickDropArea::setContainsDrag is one. Measured on QtWidgets:
+// 64 of 8234 declared manglings do not exist, mostly internal `qt_*` free functions. Empty set =
+// check disabled (nm unavailable), so a missing tool degrades to today's behaviour rather than
+// silently dropping every method.
+__gshared bool[string] DEFINED_SYMS;
+
+void loadDefinedSymbols(string[] pkgs) {
+    import std.process : execute;
+    auto libs = execute(["pkg-config", "--libs"] ~ pkgs).output.split;
+    foreach (l; libs) {
+        if (!l.startsWith("-l")) continue;
+        foreach (dir; ["/usr/lib/", "/usr/lib64/", "/usr/local/lib/"]) {
+            auto so = dir ~ "lib" ~ l[2 .. $] ~ ".so";
+            if (!exists(so)) continue;
+            auto r = execute(["nm", "-D", "--defined-only", so]);
+            if (r.status != 0) break;
+            foreach (line; r.output.splitter('\n')) {
+                auto f = line.split();
+                if (f.length >= 3) DEFINED_SYMS[f[2].split('@')[0].idup] = true;
+            }
+            break;
+        }
+    }
+}
+
+// False only when we KNOW the symbol is absent: an empty table means the check is off.
+bool symbolDefined(string mangled) {
+    if (!DEFINED_SYMS.length || !mangled.length) return true;
+    return (mangled in DEFINED_SYMS) !is null;
+}
 // Old-style 2-part Qt enums (`Qt::Horizontal`, dominant in real .ui files vs the 3-part
 // `Qt::Orientation::Horizontal`) name a value without its enum. D named-enum members need
 // qualification (`Orientation.Horizontal`), so we emit a `qt` aggregator module of

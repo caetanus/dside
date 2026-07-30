@@ -64,6 +64,7 @@ void main(string[] args) {
     }
 
     auto pkgs = spec["pkg_config"].str.split;
+    loadDefinedSymbols(pkgs);   // refuse to bind a symbol the linked libs do not define
     auto cflags = execute(["pkg-config", "--cflags"] ~ pkgs).output.split;
     auto res = execute(["clang", "-print-resource-dir"]).output.strip;
     string[] extraI;
