@@ -490,6 +490,10 @@ void main(string[] args) {
         // that works and one that throws at construction — and it is data, not a list of names.
         bool[string] extendedValueType;
         string[string] protoOf, qmlOf, defPropOf;
+        // Every exported type, bound or not: an ATTACHED read (`Window.window`) must be provable as an
+        // object, and that proof reads the property table. Restricting it to bound types left the
+        // compiler unable to tell an object member from a scalar on a type it does not subclass.
+        string[string] qmlOfAll;
         // Signals per class, kept rather than discarded after the notify lookup: a handler for a
         // BOUND type's own signal (`onClicked`) needs the name AND the full signature to connect,
         // and 226 of the 373 handlers in the QML Qt ships are exactly that shape — against 147
@@ -510,7 +514,7 @@ void main(string[] args) {
                 // guess the URI, which would make attachedObj fail, return null, and the expression
                 // yield a value that matches the engine BY ACCIDENT.
                 auto qn0 = ex[1].matchFirst(reQml);
-                if (!qn0.empty) uriRows[qn0[2]] = qn0[1];
+                if (!qn0.empty) { uriRows[qn0[2]] = qn0[1]; qmlOfAll[cpp] = qn0[2]; }
                 if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
                 auto qn = ex[1].matchFirst(reQml);
                 if (qn.empty) continue;
@@ -578,7 +582,7 @@ void main(string[] args) {
                 }
             }
         }
-        foreach (cpp, qmlName; qmlOf) {
+        foreach (cpp, qmlName; qmlOfAll) {
             bool[string] emitted;
             for (string c = cpp; c.length;) {
                 if (auto ps = c in ownProps)
