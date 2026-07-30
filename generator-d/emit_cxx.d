@@ -2130,7 +2130,9 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     // dedupe overloads that collapse to one D signature (e.g. setTextAlignment(int)
                     // and setTextAlignment(Qt::Alignment) both map to (int)); keep the first.
                     auto msKey = dname(mn) ~ "|" ~ rps.join(",") ~ "|" ~ (isStat ? "s" : "");
-                    if (msKey in seenMethodShimSig) handled = true;   // overload already covered
+                    // Reachable through the sibling overload's identical D signature — not bound
+                    // in its own right, and calling it `bound` claimed coverage that is not there.
+                    if (msKey in seenMethodShimSig) { handled = true; _fate = "inherited"; }   // overload already covered
                     else {
                         seenMethodShimSig[msKey] = true;
                         if (imp.length) impSet[imp] = true;
@@ -2158,7 +2160,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         handled = true; _fate = "shimmed";
                     }
                 }
-            } catch (Unmappable) { if (isInline(c)) handled = true; }
+            } catch (Unmappable) {
+                // An INLINE method whose signature we cannot map has no symbol to fall back to, so
+                // nothing is emitted: that is `inline-failed`, not `bound`. QComboBox::addItems
+                // (inline, QStringList param) was the clearest phantom this produced.
+                if (isInline(c)) { handled = true; _fate = "inline-failed"; }
+            }
             if (handled) continue;
             if (isInline(c)) { _fate = "inline-failed"; continue; }   // opaque inline, no workable shim
             // else: a virtual with a complex signature -> fall through to the direct guard path.
@@ -2185,7 +2192,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         mgc, kw2, crs, rawN, rps.join(", "), cst2);
                     methodLines ~= format("    extern (D) %s%s %s(%s)%s {\n        auto _r = %s(%s);\n        return %s_to(cast(void*) &_r);\n    }",
                         kw2, cid, dname(mn), rps.join(", "), cst2, rawN, cargs.join(", "), ch);
-                }
+                } else _fate = "unmapped-type";   // a param was unmappable: NOTHING was emitted
                 continue;
             }
             auto qtid = tryQList(clang_getCursorResultType(c));   // QList<T> return -> T[]
@@ -2194,6 +2201,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
                 auto pr = emitQListReturn(c, mn, qtid, kw2, cst2, impSet, dpkg);
                 if (pr.length) { methodLines ~= pr[0]; methodLines ~= pr[1]; }
+                else _fate = "unmapped-type";   // emitQListReturn bailed: NOTHING was emitted
                 continue;
             }
             string imp;
@@ -2252,7 +2260,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 // indistinguishable to a D caller).
                 auto dsig = dname(mn) ~ "|" ~ ps.join(",") ~ "|"
                     ~ (clang_CXXMethod_isStatic(c) ? "s" : "") ~ cst;
-                if (dsig in seenGuardSig) continue;
+                // Two C++ overloads collapsing to ONE D signature: only the first is emitted, so
+                // recording `bound` for the second claimed coverage that is not there. It IS
+                // reachable, through the sibling declaration — which is what `inherited` means here.
+                if (dsig in seenGuardSig) { _fate = "inherited"; continue; }
                 seenGuardSig[dsig] = true;
             }
             if (guardable) {
