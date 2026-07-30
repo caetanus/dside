@@ -1467,6 +1467,17 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             miMethods ~= miCastMethod(name, sbName);
         }
     }
+    // Is THIS class's library visible in the symbol table at all? Only then does an absent symbol
+    // mean "Qt does not export it" rather than "we are not looking at the right .so" — a binding whose
+    // library is built locally (libsample) has none of its symbols here, and without this guard every
+    // one of its methods would be refused.
+    bool classSymsVisible = false;
+    if (DEFINED_SYMS.length)
+        foreach (mc; children(cur))
+            if (mc.kind == CXCursor_CXXMethod && isPublic(mc) && !isInline(mc)
+                    && (clang_Cursor_getMangling(mc).str in DEFINED_SYMS) !is null) {
+                classSymsVisible = true; break;
+            }
     bool[string] baseM, baseSig, baseAliasable, seenB;
     string[string] aliasBase;
     baseMethodNames(cur, baseM, baseSig, baseAliasable, aliasBase, seenB);
@@ -1966,6 +1977,11 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 if (key in seenW) return;
                 seenW[key] = true;
                 bool isConst0 = clang_CXXMethod_isConst(c) != 0;
+                // Same refusal: a wrapper method CALLS the symbol, so binding one the libs do not
+                // define fails at link (QQuickDropArea::setContainsDrag).
+                if (classSymsVisible && !inl && !symbolDefined(clang_Cursor_getMangling(c).str)) {
+                    _fate = "unmapped-type"; return;
+                }
                 auto declRet = retW.length ? "void*" : retD;
                 auto callFn = format(inl ? "qtd_m_%s_%d" : "__%s_%d", name, wi);
                 auto declSelf = isStat ? "" : (declps.length ? "void* self, " : "void* self");
@@ -2348,6 +2364,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             auto kw = clang_CXXMethod_isStatic(c) ? "static " : "final ";
             auto cst = clang_CXXMethod_isConst(c) ? " const" : "";
             auto mg = clang_Cursor_getMangling(c).str;
+            // Declaring a symbol the libs do not define is a lie that surfaces only when someone calls
+            // it. Inline methods are exempt (they legitimately have no symbol; the shim path covers
+            // them), and so is a class whose library we cannot see.
+            if (classSymsVisible && !isInline(c) && !symbolDefined(mg)) { _fate = "unmapped-type"; continue; }
             auto cppRet = retD == "void" ? "void"
                 : clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
             if (cppRet.canFind("(*")) guardable = false;   // fn-ptr return can't be a guard sig

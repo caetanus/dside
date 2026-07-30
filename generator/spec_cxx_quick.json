@@ -4,7 +4,7 @@
   "out_dir": "../generated/qt-6.11/cxx-quick",
   "d_package": "qt.quick",
   "abi": "cxx",
-  "wrapper": false,
+  "wrapper": true,
   "discover_module": "QtQuick",
   "headers": [
     "QtQuick/private/qquickrectangle_p.h",
