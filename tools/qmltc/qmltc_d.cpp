@@ -437,6 +437,15 @@ static bool splitOuterDep(const std::string &d, std::string &obj, std::string &m
 // because an inlined child comes from ITS OWN document and the engine gives it that one.
 static std::string g_docUrl;
 
+// One hop of an OBJECT path: is `owner.prop` an object, and of what type? The registry types a
+// property by its C++ name, and an object-valued one ends in `*`. It also keys some types by QML
+// name and some by C++ class, so the answer is whichever spelling it actually holds — otherwise
+// the NEXT hop cannot be typed and the path stops one segment short.
+static bool objPropQml(const std::string &owner, const std::string &prop, std::string &outQml);
+// A whole object path of any depth (`background.border`, `control.searchIndicator.indicator`),
+// resolved to the expression that fetches it and the QML type it has.
+static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq);
+
 static bool knownTypeName(const std::string &n) {
     if (g_qmlCxxType.count(n)) return true;
     auto bm = g_qmlMap.find(n);
@@ -817,6 +826,9 @@ struct RawHandler { std::string sig; Statement *stmt; FunctionDeclaration *fn; s
 static const char *dtypeOf(const QString &qmlType);   // defined below; used by the pre-scan
 struct ChildRef {
     std::string field;
+    // The child's own QML type, so a path THROUGH it (`searchIndicator.indicator.visible`) can be
+    // typed hop by hop instead of stopping at the first member.
+    std::string qmlType;
     std::map<std::string, std::string> propType;
     // Members contributed by the child's BOUND type rather than by its .qml declarations. They are
     // not D fields, so a binding reads them through the meta-object; reading them as fields would
@@ -840,7 +852,7 @@ static std::map<std::string, std::set<std::string>> g_forceNotify;
 // Records one child's id, declared property types and BOUND-type members, under `field`.
 static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
                              UiQualifiedId *typeId) {
-    std::string cid;
+    std::string cid, ctypeResolved;
     std::map<std::string, std::string> pts, bps, bns;
     {
         std::string ctype = typeId ? typeName(typeId) : std::string();
@@ -855,6 +867,7 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
             for (auto &pp : qp->second) bps[pp.first] = pp.second;
         if (auto qn2 = g_qmlNotify.find(ctype); qn2 != g_qmlNotify.end())
             for (auto &pp : qn2->second) bns[pp.first] = pp.second;
+            ctypeResolved = ctype;
     }
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> sigs;
     std::set<std::string> meths;
@@ -888,7 +901,7 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
             if (auto *fd = cast<FunctionDeclaration *>(se->sourceElement))
                 if (!fd->formals) meths.insert(qs(fd->name.toString()));
     }
-    if (!cid.empty()) g_childIds[cid] = {field, pts, bps, bns, sigs, meths};
+    if (!cid.empty()) g_childIds[cid] = {field, ctypeResolved, pts, bps, bns, sigs, meths};
 }
 
 static void prescanChildIds(UiObjectInitializer *init) {
@@ -902,7 +915,7 @@ static void prescanChildIds(UiObjectInitializer *init) {
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
         auto *pub = cast<UiPublicMember *>(m->member);
         UiObjectInitializer *ci = nullptr;
-        std::string field, cid;
+        std::string field, cid, ctypeResolved;
         if (auto *dod = cast<UiObjectDefinition *>(m->member)) {
             ci = dod->initializer;
             field = "_dc" + std::to_string(dcn++);
@@ -927,6 +940,7 @@ static void prescanChildIds(UiObjectInitializer *init) {
                 for (auto &pp : qp->second) bps[pp.first] = pp.second;
             if (auto qn2 = g_qmlNotify.find(ctype); qn2 != g_qmlNotify.end())
                 for (auto &pp : qn2->second) bns[pp.first] = pp.second;
+                ctypeResolved = ctype;
         }
         std::map<std::string, std::vector<std::pair<std::string, std::string>>> sigs;
         std::set<std::string> meths;
@@ -960,7 +974,7 @@ static void prescanChildIds(UiObjectInitializer *init) {
                 if (auto *fd = cast<FunctionDeclaration *>(se->sourceElement))
                     if (!fd->formals) meths.insert(qs(fd->name.toString()));
         }
-        if (!cid.empty()) g_childIds[cid] = {field, pts, bps, bns, sigs, meths};
+        if (!cid.empty()) g_childIds[cid] = {field, ctypeResolved, pts, bps, bns, sigs, meths};
     }
 }
 
@@ -1283,6 +1297,62 @@ static bool readName(const std::string &n, std::string &out) {
     out = n; return true;
 }
 
+static bool objPropQml(const std::string &owner, const std::string &prop, std::string &outQml) {
+    std::string own = owner;
+    if (!g_qmlCxxType.count(own))
+        if (auto bm = g_qmlMap.find(own); bm != g_qmlMap.end()) own = bm->second.first;
+    auto it = g_qmlCxxType.find(own);
+    if (it == g_qmlCxxType.end()) return false;
+    auto pit = it->second.find(prop);
+    if (pit == it->second.end()) return false;
+    std::string cxx = pit->second;
+    while (!cxx.empty() && cxx.back() == ' ') cxx.pop_back();
+    if (cxx.empty() || cxx.back() != '*') return false;   // must be an OBJECT
+    cxx.pop_back();
+    while (!cxx.empty() && cxx.back() == ' ') cxx.pop_back();
+    std::string qn = qmlNameOfCxx(cxx);
+    outQml = (!qn.empty() && g_qmlCxxType.count(qn)) ? qn : cxx;
+    return true;
+}
+static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
+    if (auto *id = cast<IdentifierExpression *>(x)) {
+        std::string n2 = qs(id->name.toString());
+        // A GROUP name is allowed here: the group IS an object property of this object, and the
+        // registry types it like any other. (A VALUE group is not an object and has its own path.)
+        if (g_scope.count(n2) || g_vgroups.count(n2)) return false;
+        if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
+        if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
+            if (ci2->second.qmlType.empty()) return false;
+            oe = ci2->second.field; oq = ci2->second.qmlType; return true;
+        }
+        std::string pre2; const OuterFrame *fr2 = nullptr;
+        if (outerHop(n2, pre2, &fr2)) { oe = pre2.substr(0, pre2.size() - 1); oq = fr2->qmlType; return true; }
+        if (objPropQml(g_selfQmlType, n2, oq)) { oe = "propObj(this, \"" + n2 + "\")"; return true; }
+        // ...or an unqualified name that resolves up the SCOPE chain: inside Qt's SearchField the
+        // indicator reads `background`, which is the enclosing control's property, not its own.
+        std::string pre3;
+        for (size_t k = 0; k < g_outerChain.size(); ++k) {
+            pre3 += "__outer.";
+            if (objPropQml(g_outerChain[k].qmlType, n2, oq)) {
+                g_outerUsed = true;
+                if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                oe = "propObj(" + pre3.substr(0, pre3.size() - 1) + ", \"" + n2 + "\")";
+                return true;
+            }
+        }
+        return false;
+    }
+    if (auto *f2 = cast<FieldMemberExpression *>(x)) {
+        std::string be, bq;
+        if (!objPathExpr(f2->base, be, bq)) return false;
+        std::string mem2 = qs(f2->name.toString());
+        if (!objPropQml(bq, mem2, oq)) return false;
+        oe = "propObj(" + be + ", \"" + mem2 + "\")";
+        return true;
+    }
+    return false;
+}
+
 static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &out) {
     if (!e) return false;
     if (auto *nested = cast<NestedExpression *>(e)) {
@@ -1337,6 +1407,19 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             out = "cast(int) " + qs(b->name.toString()) + ".length"; return true;
         }
         auto *base = cast<IdentifierExpression *>(fm->base);
+        // An object path of ANY depth used as a truth value: Qt's SearchField writes
+        // `control.searchIndicator.indicator && !control.mirrored ? 6 : 0`. The two-level form has
+        // its own handling below (which also records the dependency); this covers the deeper ones,
+        // which were refused outright and left the padding at its default.
+        if (dtype == "bool")
+            if (auto *fb2 = cast<FieldMemberExpression *>(fm->base)) {
+                std::string oe2, oq2;
+                if (objPathExpr(fb2, oe2, oq2))
+                    if (std::string leafQ; objPropQml(oq2, qs(fm->name.toString()), leafQ)) {
+                        out = "(propObj(" + oe2 + ", \"" + qs(fm->name.toString()) + "\") !is null)";
+                        return true;
+                    }
+            }
         // `control.indicator && ...` — an OBJECT-valued property used as a truth value. In QML
         // that is a null test, and the object is fetched through the meta-object, so it needs no
         // type knowledge at all. Only for a bool target: as a value it would be the object.
@@ -1550,7 +1633,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             auto g = g_groups.find(qs(base->name.toString()));
             if (g != g_groups.end()) {
                 auto m = g->second->propType.find(qs(fm->name.toString()));
-                if (m == g->second->propType.end()) return false;
+                // A member the DOCUMENT did not write is not a failure — the group is a real object
+                // and the registry knows all of its properties. Returning false here ended the whole
+                // expression, so `searchIndicator.implicitIndicatorHeight` (Qt's SearchField, sizing
+                // itself from its indicators) was refused and the control came out 12px short.
+                // Falling through lets the generic object-path read below answer it.
+                if (m == g->second->propType.end()) goto notADeclaredGroupMember;
                 const char *rd = m->second == "string" ? "propStr(" : m->second == "double" ? "propDouble("
                                : m->second == "bool" ? "propBool(" : "propInt(";
                 out = rd + std::string("propObj(this, \"") + qs(base->name.toString()) + "\"), \""
@@ -1558,6 +1646,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 return true;
             }
         }
+        notADeclaredGroupMember:;
         // `<AttachedType>.<group>.<member>` — Qt's Drawer reads `SafeArea.margins.top`. The attached
         // object comes from the same machinery as `Window.window`, and its `margins` is a VALUE group
         // (QMarginsF), so the member is extracted with the vgroup readers. Typed by the target, since
@@ -1591,6 +1680,38 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 out = rd + std::string("this, \"") + qs(base->name.toString()) + "\", \""
                     + qs(fm->name.toString()) + "\")";
                 return true;
+            }
+        }
+        // An OBJECT PATH of any depth: `background.border.width`, `searchIndicator.indicator.visible`
+        // (Qt's SearchField). Each hop is an object-valued property, which the registry types by its
+        // C++ name ending in `*`, so the path can be walked with propObj hop by hop and the leaf read
+        // with the ordinary typed reader. The two-level forms above were each handled by their own
+        // special case; a third level was simply refused, which left a control's geometry at the type
+        // default. Nothing here is per-type: the depth, the hops and the leaf all come from the
+        // registry.
+        {
+            // Any depth. This runs LAST, after every path that also records a dependency, so it
+            // only ever answers what those refused — including the two-segment forms they decline
+            // (a group member the document did not itself write, which the registry knows).
+            {
+                std::string oe, oq;
+                if (objPathExpr(fm->base, oe, oq)) {
+                    std::string own = oq;
+                    if (!g_qmlProps.count(own))
+                        if (auto bm = g_qmlMap.find(own); bm != g_qmlMap.end()) own = bm->second.first;
+                    if (auto qp = g_qmlProps.find(own); qp != g_qmlProps.end()) {
+                        auto t2 = qp->second.find(qs(fm->name.toString()));
+                        if (t2 != qp->second.end()) {
+                            const std::string &ty2 = t2->second;
+                            if (ty2 == "string" || ty2 == "double" || ty2 == "bool" || ty2 == "int") {
+                                const char *rd2 = ty2 == "string" ? "propStr(" : ty2 == "double" ? "propDouble("
+                                                : ty2 == "bool" ? "propBool(" : "propInt(";
+                                out = rd2 + oe + ", \"" + qs(fm->name.toString()) + "\")";
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
         }
         // `<string>.length` -> D length (cast to int to match QML's int result).
