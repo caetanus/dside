@@ -3830,16 +3830,29 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // BETWEEN two value-typed reads. Neither branch can be compiled to a D expression
             // (there is no D type for a QColor here), but each is a copy, so the condition picks
             // which copy runs. Both branches' dependencies are collected as usual, so it reacts.
+            // ...and the branches may THEMSELVES be ternaries: Qt's Button picks defaultIconColor
+            // through three nested ones. Handling only one level accepted the simple spelling and
+            // refused the nested one — the same asymmetry, one nesting deeper.
+            std::function<std::string(ExpressionNode *, const std::string &)> copyChain =
+                [&](ExpressionNode *x, const std::string &ind) -> std::string {
+                    // `(a ? b : c)` — a parenthesised branch is a NestedExpression, and Qt's Button
+                    // writes one. Unwrap before asking what shape it is.
+                    while (auto *ne = cast<NestedExpression *>(x)) x = ne->expression;
+                    std::string ox, gx, px;
+                    readSrc(x, ox, gx, px);
+                    if (!ox.empty()) return ind + copyStmt(ox, gx, px) + "\n";
+                    auto *c2 = cast<ConditionalExpression *>(x);
+                    if (!c2) return "";
+                    std::string ce2;
+                    if (!compileExpr(c2->expression, "bool", ce2)) return "";
+                    std::string a = copyChain(c2->ok, ind + "    "), b = copyChain(c2->ko, ind + "    ");
+                    if (a.empty() || b.empty()) return "";
+                    return ind + "if (" + ce2 + ") {\n" + a + ind + "} else {\n" + b + ind + "}\n";
+                };
             if (srcObj.empty())
-                if (auto *cond = cast<ConditionalExpression *>(ba.second)) {
-                    std::string o1, g1, p1, o2, g2, p2, cexpr;
-                    readSrc(cond->ok, o1, g1, p1);
-                    readSrc(cond->ko, o2, g2, p2);
-                    if (!o1.empty() && !o2.empty() && compileExpr(cond->expression, "bool", cexpr)) {
-                        copyAssign = "        if (" + cexpr + ") " + copyStmt(o1, g1, p1) + "\n"
-                                   + "        else " + copyStmt(o2, g2, p2) + "\n";
-                        ty = "string";
-                    }
+                if (cast<ConditionalExpression *>(ba.second)) {
+                    std::string chain = copyChain(ba.second, "        ");
+                    if (!chain.empty()) { copyAssign = chain; ty = "string"; }
                 }
             // An ENUM member (`Text.AlignVCenter`, `Qt.AlignLeft`): the meta-object converts a KEY
             // STRING through QMetaEnum on write, so the numeric value is never needed here. `Qt` is
