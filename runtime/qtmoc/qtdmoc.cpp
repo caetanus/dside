@@ -738,6 +738,34 @@ extern "C" void* qtd_style_hints() {
     return nullptr;
 #endif
 }
+// Dumps EVERY property an object's meta-object declares, as `<path>.<name>\t<value>`. Both the
+// compiled side and the QQmlComponent oracle call THIS function, so the comparison covers what
+// the objects actually are rather than what the compiler chose to record — and no difference can
+// come from the two sides formatting a value differently, since there is only one formatter.
+extern "C" void qtd_dump_object(void* o, const char* path) {
+    if (!o) return;
+    QObject* q = static_cast<QObject*>(o);
+    const QMetaObject* mo = q->metaObject();
+    for (int i = 0; i < mo->propertyCount(); ++i) {
+        QMetaProperty mp = mo->property(i);
+        if (!mp.isReadable()) continue;
+        QVariant v = mp.read(q);
+        QString out;
+        if (mp.isEnumType()) {
+            const char* k = mp.enumerator().valueToKey(v.toInt());
+            out = k ? QString::fromUtf8(k) : QString::number(v.toInt());
+        } else if (v.metaType().flags() & QMetaType::PointerToQObject) {
+            // The ADDRESS differs between the two runs by construction; what is comparable is
+            // whether the slot is filled at all.
+            out = v.value<QObject*>() ? QStringLiteral("<object>") : QStringLiteral("<null>");
+        } else if (v.canConvert<QString>()) {
+            out = v.toString();
+        } else {
+            continue;   // a list or an opaque gadget: not comparable as text, and not faked as one
+        }
+        std::printf("%s%s\t%s\n", path, mp.name(), out.toUtf8().constData());
+    }
+}
 // Reads an ENUM property as its KEY — the same spelling the SETTER already takes, so a value
 // read here compares against the key a `Qt.HighContrast` literal compiles to. QVariant::toString
 // on an enum gives nothing useful; the key lives in the QMetaEnum, which the meta-object carries

@@ -5098,10 +5098,11 @@ int main(int argc, char **argv) {
     // --dump: also emit a `main` that instantiates the type, applies `name=value` mutations, and
     // prints each scalar property (dotted path for children) as `name\tvalue` sorted — the
     // corpus-check-style differential vs the QQmlComponent oracle.
-    bool dump = false, labels = false;
+    bool dump = false, labels = false, objPaths = false;
     std::vector<char *> pos;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump") == 0) dump = true;
+        else if (std::strcmp(argv[i], "--objpaths") == 0) objPaths = true;
         else if (std::strcmp(argv[i], "--labels") == 0) labels = true;   // print the dump labels (for the oracle --props)
         else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) {
             loadQmlMap(argv[i + 1]);                       // QML-name -> class table
@@ -5267,6 +5268,27 @@ int main(int argc, char **argv) {
     }
     if (!rootResolvedPath.empty()) g_resolving.erase(rootResolvedPath);
 
+    // --objpaths: the OBJECT paths `--dumpall` enumerates, so the oracle walks the same set. Two
+    // sides enumerating "everything" independently would silently disagree about which objects
+    // exist, and the comparison would be of different trees.
+    if (objPaths) {
+        std::vector<DumpLine> lines;
+        collectDump(rootNode, "o.", "", lines);
+        std::set<std::string> objs, printed;
+        std::printf("\n");                       // the root, as an empty path
+        for (auto &l : lines) {
+            if (l.setObj == "o" || l.setObj.empty()) continue;
+            if (l.setObj.find("propObj(") != std::string::npos) continue;
+            if (l.setObj.find(',') != std::string::npos) continue;
+            auto lp = l.label.rfind('.');
+            if (lp == std::string::npos) continue;
+            std::string path = l.label.substr(0, lp);
+            if (path.find('@') != std::string::npos) continue;
+            if (!objs.insert(l.setObj).second) continue;
+            std::printf("%s\n", path.c_str());
+        }
+        return partial ? 3 : 0;
+    }
     // --labels: print the sorted dump labels (property paths) for the oracle's --props mode.
     if (labels) {
         std::vector<DumpLine> lines;
@@ -5300,6 +5322,9 @@ int main(int argc, char **argv) {
         std::printf("extern(C) int qtd_key_item(void*, int, int);\n");
         std::printf("extern(C) int qtd_run_ms(void*, int);\n");
     }
+    // ...but the property enumerator lives in the shared runtime and applies to ANY object, so it
+    // is declared for every root, item or not.
+    std::printf("extern(C) void qtd_dump_object(void*, const(char)*);\n");
 
     // ...but never a runnable entry point for a root we refused: `new IMonthGrid` would hand back a
     // bare QObject standing in for AbstractMonthGrid, construct real QQuickText children under it,
@@ -5405,6 +5430,33 @@ int main(int argc, char **argv) {
                                 parentExpr.c_str(), seg.c_str(), l.setObj.c_str(), l.label.c_str(), seg.c_str());
                 }
             }
+        }
+        // `--dumpall`: instead of the properties the COMPILER recorded, print every property each
+        // object's meta-object declares, through the same shared enumerator the oracle uses. What
+        // the compiler chose to record is exactly what it also chose to translate, so a document
+        // could differ from the engine in any property no binding mentioned and the differential
+        // would never look. Emitted as a MODE rather than replacing the dump: the recorded-label
+        // comparison is what the gate is calibrated on, and widening it is a measurement, not a
+        // silent change to the bar.
+        {
+            std::set<std::string> objs;
+            std::printf("    foreach (a; args) if (a == \"--dumpall\") {\n");
+            std::printf("        qtd_dump_object(qobjOf(o), \"\");\n");
+            for (auto &l : lines) {
+                if (l.setObj == "o" || l.setObj.empty()) continue;
+                if (l.setObj.find("propObj(") != std::string::npos) continue;   // a group, not a child
+                // A VALUE group's setObj is the two-argument form (`o, "icon"`): a gadget, not an
+                // object, so there is no QObject to enumerate.
+                if (l.setObj.find(',') != std::string::npos) continue;
+                auto lp = l.label.rfind('.');
+                if (lp == std::string::npos) continue;
+                std::string path = l.label.substr(0, lp);
+                if (path.find('@') != std::string::npos) continue;
+                if (!objs.insert(l.setObj).second) continue;
+                std::printf("        qtd_dump_object(qobjOf(%s), \"%s.\");\n",
+                            l.setObj.c_str(), path.c_str());
+            }
+            std::printf("        return;\n    }\n");
         }
         for (auto &l : lines)
             // A double is printed with %.17g on BOTH sides: the default shortest forms disagree on

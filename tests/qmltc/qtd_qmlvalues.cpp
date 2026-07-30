@@ -35,6 +35,7 @@ static const QMetaObject *vGadgetMeta(const QVariant &v) { return QMetaType::met
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
+#include <QMetaEnum>
 #include <string>
 #include <vector>
 #include <set>
@@ -100,12 +101,13 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
     // exact property PATHS to dump (one per line). With --props we read those (incl. base C++
     // Q_PROPERTYs the QML file set, which auto-discovery misses); without it we auto-discover the
     // QML-declared properties.
-    std::string propsFile, verifyFile;
+    std::string propsFile, verifyFile, objPathsFile;
     QString attachedUri;
     std::vector<QString> muts;
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--props" && i + 1 < argc) { propsFile = argv[++i]; continue; }
+        if (a == "--dumpall" && i + 1 < argc) { objPathsFile = argv[++i]; continue; }
         // Cross-check a label file against what the engine actually built (see enumPaths).
         if (a == "--verify-props" && i + 1 < argc) { verifyFile = argv[++i]; continue; }
         // The module whose types may appear as ATTACHED path segments.
@@ -150,6 +152,47 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
         }
         return cur;
     };
+    // `--dumpall <file>`: enumerate EVERY property each listed object declares, instead of the
+    // labels the compiler recorded. The compiler records exactly what it also translated, so a
+    // divergence in any property no binding mentioned was invisible by construction.
+    //
+    // The enumeration is written HERE rather than shared with the runtime under test: the oracle
+    // uses only public Qt API on purpose, and a formatter shared with the compiled side could
+    // agree with it while both were wrong. The rules must match the runtime's by INTENT — enum as
+    // its key, an object slot as filled/empty, anything else as its QString form, and whatever has
+    // no text form skipped rather than faked.
+    if (!objPathsFile.empty()) {
+        std::ifstream pf(objPathsFile);
+        std::string ln;
+        while (std::getline(pf, ln)) {
+            while (!ln.empty() && (ln.back() == '\r' || ln.back() == '.')) ln.pop_back();
+            QObject *tgt = obj;
+            if (!ln.empty()) {
+                QStringList parts = QString::fromStdString(ln).split('.');
+                parts << parts.last();          // walk() stops one short: give it a dummy leaf
+                tgt = walk(obj, parts);
+            }
+            if (!tgt) { std::printf("%s.<missing>\t<missing>\n", ln.c_str()); continue; }
+            std::string pre = ln.empty() ? "" : ln + ".";
+            const QMetaObject *mo = tgt->metaObject();
+            for (int i = 0; i < mo->propertyCount(); ++i) {
+                QMetaProperty mp = mo->property(i);
+                if (!mp.isReadable()) continue;
+                QVariant v = mp.read(tgt);
+                QString outv;
+                if (mp.isEnumType()) {
+                    const char *k = mp.enumerator().valueToKey(v.toInt());
+                    outv = k ? QString::fromUtf8(k) : QString::number(v.toInt());
+                } else if (v.metaType().flags() & QMetaType::PointerToQObject) {
+                    outv = v.value<QObject *>() ? QStringLiteral("<object>") : QStringLiteral("<null>");
+                } else if (v.canConvert<QString>()) {
+                    outv = v.toString();
+                } else continue;
+                std::printf("%s%s\t%s\n", pre.c_str(), mp.name(), outv.toUtf8().constData());
+            }
+        }
+        return 0;
+    }
     for (auto &a : muts) {
         // `name()` invokes a no-arg method on the root — the engine side of the same protocol.
         if (a.endsWith(QLatin1String("()"))) {
