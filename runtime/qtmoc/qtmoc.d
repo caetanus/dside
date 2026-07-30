@@ -207,7 +207,12 @@ void* qobjOf(T)(T o) {
     static if (is(T == void*)) return o;
     else {
         if (auto p = cast(void*) o in _reg) return p.qobj;
-        return null;
+        // A WRAPPER-mode bound object is not in `_reg` — that registry holds D-DEFINED @QObject
+        // instances — and its address is the wrapper's, not the C++ object's. The C++ object is
+        // behind ptr(). Without this every qobjOf() on a bound object returned null and connectMeta
+        // reported "a null endpoint" for a perfectly valid QSlider.
+        static if (__traits(hasMember, T, "ptr")) return o.ptr();
+        else return null;
     }
 }
 
