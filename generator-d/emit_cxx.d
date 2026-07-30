@@ -1832,7 +1832,22 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 foreach (i; 0 .. na) {
                     auto a = clang_Cursor_getArgument(c, i);
                     string helper, idiom;
-                    if (containerParam(clang_getCursorType(a), helper, idiom)) { _fate = "unmapped-type"; return; }   // later step
+                    // A CONTAINER param is taken as the raw container pointer (void*) and the
+                    // idiomatic D overload — built by strOverload from the `C:` marker — converts
+                    // with the runtime's <helper>_from/_del pair. The raw emitter has done this all
+                    // along; bailing here cost `QSplitter::setSizes(int[])`, `QProcess::start` and
+                    // every other container-taking method in wrapper mode.
+                    if (containerParam(clang_getCursorType(a), helper, idiom)) {
+                        impSet["qtcontainers"] = true;
+                        wps ~= format("void* a%d", i);
+                        wpds ~= "C:" ~ helper ~ ":" ~ idiom;
+                        declps ~= format("void* a%d", i);
+                        cppPs ~= format("%s a%d",
+                            clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str, i);
+                        anames ~= format("a%d", i);
+                        callargs ~= format("a%d", i);
+                        continue;
+                    }
                     string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
                     if (pimp.length) impSet[pimp] = true;
                     auto pw = wrapperTypeOf(clang_getCursorType(a));
