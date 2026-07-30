@@ -454,6 +454,11 @@ void main(string[] args) {
         // it somewhere the ENGINE never has it -- the oracle refused the label path outright
         // (ComboBox: popup.contentItem.data[0]). The registry publishes it; carry it.
         auto reDefaultProp = regex(`\n {8}defaultProperty: "([A-Za-z0-9_]+)"`);
+        // `Window.window` reads the ATTACHED type's property, not QQuickWindow's. The registry names
+        // the attached class in the export's `attachedType`, so the compiler can prove such a read is
+        // an object instead of refusing the whole expression (Qt's Menu.qml:
+        // `interactive: Window.window ? … : false`).
+        auto reAttachedT = regex(`\n {8}attachedType: "([A-Za-z0-9_:]+)"`);
         // One level of nesting: a Signal block contains Parameter blocks, so `[^}]*` would stop at
         // the first inner `}` and every notify would come out parameterless.
         auto reSignal = regex(`Signal \{((?:[^{}]|\{[^{}]*\})*)\}`, "s");
@@ -494,6 +499,7 @@ void main(string[] args) {
         // object, and that proof reads the property table. Restricting it to bound types left the
         // compiler unable to tell an object member from a scalar on a type it does not subclass.
         string[string] qmlOfAll;
+        string[string] attachedOf;   // QML name -> the class its ATTACHED properties live on
         // Signals per class, kept rather than discarded after the notify lookup: a handler for a
         // BOUND type's own signal (`onClicked`) needs the name AND the full signature to connect,
         // and 226 of the 373 handlers in the QML Qt ships are exactly that shape — against 147
@@ -515,6 +521,8 @@ void main(string[] args) {
                 // yield a value that matches the engine BY ACCIDENT.
                 auto qn0 = ex[1].matchFirst(reQml);
                 if (!qn0.empty) { uriRows[qn0[2]] = qn0[1]; qmlOfAll[cpp] = qn0[2]; }
+                auto at0 = blk.matchFirst(reAttachedT);
+                if (!at0.empty && !qn0.empty) attachedOf[qn0[2]] = at0[1];
                 if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
                 auto qn = ex[1].matchFirst(reQml);
                 if (qn.empty) continue;
@@ -619,6 +627,22 @@ void main(string[] args) {
             string u;
             foreach (n2_, u2; uriRows) u ~= n2_ ~ "\t" ~ u2 ~ "\n";
             std.file.write(buildPath(outDir, "qmluris.tsv"), u);
+            string qa;   // qmlattached.tsv: <QML name>\t<prop>\t<dtype>\t<notify>\t<cxx type>
+            foreach (qn2, acls; attachedOf) {
+                for (string c2 = acls; c2.length;) {
+                    if (auto ps2 = c2 in ownProps)
+                        foreach (pn2, pty2; *ps2) {
+                            string dty2 = pty2, cxx2 = pty2;
+                            if (pty2.length && pty2[0] == '\x01') { dty2 = ""; cxx2 = pty2[1 .. $]; }
+                            string ns2;
+                            if (auto nm3 = c2 in ownNotify) if (auto x2 = pn2 in *nm3) ns2 = *x2;
+                            qa ~= qn2 ~ "\t" ~ pn2 ~ "\t" ~ dty2 ~ "\t" ~ ns2 ~ "\t" ~ cxx2 ~ "\n";
+                        }
+                    auto nx2 = c2 in protoOf; c2 = nx2 ? *nx2 : "";
+                }
+            }
+            std.file.write(buildPath(outDir, "qmlattached.tsv"), qa);
+            writefln("qmlattached: %d attached-type rows -> qmlattached.tsv", attachedOf.length);
             writefln("qmluris: %d QML-name -> module rows -> qmluris.tsv", uriRows.length);
         }
         std.file.write(buildPath(outDir, "qmlprops.tsv"), qprops);

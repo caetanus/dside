@@ -171,6 +171,29 @@ static std::string defaultPropOf(const std::string &qmlType) {
 // Module URIs for EVERY exported QML type, including ones we do not bind — an attached read needs the
 // attached type's module and `Window` is not a bound type. Loaded beside the qmlmap; a bound type keeps
 // the URI its own row carries.
+// Properties of ATTACHED types (qmlattached.tsv), keyed by the QML name that carries them: `Window`
+// -> {window: "QQuickWindow*"}. Separate from qmlprops because `Window`'s own rows are QQuickWindow's
+// instance properties, and an attached read is a different scope.
+static std::map<std::string, std::map<std::string, std::string>> g_qmlAttachedCxx;
+
+static void loadQmlAttached(const std::string &mapPath) {
+    auto slash = mapPath.find_last_of('/');
+    std::string p = (slash == std::string::npos ? std::string() : mapPath.substr(0, slash + 1)) + "qmlattached.tsv";
+    std::ifstream f(p);
+    std::string line;
+    while (std::getline(f, line)) {
+        std::vector<std::string> f5; size_t pos = 0;
+        while (f5.size() < 5) {
+            auto t = line.find('\t', pos);
+            if (t == std::string::npos) { f5.push_back(line.substr(pos)); break; }
+            f5.push_back(line.substr(pos, t - pos)); pos = t + 1;
+        }
+        if (f5.size() < 5) continue;
+        while (!f5[4].empty() && (f5[4].back() == '\r' || f5[4].back() == '\n')) f5[4].pop_back();
+        if (!f5[0].empty() && !f5[1].empty()) g_qmlAttachedCxx[f5[0]][f5[1]] = f5[4];
+    }
+}
+
 static void loadQmlUris(const std::string &mapPath) {
     auto slash = mapPath.find_last_of('/');
     std::string p = (slash == std::string::npos ? std::string() : mapPath.substr(0, slash + 1)) + "qmluris.tsv";
@@ -1215,6 +1238,21 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (!bn.empty()) {
                 if (outerHop(bn, pre, &fr)) { obj = pre.substr(0, pre.size() - 1); ownerType = fr->qmlType; }
                 else if (!g_selfId.empty() && bn == g_selfId) { obj = "this"; ownerType = g_selfQmlType; }
+                // An ATTACHED read as a truth value: `Window.window ? … : false` (Qt's Menu.qml). The
+                // base is a TYPE NAME; the module comes from qmluris.tsv and the proof that the member
+                // is an object from qmlattached.tsv — neither guessed.
+                else if (!g_scope.count(bn) && !g_childIds.count(bn)
+                         && std::isupper((unsigned char) bn[0]) && g_qmlTypeUri.count(bn)) {
+                    auto am = g_qmlAttachedCxx.find(bn);
+                    std::string mem2 = qs(fm->name.toString());
+                    if (am != g_qmlAttachedCxx.end()) {
+                        auto it2 = am->second.find(mem2);
+                        if (it2 != am->second.end() && !it2->second.empty() && it2->second.back() == '*') {
+                            out = "(propObj(" + attachedExpr(bn) + ", \"" + mem2 + "\") !is null)";
+                            return true;
+                        }
+                    }
+                }
             }
             if (!obj.empty()) {
                 std::string mem = qs(fm->name.toString());
@@ -4916,6 +4954,7 @@ int main(int argc, char **argv) {
         else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) {
             loadQmlMap(argv[i + 1]);                       // QML-name -> class table
             loadQmlUris(argv[i + 1]);                      // ...and every exported type's module URI
+            loadQmlAttached(argv[i + 1]);                  // ...and the ATTACHED types' properties
             // qmlprops.tsv sits beside it and is written by the same pass, so it is never given
             // separately and the two cannot be mismatched.
             std::string pp(argv[++i]);
