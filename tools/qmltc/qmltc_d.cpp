@@ -5088,6 +5088,7 @@ int main(int argc, char **argv) {
     if (isItemType(rootType)) {
         std::printf("extern(C) int qtd_render_item(void*, const(char)*);\n");
         std::printf("extern(C) int qtd_click_item(void*, int, int);\n");
+        std::printf("extern(C) int qtd_key_item(void*, int, int);\n");
         std::printf("extern(C) int qtd_run_ms(void*, int);\n");
     }
 
@@ -5120,6 +5121,12 @@ int main(int argc, char **argv) {
         if (isItemType(rootType))
             std::printf("    foreach (i, a; args) if (a == \"--click\" && i + 2 < args.length)\n"
                         "        qtd_click_item(qobjOf(o), args[i + 1].to!int, args[i + 2].to!int);\n");
+        // `--key <keycode>` delivers a real key press+release BEFORE the dump: focus and the bound
+        // type's own C++ key handling are machinery neither the frame comparison nor the click test
+        // touches, so a document can be pixel-identical, click-correct, and never see a key.
+        if (isItemType(rootType))
+            std::printf("    foreach (i, a; args) if (a == \"--key\" && i + 1 < args.length)\n"
+                        "        qtd_key_item(qobjOf(o), args[i + 1].to!int, 0);\n");
         // `--run <ms>`: put the object in a live scene and let TIME pass before dumping, so an
         // animation has a chance to advance. Without it every dump reads the initial value.
         if (isItemType(rootType))

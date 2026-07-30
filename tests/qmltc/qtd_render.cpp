@@ -11,6 +11,7 @@
 #include <QQuickItem>
 #include <QImage>
 #include <QMouseEvent>
+#include <QKeyEvent>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 
@@ -50,6 +51,31 @@ extern "C" int qtd_click_item(void *item, int x, int y) {
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QMouseEvent release(QEvent::MouseButtonRelease, p, p, win->mapToGlobal(p.toPoint()),
                         Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(win, &press);
+    QCoreApplication::sendEvent(win, &release);
+    QCoreApplication::processEvents();
+    return 0;
+}
+
+// Deliver a KEY press+release to the item in a live scene. Keyboard is its own axis: a compiled
+// document can carry a perfectly correct Keys.onPressed / focus chain and be pixel-identical, respond
+// to a click, and still never see a key — which no frame comparison and no click test can reveal.
+// The item must have focus for the scene to route the event to it, so this sets it.
+extern "C" int qtd_key_item(void *item, int key, int modifiers) {
+    auto *it = reinterpret_cast<QQuickItem *>(item);
+    if (!it) return 1;
+    static QQuickWindow *win = nullptr;      // outlives the call, like the click path
+    win = new QQuickWindow();
+    win->setWidth(qMax(1, int(it->width())));
+    win->setHeight(qMax(1, int(it->height())));
+    it->setParentItem(win->contentItem());
+    win->show();
+    it->setFocus(true);
+    // The TEXT matters: QQuickTextInput inserts event->text(), not the key code, so a key event
+    // without it is delivered and does nothing — the test would pass on both sides doing nothing.
+    const QString kt = QChar(key).toLower();
+    QKeyEvent press(QEvent::KeyPress, key, Qt::KeyboardModifiers(modifiers), kt);
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::KeyboardModifiers(modifiers), kt);
     QCoreApplication::sendEvent(win, &press);
     QCoreApplication::sendEvent(win, &release);
     QCoreApplication::processEvents();

@@ -10,6 +10,7 @@
 // than a pass.
 #include <QGuiApplication>
 #include <QQuickView>
+#include <QKeyEvent>
 #include <QQuickItem>
 #include <QImage>
 #include <QSet>
@@ -100,6 +101,32 @@ int main(int argc, char **argv) {
         QObject *root = v.rootObject();
         if (!root) { std::fprintf(stderr, "qmlrender: no root object\n"); return 4; }
         const QByteArray prop = QString::fromUtf8(argv[5]).toUtf8();
+        const QVariant val = root->property(prop.constData());
+        if (!val.isValid()) { std::fprintf(stderr, "qmlrender: no property '%s'\n", prop.constData()); return 5; }
+        std::printf("%s\t%s\n", prop.constData(), qPrintable(val.toString()));
+        return 0;
+    }
+    // `--key <qml> <key> <prop>`: load the document, deliver a key press+release to the root, print ONE
+    // property. The engine half of the keyboard axis; the compiled half is qtd_key_item.
+    if (argc == 5 && QString::fromUtf8(argv[1]) == "--key") {
+        QQuickView v;
+        v.setResizeMode(QQuickView::SizeViewToRootObject);
+        v.setSource(QUrl::fromLocalFile(QString::fromUtf8(argv[2])));
+        if (v.status() != QQuickView::Ready) { std::fprintf(stderr, "qmlrender: not ready\n"); return 3; }
+        v.show();
+        QObject *root = v.rootObject();
+        if (!root) { std::fprintf(stderr, "qmlrender: no root object\n"); return 4; }
+        if (auto *ri = qobject_cast<QQuickItem *>(root)) ri->setFocus(true);
+        const int key = QString::fromUtf8(argv[3]).toInt();
+        // The TEXT matters: QQuickTextInput inserts event->text(), not the key code, so a key event
+        // without it is delivered and does nothing — the test would pass on both sides doing nothing.
+        const QString kt = QChar(key).toLower();
+        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier, kt);
+        QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier, kt);
+        QCoreApplication::sendEvent(&v, &press);
+        QCoreApplication::sendEvent(&v, &release);
+        QCoreApplication::processEvents();
+        const QByteArray prop = QString::fromUtf8(argv[4]).toUtf8();
         const QVariant val = root->property(prop.constData());
         if (!val.isValid()) { std::fprintf(stderr, "qmlrender: no property '%s'\n", prop.constData()); return 5; }
         std::printf("%s\t%s\n", prop.constData(), qPrintable(val.toString()));

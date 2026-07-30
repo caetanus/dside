@@ -567,7 +567,16 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     static struct Timed { string name; int ms; string prop; }
     static immutable Timed[] timed = [Timed("QAnim", 400, "v")];
 
-    static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",
+    // Documents whose KEYBOARD behaviour is compared: send this key to both sides and diff the property.
+struct Keyed { string name; int key; string prop; }
+// EMPTY on purpose: the plumbing exists on both sides (qtd_key_item here, `--key` in the oracle) and
+// QKey.qml compiles clean, but under QT_QPA_PLATFORM=offscreen the window never becomes ACTIVE, so the
+// scene routes the key to nobody — measured: BOTH sides report an unchanged `text`, which is the
+// harness failing, not the compiler. Next step: requestActivate() + forceActiveFocus() before sending,
+// or a platform that grants activation. Registering a target now would just add a red one.
+static immutable Keyed[] keyed = [];
+
+static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",
                                             "QText", "QTextEdit", "QTextInput", "QVarCopy",
                                             "QVarTernary"];
 
@@ -650,6 +659,24 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
                           ~ " && " ~ renv3 ~ appBin ~ " | grep '^" ~ tm.prop ~ "\t' > " ~ zT
                           ~ " && ! diff -q " ~ oT ~ " " ~ zT ~ " > /dev/null";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-time-" ~ dc, tcmd,
+                                   [app] ~ rndDep ~ [tool]);
+            }
+            // KEYBOARD: same key to both sides, compare the property it should have changed. Focus and
+            // the bound type's own C++ key handling are machinery nothing else in this suite touches —
+            // a document can be pixel-identical and click-correct and never see a key.
+            foreach (kk; keyed) if (kk.name == name && rndDep.length) {
+                auto renv4 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto oK = genD ~ ".key.ours", eK = genD ~ ".key.eng", zK = genD ~ ".key.zero";
+                auto kcmd = renv4 ~ appBin ~ " --key " ~ kk.key.to!string
+                          ~ " | grep '^" ~ kk.prop ~ "\t' > " ~ oK
+                          ~ " && " ~ renv4 ~ rndBin ~ " --key " ~ qmlFile ~ " " ~ kk.key.to!string
+                          ~ " " ~ kk.prop ~ " > " ~ eK
+                          ~ " && diff " ~ eK ~ " " ~ oK
+                          // ...and prove the key MATTERED: without it the value must differ, or the
+                          // test would pass on a document that ignores the keyboard entirely.
+                          ~ " && " ~ renv4 ~ appBin ~ " | grep '^" ~ kk.prop ~ "\t' > " ~ zK
+                          ~ " && ! diff -q " ~ oK ~ " " ~ zK ~ " > /dev/null";
+                ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-key-" ~ dc, kcmd,
                                    [app] ~ rndDep ~ [tool]);
             }
             // Behaviour: same click to both sides, compare the property it should have changed.
