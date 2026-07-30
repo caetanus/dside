@@ -1810,7 +1810,50 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     || (clang_CXXMethod_isVirtual(c) != 0 && clang_CXXMethod_isStatic(c) == 0);
             auto rrt = clang_getCursorResultType(c);
             string _a, _b, _cc;
-            if (containerReturn(rrt, _a, _b, _cc)) { _fate = "unmapped-type"; return; }   // QHash/QMap: later step
+            // A QHash/QMap/QSet return: the raw path declares a function returning the container
+            // STRUCT and converts with <helper>_to. Same here, except the call goes through the
+            // trampoline when the method is VIRTUAL (QAbstractItemModel::roleNames is) or inline,
+            // since pragma(mangle) on the declaring class's symbol would bypass the override.
+            if (containerReturn(rrt, _a, _b, _cc)) {
+                string ch = _a, cid = _b, crs = _cc;
+                impSet["qtcontainers"] = true;
+                auto kwc = clang_CXXMethod_isStatic(c) ? "static " : "final ";
+                string[] rpsC, cargsC, cppPsC, anamesC; bool okc = true;
+                auto nac = clang_Cursor_getNumArguments(c);
+                foreach (i; 0 .. nac) {
+                    auto a = clang_Cursor_getArgument(c, i);
+                    string pimp, pd;
+                    try pd = mapCxxType(clang_getCursorType(a), pimp); catch (Unmappable) { okc = false; break; }
+                    if (pimp.length) impSet[pimp] = true;
+                    auto pwc = wrapperTypeOf(clang_getCursorType(a));
+                    rpsC ~= format("%s a%d", pd, i);
+                    cargsC ~= pwc.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
+                    cppPsC ~= format("%s a%d",
+                        clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str, i);
+                    anamesC ~= format("a%d", i);
+                }
+                if (!okc) { _fate = "unmapped-type"; return; }
+                auto selfA = clang_CXXMethod_isStatic(c) ? "" : (cargsC.length ? "this.ptr(), " : "this.ptr()");
+                auto declSelfC = clang_CXXMethod_isStatic(c) ? "" : (rpsC.length ? "void* self, " : "void* self");
+                string rawN;
+                if (clang_CXXMethod_isVirtual(c) != 0 || isInline(c)) {
+                    rawN = format("qtd_qc_%s_%d", dname(mn), METHODSHIM.length);
+                    METHODSHIM ~= MethodShim(rawN,
+                        clang_getCursorSpelling(clang_getCursorSemanticParent(c)).str,
+                        clang_getTypeSpelling(clang_getCanonicalType(rrt)).str,
+                        mn, cppPsC, anamesC, clang_CXXMethod_isStatic(c) != 0,
+                        clang_CXXMethod_isConst(c) != 0);
+                    wd ~= format("extern(C) private %s %s(%s%s);", crs, rawN, declSelfC, rpsC.join(", "));
+                    _fate = "shimmed";
+                } else {
+                    rawN = "__" ~ dname(mn) ~ "_qc";
+                    wd ~= format("private pragma(mangle, \"%s\") extern(C++) %s %s(%s%s);",
+                        clang_Cursor_getMangling(c).str, crs, rawN, declSelfC, rpsC.join(", "));
+                }
+                wm ~= format("    %s%s %s(%s) {\n        auto _r = %s(%s%s);\n        return %s_to(cast(void*) &_r);\n    }",
+                    kwc, cid, dname(mn), rpsC.join(", "), rawN, selfA, cargsC.join(", "), ch);
+                return;
+            }
             // An INLINE method has no symbol to mangle, so it can only be reached by shim; a VIRTUAL
             // one must be. Both now take the same path instead of being dropped.
             auto qtidR = (isInline(c) && !clang_CXXMethod_isVirtual(c)) ? "" : tryQList(rrt);

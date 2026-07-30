@@ -13,7 +13,11 @@ bool validFate(string f) { return FATES.canFind(f); }
 int rank(string f) {
     switch (f) {
         case "bound":         return 6;
-        case "shimmed":       return 5;
+        // `shimmed` ranks EQUAL to `bound`: both mean the binding can call the method, which is what
+        // this gate is for. The distinction is the call path, and since a VIRTUAL method MUST go
+        // through the C++ trampoline (pragma(mangle) on the declaring class's symbol bypasses the
+        // override), a bound -> shimmed move is often a correctness FIX, not a loss.
+        case "shimmed":       return 6;
         case "signal":        return 5;
         case "inherited":     return 4;
         case "pure-virtual":  return 3;
