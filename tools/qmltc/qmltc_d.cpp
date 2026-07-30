@@ -403,6 +403,11 @@ static std::string g_rootClass;
 
 // The QML type name backing a C++ class ("QQuickItem" -> "Item"), so the inner object's own
 // property table can type the member.
+// Is this the name of a type the registry knows? The registry publishes some types under their
+// QML name and some under their C++ class (`Text` is QQuickText), so a check against one table
+// alone answers "no" for a type that is perfectly well known — and an enum literal like
+// `Text.ElideRight` was refused as an unknown type rather than compiled to its key.
+static bool knownTypeName(const std::string &n);
 static std::string qmlNameOfCxx(const std::string &cxx) {
     std::string bare = cxx;
     while (!bare.empty() && (bare.back() == '*' || bare.back() == ' ')) bare.pop_back();
@@ -423,6 +428,12 @@ static bool splitOuterDep(const std::string &d, std::string &obj, std::string &m
     mem = d.substr(pos);
     *frame = &g_outerChain[k - 1];
     return true;
+}
+
+static bool knownTypeName(const std::string &n) {
+    if (g_qmlCxxType.count(n)) return true;
+    auto bm = g_qmlMap.find(n);
+    return bm != g_qmlMap.end() && g_qmlCxxType.count(bm->second.first);
 }
 
 static bool outerHop(const std::string &name, std::string &prefix, const OuterFrame **frame) {
@@ -1741,7 +1752,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 if (g_childIds.count(tn) || g_singletons.count(tn)) return false;
                 if (!g_outerId.empty() && tn == g_outerId) return false;
                 if (!g_selfId.empty() && tn == g_selfId) return false;
-                if (tn != "Qt" && !g_qmlCxxType.count(tn)) return false;
+                if (tn != "Qt" && !knownTypeName(tn)) return false;
                 key = mem; return true;
             };
             // ...and the other side must be a property whose type we do NOT map to a D scalar,
@@ -4008,7 +4019,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string tn = qs(tb->name.toString()), mem = qs(fme->name.toString());
                 if (!resolveObj(tb).empty() || g_singletons.count(tn) || mem.empty()
                         || !std::isupper((unsigned char)mem[0])
-                        || (tn != "Qt" && !g_qmlCxxType.count(tn))) return "";
+                        || (tn != "Qt" && !knownTypeName(tn))) return "";
                 return mem;
             };
             if (srcObj.empty())
