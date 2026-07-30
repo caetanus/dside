@@ -268,7 +268,11 @@ bool signalArg(CXType at, int i, ref Signal s) {
         // WRAPPER: the delegate gets a wrapper (cbd), but the C ABI delivers a raw pointer
         // (void*) -> the tramp wraps it. (An object arg is polymorphic; value records fall
         // through to the const& branch below and stay as-is.)
-        if (WRAPPER && !isValueRecord(clang_getPointeeType(ak))) {
+        // Ask the SAME question the method path asks — wrapperTypeOf — instead of a local
+        // approximation. `!isValueRecord` said yes for types that are not emitted as wrapper
+        // classes at all, and the trampoline then called `.wrap` on something that has none
+        // (QQuickGrabGestureEvent, in QQuickMultiPointTouchArea::gestureStarted).
+        if (WRAPPER && wrapperTypeOf(ak).length) {
             cbRaw = "void*"; tramp = format("%s.wrap(a%d)", dn, i);
         }
     } else if (ak.kind == CXType_LValueReference && isValueRecord(clang_getPointeeType(ak))
@@ -1884,6 +1888,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             try {
                 bool isStat = clang_CXXMethod_isStatic(c) != 0;
                 string imp; auto retD = mapCxxType(rrt, imp); if (imp.length) impSet[imp] = true;
+                retD = disambigType(retD, rrt, cur, dpkg);
                 auto retW = wrapperTypeOf(rrt);
                 string[] wps, declps, callargs, wrapArgs, cppPs, anames;
                 string[] wpds;   // just the D param TYPES, for the `string` convenience overload
@@ -1909,6 +1914,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     }
                     string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
                     if (pimp.length) impSet[pimp] = true;
+                    pd = disambigType(pd, clang_getCursorType(a), cur, dpkg);
                     auto pw = wrapperTypeOf(clang_getCursorType(a));
                     auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
                     if (inl && cpps.canFind("(*")) { _fate = "unmapped-type"; return; }   // fn-ptr param can't be a shim decl
@@ -2534,6 +2540,23 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
 
 // Enums nested in a class -> emitted inside its D declaration (so the mangling
 // substitution matches, e.g. QThread::Priority). Returns indented `enum` lines.
+// A type whose bare name collides with a NESTED enum of the class being emitted must be spelled
+// fully: inside the class body the short name binds to the nested one. QQuickItemView declares its own
+// `enum LayoutDirection` AND has methods returning the global Qt::LayoutDirection — in wrapper mode the
+// module-scope declaration and the class method then disagreed and would not compile; in raw mode the
+// same shadowing is silent (both are int-sized), which is worse.
+string disambigType(string d, CXType t, CXCursor cur, string dpkg) {
+    if (!d.length) return d;
+    auto decl = clang_getTypeDeclaration(clang_getCanonicalType(t));
+    if (decl.kind != CXCursor_EnumDecl) return d;
+    auto owner = clang_getCursorSemanticParent(decl);
+    if (clang_getCursorUSR(owner).str == clang_getCursorUSR(cur).str) return d;   // it IS this class's nested enum
+    foreach (c; children(cur))
+        if (c.kind == CXCursor_EnumDecl && clang_getCursorSpelling(c).str == d)
+            return format("%s.%s.%s", dpkg, modBase(d), d);   // shadowed: spell the module's one
+    return d;
+}
+
 string[] nestedEnumLines(CXCursor cur) {
     string[] L;
     foreach (c; children(cur))
