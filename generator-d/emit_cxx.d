@@ -1245,6 +1245,11 @@ void baseMethodNames(CXCursor node, ref bool[string] names, ref bool[string] sig
         foreach (c; children(b))
             if (c.kind == CXCursor_CXXMethod && isPublic(c)) {
                 auto sp = clang_getCursorSpelling(c).str;
+                // A PURE VIRTUAL base method is never emitted, so it exposes nothing to hide behind:
+                // recording it here made the derived class's override look like a duplicate and got
+                // it skipped too, and the method then existed NOWHERE — QLayout declares count()
+                // and itemAt() pure virtual, so a QBoxLayout wrapper had no way to reach either.
+                if (clang_CXXMethod_isPureVirtual(c)) continue;
                 names[sp] = true;
                 sigs[clang_getCursorDisplayName(c).str] = true;
                 sigs[canonSig(c)] = true;
