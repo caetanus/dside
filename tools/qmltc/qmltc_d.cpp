@@ -2077,10 +2077,29 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
         // Recording a flat dep on `first` as well produced "depends on 'first', which has no known
         // notify" — correctly, since the grouped node never changes — and marked the file partial for
         // a dependency that IS handled. Say nothing here and let the deep-read path do it.
+        // ...but ONLY when the middle really is an object property. `control.palette.text` has the
+        // same shape and `palette` is a VALUE group: no deep read handles it, so staying silent here
+        // dropped its dependency entirely — the colour was copied once and never again, with no
+        // diagnostic saying so. Found by mutating `enabled` and comparing: the engine repaints the
+        // text with the disabled palette, we kept the enabled one.
         if (auto *fmb4 = cast<FieldMemberExpression *>(fm->base))
             if (auto *b4 = cast<IdentifierExpression *>(fmb4->base)) {
                 std::string pre4; const OuterFrame *fr4 = nullptr;
-                if (outerHop(qs(b4->name.toString()), pre4, &fr4)) return;
+                if (outerHop(qs(b4->name.toString()), pre4, &fr4)) {
+                    // Silent only when the middle has NO notify — `first` on a RangeSlider never
+                    // changes, so depending on it is what produced a false "would not update", and
+                    // the deep-read path handles that shape. `palette` DOES have one, and staying
+                    // silent for it dropped the dependency outright: the colour was copied once and
+                    // never again, with nothing reporting it. Found by mutating `enabled`.
+                    std::string mid4 = qs(fmb4->name.toString());
+                    if (auto qn4 = g_qmlNotify.find(fr4->qmlType); qn4 != g_qmlNotify.end())
+                        if (auto nt4 = qn4->second.find(mid4);
+                                nt4 != qn4->second.end() && !nt4->second.empty()) {
+                            ids.push_back(pre4 + mid4);
+                            return;
+                        }
+                    return;
+                }
             }
         // `<AttachedType>.<group>.<member>` (SafeArea.margins.top): the dependency is the attached
         // GROUP, whose notify the attached table carries. Without this the read compiled and connected
@@ -5819,6 +5838,18 @@ int main(int argc, char **argv) {
         // silent change to the bar.
         {
             std::set<std::string> objs;
+            // `--set <prop>=<value>` before a --dumpall: a MUTATION, so the dump becomes a test of
+            // reactivity rather than of construction. Written through the meta-object as text and
+            // converted by QMetaProperty, which is exactly what the oracle's `name=value` does — so
+            // the two sides mutate the same way and any difference is the compiler's.
+            //
+            // Without this the differential only ever read initial values, and every connection the
+            // compiler emits was untested: a binding wired to nothing looks identical to a correct
+            // one until something changes.
+            std::printf("    foreach (i, a; args) if (a.length > 6 && a[0 .. 6] == \"--set:\") {\n"
+                        "        auto eq = a.indexOf('='); if (eq < 0) continue;\n"
+                        "        setProp(o, a[6 .. eq], a[eq + 1 .. $]);\n"
+                        "    }\n");
             std::printf("    foreach (a; args) if (a == \"--dumpall\") {\n");
             std::printf("        qtd_dump_object(qobjOf(o), \"\");\n");
             for (auto &l : lines) {
