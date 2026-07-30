@@ -1726,10 +1726,22 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // one method: build the module-level self-taking decl + the delegating wrapper method
         void emitWrapMethod(CXCursor c) {
             auto mn = clang_getCursorSpelling(c).str;
+            // Manifest bookkeeping, same as the raw emitter: EVERY method must produce a row with an
+            // honest fate, or the gate cannot tell "not bound" from "not recorded". Without this the
+            // wrapper manifest carried 731 rows against the raw 8344 for the SAME spec, so the gate
+            // read 7613 methods as DISAPPEARED when most of them were callable. The vocabulary is
+            // closed (tests/manifest_gate.d) on purpose — no inventing categories here.
+            string _fate = "bound";
+            scope(exit) recordSym(cppName, mn, _fate, c);
             // qt_* are MOC/Q_GADGET internals (qt_metacast, qt_metacall,
             // qt_check_for_QGADGET_macro) — never user-callable, and some reference
             // symbols Qt doesn't export (ldc dead-strips them; dmd whole-program breaks).
-            if (mn.startsWith("operator") || mn.startsWith("qt_")) return;
+            // qt_* are moc internals and an operator has no wrapper form here. They are NOT binding
+            // failures — calling them "unmapped-type" made the gate read 411 label changes as
+            // regressions. The raw emitter records them as `inherited` (the base's declaration is
+            // what the manifest points at), so match that rather than invent a category: the fate
+            // vocabulary is closed and the gate rejects anything outside it.
+            if (mn.startsWith("operator") || mn.startsWith("qt_")) { _fate = "inherited"; return; }
             // Skipping by NAME dropped every overload a derived class ADDS to a base-class name:
             // QGridLayout::addWidget(w, row, col, span...) vanished because QLayout declares an
             // `addWidget`, so `layout.addWidget(w, 0, 1)` did not compile in wrapper mode at all.
@@ -1738,13 +1750,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             // exactly as the raw path already did.
             if ((clang_CXXMethod_isVirtual(c) != 0 && (mn in baseM) !is null)
                     || (clang_getCursorDisplayName(c).str in baseSig)
-                    || (canonSig(c) in baseSig)) return;
+                    || (canonSig(c) in baseSig)) { _fate = "inherited"; return; }
             if ((mn in baseM) !is null && (mn in baseAliasable) !is null) {
                 aliasNamesW[mn] = true;
                 impSet[aliasBase[mn]] = true;   // the aliased base type must be imported
             }
             // Qt signal -> a connect<Signal>(delegate) method (object args wrapped by the tramp).
             if (isSignal(c)) {
+                _fate = "signal";
                 if (sigNameCountW.get(mn, 0) == 1 && allNameCountW.get(mn, 0) == 1 && mn !in seenSigW) {
                     Signal s; s.dClass = name; s.cppClass = cppName; s.name = mn;
                     bool ok = true;
@@ -1763,7 +1776,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 }
                 return;
             }
-            if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; return; }
+            if (clang_CXXMethod_isPureVirtual(c)) { hasVirtual = true; _fate = "pure-virtual"; return; }
             // A VIRTUAL method must go through the shim too, and for a different reason than an
             // inline one: pragma(mangle) on the base symbol calls the BASE implementation and
             // BYPASSES the vtable. `QBoxLayout::spacing()/setSpacing()` are `override`s of
@@ -1775,7 +1788,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     || (clang_CXXMethod_isVirtual(c) != 0 && clang_CXXMethod_isStatic(c) == 0);
             auto rrt = clang_getCursorResultType(c);
             string _a, _b, _cc;
-            if (containerReturn(rrt, _a, _b, _cc)) return;   // QHash/QMap: later step
+            if (containerReturn(rrt, _a, _b, _cc)) { _fate = "unmapped-type"; return; }   // QHash/QMap: later step
             auto qtidR = inl ? "" : tryQList(rrt);   // QList<T> return -> T[]; inline QList has no symbol -> skip
             if (qtidR.length) {
                 auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
@@ -1794,12 +1807,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 foreach (i; 0 .. na) {
                     auto a = clang_Cursor_getArgument(c, i);
                     string helper, idiom;
-                    if (containerParam(clang_getCursorType(a), helper, idiom)) return;   // later step
+                    if (containerParam(clang_getCursorType(a), helper, idiom)) { _fate = "unmapped-type"; return; }   // later step
                     string pimp; auto pd = mapCxxType(clang_getCursorType(a), pimp);
                     if (pimp.length) impSet[pimp] = true;
                     auto pw = wrapperTypeOf(clang_getCursorType(a));
                     auto cpps = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str;
-                    if (inl && cpps.canFind("(*")) return;   // fn-ptr param can't be a shim decl
+                    if (inl && cpps.canFind("(*")) { _fate = "unmapped-type"; return; }   // fn-ptr param can't be a shim decl
                     wps ~= format("%s a%d", pd, i);
                     wpds ~= pd;
                     declps ~= format("%s a%d", pw.length ? "void*" : pd, i);
@@ -1808,7 +1821,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     callargs ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
                     if (pw.length) wrapArgs ~= format("a%d", i);
                 }
-                if (inl && nestedInaccessible(cur)) return;
+                if (inl && nestedInaccessible(cur)) { _fate = "unmapped-type"; return; }
                 auto key = dname(mn) ~ "|" ~ wps.join(",") ~ "|" ~ (isStat ? "s" : "");
                 if (key in seenW) return;
                 seenW[key] = true;
@@ -1820,6 +1833,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     auto cppRet = retW.length ? clang_getTypeSpelling(clang_getCanonicalType(rrt)).str
                         : retD == "void" ? "void" : clang_getTypeSpelling(clang_getCanonicalType(rrt)).str;
                     METHODSHIM ~= MethodShim(callFn, cppName, cppRet, mn, cppPs, anames, isStat, isConst0);
+                    _fate = "shimmed";   // reached through the C++ trampoline (inline, or virtual)
                     wd ~= format("extern(C) private %s %s(%s%s);", declRet, callFn, declSelf, declps.join(", "));
                 } else
                     wd ~= format("private pragma(mangle, \"%s\") extern(C++) %s %s(%s%s);",
@@ -1855,7 +1869,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 auto sov = strOverload(mn, retD, kw, "", wpds, seenStrOvW);
                 if (sov.length) wm ~= sov;
                 wi++;
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
+            } catch (Unmappable) { _fate = "unmapped-type"; }
         }
         // one constructor: a _new factory that heap-allocates, runs the C++ ctor, and wraps.
         int wci; bool[string] seenCW;
