@@ -13,7 +13,7 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto root = QDialog_new();
+    auto root = new QDialog();
     Ui_Dialog ui;
     ui.setupUi(root);                    // builds the QGridLayout tree
 

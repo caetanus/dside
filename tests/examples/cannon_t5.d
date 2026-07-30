@@ -11,12 +11,12 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto widget = QWidget_new();
+    auto widget = new QWidget();
     auto lbl = qstr("Quit");
-    auto quit = QPushButton_new(lbl, null);
+    auto quit = new QPushButton(lbl, null);
     auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false); quit.setFont(font);
-    auto lcd = QLCDNumber_new(2u, null);
-    auto slider = QSlider_new(Orientation.Horizontal, null);
+    auto lcd = new QLCDNumber(2u, null);
+    auto slider = new QSlider(Orientation.Horizontal, null);
     slider.setRange(0, 99);
     slider.setValue(0);
 
@@ -24,7 +24,7 @@ void main() {
     __gshared int lastLcd = -1;
     slider.connectValueChanged((int v) { lcd.display(v); lastLcd = v; });   // signal(int) -> slot
 
-    auto layout = QVBoxLayout_new(widget);
+    auto layout = new QVBoxLayout(widget);
     layout.addWidget(quit);
     layout.addWidget(lcd);
     layout.addWidget(slider);
@@ -33,7 +33,7 @@ void main() {
     slider.setValue(42);                       // fires valueChanged(42) -> delegate -> lcd.display
     assert(lastLcd == 42, "valueChanged(int) delegate did not receive the value");
 
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
     writefln("cannon/t5 OK: slider.valueChanged(int) -> lcd.display, got %d", lastLcd);

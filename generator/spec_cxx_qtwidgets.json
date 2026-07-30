@@ -8,5 +8,6 @@
   "discover_module": "QtWidgets",
   "subclass": [
     "QWidget"
-  ]
+  ],
+  "wrapper": true
 }

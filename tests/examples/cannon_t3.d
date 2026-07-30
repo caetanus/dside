@@ -9,11 +9,11 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto window = QWidget_new();
+    auto window = new QWidget();
     auto wsz = QSize(200, 120); window.resize(wsz);
 
     auto lbl = qstr("Quit");
-    auto quit = QPushButton_new(lbl, window);          // child of window
+    auto quit = new QPushButton(lbl, window);          // child of window
     auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false);
     quit.setFont(font);
     // setGeometry(x,y,w,h) is inline (builds a QRect); construct the QRect directly
@@ -23,7 +23,7 @@ void main() {
     quit.connectClicked((bool) { QApplication.quit(); });
 
     window.show();
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
     writeln("cannon/t3 OK: QWidget window + parented QPushButton + setGeometry(int x4)");

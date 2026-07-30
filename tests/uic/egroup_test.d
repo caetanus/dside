@@ -6,7 +6,7 @@ void main() {
     __gshared int argc = 1; __gshared char*[2] argv = [cast(char*) "uic\0".ptr, null];
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
-    auto root = QWidget_new();
+    auto root = new QWidget();
     Ui_ShapeForm ui; ui.setupUi(root);
     assert(ui.shapeGroup !is null && ui.lineRadio !is null && ui.circleRadio !is null && ui.nameEdit !is null);
     assert(ui.lineRadio.text().toString() == "Line");

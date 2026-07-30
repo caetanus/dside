@@ -17,8 +17,8 @@ void main() {
     __qapp_ctor(app, argc, argv.ptr, 0);
 
     // pointer path (QList<QWidget*> -> QWidget[]): free the block + at()/length.
-    auto w1 = QWidget_new(); w1.show();
-    auto w2 = QWidget_new(); w2.show();
+    auto w1 = new QWidget(); w1.show();
+    auto w2 = new QWidget(); w2.show();
     auto tops = QApplication.topLevelWidgets();
     assert(tops.length >= 2, "topLevelWidgets() does not see the 2 widgets");
     foreach (t; tops) assert(t !is null, "null element");        // exercises at() at each index

@@ -11,7 +11,7 @@ void main() {
     __qapp_ctor(app, argc, argv.ptr, 0);
 
     auto lbl = qstr("Quit");
-    auto quit = QPushButton_new(lbl, null);
+    auto quit = new QPushButton(lbl, null);
     auto sz = QSize(75, 30);
     quit.resize(sz);
     auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false);   // value-type ctor + string overload
@@ -20,7 +20,7 @@ void main() {
     quit.show();
 
     // headless (no real click): quit after a tick
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { writeln("  (headless) tick -> quit"); QApplication.quit(); });
     t.start(50);
     QApplication.exec();

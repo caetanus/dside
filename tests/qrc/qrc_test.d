@@ -11,7 +11,7 @@ enum ReadOnly = 1;   // QIODeviceBase::ReadOnly
 
 ubyte[] slurpResource(string path) {
     auto qs = qstr(path);
-    auto f = QFile_new(qs);
+    auto f = new QFile(qs);
     assert(f.open(ReadOnly), "could not open " ~ path ~ " from the registered .rcc");
     scope(exit) f.close();
     auto ba = f.readAll();

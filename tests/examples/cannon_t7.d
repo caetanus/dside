@@ -20,20 +20,20 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto widget = QWidget_new();
-    auto label = QLabel_new(cast(QWidget) null, 0);
-    auto layout = QVBoxLayout_new(widget);
+    auto widget = new QWidget();
+    auto label = new QLabel(cast(QWidget) null, 0);
+    auto layout = new QVBoxLayout(widget);
     layout.addWidget(label);
     widget.show();
 
     auto ed = newQObject!Editor();
     // custom signal QString (D) -> slot built-in QString (Qt)
-    connectMeta(ed, "textChanged(QString)", cast(void*) label, "setText(QString)");
+    connectMeta(ed, "textChanged(QString)", label, "setText(QString)");
 
     ed.setText("olá çãé 42");                    // textChanged("olá çãé 42") -> label.setText
     assert(label.text().toString() == "olá çãé 42", "QString custom-signal -> Qt-slot failed");
 
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
     writefln("cannon/t7 OK: @QObject D textChanged(QString) -> QLabel.setText, label=%s", label.text().toString());

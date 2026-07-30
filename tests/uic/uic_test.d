@@ -16,7 +16,7 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto root = QWidget_new();
+    auto root = new QWidget();
     Ui_LoginForm ui;
     ui.setupUi(root);                    // builds the real widget tree (incl. resize/alignment/wordWrap)
 

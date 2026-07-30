@@ -71,7 +71,7 @@ bool onlyWaived(string a, string b) {
 void check(T, R)(string path, R root) {
     T ui;
     ui.setupUi(root);
-    string ours = qtd_ui_dump(cast(void*) root).fromStringz.idup;
+    string ours = qtd_ui_dump(root.ptr()).fromStringz.idup;
     string oracle = qtd_ui_load_and_dump(path.toStringz).fromStringz.idup;
     if (ours == oracle) {
         writefln("  MATCH     %s", path);
@@ -91,28 +91,28 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    check!Ui_Dialog("tests/uic/dialog.ui", QDialog_new());
-    check!Ui_LoginForm("tests/uic/login.ui", QWidget_new());
-    check!Ui_MainWindow("tests/uic/mainwin.ui", QMainWindow_new());
-    check!Ui_TabForm("tests/uic/tabs.ui", QWidget_new());
-    check!Ui_ShapeForm("tests/uic/egroup.ui", QWidget_new());
-    check!Ui_SpacerForm("tests/uic/spacer.ui", QWidget_new());
-    check!Ui_IconForm("tests/uic/icon.ui", QWidget_new());
-    check!Ui_FontForm("tests/uic/font.ui", QWidget_new());
-    check!Ui_SizePolForm("tests/uic/sizepolicy.ui", QWidget_new());
-    check!Ui_PaletteForm("tests/uic/palette.ui", QWidget_new());
-    check!Ui_ConnForm("tests/uic/connect.ui", QWidget_new());
-    check!Ui_BuddyForm("tests/uic/buddy.ui", QWidget_new());
-    check!Ui_embeddedDialog("tests/uic/embeddeddialog.ui", QDialog_new());
-    check!Ui_ProxyDialog("tests/uic/proxy.ui", QDialog_new());
-    check!Ui_TranslationSettings("tests/uic/translationsettings.ui", QDialog_new());
-    check!Ui_BookWindow("tests/uic/bookwindow.ui", QMainWindow_new());
+    check!Ui_Dialog("tests/uic/dialog.ui", new QDialog());
+    check!Ui_LoginForm("tests/uic/login.ui", new QWidget());
+    check!Ui_MainWindow("tests/uic/mainwin.ui", new QMainWindow());
+    check!Ui_TabForm("tests/uic/tabs.ui", new QWidget());
+    check!Ui_ShapeForm("tests/uic/egroup.ui", new QWidget());
+    check!Ui_SpacerForm("tests/uic/spacer.ui", new QWidget());
+    check!Ui_IconForm("tests/uic/icon.ui", new QWidget());
+    check!Ui_FontForm("tests/uic/font.ui", new QWidget());
+    check!Ui_SizePolForm("tests/uic/sizepolicy.ui", new QWidget());
+    check!Ui_PaletteForm("tests/uic/palette.ui", new QWidget());
+    check!Ui_ConnForm("tests/uic/connect.ui", new QWidget());
+    check!Ui_BuddyForm("tests/uic/buddy.ui", new QWidget());
+    check!Ui_embeddedDialog("tests/uic/embeddeddialog.ui", new QDialog());
+    check!Ui_ProxyDialog("tests/uic/proxy.ui", new QDialog());
+    check!Ui_TranslationSettings("tests/uic/translationsettings.ui", new QDialog());
+    check!Ui_BookWindow("tests/uic/bookwindow.ui", new QMainWindow());
 
     // Behavioral: the <connection> must actually fire (string-based QObject.connect ->
     // QMetaObject_Connection return; the meta-object forwards toggled(bool)->setChecked(bool)).
     {
         Ui_ConnForm ui;
-        ui.setupUi(QWidget_new());
+        ui.setupUi(new QWidget());
         ui.src.setChecked(true);
         if (ui.dst.isChecked())
             writeln("  CONNECT   connect.ui: src.toggled(bool) -> dst.setChecked(bool) fired");

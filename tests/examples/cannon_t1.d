@@ -15,13 +15,13 @@ void main() {
     __qapp_ctor(app, argc, argv.ptr, 0);
 
     auto title = qstr("Hello world!");
-    auto hello = QPushButton_new(title, null);
+    auto hello = new QPushButton(title, null);
     auto sz = QSize(100, 30);
     hello.resize(sz);
     hello.show();
 
     // quit the (offscreen) event loop shortly after it starts
-    auto timer = QTimer_new();
+    auto timer = new QTimer();
 
     timer.connectTimeout(() { writeln("  event loop running -> quit"); QApplication.quit(); });
     timer.start(50);

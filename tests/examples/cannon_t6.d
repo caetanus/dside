@@ -21,20 +21,20 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto widget = QWidget_new();
-    auto lcd = QLCDNumber_new(3u, null);
-    auto layout = QVBoxLayout_new(widget);
+    auto widget = new QWidget();
+    auto lcd = new QLCDNumber(3u, null);
+    auto layout = new QVBoxLayout(widget);
     layout.addWidget(lcd);
     widget.show();
 
     auto thermo = newQObject!Thermostat();     // build the meta-object at runtime
     // custom signal (D) -> built-in slot (Qt): the receiver is the raw QObject of the lcd.
-    connectMeta(thermo, "temperatureChanged(int)", cast(void*) lcd, "display(int)");
+    connectMeta(thermo, "temperatureChanged(int)", lcd, "display(int)");
 
     thermo.setTemperature(42);                  // fires temperatureChanged(42) -> lcd.display(42)
     assert(lcd.intValue() == 42, "custom signal -> Qt slot did not update the LCD");
 
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
     writefln("cannon/t6 OK: @QObject D custom signal -> QLCDNumber.display, lcd=%d", lcd.intValue());

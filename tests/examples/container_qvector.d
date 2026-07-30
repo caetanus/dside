@@ -5,7 +5,7 @@
 import qt.widgets.qimage;
 import std.stdio;
 void main() {
-    auto img = QImage_new(4, 4, QImage.Format.Format_Indexed8);
+    auto img = new QImage(4, 4, QImage.Format.Format_Indexed8);
     img.setColorCount(3);
     img.setColor(0, 0xFFFF0000);
     img.setColor(1, 0xFF00FF00);

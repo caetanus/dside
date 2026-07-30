@@ -18,19 +18,19 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto w = QWidget_new();
-    auto lcd = QLCDNumber_new(3u, null);
-    auto lay = QVBoxLayout_new(w); lay.addWidget(lcd); w.show();
+    auto w = new QWidget();
+    auto lcd = new QLCDNumber(3u, null);
+    auto lay = new QVBoxLayout(w); lay.addWidget(lcd); w.show();
 
     auto dial = newQObject!Dial();
-    connectMeta(dial, "valueChanged(int)", cast(void*) lcd, "display(int)");  // notify -> Qt slot
+    connectMeta(dial, "valueChanged(int)", lcd, "display(int)");  // notify -> Qt slot
 
     dial.setProp("value", 88);                  // WriteProperty -> D field + emits valueChanged
     assert(dial.value == 88, "property did not set the D field");
     assert(dial.propInt("value") == 88, "ReadProperty did not read the D field");
     assert(lcd.intValue() == 88, "property notify did not reach the LCD slot");
 
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
     writefln("cannon/t9 OK: @Property int value (NOTIFY) -> QLCDNumber.display, lcd=%d", lcd.intValue());

@@ -10,16 +10,16 @@ void main() {
     auto app = cast(QApplication) __cpp_new(__traits(classInstanceSize, QApplication));
     __qapp_ctor(app, argc, argv.ptr, 0);
 
-    auto widget = QWidget_new();
+    auto widget = new QWidget();
     widget.setFixedSize(200, 120);
     auto lbl = qstr("Quit");
-    auto quit = QPushButton_new(lbl, widget);
+    auto quit = new QPushButton(lbl, widget);
     auto geo = QRect(62, 40, 62 + 75 - 1, 40 + 30 - 1); quit.setGeometry(geo);
     auto font = QFont("Times", 18, cast(int) QFont.Weight.Bold, false); quit.setFont(font);
     quit.connectClicked((bool) { QApplication.quit(); });
     widget.show();
 
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
     writeln("cannon/t4 OK: QWidget container + child button");

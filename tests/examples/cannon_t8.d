@@ -12,11 +12,11 @@ pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(QAppli
     QWidget root; QLCDNumber lcd; QSlider slider;
     Signal!int valueChanged;
     this() {
-        root = QWidget_new();
-        lcd = QLCDNumber_new(2u, null);
-        slider = QSlider_new(Orientation.Horizontal, null);
+        root = new QWidget();
+        lcd = new QLCDNumber(2u, null);
+        slider = new QSlider(Orientation.Horizontal, null);
         slider.setRange(0, 99); slider.setValue(0);
-        auto lay = QVBoxLayout_new(root);
+        auto lay = new QVBoxLayout(root);
         lay.addWidget(lcd); lay.addWidget(slider);
     }
     @Slot void onSlider(int v) { lcd.display(v); valueChanged.emit(v); }  // slider -> lcd + re-emit
@@ -36,7 +36,7 @@ void main() {
 
     auto r = newQObject!LCDRange();
     // internal wiring (after newQObject: the LCDRange meta-object already exists)
-    connectMeta(cast(void*) r.slider, "valueChanged(int)", r, "onSlider(int)");
+    connectMeta(r.slider, "valueChanged(int)", r, "onSlider(int)");
     r.root.show();
 
     auto sink = newQObject!Sink();
@@ -47,7 +47,7 @@ void main() {
     assert(r.value() == 37, "value() does not reflect the slider");
     assert(sink.last == 37, "re-emit of the custom valueChanged did not reach the sink");
 
-    auto t = QTimer_new();
+    auto t = new QTimer();
     t.connectTimeout(() { QApplication.quit(); }); t.start(50);
     QApplication.exec();
     writefln("cannon/t8 OK: LCDRange composed — slider(built-in) -> onSlider(D) -> re-emit -> sink(D)=%d", sink.last);

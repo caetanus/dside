@@ -542,7 +542,7 @@ private string genSpacer(ref Gen g, Node sp) {
     string hp = orient == "Vertical" ? "Minimum" : sizeType;
     string vp = orient == "Vertical" ? sizeType : "Minimum";
     g.fields ~= "    QSpacerItem " ~ name ~ ";\n";
-    g.setup ~= "        " ~ name ~ " = QSpacerItem_new(" ~ w ~ ", " ~ h
+    g.setup ~= "        " ~ name ~ " = new QSpacerItem(" ~ w ~ ", " ~ h
         ~ ", QSizePolicy.Policy." ~ hp ~ ", QSizePolicy.Policy." ~ vp ~ ");\n";
     return name;
 }
@@ -588,7 +588,7 @@ private string genLayout(ref Gen g, Node lay, string parentVar, bool zeroMargin 
     bool form = cls == "QFormLayout";
     need(g, cls);
     g.fields ~= "    " ~ cls ~ " " ~ name ~ ";\n";
-    g.setup ~= "        " ~ name ~ " = " ~ cls ~ "_new(" ~ parentVar ~ ");\n";
+    g.setup ~= "        " ~ name ~ " = new " ~ cls ~ "(" ~ parentVar ~ ");\n";
     if (objName.length)   // named in the .ui -> QUiLoader sets it too (a nameless one stays nameless)
         g.setup ~= "        " ~ name ~ ".setObjectName(\"" ~ esc(objName) ~ "\");\n";
     // spacing + the four *Margin props collapse to setContentsMargins(l, t, r, b).
@@ -686,7 +686,7 @@ private void emitGroups(ref Gen g) {
     // is a logical grouping, not a rendered child; naming it would diverge from the oracle.
     foreach (grp; g.groupList) {
         g.fields ~= "    QButtonGroup " ~ grp ~ ";\n";
-        g.setup ~= "        " ~ grp ~ " = QButtonGroup_new(root);\n";
+        g.setup ~= "        " ~ grp ~ " = new QButtonGroup(root);\n";
     }
 }
 
@@ -715,14 +715,14 @@ private void genAction(ref Gen g, Node act, string parentVar) {
     need(g, "QAction");
     string an = act.attr("name");
     g.fields ~= "    QAction " ~ an ~ ";\n";
-    g.setup ~= "        " ~ an ~ " = QAction_new(" ~ parentVar ~ ");\n";
+    g.setup ~= "        " ~ an ~ " = new QAction(" ~ parentVar ~ ");\n";
     g.setup ~= "        " ~ an ~ ".setObjectName(\"" ~ an ~ "\");\n";
     genProps(g, act, an, false);
 }
 
 // A <widget class="QMenu">: create it (+ title), its submenus, then wire its <addaction>s.
 private string genMenu(ref Gen g, Node menu, string parentVar) {
-    string cn = genWidget(g, menu, parentVar, false);   // QMenu field + QMenu_new + setTitle (retranslate)
+    string cn = genWidget(g, menu, parentVar, false);   // QMenu field + new QMenu + setTitle (retranslate)
     foreach (sub; menu.childrenOf("widget"))
         if (sub.attr("class") == "QMenu") genMenu(g, sub, cn);
     genAddActions(g, menu, cn);
@@ -757,7 +757,7 @@ private string genWidget(ref Gen g, Node w, string parentVar, bool isRoot, strin
         // parenting it up front gave every such page's layout the wrong default margin.
         // (QSplitter is NOT in this set: uic does pass it as parent.)
         string ctor = isContainerCls(parentCls) ? "" : parentVar;
-        g.setup ~= "        " ~ var ~ " = " ~ cls ~ "_new(" ~ ctor ~ ");\n";
+        g.setup ~= "        " ~ var ~ " = new " ~ cls ~ "(" ~ ctor ~ ");\n";
         if (named)   // unnamed in the .ui -> QUiLoader leaves it nameless; don't setObjectName
             g.setup ~= "        " ~ var ~ ".setObjectName(\"" ~ esc(objName) ~ "\");\n";
         if (isLine) {
