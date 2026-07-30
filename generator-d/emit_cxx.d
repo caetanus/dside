@@ -994,7 +994,7 @@ bool containerReturn(CXType t, out string helper, out string idiom, out string r
 // if the method has no such param. `pds` are the raw D param types in order.
 // Like strOverload, but generates a struct CONSTRUCTOR `this(string...)` that
 // delegates to the raw ctor — so the value type is built idiomatically: X("foo")
-// instead of X_new("foo"). (only QString/QByteArray/QAnyStringView; a container ctor is rare.)
+// instead of make!X("foo"). (only QString/QByteArray/QAnyStringView; a container ctor is rare.)
 string ctorStrOv(string[] pds, ref bool[string] seen) {
     if (!pds.any!(p => p == "ref const(QString)" || p == "ref const(QByteArray)"
         || p == "QAnyStringView")) return "";
@@ -1682,7 +1682,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 auto ov = strOverload("__make", name, "static ", "", pds, seenStrOv);
                 if (ov.length) ctorMethods ~= ov;
                 // Idiomatic this(args) ctor INSIDE the struct: X("foo") instead of
-                // X_new("foo"). Parameterized only (D forbids this() with no args).
+                // make!X("foo"). Parameterized only (D forbids this() with no args).
                 if (na > 0 && !allDeflt && !selfLiteral) {   // !allDeflt: all-default this() is illegal for a struct
                     // extern(D): otherwise an extern(C++) struct's ctor auto-mangles to
                     // the C++ ctor symbol and collides with the raw __ctor (same mangle).
@@ -2391,6 +2391,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     // Value-type ctors are inline (no symbol) — construct via D struct literal
     // `QSize(w, h)` instead. Only polymorphic classes get C++-heap ctor helpers.
     string[] ctorHelpers;
+    string[] ctorStatics;   // `static T __make(...)` inside the type — what make!T reaches
     int ci;
     // Abstract classes (an unoverridden pure virtual) can't be instantiated — their
     // complete-object ctor (C1) isn't even emitted by C++ — so skip the _new factory.
@@ -2465,19 +2466,25 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 ctorHelpers ~= format(`private pragma(mangle, "%s") extern(C++) void %s();`,
                     clang_Cursor_getMangling(c).str, ctorFn);
             }
-            ctorHelpers ~= format("%s %s_new(%s) {", name, name, dparams.join(", "));
+            // `X_new(...)` was a third construction spelling next to `new X(...)` and `make!X(...)`.
+            // The rule is: an object uses `new X(parent)` — which is what WRAPPER mode gives, since
+            // the holder layer makes the lifetime sound — and `make!X` is the one justified factory,
+            // for a POD or a raw type that cannot offer a real constructor (D's `new` would
+            // GC-allocate memory that C++ deletes). So the factory stays for raw bindings, but as the
+            // `static __make` that cxxrt's `make!T` dispatches to: one spelling, and X_new is gone.
+            ctorStatics ~= format("    static %s __make(%s) {", name, dparams.join(", "));
             if (valueType) {                                // by-value on the stack
-                ctorHelpers ~= format("    %s self = void;", name);
-                ctorHelpers ~= format("    %s(&self%s);", ctorFn, callTail);
+                ctorStatics ~= format("        %s self = void;", name);
+                ctorStatics ~= format("        %s(&self%s);", ctorFn, callTail);
             } else {                                        // C++ heap (Qt owns/deletes)
-                ctorHelpers ~= format("    auto self = cast(%s) __cpp_new(__traits(classInstanceSize, %s));", name, name);
+                ctorStatics ~= format("        auto self = cast(%s) __cpp_new(__traits(classInstanceSize, %s));", name, name);
                 if (ctorGuard)
-                    ctorHelpers ~= format("    %s(cast(void*)&%s, cast(void*) self%s);", cgn, ctorFn, callTail);
+                    ctorStatics ~= format("        %s(cast(void*)&%s, cast(void*) self%s);", cgn, ctorFn, callTail);
                 else
-                    ctorHelpers ~= format("    %s(self%s);", ctorFn, callTail);
+                    ctorStatics ~= format("        %s(self%s);", ctorFn, callTail);
             }
-            ctorHelpers ~= "    return self;";
-            ctorHelpers ~= "}";
+            ctorStatics ~= "        return self;";
+            ctorStatics ~= "    }";
             ci++;
         } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
     }
@@ -2522,7 +2529,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
 
     return format("%s\nmodule %s.%s;\nimport cxxrt;\n%s\n\nextern (C++%s) %s %s%s {\n%s\n}\n\n%s\n%s\n",
         manifest, dpkg, modBase(name), impLines, nsClause(cppName), kind, name, baseClause,
-        body_.join("\n"), ctorHelpers.join("\n"), shimDecls.join("\n"));
+        (body_ ~ ctorStatics).join("\n"), ctorHelpers.join("\n"), shimDecls.join("\n"));
 }
 
 // Enums nested in a class -> emitted inside its D declaration (so the mangling

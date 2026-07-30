@@ -1,7 +1,8 @@
 import sample.modifications, sample.point;
+import cxxrt : make;   // make!T(...) — the one factory spelling (cxxrt dispatches to T.__make)
 import std.stdio;
 void main() {
-    auto m = Modifications_new(); auto pt = Point(1.0, 2.0);
+    auto m = make!Modifications(); auto pt = Point(1.0, 2.0);
     alias E = Modifications.OverloadedModFunc;
     assert(m.overloaded(1, true, 2, 3.0)   == E.Overloaded_ibid, "...int,double");
     assert(m.overloaded(1, true, 2, false) == E.Overloaded_ibib, "...int,bool");

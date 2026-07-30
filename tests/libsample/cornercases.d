@@ -54,7 +54,7 @@ void main() {
 
     // --- inheritance + overload resolution + enum return ----------------------
     {
-        auto d = Derived_new(0);
+        auto d = make!Derived(0);
         assert(d.singleArgument(true) == false && d.singleArgument(false) == true);
         assert(d.defaultValue(5) == 5.1);
         assert(cast(int) d.overloaded(1, 2) == 0);   // OverloadedFunc_ii
@@ -62,7 +62,7 @@ void main() {
     }
     // --- object factories return live object pointers (no abstract _new) ------
     {
-        auto o = ObjectType_new();
+        auto o = make!ObjectType();
         assert(o !is null);
         assert(o.createChild(o) !is null);
         assert(ObjectType.createWithChild() !is null);
@@ -105,7 +105,7 @@ void main() {
     //  overload resolution is already covered by Derived.overloaded above.)
     // --- object identity + parent/child + Str-typed methods ---------------------
     {
-        auto o = ObjectType_new();
+        auto o = make!ObjectType();
         auto rootn = make!Str("root\0".ptr);      // const& param requires an lvalue (D does not bind an rvalue to ref)
         o.setObjectName(rootn);
         assert(o.objectName().cstring().fromStringz == "root", "objectName round-trip (Str)");
