@@ -1443,7 +1443,24 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
     return false;
 }
 
+// A dep spelled `__outer.…` whose remainder still has a dot is a PATH, not a member of the
+// enclosing object: `__outer.searchIndicator.indicator`. The __outer branch would split it as the
+// compound member "searchIndicator.indicator", find no notify under that name and report — 20
+// phantom diagnostics — while the path branch resolves it. Let the path branch have it.
+static bool outerDepIsPath(const std::string &d) {
+    size_t i = 0;
+    while (d.compare(i, 8, "__outer.") == 0) i += 8;
+    return d.find('.', i) != std::string::npos;
+}
+
 static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq) {
+    // `__outer` is a head like any other: the wiring holds deps spelled with it, and a path through
+    // an enclosing object cannot be re-resolved there without this.
+    if (n2 == "__outer" && !g_outerChain.empty()) {
+        g_outerUsed = true;
+        if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;
+        oe = "__outer"; oq = g_outerChain[0].qmlType; return true;
+    }
     if (g_scope.count(n2) || g_vgroups.count(n2)) return false;
     if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
     if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
@@ -2271,6 +2288,12 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                             ids.push_back(pre4 + mid4);
                             return;
                         }
+                    // The middle has no notify of its own (`searchIndicator` is a CONSTANT group),
+                    // so depending on IT is the false "would not update" the RangeSlider case
+                    // produced. Depend on the MEMBER, which does change — Qt's SearchField pads
+                    // itself from `control.searchIndicator.indicator`, and recording nothing left
+                    // that read connected to nothing, with no message.
+                    ids.push_back(pre4 + mid4 + "." + qs(fm->name.toString()));
                     return;
                 }
             }
@@ -4537,7 +4560,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            + "\", this, \"__rcb_" + ba.first + "()\");\n";
                     continue;
                 }
-                if (d.rfind("__outer.", 0) == 0) {   // reads an enclosing object
+                if (d.rfind("__outer.", 0) == 0 && !outerDepIsPath(d)) {   // reads an enclosing object
                     std::string obj, mem, sig; const OuterFrame *fr = nullptr;
                     if (!splitOuterDep(d, obj, mem, &fr)) {
                         // Reported, not dropped. `__outer.<group>.<member>` (Qt's SearchField pads
@@ -4961,7 +4984,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string conns;
         for (auto &d : deps) {
             if (!seen.insert(d).second) continue;
-            if (d.rfind("__outer.", 0) == 0) {
+            if (d.rfind("__outer.", 0) == 0 && !outerDepIsPath(d)) {
                 std::string obj, mem, sig; const OuterFrame *fr = nullptr;
                 if (!splitOuterDep(d, obj, mem, &fr)) continue;
                 if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
@@ -5402,7 +5425,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // `control.<prop>` — the dependency lives on the ENCLOSING object, so the connect
                 // is made on __outer, not on this. Its notify comes from the outer's own table
                 // (declared properties spell it <prop>Changed; base ones carry a full signature).
-                if (d.rfind("__outer.", 0) == 0) {
+                if (d.rfind("__outer.", 0) == 0 && !outerDepIsPath(d)) {
                     std::string obj, mem, sig; const OuterFrame *fr = nullptr;
                     if (!splitOuterDep(d, obj, mem, &fr)) {
                         // Reported, not dropped. `__outer.<group>.<member>` (Qt's SearchField pads
