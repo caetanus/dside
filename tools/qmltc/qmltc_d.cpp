@@ -3503,6 +3503,29 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // (the table carries each type's module URI now), but the ORACLE cannot read an
                     // attached path back, and shipping what the differential cannot compare is how
                     // false green happens.
+                    // ...and an attached type of a BOUND module whose member is a real OBJECT.
+                    // Held back until the ORACLE could read an attached path back, which it now
+                    // can (QQmlProperty resolves one by name, public API). A QQmlComponent* member
+                    // stays refused: that is a TEMPLATE the attachee instantiates, and compiling it
+                    // as a child would assign an instance where Qt expects a factory.
+                    bool boundAttachedObj = false;
+                    if (auto am6 = g_qmlAttachedCxx.find(qid.substr(0, dot));
+                            am6 != g_qmlAttachedCxx.end()) {
+                        auto mi6 = am6->second.find(qid.substr(dot + 1));
+                        if (mi6 != am6->second.end()) {
+                            std::string ct = mi6->second;
+                            while (!ct.empty() && ct.back() == ' ') ct.pop_back();
+                            boundAttachedObj = !ct.empty() && ct.back() == '*'
+                                            && ct.rfind("QQmlComponent", 0) != 0;
+                        }
+                    }
+                    // GATE STAYS SHUT, deliberately: with `|| boundAttachedObj` the corpus gets
+                    // WORSE — 99 divergences become 149, files identical in every property 34 -> 33,
+                    // and the oracle dies on two more. The compiled attached child differs from the
+                    // engine's by more than its absence does, so shipping it would trade a reported
+                    // gap for a silent wrong object. Re-open only when a compiled ScrollBar.vertical
+                    // matches the engine property-for-property.
+                    (void) boundAttachedObj;
                     if (g_attached.count(qid.substr(0, dot))) {
                         attachedKidBindings.push_back({qid, ob->initializer,
                                                        ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : "",
@@ -4736,13 +4759,32 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string field = "_a_" + tn + "_" + mem;
         std::string childCls = cls + "_" + tn + "_" + mem;
         auto akt = boundTypeFor(ak.type);   // a bound child type makes this a SUBCLASS
+        // ...and if it is not bound, it may be a LOCAL .qml type, exactly as for an ordinary child.
+        // ScrollView.qml writes `ScrollBar.vertical: ScrollBar {}` where that ScrollBar is the
+        // style's OWN ScrollBar.qml — QtQuick.Templates is imported under an alias, so the bare
+        // name is not the Templates type. Without this the child came out a bare QObject with none
+        // of the type's properties, and its first connect threw.
+        UiObjectInitializer *akInit = ak.init;
+        std::string akResolvedPath;
+        QString savedAkSrc = g_srcText;
+        auto savedAkBare = g_bareImports, savedAkQual = g_qualifiedTypes;
+        if (akt.first.empty() && ak.type != "QtObject" && !ak.type.empty()) {
+            if (UiObjectDefinition *lt = loadLocalType(ak.type, inPath, &akResolvedPath)) {
+                std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
+                akt = boundTypeFor(ltRoot);
+                akInit = spliceUseSite(lt->initializer, ak.init);
+            }
+        }
         if (!akt.first.empty() && !akt.second.empty()) {
             std::string imp = "import " + akt.second + ";\n";
             if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
             std::string vimp = "import " + akt.second.substr(0, akt.second.rfind('.')) + ".qtvirt;\n";
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
-        ObjNode kid = compileObject(ak.init, childCls, classes, partial, inPath, akt.first, nullptr, ak.type);
+        if (!akResolvedPath.empty()) g_resolving.insert(akResolvedPath);
+        ObjNode kid = compileObject(akInit, childCls, classes, partial, inPath, akt.first, nullptr, ak.type);
+        if (!akResolvedPath.empty()) g_resolving.erase(akResolvedPath);
+        g_srcText = savedAkSrc; g_bareImports = savedAkBare; g_qualifiedTypes = savedAkQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
