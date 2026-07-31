@@ -1422,3 +1422,27 @@ constructing with 0 failures, and no file that matches at construction failing a
   never recomputed. A layout-ordering difference in a derived value, stable on both sides.
 - `DialImpl`: a type from QtQuick.Controls.impl that this binding does not cover. Building it as a
   bare object would drop every property set on it, so the whole `background` is refused.
+
+### Before `Component` is implemented: what its test has to prove
+
+`delegate`/`model` are left null today and reported as refused. 16 properties of the Basic corpus
+differ because of it, and there is an obvious way to make all 16 match that would make the product
+WORSE: build a `QQmlComponent` from the delegate's source text at runtime. `delegate` would stop
+being null immediately, and the metric would move — while a delegate whose bindings cannot resolve
+the enclosing document's ids would instantiate and behave wrongly, which is strictly worse than a
+document that admits it has no delegate.
+
+So the acceptance criterion is not "delegate is non-null". It is:
+
+1. the view INSTANTIATES the delegate — for a model of N, the same number of items exists on both
+   sides, at the same paths;
+2. each instantiated item matches the engine property-for-property under `--dumpall`, which means
+   the delegate's own bindings resolved;
+3. a binding inside the delegate that reads the ENCLOSING document (`control.something`, the shape
+   Qt's own delegates use constantly) has the same value on both sides — this is the one that
+   distinguishes a real Component from a detached one;
+4. it still holds after a mutation (`--set:`) that the delegate's bindings depend on.
+
+Points 3 and 4 are the whole test. A Component implementation that passes 1 and 2 and fails 3 has
+produced items that look right at construction and are not connected to anything, which is the
+failure mode this compiler has hit more than once and which no value dump at construction can see.
