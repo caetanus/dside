@@ -1820,6 +1820,14 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // default. Nothing here is per-type: the depth, the hops and the leaf all come from the
         // registry.
         {
+            // ...and the whole path as a TRUTH VALUE: `!searchIndicator.indicator` (Qt's
+            // SearchField, deciding its own padding). The leaf is an OBJECT, so the typed read
+            // below cannot answer it, and refusing left the control's padding at 0 where the
+            // engine computes 28 — which then moved every child.
+            if (dtype == "bool") {
+                std::string oe0, oq0;
+                if (objPathExpr(fm, oe0, oq0)) { out = "(" + oe0 + " !is null)"; return true; }
+            }
             // Any depth. This runs LAST, after every path that also records a dependency, so it
             // only ever answers what those refused — including the two-segment forms they decline
             // (a group member the document did not itself write, which the registry knows).
