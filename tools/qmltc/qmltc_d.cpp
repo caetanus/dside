@@ -4545,7 +4545,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
                 if (d.rfind("__outer.", 0) == 0) {   // reads an enclosing object
                     std::string obj, mem, sig; const OuterFrame *fr = nullptr;
-                    if (!splitOuterDep(d, obj, mem, &fr)) { ++partial; continue; }
+                    if (!splitOuterDep(d, obj, mem, &fr)) {
+                        // Reported, not dropped. `__outer.<group>.<member>` (Qt's SearchField pads
+                        // itself from `control.searchIndicator.indicator`) does not split, and this
+                        // used to `continue` in SILENCE — the read compiled, nothing connected, and
+                        // no message said so. A binding that looks live and is not is the worst
+                        // thing this compiler can emit, so it says so now.
+                        std::fprintf(stderr, "qmltc-d: %s: binding in %s depends on '%s', a path through "
+                                     "an enclosing object that is not wired — it would not update "
+                                     "(later phase)\n", inPath, cls.c_str(), d.c_str());
+                        ++partial; continue;
+                    }
                     if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
                         sig = mem + "Changed()";
                         g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
@@ -5401,7 +5411,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // (declared properties spell it <prop>Changed; base ones carry a full signature).
                 if (d.rfind("__outer.", 0) == 0) {
                     std::string obj, mem, sig; const OuterFrame *fr = nullptr;
-                    if (!splitOuterDep(d, obj, mem, &fr)) { ++partial; continue; }
+                    if (!splitOuterDep(d, obj, mem, &fr)) {
+                        // Reported, not dropped. `__outer.<group>.<member>` (Qt's SearchField pads
+                        // itself from `control.searchIndicator.indicator`) does not split, and this
+                        // used to `continue` in SILENCE — the read compiled, nothing connected, and
+                        // no message said so. A binding that looks live and is not is the worst
+                        // thing this compiler can emit, so it says so now.
+                        std::fprintf(stderr, "qmltc-d: %s: binding in %s depends on '%s', a path through "
+                                     "an enclosing object that is not wired — it would not update "
+                                     "(later phase)\n", inPath, cls.c_str(), d.c_str());
+                        ++partial; continue;
+                    }
                     if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
                         sig = mem + "Changed()";
                         g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
