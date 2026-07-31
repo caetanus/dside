@@ -214,6 +214,24 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
             if (!tgt && !ln.empty()) {
                 QQmlProperty qp(obj, QString::fromStdString(ln), qmlContext(obj));
                 if (qp.isValid()) tgt = qp.read().value<QObject *>();
+                // ...and for a path that goes THROUGH an attached object
+                // (`ScrollBar.vertical.contentItem`), resolve the longest prefix QQmlProperty can
+                // answer and walk the rest the ordinary way. Without this the comparison reported
+                // <missing> for every deep path under an attached object — which is the compiler
+                // being unmeasurable, not wrong, and it would have been read as the compiler
+                // producing objects the engine does not have.
+                if (!tgt) {
+                    QStringList ps = QString::fromStdString(ln).split('.');
+                    for (int cut = ps.size() - 1; cut >= 2 && !tgt; --cut) {
+                        QQmlProperty pre(obj, ps.mid(0, cut).join('.'), qmlContext(obj));
+                        if (!pre.isValid()) continue;
+                        QObject *base = pre.read().value<QObject *>();
+                        if (!base) continue;
+                        QStringList rest = ps.mid(cut);
+                        rest << rest.last();          // walk() stops one short
+                        tgt = walk(base, rest);
+                    }
+                }
             }
             if (!tgt) { std::printf("%s.<missing>\t<missing>\n", ln.c_str()); continue; }
             std::string pre = ln.empty() ? "" : ln + ".";
