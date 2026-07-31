@@ -4536,6 +4536,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // so this needs no new type routing. Restricted to a singleton call: accepting any
         // string-compilable expression for an unrouted type would quietly write text into
         // properties that are not colours.
+        // ...and a CONDITIONAL whose branches are themselves colours: `color: cond ? a : b`, which
+        // is what a rewritten script binding becomes. Same channel as the singleton call above —
+        // the value crosses as text and QMetaType turns it into a QColor on write — and setProp
+        // throws if the property does not take it, so a wrong target is loud rather than silent.
+        if (copyAssign.empty() && !scalar)
+            if (cast<ConditionalExpression *>(ba.second) && compileExpr(ba.second, "string", val)) {
+                scalar = true;
+                ty = "string";
+            }
         if (copyAssign.empty() && !scalar)
             if (auto *cx = cast<CallExpression *>(ba.second))
                 if (auto *cfm = cast<FieldMemberExpression *>(cx->base))
