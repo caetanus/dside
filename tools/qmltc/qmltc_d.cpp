@@ -58,6 +58,8 @@ static std::string dIdent(const std::string &n) {
 
 // The root object's `id:` (e.g. `id: root`), so a self-reference `root.x` in an expression
 // resolves to the property `x`. Set once in main before any expression is compiled.
+// The parser engine whose POOL owns the AST, so a script binding can be rewritten into nodes.
+static Engine *g_astEngine = nullptr;
 static std::string g_selfId;
 
 // QML type name of the object being compiled (its BOUND type, e.g. "Item"), so a binding that
@@ -651,6 +653,7 @@ static bool loadDTypes(const char *path, const char *dScope, bool bound) {
     QFile f(QString::fromUtf8(path));
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", path); return false; }
     auto *engine = new Engine();                       // leaked: the AST must outlive this call
+    g_astEngine = engine;   // ...and its pool, for the nodes a script binding is rewritten into
     auto *lexer = new Lexer(engine);
     lexer->setCode(QString::fromUtf8(f.readAll()), 1, /*qmlMode*/ true);
     auto *parser = new Parser(engine);
@@ -1447,6 +1450,30 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
 // enclosing object: `__outer.searchIndicator.indicator`. The __outer branch would split it as the
 // compound member "searchIndicator.indicator", find no notify under that name and report — 20
 // phantom diagnostics — while the path branch resolves it. Let the path branch have it.
+// A script binding is a BLOCK, not an expression: Qt's controls write
+// `color: { if (c) return a; else return b }` — 18 of them in the Basic corpus, 12 on border.color.
+// Rewritten here into the equivalent conditional EXPRESSION, so every path that already compiles an
+// expression handles it with no change. Nodes come from the parser's own pool (kept alive because
+// the AST is deliberately leaked); constructing them any other way is not possible.
+static ExpressionNode *blockToExpr(Statement *st) {
+    auto *blk = cast<Block *>(st);
+    if (!blk || !blk->statements || !g_astEngine) return nullptr;
+    // Exactly one statement, an if/else chain whose every leaf is a `return <expr>`.
+    if (blk->statements->next) return nullptr;
+    // `StatementList::statement` is a Node*, not a Statement* — the casts below narrow it.
+    std::function<ExpressionNode *(Node *)> conv = [&](Node *x) -> ExpressionNode * {
+        if (auto *r = cast<ReturnStatement *>(x)) return r->expression;
+        if (auto *b2 = cast<Block *>(x))
+            return (b2->statements && !b2->statements->next) ? conv(b2->statements->statement) : nullptr;
+        auto *iff = cast<IfStatement *>(x);
+        if (!iff || !iff->ko) return nullptr;      // no else: the value would be undefined
+        ExpressionNode *a = conv(iff->ok), *b = conv(iff->ko);
+        if (!a || !b || !iff->expression) return nullptr;
+        return new (g_astEngine->pool()) ConditionalExpression(iff->expression, a, b);
+    };
+    return conv(blk->statements->statement);
+}
+
 static bool outerDepIsPath(const std::string &d) {
     size_t i = 0;
     while (d.compare(i, 8, "__outer.") == 0) i += 8;
@@ -2901,6 +2928,7 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
     g_docUrl = "file://" + QFileInfo(path).absoluteFilePath().toStdString();
     auto *engine = new Engine();
+    g_astEngine = engine;
     auto *lexer = new Lexer(engine);
     lexer->setCode(code, 1, /*qmlMode*/ true);
     auto *parser = new Parser(engine);
@@ -3403,24 +3431,31 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     rawGroupHandlers.push_back({head + "." + sig, sb->statement});
                     continue;
                 }
-                if (auto *es = cast<ExpressionStatement *>(sb->statement)) {
+                // A script binding (`color: { if (c) return a; else return b }`) is rewritten into
+                // the equivalent conditional expression, so everything below treats it as one.
+                ExpressionNode *sbExpr = nullptr;
+                if (auto *es0 = cast<ExpressionStatement *>(sb->statement)) sbExpr = es0->expression;
+                else sbExpr = blockToExpr(sb->statement);
+                if (sbExpr) {
+                    auto *es = sb->statement ? cast<ExpressionStatement *>(sb->statement) : nullptr;
+                    (void) es;
                     if (dot == std::string::npos) {
                         // `state: "big"` selects which State's overrides apply. It is recorded
                         // rather than assigned: assigning the base property would set the name
                         // without applying anything, which reads as a state that silently did
                         // nothing.
                         if (hid == "state")
-                            if (auto *sl = cast<StringLiteral *>(es->expression)) {
+                            if (auto *sl = cast<StringLiteral *>(sbExpr)) {
                                 initialState = qs(sl->value.toString());
-                                rawBaseAssigns.push_back({hid, es->expression});
+                                rawBaseAssigns.push_back({hid, sbExpr});
                                 continue;
                             }
-                        rawBaseAssigns.push_back({hid, es->expression}); continue;
+                        rawBaseAssigns.push_back({hid, sbExpr}); continue;
                     }
-                    if (g_groups.count(head)) { rawGroupAssigns.push_back({hid, es->expression}); continue; }
+                    if (g_groups.count(head)) { rawGroupAssigns.push_back({hid, sbExpr}); continue; }
                     // `vgroup.member: <expr>` — same shape, but it must compile to a
                     // read-modify-write on the VALUE (see rawValueGroupAssigns below).
-                    if (g_vgroups.count(head)) { rawValueGroupAssigns.push_back({hid, es->expression}); continue; }
+                    if (g_vgroups.count(head)) { rawValueGroupAssigns.push_back({hid, sbExpr}); continue; }
                     // `font.pixelSize: 22` on a BOUND type. g_vgroups is populated only for
                     // D-registered types, so this was refused outright — but no compile-time
                     // table is needed: setVgroup resolves the member BY NAME through the gadget's
@@ -3435,7 +3470,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
                         auto it = qc->second.find(head);
                         if (it != qc->second.end() && !it->second.empty() && it->second.back() == '*') {
-                            rawObjGroupAssigns.push_back({hid, es->expression});
+                            rawObjGroupAssigns.push_back({hid, sbExpr});
                             continue;
                         }
                     }
@@ -3448,7 +3483,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         auto it = qc->second.find(head);
                         if (it != qc->second.end() && !it->second.empty()
                                 && it->second.back() != '*' && it->second.back() != '^') {
-                            rawBaseVGroupAssigns.push_back({hid, es->expression});
+                            rawBaseVGroupAssigns.push_back({hid, sbExpr});
                             continue;
                         }
                     }
