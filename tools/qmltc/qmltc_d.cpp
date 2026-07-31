@@ -1482,8 +1482,29 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
 static ExpressionNode *blockToExpr(Statement *st) {
     auto *blk = cast<Block *>(st);
     if (!blk || !blk->statements || !g_astEngine) return nullptr;
-    // Exactly one statement, an if/else chain whose every leaf is a `return <expr>`.
-    if (blk->statements->next) return nullptr;
+    // Also the guard-clause form Qt uses: `if (c) return A;` followed by `return B;` — an if with
+    // NO else and a trailing return, possibly several of them. Folded right-to-left into the same
+    // nested ternary, so the two shapes share one path.
+    if (blk->statements->next) {
+        std::vector<std::pair<ExpressionNode *, ExpressionNode *>> guards;
+        ExpressionNode *tail = nullptr;
+        for (auto *it = blk->statements; it; it = it->next) {
+            if (auto *r = cast<ReturnStatement *>(it->statement)) {
+                if (it->next || !r->expression) return nullptr;   // a return must be LAST
+                tail = r->expression;
+                break;
+            }
+            auto *iff = cast<IfStatement *>(it->statement);
+            if (!iff || iff->ko || !iff->expression) return nullptr;
+            auto *r2 = cast<ReturnStatement *>(iff->ok);
+            if (!r2 || !r2->expression) return nullptr;
+            guards.push_back({iff->expression, r2->expression});
+        }
+        if (!tail || guards.empty()) return nullptr;
+        for (auto g = guards.rbegin(); g != guards.rend(); ++g)
+            tail = new (g_astEngine->pool()) ConditionalExpression(g->first, g->second, tail);
+        return tail;
+    }
     // `StatementList::statement` is a Node*, not a Statement* — the casts below narrow it.
     std::function<ExpressionNode *(Node *)> conv = [&](Node *x) -> ExpressionNode * {
         if (auto *r = cast<ReturnStatement *>(x)) return r->expression;
