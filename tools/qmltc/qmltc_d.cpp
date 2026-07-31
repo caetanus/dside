@@ -1519,6 +1519,25 @@ static ExpressionNode *blockToExpr(Statement *st) {
     return conv(blk->statements->statement);
 }
 
+// `Qt.styleHints.<group>.<leaf>` — the types under the QML global are not exported to QML, so no
+// table can name their notify. connectNotify resolves it through the META-OBJECT at runtime, which
+// is exactly what this needs and needs nothing else.
+static bool styleHintsDep(const std::string &d, std::string &objExpr, std::string &leaf) {
+    if (d.rfind("Qt.styleHints.", 0) != 0) return false;
+    std::string rest = d.substr(std::strlen("Qt.styleHints."));
+    auto dot = rest.rfind('.');
+    if (dot == std::string::npos) { objExpr = "styleHintsObj()"; leaf = rest; return true; }
+    objExpr = "styleHintsObj()";
+    size_t i = 0;
+    while (i < dot) {
+        auto j = rest.find('.', i);
+        objExpr = "propObj(" + objExpr + ", \"" + rest.substr(i, j - i) + "\")";
+        i = j + 1;
+    }
+    leaf = rest.substr(dot + 1);
+    return true;
+}
+
 static bool outerDepIsPath(const std::string &d) {
     size_t i = 0;
     while (d.compare(i, 8, "__outer.") == 0) i += 8;
@@ -2425,6 +2444,28 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                      qs(base ? base->name.toString() : QString()) + "." + qs(fm->name.toString()),
                      oe5, sig5))
             ids.push_back(qs(base->name.toString()) + "." + qs(fm->name.toString()));
+        // `Qt.styleHints.accessibility.contrastPreference` — the head is the QML global, which is
+        // not a property of anything. Recording it (which is what recursing down to `Qt` did) named
+        // something that cannot change and reported "would not update" for a binding that DOES.
+        // The whole path is recorded instead; the wiring connects through the meta-object by name.
+        else if (std::string qp2; [&]{
+                     std::function<bool(ExpressionNode *, std::string &)> path =
+                         [&](ExpressionNode *x, std::string &outp) -> bool {
+                         if (auto *idq = cast<IdentifierExpression *>(x)) {
+                             outp = qs(idq->name.toString());
+                             return outp == "Qt" && !g_scope.count("Qt") && !g_childIds.count("Qt");
+                         }
+                         if (auto *fq = cast<FieldMemberExpression *>(x)) {
+                             std::string h;
+                             if (!path(fq->base, h)) return false;
+                             outp = h + "." + qs(fq->name.toString());
+                             return true;
+                         }
+                         return false;
+                     };
+                     return path(fm, qp2) && qp2.rfind("Qt.styleHints.", 0) == 0;
+                 }())
+            ids.push_back(qp2);
         else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
         return;
     }
@@ -4733,6 +4774,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // reaches, on the leaf's own notify. tryConnectMeta because that object may not
                 // exist yet at wire time (a control builds its background in componentComplete),
                 // and a throwing connect would kill the object for a reactivity detail.
+                if (std::string so9, lf9; styleHintsDep(d, so9, lf9)) {
+                    conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"__rcb_"
+                           + ba.first + "()\");\n";
+                    continue;
+                }
                 std::string dEff = d;
                 if (dEff.find('.') != std::string::npos) {
                     std::string oe6, sig6;
@@ -5131,6 +5177,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // reaches, on the leaf's own notify. tryConnectMeta because that object may not
             // exist yet at wire time (a control builds its background in componentComplete),
             // and a throwing connect would kill the object for a reactivity detail.
+            if (std::string so9, lf9; styleHintsDep(d, so9, lf9)) {
+                conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"" + slot + "()\");\n";
+                continue;
+            }
             std::string dEff = d;
             if (dEff.find('.') != std::string::npos) {
                 std::string oe6, sig6;
@@ -5579,6 +5629,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // An object PATH the registry resolves: connect to the object the path reaches,
                     // on the leaf's own notify — the head of the path is typically a group that
                     // never changes. When it does not resolve, depend on the head, as before.
+                    if (std::string so9, lf9; styleHintsDep(d, so9, lf9)) {
+                        wire += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"__rc_"
+                              + p.name + "()\");\n";
+                        continue;
+                    }
                     std::string dEff = d;
                     if (dEff.find('.') != std::string::npos) {
                         std::string oe7, sig7;
