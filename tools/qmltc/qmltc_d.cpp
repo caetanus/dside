@@ -5261,6 +5261,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 node.groupProps.push_back({ga.first, "string"});
                 continue;
             }
+            // ...and when the source is not a plain read or a ternary BETWEEN two of them — Qt's
+            // SpinBox nests one: `c ? A : (enabled ? B : C)` — fall back to the text channel the
+            // colours already use. QMetaType turns the string into a QColor on write, and setProp
+            // throws if the member does not take one, so a wrong target stays loud.
+            if (std::string sval; compileExpr(ga.second, "string", sval)) {
+                std::string slot = "__rcg_" + gname + "_" + mem;
+                handlerSlots += "    @Slot void " + slot + "() {\n        setProp(propObj(this, \""
+                              + gname + "\"), \"" + mem + "\", " + sval + ");\n    }\n";
+                lateWire += "        " + slot + "();\n";
+                node.groupProps.push_back({ga.first, "string"});
+                continue;
+            }
             std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s: value is not a scalar "
                          "the channel can convert [%s] — skipped (later phase)\n",
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
