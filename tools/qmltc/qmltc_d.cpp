@@ -223,6 +223,77 @@ static void loadQmlUris(const std::string &mapPath) {
     }
 }
 
+// QML SINGLETONS and their methods: which names are singletons, the module and version their one
+// instance is fetched with, and each method's parameter types. All of it published by the registry
+// (`isSingleton`, the export string, the Method blocks) — nothing here is a list of known names.
+static std::map<std::string, std::pair<std::string, std::pair<int, int>>> g_qmlSingletonUri;
+static std::map<std::string, std::map<std::string, std::pair<std::string, std::vector<std::string>>>>
+    g_qmlMethods;
+// C++ class -> QML name for every EXPORTED type, not just the ones we subclass. Without it a
+// property typed by an unbound helper class could not be followed to its own properties.
+static std::map<std::string, std::string> g_cxxQmlName;
+static void loadQmlCxxNames(const std::string &mapPath) {
+    auto slash = mapPath.find_last_of('/');
+    std::string p = (slash == std::string::npos ? std::string() : mapPath.substr(0, slash + 1))
+                  + "qmlcxxnames.tsv";
+    std::ifstream f(p);
+    std::string line;
+    while (std::getline(f, line)) {
+        auto t = line.find('\t');
+        if (t == std::string::npos) continue;
+        std::string cxx = line.substr(0, t), qml = line.substr(t + 1);
+        while (!qml.empty() && (qml.back() == '\r' || qml.back() == '\n')) qml.pop_back();
+        if (!cxx.empty() && !qml.empty()) g_cxxQmlName.emplace(cxx, qml);
+    }
+}
+
+static void loadQmlSingletons(const std::string &mapPath) {
+    auto slash = mapPath.find_last_of('/');
+    std::string dir = slash == std::string::npos ? std::string() : mapPath.substr(0, slash + 1);
+    {
+        std::ifstream f(dir + "qmlsingletons.tsv");
+        std::string line;
+        while (std::getline(f, line)) {
+            std::vector<std::string> c;
+            for (size_t i = 0, j; i <= line.size(); i = j + 1) {
+                j = line.find('\t', i);
+                if (j == std::string::npos) j = line.size();
+                c.push_back(line.substr(i, j - i));
+                if (j == line.size()) break;
+            }
+            if (c.size() < 3) continue;
+            while (!c[2].empty() && (c[2].back() == '\r' || c[2].back() == '\n')) c[2].pop_back();
+            auto dot = c[2].find('.');
+            if (dot == std::string::npos) continue;
+            g_qmlSingletonUri[c[0]] = {c[1], {std::stoi(c[2].substr(0, dot)),
+                                              std::stoi(c[2].substr(dot + 1))}};
+        }
+    }
+    {
+        std::ifstream f(dir + "qmlmethods.tsv");
+        std::string line;
+        while (std::getline(f, line)) {
+            std::vector<std::string> c;
+            for (size_t i = 0, j; i <= line.size(); i = j + 1) {
+                j = line.find('\t', i);
+                if (j == std::string::npos) j = line.size();
+                c.push_back(line.substr(i, j - i));
+                if (j == line.size()) break;
+            }
+            if (c.size() < 4) continue;
+            while (!c[3].empty() && (c[3].back() == '\r' || c[3].back() == '\n')) c[3].pop_back();
+            std::vector<std::string> ps;
+            for (size_t i = 0, j; !c[3].empty() && i <= c[3].size(); i = j + 1) {
+                j = c[3].find(',', i);
+                if (j == std::string::npos) j = c[3].size();
+                ps.push_back(c[3].substr(i, j - i));
+                if (j == c[3].size()) break;
+            }
+            g_qmlMethods[c[0]][c[1]] = {c[2], ps};
+        }
+    }
+}
+
 static void loadQmlMap(const char *path) {
     std::ifstream f(path);
     std::string line;
@@ -1311,6 +1382,10 @@ static bool objPropQml(const std::string &owner, const std::string &prop, std::s
     cxx.pop_back();
     while (!cxx.empty() && cxx.back() == ' ') cxx.pop_back();
     std::string qn = qmlNameOfCxx(cxx);
+    // qmlmap only names the types we SUBCLASS; the registry files an unbound helper's rows under
+    // its QML name all the same (QQuickPalette's are under `Palette`), so ask the full table too.
+    if (qn.empty() || !g_qmlCxxType.count(qn))
+        if (auto it2 = g_cxxQmlName.find(cxx); it2 != g_cxxQmlName.end()) qn = it2->second;
     outQml = (!qn.empty() && g_qmlCxxType.count(qn)) ? qn : cxx;
     return true;
 }
@@ -1754,6 +1829,18 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     std::string own = oq;
                     if (!g_qmlProps.count(own))
                         if (auto bm = g_qmlMap.find(own); bm != g_qmlMap.end()) own = bm->second.first;
+                    // A COLOUR has no D scalar type, but it crosses as text through the
+                    // meta-object (QMetaType renders it #rrggbb) — which is how every colour here
+                    // already travels, and what the oracle prints from the same QVariant. Without
+                    // this, `Color.blend(control.palette.mid, ...)` could not compile its own
+                    // arguments even though each one is a plain read.
+                    if (dtype == "string")
+                        if (auto qc2 = g_qmlCxxType.find(own); qc2 != g_qmlCxxType.end())
+                            if (auto c2 = qc2->second.find(qs(fm->name.toString()));
+                                    c2 != qc2->second.end() && c2->second.rfind("QColor", 0) == 0) {
+                                out = "propStr(" + oe + ", \"" + qs(fm->name.toString()) + "\")";
+                                return true;
+                            }
                     if (auto qp = g_qmlProps.find(own); qp != g_qmlProps.end()) {
                         auto t2 = qp->second.find(qs(fm->name.toString()));
                         if (t2 != qp->second.end()) {
@@ -1801,6 +1888,57 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             }
             if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
             return false;
+        }
+        // `<Singleton>.<method>(args)` — Qt's own controls compute colours with
+        // `Color.blend(a, b, f)`. The registry says which names are singletons, the module and
+        // version their one instance is fetched with, and how many parameters each method takes;
+        // the arguments cross as TEXT and QMetaType converts each to the parameter's own type, the
+        // same channel every property here uses. So this is one mechanism for every method of
+        // every singleton, not a rule about blend.
+        if (recv) {
+            std::string sn = qs(recv->name.toString());
+            auto sg = g_qmlSingletonUri.find(sn);
+            if (sg != g_qmlSingletonUri.end() && !g_scope.count(sn) && !g_childIds.count(sn)
+                    && (g_selfId.empty() || sn != g_selfId)) {
+                std::string mn2 = qs(fm->name.toString());
+                auto mi = g_qmlMethods.find(sn);
+                if (mi != g_qmlMethods.end())
+                    if (auto me = mi->second.find(mn2); me != mi->second.end()) {
+                        // Each argument is compiled AS ITS PARAMETER'S TYPE, which the registry
+                        // publishes. Trying `string` first and falling back was wrong in a way that
+                        // compiled: a numeric ternary compiles fine with a string target and stays
+                        // numeric, so the call went out with a double inside an array of strings.
+                        std::vector<std::string> as;
+                        bool ok2 = true;
+                        size_t pi = 0;
+                        const auto &ptypes = me->second.second;
+                        for (auto *a = call->arguments; a && ok2; a = a->next, ++pi) {
+                            if (pi >= ptypes.size()) { ok2 = false; break; }
+                            const std::string &pt = ptypes[pi];
+                            bool num = pt == "double" || pt == "qreal" || pt == "float"
+                                    || pt == "int" || pt == "uint" || pt == "bool";
+                            std::string one;
+                            if (num) {
+                                if (compileExpr(a->expression, pt == "bool" ? "bool" : "double", one))
+                                    as.push_back("to!string(" + one + ")");
+                                else ok2 = false;
+                            } else if (compileExpr(a->expression, "string", one)) as.push_back(one);
+                            else ok2 = false;
+                        }
+                        if (ok2 && as.size() == ptypes.size()) {
+                            std::string joined;
+                            for (auto &x : as) joined += (joined.empty() ? "" : ", ") + x;
+                            std::string c2 = "invokeStr(qmlSingleton(\"" + sg->second.first + "\", \""
+                                + sn + "\", " + std::to_string(sg->second.second.first) + ", "
+                                + std::to_string(sg->second.second.second) + "), \"" + mn2 + "\", ["
+                                + joined + "])";
+                            if (dtype == "string") { out = c2; return true; }
+                            if (dtype == "double" || dtype == "int" || dtype == "bool") {
+                                out = "(" + c2 + ").to!" + dtype.toStdString(); return true;
+                            }
+                        }
+                    }
+            }
         }
         // `<childId>.method()` / `<childId>.signal(args)` — a call on ANOTHER object reached
         // through its id. The child is a D field, so this is a direct call; a name the child does
@@ -4270,6 +4408,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ty = "string";
             }
         }
+        // A property whose declared type we do not route (a colour) assigned from a SINGLETON
+        // CALL: `color: Color.blend(a, b, f)` in Qt's own controls. The result crosses as text and
+        // QMetaType turns it into a QColor on write — exactly how every other colour here travels,
+        // so this needs no new type routing. Restricted to a singleton call: accepting any
+        // string-compilable expression for an unrouted type would quietly write text into
+        // properties that are not colours.
+        if (copyAssign.empty() && !scalar)
+            if (auto *cx = cast<CallExpression *>(ba.second))
+                if (auto *cfm = cast<FieldMemberExpression *>(cx->base))
+                    if (auto *crv = cast<IdentifierExpression *>(cfm->base))
+                        if (g_qmlSingletonUri.count(qs(crv->name.toString()))
+                                && compileExpr(ba.second, "string", val)) {
+                            scalar = true;
+                            ty = "string";
+                        }
         if (copyAssign.empty() && (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val))) {
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
@@ -5502,6 +5655,8 @@ int main(int argc, char **argv) {
         else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) {
             loadQmlMap(argv[i + 1]);                       // QML-name -> class table
             loadQmlUris(argv[i + 1]);                      // ...and every exported type's module URI
+            loadQmlSingletons(argv[i + 1]);                // ...and the SINGLETONS and their methods
+            loadQmlCxxNames(argv[i + 1]);                  // ...and every exported class's QML name
             loadQmlAttached(argv[i + 1]);                  // ...and the ATTACHED types' properties
             // qmlprops.tsv sits beside it and is written by the same pass, so it is never given
             // separately and the two cannot be mismatched.

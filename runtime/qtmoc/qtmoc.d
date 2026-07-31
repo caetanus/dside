@@ -79,6 +79,8 @@ void qtd_parser_status(void*, int);
     int    qtd_prop_set_bool(void*, const(char)*, bool);
     void* qtd_prop_get_qs(void*, const(char)*);
 void* qtd_style_hints();
+void* qtd_qml_singleton(const(char)*, const(char)*, int, int);
+void* qtd_invoke_str(void*, const(char)*, const(char)**, int);
 void* qtd_prop_get_enum_key(void*, const(char)*);
     int    qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
 }
@@ -800,6 +802,20 @@ T __qmltcAnd(T)(T a, lazy T b) { return a != 0 ? b : a; }
 /// The QML global `Qt.styleHints`: an ordinary QObject, so every member below it is reachable
 /// with the ordinary propObj/propEnumKey channel. Null in a binding without QtGui.
 void* styleHintsObj() { return qtd_style_hints(); }
+/// A QML singleton's one instance — the engine's, not one of ours: a singleton has state, and a
+/// second instance would be a different object that happens to share a type.
+void* qmlSingleton(string uri, string name, int major, int minor) {
+    return qtd_qml_singleton((uri ~ "\0").ptr, (name ~ "\0").ptr, major, minor);
+}
+/// Calls a method by NAME, passing every argument as text and letting QMetaType convert it to the
+/// parameter's own type — the same channel the properties use. The result comes back as text for
+/// the same reason a colour property does: that is what both sides of the differential compare.
+string invokeStr(void* obj, string method, string[] args) {
+    auto cs = new const(char)*[args.length];
+    foreach (i, a; args) cs[i] = (a ~ "\0").ptr;
+    auto q = qtd_invoke_str(obj, (method ~ "\0").ptr, cs.ptr, cast(int) args.length);
+    auto r = qsToD(q); qtd_qs_free(q); return r;
+}
 /// Reads an enum property as its KEY string — the spelling `setProp(o, name, "AlignRight")`
 /// takes, so a read and a literal compare directly.
 string propEnumKey(T)(T o, string name) {

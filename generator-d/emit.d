@@ -447,6 +447,16 @@ void main(string[] args) {
         // "QtQuick.Templates/Overlay 2.3" — the URI is as much a part of the export as the name,
         // and reaching an ATTACHED type needs it (attachedObj resolves by uri + type at runtime).
         auto reQml  = regex(`"([^"/]+)/([A-Za-z0-9_]+) `);
+        // The export's VERSION, read separately: this regex is what keys the whole registry, and
+        // adding a group to it stopped ~9000 property rows from matching their export at all —
+        // they fell back to the C++-class key, giving a registry the same SIZE as before and keyed
+        // differently. Nothing looked wrong until a fixture stopped compiling.
+        auto reQmlVer = regex(`"[^"/]+/[A-Za-z0-9_]+ ([0-9]+\.[0-9]+)"`);
+        // A singleton's METHODS, with the types a call has to marshal by. The nested braces are the
+        // Parameter blocks, which are single-line.
+        auto reMethod = regex(`Method \{((?:[^{}]|\{[^{}]*\})*)\}`, "s");
+        auto reMName  = regex(`name: "([A-Za-z0-9_]+)"`);
+        auto reMType  = regex(`type: "([^"]+)"`);
         auto rePrototype = regex(`\n {8}prototype: "([A-Za-z0-9_:]+)"`);
         // The DEFAULT property is not always `data`: QQuickFlickable declares `flickableData`
         // (children are reparented into the flickable's contentItem) and QQuickPopup/Control
@@ -507,6 +517,8 @@ void main(string[] args) {
         string[string][string] ownProps, ownNotify, ownSignals;
         string qmap, qprops; int rows2, rows3; string[][] qmapRows;
         string[string] uriRows;   // QML name -> module URI, for EVERY exported type
+        string[string] singletonRows;   // QML name -> "<uri>\t<version>", for every QML SINGLETON
+        string methodRows;              // <QML name>\t<method>\t<return type>\t<param types>
         foreach (qtj; qt.array) {
             if (!exists(qtj.str)) continue;
             foreach (blk; readText(qtj.str).split("Component {")) {
@@ -533,6 +545,32 @@ void main(string[] args) {
                 // property table only covered exported types. Key those rows by the C++ CLASS name,
                 // which is exactly what the compiler holds at that point.
                 else qmlOfAll[cpp] = cpp;   // exported but with no parsable QML name
+                // NOTE: this block goes AFTER the if/else above, not between them. Sitting in the
+                // middle, its `if` stole the `else` — so every exported non-singleton type was
+                // keyed by its C++ class instead of its QML name. The registry kept its SIZE and
+                // changed its keys, which is why the corpus still built and one fixture did not.
+                // A QML SINGLETON is a type with ONE instance the engine owns: `Color.blend(...)`
+                // in Qt's own controls is a method call on one. The registry says so outright
+                // (`isSingleton: true`) and gives the module and version the instance is fetched
+                // with, so nothing here is guessed. Recorded with its METHODS and their parameter
+                // types, since a call has to marshal its arguments by type.
+                if (!qn0.empty && blk.canFind("isSingleton: true")) {
+                    auto vv = ex[1].matchFirst(reQmlVer);
+                    if (vv.empty) continue;      // no version, no way to fetch the one instance
+                    string ver = vv[1];
+                    singletonRows[qn0[2]] = qn0[1] ~ "\t" ~ ver;
+                    foreach (mm; blk.matchAll(reMethod)) {
+                        string sig = mm[1];
+                        auto mn = sig.matchFirst(reMName);
+                        if (mn.empty) continue;
+                        auto mt = sig.matchFirst(reMType);
+                        string ps;
+                        foreach (pp; sig.matchAll(regex(`Parameter \{[^}]*type: "([^"]+)"`)))
+                            ps ~= (ps.length ? "," : "") ~ pp[1];
+                        methodRows ~= qn0[2] ~ "\t" ~ mn[1] ~ "\t" ~ (mt.empty ? "" : mt[1])
+                                    ~ "\t" ~ ps ~ "\n";
+                    }
+                }
                 auto at0 = blk.matchFirst(reAttachedT);
                 if (!at0.empty && !qn0.empty) attachedOf[qn0[2]] = at0[1];
                 if (cpp !in SUBCLASS) continue;      // only types we actually subclass are usable
@@ -648,6 +686,18 @@ void main(string[] args) {
             string u;
             foreach (n2_, u2; uriRows) u ~= n2_ ~ "\t" ~ u2 ~ "\n";
             std.file.write(buildPath(outDir, "qmluris.tsv"), u);
+            string sg;
+            foreach (n3_, u3; singletonRows) sg ~= n3_ ~ "\t" ~ u3 ~ "\n";
+            std.file.write(buildPath(outDir, "qmlsingletons.tsv"), sg);
+            // C++ CLASS -> QML name, for EVERY exported type. qmlmap carries this only for types we
+            // subclass, so a property whose C++ type is an unbound helper (`palette` is a
+            // QQuickPalette*) could not be followed: the compiler had the class name and no way to
+            // reach the rows the registry files under the QML name.
+            string cn;
+            foreach (c4, q4; qmlOfAll) if (c4 != q4) cn ~= c4 ~ "\t" ~ q4 ~ "\n";
+            std.file.write(buildPath(outDir, "qmlcxxnames.tsv"), cn);
+            std.file.write(buildPath(outDir, "qmlmethods.tsv"), methodRows);
+            writefln("qmlsingletons: %d singleton rows -> qmlsingletons.tsv", singletonRows.length);
             string qa;   // qmlattached.tsv: <QML name>\t<prop>\t<dtype>\t<notify>\t<cxx type>
             foreach (qn2, acls; attachedOf) {
                 for (string c2 = acls; c2.length;) {

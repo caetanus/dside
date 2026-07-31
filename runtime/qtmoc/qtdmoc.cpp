@@ -10,6 +10,7 @@
 #include <QString>
 #include <QMetaProperty>
 #include <QMetaEnum>
+#include <QMetaMethod>
 #ifdef QT_GUI_LIB
 // QGuiApplication alone: the result is handed out as an opaque void* and every member below it is
 // reached through the meta-object, so neither QStyleHints nor QAccessibilityHints needs to be a
@@ -513,6 +514,75 @@ static QQmlEngine* qtd_qml_engine() {
     return eng;
 }
 #endif
+// A QML SINGLETON's one instance, and a call on it. Qt's own controls compute colours with
+// `Color.blend(a, b, f)` — a method on a C++ singleton the ENGINE owns, so there is no way to
+// reach it by name from any object we hold and no honest way to fake it (constructing our own
+// would be a different object with different state). The engine we already keep for contexts owns
+// this one too.
+extern "C" void qtd_ensure_module(const char* uri);
+extern "C" void* qtd_qml_singleton(const char* uri, const char* name, int major, int minor) {
+#ifdef QTD_HAVE_QML
+    if (!QCoreApplication::instance()) return nullptr;
+    // The module has to be LOADED before its types have ids: a compiled document imports nothing
+    // by itself, so without this qmlTypeId answers -1, the instance comes back null, the call
+    // returns an empty string and the write fails — loudly, which is how this was found.
+    qtd_ensure_module(uri);
+    int id = qmlTypeId(uri, major, minor, name);
+    if (id < 0) return nullptr;
+    return qtd_qml_engine()->singletonInstance<QObject*>(id);
+#else
+    (void) uri; (void) name; (void) major; (void) minor; return nullptr;
+#endif
+}
+// ...and the call itself, by NAME, with every argument passed as text and converted to the
+// parameter's own type by QMetaType — the same principle as every property here: the meta-object
+// says what the types are, so one function serves every method of every singleton.
+extern "C" void* qtd_invoke_str(void* o, const char* method, const char** args, int n) {
+    if (!o) return new QString();
+    QObject* q = static_cast<QObject*>(o);
+    const QMetaObject* mo = q->metaObject();
+    QByteArray want(method);
+    for (int i = 0; i < mo->methodCount(); ++i) {
+        QMetaMethod m = mo->method(i);
+        if (m.name() != want || m.parameterCount() != n || n > 8) continue;
+        QVariant vals[8];
+        QGenericArgument ga[8];
+        for (int k = 0; k < n; ++k) {
+            vals[k] = QVariant(QString::fromUtf8(args[k]));
+#if QT_VERSION >= 0x060000
+            if (!vals[k].convert(m.parameterMetaType(k))) return new QString();
+#else
+            if (!vals[k].convert(m.parameterType(k))) return new QString();
+#endif
+            ga[k] = QGenericArgument(vals[k].typeName(), vals[k].constData());
+        }
+#if QT_VERSION >= 0x060000
+        QMetaType rt = m.returnMetaType();
+        void* rd = rt.create();
+#else
+        int rtId = m.returnType();
+        void* rd = QMetaType::create(rtId);
+#endif
+        bool ok = m.invoke(q, Qt::DirectConnection,
+#if QT_VERSION >= 0x060000
+                           QGenericReturnArgument(rt.name(), rd),
+#else
+                           QGenericReturnArgument(QMetaType::typeName(rtId), rd),
+#endif
+                           ga[0], ga[1], ga[2], ga[3], ga[4], ga[5], ga[6], ga[7]);
+#if QT_VERSION >= 0x060000
+        QVariant rv(rt, rd);
+        QString out = ok ? rv.toString() : QString();
+        rt.destroy(rd);
+#else
+        QVariant rv(rtId, rd);
+        QString out = ok ? rv.toString() : QString();
+        QMetaType::destroy(rtId, rd);
+#endif
+        return new QString(out);
+    }
+    return new QString();
+}
 extern "C" void qtd_attach_context(void* o);
 // ...with the DOCUMENT the object was written in. The engine gives each component a context whose
 // baseUrl is its own document; sharing the engine's root context gave every compiled object an
