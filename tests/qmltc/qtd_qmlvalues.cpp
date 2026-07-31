@@ -209,6 +209,24 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
             if (!tgt) { std::printf("%s.<missing>\t<missing>\n", ln.c_str()); continue; }
             std::string pre = ln.empty() ? "" : ln + ".";
             const QMetaObject *mo = tgt->metaObject();
+    // The C++ class each object actually IS, so comparing two DIFFERENT objects shows up as one
+    // clear difference instead of a scattered set of property mismatches. Our objects are D
+    // subclasses whose own className is generated, so the chain is walked to the first Qt class —
+    // which is the bound base for ours and the class itself for the engine's, and therefore
+    // comparable. Qt's Flickable reparents visual children into its contentItem, so `data[0]` on a
+    // ListView is NOT the child the document wrote there: without this the two sides quietly
+    // compared a Rectangle against an internal content item.
+            {
+                const QMetaObject *c = mo;
+                while (c && c->className()[0] != 'Q') c = c->superClass();
+                // Qt generates a subclass per QML type (`QQuickRectangle_QML_2`); it IS that type, so the
+                // suffix is normalised away — otherwise every object the document declares would read as a
+                // type mismatch and the real ones would be lost in it.
+                QByteArray cn(c ? c->className() : mo->className());
+                int cut = cn.indexOf("_QML");
+                if (cut > 0) cn.truncate(cut);
+                std::printf("%s__class\t%s\n", pre.c_str(), cn.constData());
+            }
             for (int i = 0; i < mo->propertyCount(); ++i) {
                 QMetaProperty mp = mo->property(i);
                 if (!mp.isReadable()) continue;
