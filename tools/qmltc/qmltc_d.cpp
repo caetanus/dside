@@ -1376,6 +1376,30 @@ static bool readName(const std::string &n, std::string &out) {
                 }
             }
         }
+        // ...and a bare name that belongs to an ENCLOSING object. Qt's ScrollBar writes
+        // `color: pressed ? control.palette.dark : control.palette.mid` inside its contentItem: the
+        // contentItem is a Rectangle and `pressed` is the ScrollBar's. QML resolves it up the scope
+        // chain; without this the name did not compile, which failed the whole expression and left
+        // the colour at the type default.
+        {
+            std::string pre;
+            for (size_t k = 0; k < g_outerChain.size(); ++k) {
+                pre += "__outer.";
+                const std::string &oq = g_outerChain[k].qmlType;
+                auto qp2 = g_qmlProps.find(oq);
+                if (qp2 == g_qmlProps.end()) continue;
+                auto pt2 = qp2->second.find(n);
+                if (pt2 == qp2->second.end()) continue;
+                const std::string &ty2 = pt2->second;
+                if (ty2 != "string" && ty2 != "double" && ty2 != "bool" && ty2 != "int") continue;
+                g_outerUsed = true;
+                if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                const char *rd2 = ty2 == "string" ? "propStr(" : ty2 == "double" ? "propDouble("
+                               : ty2 == "bool" ? "propBool(" : "propInt(";
+                out = rd2 + pre.substr(0, pre.size() - 1) + ", \"" + n + "\")";
+                return true;
+            }
+        }
         return false;
     }
     out = n; return true;
