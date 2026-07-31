@@ -1446,3 +1446,23 @@ So the acceptance criterion is not "delegate is non-null". It is:
 Points 3 and 4 are the whole test. A Component implementation that passes 1 and 2 and fails 3 has
 produced items that look right at construction and are not connected to anything, which is the
 failure mode this compiler has hit more than once and which no value dump at construction can see.
+
+### The Component test, and its measured baseline (2026-07-31)
+
+`tests/qmltc/controls/CDelegate.qml` is the acceptance fixture written BEFORE the feature, per the
+criterion above. A Repeater with `model: 3` and a delegate whose bindings read the enclosing
+document (`root.tag`, `root.bump`) — point 3 of the criterion, the one that separates a real
+Component from a detached one.
+
+Measured today, with the engine on one side and the compiler on the other:
+
+| path | engine | compiled |
+|---|---|---|
+| data[0..2] | three QQuickText, `outer-0/1/2`, x = 1/11/21 | absent |
+| the Repeater | data[3] | data[0] — the only child |
+
+So the bar is concrete: the compiled document must produce those three items, at those paths, with
+those values — `x` proving the index arithmetic and `text` proving the read of the enclosing
+document. The refusal today is honest (`'delegate' ... takes a Component ... not an object`), and
+the fixture is deliberately NOT wired into the build: it would fail, and a failing target teaches
+nothing that this table does not.
