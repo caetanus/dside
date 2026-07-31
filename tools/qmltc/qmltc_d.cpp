@@ -1538,6 +1538,34 @@ static bool styleHintsDep(const std::string &d, std::string &objExpr, std::strin
     return true;
 }
 
+// `__outer[.__outer].<AttachedType>.<member>` — Qt's ComboBox sizes its popup from
+// `control.Window.height`, and the ATTACHED object belongs to the enclosing control. The read side
+// already resolves this (attachedExprOn); the dependency side did not, so the binding was reported
+// as unwireable. connectNotify finds the member's notify through the meta-object, so no table of
+// attached notifies is needed here either.
+static bool attachedOuterDep(const std::string &d, std::string &objExpr, std::string &leaf) {
+    std::vector<std::string> parts;
+    for (size_t i = 0, j; i <= d.size(); i = j + 1) {
+        j = d.find('.', i);
+        if (j == std::string::npos) j = d.size();
+        parts.push_back(d.substr(i, j - i));
+        if (j == d.size()) break;
+    }
+    size_t k = 0;
+    while (k < parts.size() && parts[k] == "__outer") ++k;
+    if (k == 0 || k + 2 != parts.size()) return false;
+    const std::string &tn = parts[k];
+    if (!g_qmlTypeUri.count(tn) || !g_qmlAttachedCxx.count(tn)) return false;
+    if (g_outerChain.size() < k) return false;
+    g_outerUsed = true;
+    if ((int) (k - 1) > g_outerHopsNeeded) g_outerHopsNeeded = (int) (k - 1);
+    std::string tgt;
+    for (size_t i = 0; i < k; ++i) tgt += (i ? "." : "") + std::string("__outer");
+    objExpr = attachedExprOn(tgt, tn);
+    leaf = parts.back();
+    return true;
+}
+
 static bool outerDepIsPath(const std::string &d) {
     size_t i = 0;
     while (d.compare(i, 8, "__outer.") == 0) i += 8;
@@ -4786,7 +4814,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // reaches, on the leaf's own notify. tryConnectMeta because that object may not
                 // exist yet at wire time (a control builds its background in componentComplete),
                 // and a throwing connect would kill the object for a reactivity detail.
-                if (std::string so9, lf9; styleHintsDep(d, so9, lf9)) {
+                if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)) {
                     conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"__rcb_"
                            + ba.first + "()\");\n";
                     continue;
@@ -5189,7 +5217,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // reaches, on the leaf's own notify. tryConnectMeta because that object may not
             // exist yet at wire time (a control builds its background in componentComplete),
             // and a throwing connect would kill the object for a reactivity detail.
-            if (std::string so9, lf9; styleHintsDep(d, so9, lf9)) {
+            if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)) {
                 conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"" + slot + "()\");\n";
                 continue;
             }
@@ -5641,7 +5669,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // An object PATH the registry resolves: connect to the object the path reaches,
                     // on the leaf's own notify — the head of the path is typically a group that
                     // never changes. When it does not resolve, depend on the head, as before.
-                    if (std::string so9, lf9; styleHintsDep(d, so9, lf9)) {
+                    if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)) {
                         wire += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"__rc_"
                               + p.name + "()\");\n";
                         continue;
