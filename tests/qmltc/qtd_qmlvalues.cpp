@@ -15,6 +15,8 @@
 #endif
 #include <QQmlEngine>
 #include <QQmlComponent>
+#include <QQmlProperty>
+#include <QQmlContext>
 #include <QQmlListReference>
 #include <QMetaProperty>
 
@@ -205,6 +207,13 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                 QStringList parts = QString::fromStdString(ln).split('.');
                 parts << parts.last();          // walk() stops one short: give it a dummy leaf
                 tgt = walk(obj, parts);
+            }
+            // ...and if the dotted walk cannot get there, ask QQmlProperty, which resolves an
+            // ATTACHED path by NAME and is public API — the walk's attached branch needs private
+            // QtQml headers this oracle deliberately does not compile with.
+            if (!tgt && !ln.empty()) {
+                QQmlProperty qp(obj, QString::fromStdString(ln), qmlContext(obj));
+                if (qp.isValid()) tgt = qp.read().value<QObject *>();
             }
             if (!tgt) { std::printf("%s.<missing>\t<missing>\n", ln.c_str()); continue; }
             std::string pre = ln.empty() ? "" : ln + ".";
