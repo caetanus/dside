@@ -1566,6 +1566,21 @@ static bool attachedOuterDep(const std::string &d, std::string &objExpr, std::st
     return true;
 }
 
+static bool outerBareDep(const std::string &d, std::string &objExpr, std::string &leaf) {
+    if (d.find('.') != std::string::npos) return false;
+    std::string pre;
+    for (size_t k = 0; k < g_outerChain.size(); ++k) {
+        pre += (k ? "." : "") + std::string("__outer");
+        auto qp = g_qmlProps.find(g_outerChain[k].qmlType);
+        if (qp == g_qmlProps.end() || !qp->second.count(d)) continue;
+        g_outerUsed = true;
+        if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+        objExpr = pre; leaf = d;
+        return true;
+    }
+    return false;
+}
+
 static bool outerDepIsPath(const std::string &d) {
     size_t i = 0;
     while (d.compare(i, 8, "__outer.") == 0) i += 8;
@@ -4814,9 +4829,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // reaches, on the leaf's own notify. tryConnectMeta because that object may not
                 // exist yet at wire time (a control builds its background in componentComplete),
                 // and a throwing connect would kill the object for a reactivity detail.
-                if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)) {
+                if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)
+                        || outerBareDep(d, so9, lf9)) {
                     conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"__rcb_"
                            + ba.first + "()\");\n";
+                    // ...and the FIRST computation belongs to the late phase. Connecting alone let
+                    // the binding recompute mid-construction, with geometry that is not final yet,
+                    // and never again — measured: five ScrollBar radii and two implicitWidths came
+                    // out wrong that way, which is worse than the one-shot it replaced.
+                    lateWire += "        __rcb_" + ba.first + "();\n";
                     continue;
                 }
                 std::string dEff = d;
@@ -5217,7 +5238,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // reaches, on the leaf's own notify. tryConnectMeta because that object may not
             // exist yet at wire time (a control builds its background in componentComplete),
             // and a throwing connect would kill the object for a reactivity detail.
-            if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)) {
+            if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)
+                        || outerBareDep(d, so9, lf9)) {
                 conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"" + slot + "()\");\n";
                 continue;
             }
@@ -5669,7 +5691,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // An object PATH the registry resolves: connect to the object the path reaches,
                     // on the leaf's own notify — the head of the path is typically a group that
                     // never changes. When it does not resolve, depend on the head, as before.
-                    if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)) {
+                    if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)
+                        || outerBareDep(d, so9, lf9)) {
                         wire += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"__rc_"
                               + p.name + "()\");\n";
                         continue;
