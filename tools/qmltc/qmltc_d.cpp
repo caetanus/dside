@@ -2303,6 +2303,32 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 outRead = "propStr(" + obj + ", \"" + mem + "\")";
                 return true;
             };
+            // `parent?.parent === Overlay.overlay` (Qt's Dialog) compares OBJECT IDENTITY, not
+            // values: both sides are objects, and D's `is` is the same test QML performs. Without
+            // this the comparison fell through to the value paths and the whole binding was refused.
+            {
+                auto objSide = [&](ExpressionNode *x, std::string &oe) {
+                    std::string oq;
+                    if (objPathExpr(x, oe, oq)) return true;
+                    if (auto *fmo = cast<FieldMemberExpression *>(x))
+                        if (auto *bo = cast<IdentifierExpression *>(fmo->base)) {
+                            std::string tn = qs(bo->name.toString()), mem = qs(fmo->name.toString());
+                            if (g_scope.count(tn) || g_childIds.count(tn)) return false;
+                            auto am = g_qmlAttachedCxx.find(tn);
+                            if (am != g_qmlAttachedCxx.end() && am->second.count(mem)) {
+                                oe = "propObj(" + attachedExpr(tn) + ", \"" + mem + "\")";
+                                return true;
+                            }
+                        }
+                    return false;
+                };
+                std::string l1, r1;
+                if ((bin->op == QSOperator::StrictEqual || bin->op == QSOperator::StrictNotEqual)
+                        && objSide(bin->left, l1) && objSide(bin->right, r1)) {
+                    out = "(" + l1 + (bin->op == QSOperator::StrictEqual ? " is " : " !is ") + r1 + ")";
+                    return true;
+                }
+            }
             std::string key, read;
             if ((enumKey(bin->right, key) && enumRead(bin->left, read))
                     || (enumKey(bin->left, key) && enumRead(bin->right, read))) {
