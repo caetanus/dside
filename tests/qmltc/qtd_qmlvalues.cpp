@@ -217,8 +217,12 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
     // ListView is NOT the child the document wrote there: without this the two sides quietly
     // compared a Rectangle against an internal content item.
             {
+// ...skipping any class that declares no properties of its own. Qt puts pure enum-holders in the
+                // chain (QQuickDialogButtonBox's is DialogButtonBox_QMLTYPE < QPlatformDialogHelper <
+                // QQuickDialogButtonBox), and stopping at the first Qt name picked the holder instead of the type.
                 const QMetaObject *c = mo;
-                while (c && c->className()[0] != 'Q') c = c->superClass();
+                while (c && (c->className()[0] != 'Q'
+                             || c->propertyCount() <= c->propertyOffset())) c = c->superClass();
                 // Qt generates a subclass per QML type (`QQuickRectangle_QML_2`); it IS that type, so the
                 // suffix is normalised away — otherwise every object the document declares would read as a
                 // type mismatch and the real ones would be lost in it.
