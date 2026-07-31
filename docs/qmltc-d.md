@@ -1378,3 +1378,47 @@ wrong conclusions in a row here. A difference must be attributed to a cause befo
 After attribution, no silent defect remains proven in that corpus. The method matters more than the
 tally: match a difference to a cause, and when the cause is a refused member on ANOTHER object, expect
 to need arithmetic rather than a name.
+
+## Comparing EVERY property, and comparing after a CHANGE (2026-07-30)
+
+The differential above dumps the properties the compiler RECORDED for each object — which is
+exactly the set it also chose to translate. A document could differ from the engine in any
+property no binding mentions, and the comparison would never look. Enum properties were excluded
+outright (they have no D scalar type), so `elide`, `verticalAlignment` and every other enum had
+never once been compared.
+
+`--dumpall` (compiled side) and `--dumpall <objpaths>` (oracle) now enumerate every property each
+object's meta-object declares, over the object set `qmltc-d --objpaths` emits so both sides walk
+the same tree. The oracle keeps its own copy of the enumeration rather than sharing ours: it uses
+only public Qt API on purpose, and a formatter shared with the side under test could agree with it
+while both were wrong.
+
+A second axis mutates before dumping: `--set:<prop>=<value>` on our side, the oracle's existing
+`name=value` on its side, both written through the meta-object as text. Until this existed, every
+connection the compiler emits was untested — a binding wired to nothing is indistinguishable from
+a correct one until something changes. It found a real defect on its first run (a dependency on
+`control.palette.<role>` that was silently dropped, so a colour was copied once and never again).
+
+Two harness rules that are not optional: mutate only where the property EXISTS on the root (Action
+and ButtonGroup are not Items; writing `width` to one is the test's error, and our side reports the
+failed write by throwing while the engine ignores it), and regenerate BOTH sides before comparing,
+or a stale binary is compared against a fresh oracle.
+
+Numbers on Qt's Basic corpus at the end of that day: 34 of 57 files identical to the engine in
+EVERY property, 101 divergences over 8914 properties compared, 153 diagnostics, 61 of 61
+constructing with 0 failures, and no file that matches at construction failing after a mutation.
+
+### What the remaining divergences are, by cause
+
+- `delegate`/`model` left null: a `Component` is a template the type instantiates itself, which is
+  not yet built. Refusing it is honest; faking it with a component whose bindings cannot resolve
+  the enclosing document's ids would improve the metric and damage the product.
+- `Behavior on x` (SwitchDelegate): animation is not implemented and is reported as such. Our final
+  value is right; the engine's, read at that instant, is mid-transition.
+- `baselineOffset` (CheckBox/TextField placeholders): NOT a binding bug. The objects are identical
+  on both sides — same font, geometry, elide, colour. Qt computes
+  `ascent + (height - contentHeight)/2`; ours is `14.84 + (28-19)/2 = 19.34`, the engine's is
+  `14.84 + (0-19)/2 = 5.34`, i.e. the engine computed it while the item still had height ZERO and
+  never recomputed. A layout-ordering difference in a derived value, stable on both sides.
+- `DialImpl`: a type from QtQuick.Controls.impl that this binding does not cover. Building it as a
+  bare object would drop every property set on it, so the whole `background` is refused.
