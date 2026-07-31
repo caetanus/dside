@@ -79,6 +79,7 @@ void qtd_parser_status(void*, int);
     int    qtd_prop_set_bool(void*, const(char)*, bool);
     void* qtd_prop_get_qs(void*, const(char)*);
 void* qtd_style_hints();
+void* qtd_list_at(void*, const(char)*, int);
 void* qtd_qml_singleton(const(char)*, const(char)*, int, int);
 void* qtd_invoke_str(void*, const(char)*, const(char)**, int);
 void* qtd_prop_get_enum_key(void*, const(char)*);
@@ -802,6 +803,9 @@ T __qmltcAnd(T)(T a, lazy T b) { return a != 0 ? b : a; }
 /// The QML global `Qt.styleHints`: an ordinary QObject, so every member below it is reachable
 /// with the ordinary propObj/propEnumKey channel. Null in a binding without QtGui.
 void* styleHintsObj() { return qtd_style_hints(); }
+/// The Nth element of a list property, through the meta-object — where the ENGINE holds it, which
+/// is not always the field we appended from.
+void* listAt(T)(T o, string prop, int i) { return qtd_list_at(qobjOf(o), (prop ~ "\0").ptr, i); }
 /// A QML singleton's one instance — the engine's, not one of ours: a singleton has state, and a
 /// second instance would be a different object that happens to share a type.
 void* qmlSingleton(string uri, string name, int major, int minor) {

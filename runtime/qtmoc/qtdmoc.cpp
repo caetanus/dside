@@ -583,6 +583,20 @@ extern "C" void* qtd_invoke_str(void* o, const char* method, const char** args, 
     }
     return new QString();
 }
+// The Nth element of a list property, THROUGH the meta-object — the same walk the oracle does.
+// A default child is appended with qtd_list_append and Qt may reparent it (a Flickable moves visual
+// children into its content item), so the D field that holds it and `<prop>[N]` on the object are
+// not the same thing. Dumping the field under that label compared two different objects.
+extern "C" void* qtd_list_at(void* o, const char* prop, int i) {
+#ifdef QTD_HAVE_QML
+    if (!o) return nullptr;
+    QQmlListReference ref(static_cast<QObject*>(o), prop);
+    if (!ref.isValid() || !ref.canAt() || i < 0 || i >= ref.count()) return nullptr;
+    return ref.at(i);
+#else
+    (void) o; (void) prop; (void) i; return nullptr;
+#endif
+}
 extern "C" void qtd_attach_context(void* o);
 // ...with the DOCUMENT the object was written in. The engine gives each component a context whose
 // baseUrl is its own document; sharing the engine's root context gave every compiled object an
