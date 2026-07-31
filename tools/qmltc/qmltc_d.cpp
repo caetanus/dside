@@ -1311,6 +1311,10 @@ static std::string attachedNameOf(ExpressionNode *e) {
 static bool g_needsModuleRegistration;
 // True while compiling a root whose members were merged in from a local `.qml` base type.
 static bool g_localMerged;
+// The attached object of a GIVEN object, not always of `this`: Qt's ComboBox sizes its popup from
+// `control.Window.height`, where the window is attached to the enclosing CONTROL. Attaching to the
+// popup instead would read a different object (or none), so the target is passed in.
+static std::string attachedExprOn(const std::string &target, const std::string &typeName);
 static std::string attachedExpr(const std::string &typeName) {
     // A type from a BOUND module carries its own URI (Overlay lives in QtQuick.Templates); only a
     // type this document itself registers falls back to the document's uri — and only that case
@@ -1319,6 +1323,12 @@ static std::string attachedExpr(const std::string &typeName) {
         return "attachedObj(this, \"" + it->second + "\", \"" + typeName + "\")";
     g_needsModuleRegistration = true;
     return "attachedObj(this, \"" + g_qmlUri + "\", \"" + typeName + "\")";
+}
+static std::string attachedExprOn(const std::string &target, const std::string &typeName) {
+    if (auto it = g_qmlTypeUri.find(typeName); it != g_qmlTypeUri.end())
+        return "attachedObj(" + target + ", \"" + it->second + "\", \"" + typeName + "\")";
+    g_needsModuleRegistration = true;
+    return "attachedObj(" + target + ", \"" + g_qmlUri + "\", \"" + typeName + "\")";
 }
 
 // `x: undefined` in QML RESETS the property — it calls the RESET method, it does not assign a
@@ -1820,6 +1830,23 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // default. Nothing here is per-type: the depth, the hops and the leaf all come from the
         // registry.
         {
+            // `<id>.<AttachedType>.<member>` — Qt's ComboBox reads `control.Window.height`. The
+                // attached object belongs to the object the id names, not to us.
+            if (auto *fmb5 = cast<FieldMemberExpression *>(fm->base))
+                if (auto *b5 = cast<IdentifierExpression *>(fmb5->base)) {
+                    std::string tgt, tq, an5 = qs(fmb5->name.toString());
+                    if (!an5.empty() && std::isupper((unsigned char) an5[0]) && g_qmlTypeUri.count(an5)
+                            && objPathHead(qs(b5->name.toString()), tgt, tq)) {
+                        auto am5 = g_qmlAttachedCxx.find(an5);
+                        if (am5 != g_qmlAttachedCxx.end() && am5->second.count(qs(fm->name.toString()))) {
+                            std::string dt5 = dtype.toStdString();
+                            const char *rd5 = dt5 == "string" ? "propStr(" : dt5 == "bool" ? "propBool("
+                                            : dt5 == "int" ? "propInt(" : "propDouble(";
+                            out = rd5 + attachedExprOn(tgt, an5) + ", \"" + qs(fm->name.toString()) + "\")";
+                            return true;
+                        }
+                    }
+                }
             // ...and the whole path as a TRUTH VALUE: `!searchIndicator.indicator` (Qt's
             // SearchField, deciding its own padding). The leaf is an OBJECT, so the typed read
             // below cannot answer it, and refusing left the control's padding at 0 where the
