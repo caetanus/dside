@@ -1583,8 +1583,20 @@ static bool objPathFromString(const std::string &dotted, std::string &objExpr, s
     }
     if (parts.size() < 2) return false;
     std::string oe, oq;
-    if (!objPathHead(parts[0], oe, oq)) return false;
-    for (size_t k = 1; k + 1 < parts.size(); ++k) {
+    // A path may reach through SEVERAL enclosing objects (`__outer.__outer.first.position` in Qt's
+    // RangeSlider). Consume every `__outer` at the head, not just one: stopping at the first left
+    // the next segment being looked up as a property named `__outer`, which no type has.
+    size_t k0 = 0;
+    while (k0 + 1 < parts.size() && parts[k0] == "__outer") ++k0;
+    if (k0 > 0) {
+        if (g_outerChain.size() < k0) return false;
+        g_outerUsed = true;
+        if ((int) (k0 - 1) > g_outerHopsNeeded) g_outerHopsNeeded = (int) (k0 - 1);
+        oe.clear();
+        for (size_t i = 0; i < k0; ++i) oe += (i ? "." : "") + std::string("__outer");
+        oq = g_outerChain[k0 - 1].qmlType;
+    } else if (!objPathHead(parts[0], oe, oq)) return false;
+    for (size_t k = (k0 ? k0 : 1); k + 1 < parts.size(); ++k) {
         std::string nq;
         if (!objPropQml(oq, parts[k], nq)) return false;
         oe = "propObj(" + oe + ", \"" + parts[k] + "\")";
