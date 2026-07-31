@@ -3607,6 +3607,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // engine's by more than its absence does, so shipping it would trade a reported
                     // gap for a silent wrong object. Re-open only when a compiled ScrollBar.vertical
                     // matches the engine property-for-property.
+                    // GATE STILL SHUT, and the number is now MEANINGFUL. Both prerequisites are
+                    // done — the oracle descends past an attached object (2a744e5) and the colour
+                    // that probe found is fixed (732f674) — so opening it no longer mixes our error
+                    // with the oracle's blindness. Measured with both in place: divergences 96 ->
+                    // 104 and files identical in every property 34 -> 33. Better than the 149 it
+                    // cost before, still net negative. Re-open when a compiled attached child
+                    // matches the engine property-for-property.
                     (void) boundAttachedObj;
                     if (g_attached.count(qid.substr(0, dot))) {
                         attachedKidBindings.push_back({qid, ob->initializer,
