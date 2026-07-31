@@ -3777,6 +3777,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     ObjNode node;
     node.id = g_selfId;   // still this object's id here (the loop doesn't touch g_selfId)
     std::string childFields, childWire, crossConnects;
+    std::string dcWire;   // default children, emitted before the property-bound ones (see below)
     // A use-site binding OVERRIDES a same-named binding from a merged local definition (QML
     // property-override semantics): keep only the LAST binding per property name (use-site members
     // were spliced on AFTER the local definition's), else we'd emit two `cls_<name>` classes.
@@ -4035,7 +4036,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (!childResolvedPath.empty()) g_resolving.erase(childResolvedPath);
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        // Into its OWN buffer, flushed BEFORE the property-bound children. The engine's `data`
+        // holds the default children first: TextField declares its placeholder before its
+        // background and TextArea after it, and the engine puts the placeholder at data[0] in
+        // BOTH — so the order is not the document's, it is default-then-property. Ours was the
+        // reverse, which made `data[N]` name a different object on each side.
+        dcWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    // Append through the type's DEFAULT PROPERTY, which is how the engine places a
                    // default child and lets each type apply its own rule (a Flickable reparents
@@ -5298,7 +5304,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // context only when the object has none, so this one wins.
         wire += "        attachContext(this, \"" + g_docUrl + "\");\n";
         wire += "        classBegin(this);\n";
-        wire += childWire;   // build children first
+        wire += dcWire;      // ...default children first, as the engine's `data` has them...
+    wire += childWire;   // ...then the property-bound ones
         // Connect EVERYTHING before the initial binding pass. Two reasons:
         //  - a bound property's first evaluation IS a change (`property int p: dummy` goes
         //    0 -> 42) and QML's handler observes it; wiring handlers afterwards would miss it.
