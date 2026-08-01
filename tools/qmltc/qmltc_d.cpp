@@ -2248,6 +2248,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         out = "(" + c + " ? " + a + " : " + b + ")"; return true;
     }
     if (auto *bin = cast<BinaryExpression *>(e)) {
+        // `contentItem as ListView` — a TYPE ASSERTION, not a conversion: it tells the engine's type
+        // checker what to expect and leaves the value alone. Every read here goes through the
+        // meta-object BY NAME, which does not consult the declared type, so the assertion has
+        // nothing to change and the left side is the whole expression. (Qt's DialogButtonBox writes
+        // `(contentItem as ListView)?.contentWidth`.)
+        if (bin->op == QSOperator::As) return compileExpr(bin->left, dtype, out);
         // `Qt.styleHints` is the one object in these documents that no name in scope can reach: it
         // is QGuiApplication::styleHints(), a plain QObject. Everything BELOW it is ordinary —
         // `accessibility` is a QObject property, `contrastPreference` an enum one — so once the
@@ -2579,7 +2585,11 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (auto *c = cast<ConditionalExpression *>(e)) {
         collectIds(c->expression, ids); collectIds(c->ok, ids); collectIds(c->ko, ids); return;
     }
-    if (auto *b = cast<BinaryExpression *>(e)) { collectIds(b->left, ids); collectIds(b->right, ids); return; }
+    if (auto *b = cast<BinaryExpression *>(e)) {
+        // The right side of `x as T` is a TYPE, not a value: descending into it recorded the type
+        // name as a dependency and reported "ListView has no known notify".
+        if (b->op == QSOperator::As) { collectIds(b->left, ids); return; }
+        collectIds(b->left, ids); collectIds(b->right, ids); return; }
 }
 
 struct Prop { std::string name, dtype, expr; bool bound; std::vector<std::string> deps;
