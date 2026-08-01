@@ -1522,6 +1522,30 @@ What it took, beyond the registration feature above:
   a document that binds a Component; `--dumpall` keeps them, because there both sides resolve the
   same index through the same list — which is a comparison rather than a guess.
 
+### The "unexportable *Impl" is NOT a ceiling — it is a ceiling on SUBCLASSING (2026-08-01)
+
+Twenty-four of the 54 remaining value defects are one story: Dial's `background: DialImpl {}`,
+BusyIndicator's and ProgressBar's `contentItem`. Those types export ZERO C++ symbols (`nm -D` on
+libQt6QuickControls2Impl finds none, while it does export QQuickIconLabel, QQuickColorImage,
+QQuickCheckLabel and friends), so no D subclass of them can exist and the compiler refuses them —
+recorded for weeks as a verified ceiling.
+
+Measured today, and the recorded belief is too strong. They are registered QML TYPES, and the
+engine builds them by name:
+
+    DialImpl:           class=QQuickBasicDial            isItem=true, implicitWidth writable
+    BusyIndicatorImpl:  class=QQuickBasicBusyIndicator   isItem=true, implicitWidth writable
+    ProgressBarImpl:    class=QQuickBasicProgressBar     isItem=true, implicitWidth writable
+
+(one-line component from `QtQuick.Controls.Basic.impl 2.0`, created, then written through the
+meta-object). So what is impossible is SUBCLASSING one; a document that instantiates and configures
+one does not need a subclass. The shape that fits: the generated child is a plain `@QObject` that
+holds the engine-created instance and writes it BY NAME — its reactive bindings are slots on that
+helper, its connects are made on the instance, and the parent assigns the instance to the property.
+Every piece already exists (the delegate work built the component + registration path).
+
+That is the next feature, and it is the largest single bucket left.
+
 ### LANDED, after the two findings below were fixed: `font.bold` / `origin.x` (2026-08-01)
 
 Both blockers turned out to be real bugs elsewhere, which is why the first attempt was reverted
