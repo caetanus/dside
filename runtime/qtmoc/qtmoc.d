@@ -256,6 +256,11 @@ template cppSig(T) {
     // matches its C++ one (QColor, QSize, QRectF, …) needs nothing special here. The marshalling
     // below is a plain copy, which is what a trivially-copyable value type wants.
     else static if (is(T == struct)) enum cppSig = T.stringof;
+    // A bound wrapper CLASS is an object: the meta-object records the property as `X*` and Qt
+    // resolves it through QMetaType::fromName, exactly as it does for the value types above. This is
+    // what a QML `property Item control` needs — the property has to EXIST for whoever instantiates
+    // the type to write it, and dropping it made those writes throw at construction.
+    else static if (is(T == class)) enum cppSig = T.stringof ~ "*";
     else static assert(0, "qtmoc: signal/slot type not yet supported: " ~ T.stringof);
 }
 string sigString(string name, Args...)() {
@@ -387,7 +392,21 @@ void validateMeta(T)() {
 void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) {
     alias X = typeof(__traits(getMember, T, m));
     if (write) {
-        static if (is(X == string)) X nv = qsToD(a[0]);
+        // An OBJECT property carries a POINTER in the slot, and the D side holds a wrapper: unwrap
+        // on write, hand the C++ pointer back on read. Comparing wrappers with `!=` would compare
+        // by value; identity is what QML assigns and what a notify must be based on.
+        static if (is(X == class)) {
+            auto pv = *cast(void**) a[0];
+            if (qobjOf(__traits(getMember, o, m)) !is pv) {
+                __traits(getMember, o, m) = pv is null ? null : X.wrap(pv);
+                if (notifyIdx >= 0) {
+                    void*[2] argv; argv[0] = null; argv[1] = cast(void*) &pv;
+                    qtd_moc_activate(qobj, notifyIdx, argv.ptr);
+                }
+            }
+            return;
+        }
+        else static if (is(X == string)) X nv = qsToD(a[0]);
         else                        X nv = *cast(X*) a[0];
         if (__traits(getMember, o, m) != nv) {
             __traits(getMember, o, m) = nv;
@@ -402,7 +421,8 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
             }
         }
     } else {   // ReadProperty: assign the D value into the QVariant/typed slot at a[0]
-        static if (is(X == string)) {
+        static if (is(X == class)) *cast(void**) a[0] = qobjOf(__traits(getMember, o, m));
+        else static if (is(X == string)) {
             auto s = __traits(getMember, o, m);
             qtd_qs_set(a[0], s.ptr, cast(int) s.length);   // *(QString*)a[0] = s
         }

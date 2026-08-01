@@ -1535,15 +1535,24 @@ Its largest refusal cluster is 26 types Qt writes in QML inside the style's own 
 are refused as "not a bound Qt type" because only the DOCUMENT's own directory is searched for a
 local type.
 
-**Attempted and reverted, with what it exposed.** Resolving an imported module to its directory (the
-way the engine does: dots to slashes under the import root) does unlock all 26 — and then three
-documents die at construction, because a declared property whose INITIAL BINDING the compiler
-refuses is dropped entirely, so the use-site's write to it throws (`no writable property
-"highlighted"`). Declaring it anyway with its default is the obvious next move and does NOT work
-yet: `property Item control` has no D scalar type, and the generated D stops compiling where such a
-property is read (8 link failures). So the order is fixed — **declared OBJECT properties first, then
-imported-module types** — and neither was left half-applied: both experiments are reverted, Fusion
-is back to 52/55 with 0 failures and Basic is untouched at 78 diagnostics and 0 failures.
+**Two of the three prerequisites now exist** (committed, both corpora green):
+
+- a declared OBJECT property (`property Item control`) is a real property: the meta-object records
+  it as `X*` and the D field is the bound wrapper class, so whoever instantiates the type can write
+  it. What is still refused is an object property with an initial BINDING;
+- a declared SCALAR property whose initial binding is refused is still DECLARED, with its default —
+  the property exists in QML whether or not we can evaluate its first value, and dropping it made
+  the use-site's write throw. Restricted to scalars and objects on purpose: a value type
+  (`property color x`) declared as a D struct field changes how every READ of it compiles, and the
+  refusal path takes the name out of scope so reads fall back to the meta-object (measured: 8 link
+  failures in Fusion and 1 in Basic when it was not restricted).
+
+**The third is not done, and imported-module resolution stays out until it is.** With the module
+resolution applied, Qt's Fusion ComboBox/CheckBox/DelayButton still die at construction on
+`no writable property "highlighted"`: the ButtonPanel that declares it is merged with the use-site
+assignment, and the declaration disappears with NO diagnostic — the property is neither declared nor
+refused. A silent drop is the one outcome this compiler must not have, so that is the next thing to
+find, not the module lookup. Fusion stays at 52 of 55 with 0 failures and 183 diagnostics.
 
 ## Where the four axes stand (2026-08-01, end of day)
 

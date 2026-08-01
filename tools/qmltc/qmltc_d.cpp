@@ -4118,6 +4118,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 continue;
             }
             const char *dt = dtypeOf(qmlType);
+            // A declared OBJECT property (`property Item control`): no D scalar type, but the type
+            // IS bound, so the field is the wrapper class and the meta-object records `X*`. The
+            // property has to exist whether or not this document assigns it — whoever instantiates
+            // the type writes to it, and dropping it made that write throw at construction (Qt's
+            // Fusion ButtonPanel declares `property Item control`, and every control that uses it
+            // sets it). Only the UNBOUND form: an initial binding to an object is still refused.
+            std::string objDt;
+            auto *es0 = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+            if (!dt[0] && !es0 && !pub->binding) {
+                auto obt = boundTypeFor(qs(qmlType));
+                if (!obt.first.empty() && !obt.second.empty()) {
+                    objDt = obt.first;
+                    std::string imp = "import " + obt.second + ";\n";
+                    if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+                    dt = objDt.c_str();
+                }
+            }
             std::string expr;
             auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
             // `property var x: <expr>` — QML gives `var` no static type; it holds a QVariant. The
@@ -4203,6 +4220,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::vector<std::string> ids; collectIds(es->expression, ids);
                 props.push_back({name, dt, expr, true, ids, g_deepReads});
                 g_deepReads.clear();
+            } else if (!std::strcmp(dt, "int") || !std::strcmp(dt, "bool")
+                       || !std::strcmp(dt, "double") || !std::strcmp(dt, "string") || !objDt.empty()) {
+                // The property EXISTS whether or not its INITIAL BINDING compiles.
+                // SCALARS and objects only: a value type (`property color x`) declared as a D
+                // struct field changes how every READ of it compiles — the refusal path takes the
+                // name out of scope, so reads fall back to the meta-object, and a QColor field used
+                // where the expression wants a string stops the generated D from compiling
+                // (measured: 8 link failures in Fusion, 1 in Basic). Qt's Fusion
+                // ButtonPanel declares `property bool highlighted: control.highlighted`, and every
+                // control that instantiates it writes that property; dropping the declaration made
+                // those writes throw at construction ("no writable property highlighted"). Declared
+                // with its default, and the binding reported as the refusal it is.
+                std::fprintf(stderr, "qmltc-d: %s: the initial binding of property '%s' (%s) in %s is not "
+                             "supported — the property is DECLARED, its initial value is not\n",
+                             inPath, qPrintable(pub->name.toString()), qPrintable(qmlType), cls.c_str());
+                ++partial;
+                props.push_back({name, dt, "", false, {}});
             } else {
                 std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — skipped (later phase)\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
