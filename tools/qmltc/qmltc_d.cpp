@@ -438,6 +438,11 @@ static std::string g_delegateCls;
 // The class being compiled as an ENGINE-CREATED child: a registered QML type with no exported C++
 // symbol, so it cannot be subclassed. The class holds the instance and writes it by name.
 static std::string g_engineChildCls, g_engineChildType, g_engineChildUri;
+// The CALLER will complete this object after it has assigned and parented it, which is the engine's
+// order: create, set properties, put it in the tree, then complete the whole tree. An object that
+// completes itself at the end of its own wire is complete BEFORE it has a parent — and a QQuickPopup
+// resolves its `parent` in componentComplete from the QObject parent it does not have yet.
+static bool g_parentCompletes = false;
 // This document hands a view a Component, so the view INSERTS objects into a list the document
 // also writes to — and where they land is the view's business, not the document's. Static
 // `data[N]` labels are then a guess: Qt's Repeater puts its items BEFORE itself. The dump drops
@@ -3400,6 +3405,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the ROOT's table: a Rectangle inside an Item resolved its properties against Item, which is
     // why child properties came back typeless — and would have silently used the root's type for
     // any name the two happened to share.
+    // Taken at ENTRY and cleared, so a nested compile does not inherit the caller's answer.
+    const bool thisParentCompletes = g_parentCompletes;
+    g_parentCompletes = false;
     std::string savedSelfQmlType = g_selfQmlType;
     std::string savedId = g_selfId;
     // Everything still in the globals belongs to the ENCLOSING object: capture it as the outer
@@ -4382,6 +4390,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
         if (!cbResolvedPath.empty()) g_resolving.insert(cbResolvedPath);
+        g_parentCompletes = true;   // ...after this wire assigns and parents it
         ObjNode kid = compileObject(cbInit, childCls, classes, partial, inPath, cbt.first, nullptr, cb.type);
         if (!cbResolvedPath.empty()) g_resolving.erase(cbResolvedPath);
         // The imports (and what arrived qualified) belong to the DOCUMENT they were read from.
@@ -4426,7 +4435,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         ? "        listAppend(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n"
                         : isBoundObjectProp(cb.field)
                         ? "        setPropObj(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n" : "")
-                   ;   // ...and NOT classBegin: the child already did it at the top of its own wire
+                   // ...and NOT classBegin: the child already did it at the top of its own wire.
+                   // componentComplete IS ours to call, and only now: the child is in the tree.
+                   + "        componentComplete(" + dIdent(cb.field) + ");\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
@@ -4545,6 +4556,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string field = "_dc" + std::to_string(di);
         std::string childCls = cls + "_dc" + std::to_string(di);
         if (!childResolvedPath.empty()) g_resolving.insert(childResolvedPath);
+        g_parentCompletes = true;   // ...after this wire appends and parents it
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
         g_docUrl = savedDocUrl;   // ...and so a class emits ITS document's baseUrl, not ours
@@ -4593,7 +4605,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                           + "        setPropObj(" + field + ", \"parent\", this);\n" : "")
                    + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
                         ? "        }\n" : "")
-                   ;   // ...and NOT classBegin: the child already did it at the top of its own wire
+                   // ...and NOT classBegin (the child did it); componentComplete IS ours, and only
+                   // now that the child is in the tree.
+                   + "        componentComplete(" + field + ");\n";
         // A BARE child with an id is just as addressable as one bound to a property:
         // `property alias source: dps.source` where dps is a default child is the dominant shape
         // in real QML (241 of the alias skips measured against Qt's own .qml). Registering its
@@ -6239,15 +6253,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // read what its children settled. A type that does not implement the interface is a no-op.
         // Without this the objects are constructed but not COMPLETE: QQuickControl computes
         // hoverEnabled here, and Controls generally do their real initialisation in it.
-        // ...ONCE. Every generated object completes itself at the end of its own wire, and a child
-        // is constructed DURING its parent's wire, so children are already complete when the parent
-        // completes — the ordering this loop was for, without the second call. The second call was
-        // not harmless: a Repeater re-completed after it had created its items releases them
-        // through a QQmlDelegateModel that has already been completed, and Qt segfaults in
-        // QQuickRepeater::clear(). (Group, attached and value-source children are only ever
-        // completed by their own wire, which is the other reason self-completion is the one to
-        // keep.)
-        wire += "        componentComplete(this);\n";
+        // ...ONCE, and by whoever can do it in the right ORDER. A child that its parent assigns
+        // and parents is completed BY THE PARENT, right after that — the engine completes a tree
+        // once it is built, and an object completed before it has a parent resolves anything that
+        // depends on one against nothing (a QQuickPopup takes its `parent` from its QObject parent
+        // in componentComplete). Everything else — the root, group, attached and value-source
+        // children — completes itself here, because nobody else does.
+        // Never BOTH: a Repeater re-completed after it has created its items releases them through
+        // an already-completed QQmlDelegateModel, and Qt segfaults in QQuickRepeater::clear().
+        if (!thisParentCompletes) wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
     }
