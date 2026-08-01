@@ -153,6 +153,11 @@ Build reggaeBuild() {
         // generated, linked and CONSTRUCTED. Six defects lived where compile-clean cannot see —
         // they all build and then die (or silently build the wrong object) at construction.
         all ~= qmltcControlsRuntimeTargets(root, ctrl);
+        // ...and this binding gets a manifest gate like the other two. It had none, so changing its
+        // spec tripped nothing — which is how binding the QtQuick animations (a real and intended
+        // coverage change) landed without the manifest ever being consulted. A binding nobody holds
+        // to a symbol contract is a binding whose fates can rot unnoticed.
+        all ~= manifestGateTargets(root, [ctrl], ["controls"], ["controls.manifest.tsv"]);
     }
     if (haveQt5()) {
         // qmltc-d on Qt5: Qt ships no qmltc there at all, so this combination is ONLY covered by
