@@ -1598,6 +1598,25 @@ Tried and removed rather than left in: an assignment path for declared object pr
 right rule and it cannot fire until the scoping is fixed — every `control:` in this corpus is the
 shadowed form — and untested code that never runs is worse than no code.
 
+### The rest of that cluster is a NOTIFY lookup, not a read (2026-08-01)
+
+After the assigned-type rule (`<id>.control.<member>` refusals 80 -> 60), the Fusion Button's
+gradient stops still refuse. Bisecting the argument list of
+`Fusion.buttonColor(panel.control.palette, panel.highlighted, panel.control.down, panel.enabled && …)`
+one argument at a time: `panel.control.palette` compiles, `panel.control.down` compiles,
+`panel.highlighted` compiles — `panel.enabled` does not.
+
+Reduced to five lines (`Rectangle { id: panel; Item { Text { visible: panel.enabled } } }`) the
+message is precise and is NOT about the read: *"depends on 'enabled' of the enclosing object, which
+has no known notify"*. The read compiles; the DEPENDENCY does not resolve, so the binding is refused
+rather than emitted dead. So the remaining work here is in the notify lookup for a base property of
+an enclosing frame reached at depth — not in the expression compiler, where the last three fixes
+were.
+
+(Method note, since it cost two wrong turns: `grep -c` through the rtk proxy does not print a count
+in the format the caller expects — bisecting on it read "10" as ten diagnostics for a file that had
+none. Read the diagnostics with python.)
+
 ### Fusion's biggest cluster, diagnosed: a declared type WEAKER than the object it gets (2026-08-01)
 
 About 80 of Fusion's remaining refusals are one shape: `indicator.control.checkState`, where the
