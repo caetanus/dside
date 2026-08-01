@@ -94,6 +94,8 @@ static std::map<std::string, std::string> g_qmlTypeUri;
 // `BusyIndicatorImpl`, `SliderGroove` and so on, so a single answer is right for at most one style:
 // Qt's Fusion BusyIndicator was built from the BASIC impl. The document's own imports decide.
 static std::map<std::string, std::vector<std::string>> g_qmlTypeUris;
+// <QML type of a document-defined class> -> its declared OBJECT properties -> their QML type.
+static std::map<std::string, std::map<std::string, std::string>> g_declObjProps;
 // The URI for `typeName` that THIS document imports, or the registry's first answer.
 // (defined below g_bareImports, which it consults)
 static std::string uriForType(const std::string &typeName);
@@ -1019,6 +1021,8 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
                 cp && cp->type == UiPublicMember::Property && cp->memberType) {
             const char *dt = dtypeOf(cp->memberType->name.toString());
             if (dt[0]) pts[qs(cp->name.toString())] = dt;
+            else if (!boundTypeFor(qs(cp->memberType->name.toString())).first.empty())
+                pts[qs(cp->name.toString())] = "@" + qs(cp->memberType->name.toString());   // see above
             continue;
         }
         if (auto *cp = cast<UiPublicMember *>(cm->member);
@@ -1109,6 +1113,12 @@ static void prescanChildIds(UiObjectInitializer *init) {
                     cp && cp->type == UiPublicMember::Property && cp->memberType) {
                 const char *dt = dtypeOf(cp->memberType->name.toString());
                 if (dt[0]) pts[qs(cp->name.toString())] = dt;
+                // ...and a declared OBJECT property keeps its QML TYPE, so a path THROUGH it can be
+                // typed: Qt's Fusion writes `indicator.control.checkState`, where `control` is the
+                // CheckIndicator's own `property Item control`. Marked with `@` and recorded as the
+                // QML type name — the vocabulary the registry uses — since it has no D type.
+                else if (!boundTypeFor(qs(cp->memberType->name.toString())).first.empty())
+                    pts[qs(cp->name.toString())] = "@" + qs(cp->memberType->name.toString());
                 continue;
             }
             if (auto *cp = cast<UiPublicMember *>(cm->member);
@@ -1492,6 +1502,12 @@ static bool readName(const std::string &n, std::string &out) {
 
 static bool objPropQml(const std::string &owner, const std::string &prop, std::string &outQml) {
     std::string own = owner;
+    // A DECLARED object property of a type this document itself defines: `indicator.control.
+    // checkState` in Qt's Fusion, where `control` is CheckIndicator's own `property Item control`.
+    // No registry knows about it — the document does, and the compiler records it under the same
+    // QML type name the walk is already carrying.
+    if (auto d2 = g_declObjProps.find(owner); d2 != g_declObjProps.end())
+        if (auto p2 = d2->second.find(prop); p2 != d2->second.end()) { outQml = p2->second; return true; }
     if (!g_qmlCxxType.count(own))
         if (auto bm = g_qmlMap.find(own); bm != g_qmlMap.end()) own = bm->second.first;
     auto it = g_qmlCxxType.find(own);
@@ -1722,6 +1738,12 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
         if (ci2->second.qmlType.empty()) return false;
         oe = ci2->second.field; oq = ci2->second.qmlType; return true;
+    }
+    // A DECLARED object property of THIS object (`property Item control`): the field is the wrapper
+    // and its QML type is what the document declared, which is how a path through it gets typed.
+    if (auto pt2 = g_propType.find(n2); pt2 != g_propType.end() && pt2->second.size() > 1
+            && pt2->second[0] == '@') {
+        oe = dIdent(n2); oq = pt2->second.substr(1); return true;
     }
     std::string pre2; const OuterFrame *fr2 = nullptr;
     if (outerHop(n2, pre2, &fr2)) { oe = pre2.substr(0, pre2.size() - 1); oq = fr2->qmlType; return true; }
@@ -4241,6 +4263,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 auto obt = boundTypeFor(qs(qmlType));
                 if (!obt.first.empty() && !obt.second.empty()) {
                     objDt = obt.first;
+                    if (!g_selfQmlType.empty())
+                        g_declObjProps[g_selfQmlType][name] = qs(qmlType);
                     std::string imp = "import " + obt.second + ";\n";
                     if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
                     dt = objDt.c_str();
