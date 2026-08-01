@@ -5350,6 +5350,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 scalar = true;
                 ty = "string";
             }
+        // ...and a bare singleton PROPERTY read into the same unrouted type: `color: Fusion.topShadow`
+        // (Qt's Fusion, eleven times). Same channel as the call below — the value crosses as text
+        // and QMetaType converts it on write.
+        if (copyAssign.empty() && !scalar)
+            if (auto *px = cast<FieldMemberExpression *>(ba.second))
+                if (auto *pv = cast<IdentifierExpression *>(px->base);
+                        pv && g_qmlSingletonUri.count(qs(pv->name.toString()))
+                        && compileExpr(ba.second, "string", val)) {
+                    scalar = true;
+                    ty = "string";
+                }
         if (copyAssign.empty() && !scalar)
             if (auto *cx = cast<CallExpression *>(ba.second))
                 if (auto *cfm = cast<FieldMemberExpression *>(cx->base))
@@ -5561,7 +5572,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            + ba.first + "()\");\n";
                     continue;
                 }
-                if (g_valueLists.count(d) || g_singletons.count(d)) continue;   // nothing mutates these
+                if (g_valueLists.count(d) || g_singletons.count(d) || g_qmlSingletonUri.count(d)) continue;   // nothing mutates these
                 // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
                 // names, but the per-item context carries an object that publishes it as a property
                 // WITH a notify — so the binding is as live as any other, same channel.
@@ -5981,7 +5992,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (nt != qn->second.end()) sig = nt->second;
             }
             if (!sig.empty()) { conns += "        connectMeta(this, \"" + sig + "\", this, \"" + slot + "()\");\n"; continue; }
-            if (g_valueLists.count(d) || g_singletons.count(d)) continue;
+            if (g_valueLists.count(d) || g_singletons.count(d) || g_qmlSingletonUri.count(d)) continue;
             // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
             // names, but the per-item context DOES carry an object that publishes it as a property
             // with a notify — so the binding is as live as any other, through the same channel.
