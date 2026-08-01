@@ -1990,6 +1990,17 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                         }
                     }
                 }
+                // ...but a COLOUR is not unknown: it has no D scalar type, and the registry says
+                // outright that it is a QColor, which crosses as text through the meta-object like
+                // every other colour here. Qt's Fusion passes exactly this as an argument —
+                // `Fusion.gradientStart(backgroundRect.color)` — and refusing it cost the call.
+                if (dtype == "string")
+                    if (auto qcE = g_qmlCxxType.find(fr->qmlType); qcE != g_qmlCxxType.end())
+                        if (auto cE = qcE->second.find(mem);
+                                cE != qcE->second.end() && cE->second.rfind("QColor", 0) == 0) {
+                            out = "propStr(" + obj + ", \"" + mem + "\")";
+                            return true;
+                        }
                 return false;   // unknown member of that enclosing object: refused, not guessed
             }
         }
