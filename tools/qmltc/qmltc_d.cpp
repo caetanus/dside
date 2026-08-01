@@ -5432,16 +5432,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    + "        " + field + " = " + (cbt.first.empty() ? "newQObject!" + childCls + "()"
                                                                      : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n"
-                   ;
-        // ...and APPENDED to the list the document names, in the LATE phase. Creating and parenting
-        // is not the same as `transform: [ Translate {}, Rotation {} ]`: without the append the
-        // objects exist and do nothing — Qt's Dial builds both of its handle transforms and the
-        // handle was neither translated nor rotated, while the engine holds them at transform[0]
-        // and transform[1]. Late because an append issued right after the element is constructed
-        // FAILS for the first element (measured on that same Dial: append #0 returns false, the
-        // identical call a few lines later returns true), and the late phase is where this compiler
-        // already puts work that needs the tree to exist.
-        lateWire += "        listAppend(this, \"" + ae.prop + "\", " + field + ");\n";
+                   // ...and APPENDED to the list the document names, in ORDER. Creating and
+                   // parenting is not the same as `transform: [ Translate {}, Rotation {} ]`:
+                   // without the append the objects exist and do nothing — Qt's Dial builds both of
+                   // its handle transforms and the handle was neither translated nor rotated.
+                   + "        listAppend(this, \"" + ae.prop + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(ae.prop + "[" + std::to_string(ae.idx) + "]");
     }

@@ -26,7 +26,7 @@ def main():
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     verbose = "--list" in sys.argv
     files = ident = 0
-    value_diff, only_ours, only_engine = [], [], []
+    value_diff, only_ours, only_engine, unmeasurable = [], [], [], []
     for f in sorted(glob.glob(os.path.join(root, "*.dall.s"))):
         q = f[:-7] + ".qall.s"
         n = os.path.basename(f)[:-7]
@@ -34,8 +34,17 @@ def main():
             continue
         a, b = load(f), load(q)
         files += 1
+        # A path the ENGINE marks `<missing>` is one IT cannot read: Qt leaves a Transition's public
+        # `animations` list empty at construction while holding the animations internally. Our side
+        # exposes them, so every property under such a path shows up as "absent in the engine" —
+        # which is not a difference between the two documents but a place where the comparison
+        # cannot be made. Counted apart, so neither side's number lies.
+        blind = tuple(k[: -len("<missing>")] for k in b if k.endswith(".<missing>"))
         d = 0
         for k in set(a) | set(b):
+            if blind and k.startswith(blind):
+                unmeasurable.append(f"{n}:{k}")
+                continue
             if a.get(k) == b.get(k):
                 continue
             d += 1
@@ -50,6 +59,7 @@ def main():
     print(f"value-diff\t{len(value_diff)}\t<- defects: both sides have the property, values differ")
     print(f"only-ours\t{len(only_ours)}\t<- path absent in the ENGINE (harness or Qt question)")
     print(f"only-engine\t{len(only_engine)}\t<- path absent in OURS (usually a refused binding)")
+    print(f"unmeasurable\t{len(unmeasurable)}\t<- under a path the ENGINE reports as <missing>")
     if verbose:
         for k, x, y in value_diff[:40]:
             print(f"  {k[:56]:58} ours={str(x)[:16]:18} engine={str(y)[:16]}")

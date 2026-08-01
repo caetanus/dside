@@ -410,9 +410,18 @@ extern "C" int qtd_prop_get_var(void* o, const char* n, const char* typeName, vo
 // `flickableData` reparents into the flickable's contentItem, QQuickPopup/Control's `contentData`
 // into theirs. Doing it by hand (setQtParent + parent) put the child somewhere the engine never
 // has it. QQmlListReference is the generic channel -- one call, every type's own rule.
+extern "C" void qtd_ensure_module(const char* uri);
 extern "C" int qtd_list_append(void* ownerV, const char* prop, void* childV) {
 #ifdef QTD_HAVE_QML
     if (!ownerV || !childV || !prop) return 0;
+    // QQmlListReference type-checks the element against the list's declared type, and that check
+    // needs QML's type registry populated — which only IMPORTING the module does. Without it,
+    // appending to a typed list (`transform`, `transitions`) silently returns false while `data`
+    // (a list of QObject, no lookup) works, so the objects were built, wired and never linked:
+    // Qt's ScrollBar had no transition and its Dial handle no transforms. Measured: the identical
+    // append returns true right after `import QtQuick`. Once, like the value-type writer.
+    static bool imported = false;
+    if (!imported) { imported = true; qtd_ensure_module("QtQuick"); }
     QQmlListReference ref(static_cast<QObject*>(ownerV), prop);
     if (!ref.isValid() || !ref.canAppend()) return 0;
     return ref.append(static_cast<QObject*>(childV)) ? 1 : 0;
