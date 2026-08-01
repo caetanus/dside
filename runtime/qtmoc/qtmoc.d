@@ -397,7 +397,10 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
         // by value; identity is what QML assigns and what a notify must be based on.
         static if (is(X == class)) {
             auto pv = *cast(void**) a[0];
-            if (qobjOf(__traits(getMember, o, m)) !is pv) {
+            // A NULL wrapper has no C++ object to ask: qobjOf() would call through it and segfault
+            // (measured — Qt's Fusion Button, reading `control` before anything assigned it).
+            auto cur = __traits(getMember, o, m);
+            if ((cur is null ? null : qobjOf(cur)) !is pv) {
                 __traits(getMember, o, m) = pv is null ? null : X.wrap(pv);
                 if (notifyIdx >= 0) {
                     void*[2] argv; argv[0] = null; argv[1] = cast(void*) &pv;
@@ -424,7 +427,10 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
             }
         }
     } else {   // ReadProperty: assign the D value into the QVariant/typed slot at a[0]
-        static if (is(X == class)) *cast(void**) a[0] = qobjOf(__traits(getMember, o, m));
+        static if (is(X == class)) {
+            auto cur = __traits(getMember, o, m);
+            *cast(void**) a[0] = cur is null ? null : qobjOf(cur);
+        }
         else static if (is(X == string)) {
             auto s = __traits(getMember, o, m);
             qtd_qs_set(a[0], s.ptr, cast(int) s.length);   // *(QString*)a[0] = s

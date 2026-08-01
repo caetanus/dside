@@ -1422,7 +1422,13 @@ static bool resetCall(const std::string &obj, const std::string &prop, std::stri
     return true;
 }
 
+// While a USE-SITE binding is being compiled, these declared properties of the merged class do NOT
+// shadow the enclosing document — the binding was written where they are not in scope.
+static std::set<std::string> g_useSiteShadowed;
+static bool shadowedByLocalType(const std::string &n) { return g_useSiteShadowed.count(n) > 0; }
+
 static bool readName(const std::string &n, std::string &out) {
+    if (shadowedByLocalType(n)) return false;   // resolve it in the enclosing scope instead
     if (auto a = g_aliasRead.find(n); a != g_aliasRead.end()) { out = a->second; return true; }
     auto bp = g_baseProps.find(n);
     if (bp != g_baseProps.end()) {
@@ -1526,7 +1532,9 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         std::string n2 = qs(id->name.toString());
         // A GROUP name is allowed here: the group IS an object property of this object, and the
         // registry types it like any other. (A VALUE group is not an object and has its own path.)
-        if (g_scope.count(n2) || g_vgroups.count(n2)) return false;
+        // ...unless we are compiling a USE-SITE binding, where the merged class's own declarations are
+    // not in scope (see shadowedByLocalType): `control: control` must reach the enclosing object.
+    if ((g_scope.count(n2) && !shadowedByLocalType(n2)) || g_vgroups.count(n2)) return false;
         if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
         if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
             if (ci2->second.qmlType.empty()) return false;
@@ -1702,7 +1710,9 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
         if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;
         oe = "__outer"; oq = g_outerChain[0].qmlType; return true;
     }
-    if (g_scope.count(n2) || g_vgroups.count(n2)) return false;
+    // ...unless we are compiling a USE-SITE binding, where the merged class's own declarations are
+    // not in scope (see shadowedByLocalType): `control: control` must reach the enclosing object.
+    if ((g_scope.count(n2) && !shadowedByLocalType(n2)) || g_vgroups.count(n2)) return false;
     if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
     if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
         if (ci2->second.qmlType.empty()) return false;
@@ -3243,6 +3253,9 @@ static std::string memberBoundName(UiObjectMember *m) {
 // site WINS, it does not add a second binding. Appending both emitted two recompute slots with the
 // same name and the generated D did not compile (HorizontalHeaderViewDelegate). Both child paths
 // splice through this, so the two cannot drift apart again.
+// Members spliced in from a use site (see spliceUseSite).
+static std::set<UiObjectMember *> g_useSiteMembers;
+
 static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectInitializer *use) {
     if (!use || !use->members) return defn;
     if (!defn || !defn->members) return use;
@@ -3251,6 +3264,13 @@ static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectIni
         std::string n = memberBoundName(m->member);
         if (!n.empty()) overridden.insert(n);
     }
+    // A binding written at the USE SITE is evaluated in the scope of the document that WROTE it —
+    // `background: ButtonPanel { control: control }` means Button.qml's `control`, not the
+    // ButtonPanel property being assigned. Merging both bodies into one class merges the scopes
+    // too, so the members that came from the use site are remembered and compiled with the local
+    // type's own declarations out of scope.
+    for (auto *m = use->members; m; m = m->next)
+        if (m->member) g_useSiteMembers.insert(m->member);
     UiObjectMemberList *first = nullptr, *last = nullptr;
     for (auto *m = defn->members; m;) {
         auto *nx = m->next;
@@ -3805,7 +3825,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<UiObjectDefinition *> defaultKids;                               // bare `Type { }` children
     std::vector<std::pair<std::string, ExpressionNode *>> aliases;                // (name, target)
     std::vector<FunctionExpression *> functions;                                  // QML `function`s
-    std::vector<std::pair<std::string, ExpressionNode *>> rawBaseAssigns;         // base prop `name: expr`
+    struct BaseAssign { std::string first; ExpressionNode *second; bool useSite = false; };
+    std::vector<BaseAssign> rawBaseAssigns;         // base prop `name: expr`
     std::vector<std::pair<std::string, ExpressionNode *>> rawGroupAssigns;        // `group.member: expr`
     std::vector<std::pair<std::string, ExpressionNode *>> rawValueGroupAssigns;   // `vgroup.member: expr`
     // `<baseProp>.<member>: expr` where baseProp holds an OBJECT (border.width on a Rectangle).
@@ -3880,10 +3901,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         if (hid == "state")
                             if (auto *sl = cast<StringLiteral *>(sbExpr)) {
                                 initialState = qs(sl->value.toString());
-                                rawBaseAssigns.push_back({hid, sbExpr});
+                                rawBaseAssigns.push_back({hid, sbExpr, g_useSiteMembers.count(m->member) > 0});
                                 continue;
                             }
-                        rawBaseAssigns.push_back({hid, sbExpr}); continue;
+                        rawBaseAssigns.push_back({hid, sbExpr,
+                                                  g_useSiteMembers.count(m->member) > 0}); continue;
                     }
                     if (g_groups.count(head)) { rawGroupAssigns.push_back({hid, sbExpr}); continue; }
                     // `vgroup.member: <expr>` — same shape, but it must compile to a
@@ -4961,6 +4983,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // pass; every level forwards it to its children.
     std::string lateWire;
     for (auto &ba : rawBaseAssigns) {
+        // A use-site binding resolves names in the USE SITE's scope: the local type's own declared
+        // properties must not shadow the enclosing document. Qt's Fusion writes
+        // `background: ButtonPanel { control: control }`, where the right-hand `control` is the
+        // Button's id and the left-hand one is ButtonPanel's property. Merging the two bodies into
+        // one class merged the scopes; this takes the declarations out for the length of this one
+        // binding. Restored right after, because the DEFINITION's own bindings do see them.
+        struct UseSiteScope { bool on = false; ~UseSiteScope() { if (on) g_useSiteShadowed.clear(); } } uss;
+        if (ba.useSite && !props.empty()) {
+            for (auto &p : props) g_useSiteShadowed.insert(p.name);
+            uss.on = true;
+        }
         // Deep reads belong to the binding being compiled RIGHT NOW. The accumulator is global and
         // was only cleared after a consumer took it, so anything an earlier expression recorded and
         // nobody consumed — a CHILD's, whose object expression is spelled `__outer.__outer` —
@@ -5219,6 +5252,26 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             scalar = true;
                             ty = "string";
                         }
+        // ...or the target is a DECLARED OBJECT property and the value is an object: `control:
+        // control` on Qt's Fusion ButtonPanel, where the right-hand side is the enclosing Button
+        // (the use-site scope rule above is what makes it resolve to that and not to the property
+        // being assigned). An ordinary meta-object write of an object, the same channel a
+        // property-bound child uses.
+        if (copyAssign.empty() && !scalar) {
+            auto isObjProp = [&](const std::string &n) {
+                for (auto &p : props)
+                    if (p.name == n)
+                        return !p.dtype.empty() && p.dtype != "int" && p.dtype != "bool"
+                            && p.dtype != "double" && p.dtype != "string";
+                return false;
+            };
+            std::string oe9, oq9;
+            if (isObjProp(ba.first) && objPathExpr(ba.second, oe9, oq9)) {
+                baseWire += "        setPropObj(this, \"" + ba.first + "\", " + oe9 + ");\n";
+                node.baseProps.push_back({ba.first, ty});
+                continue;
+            }
+        }
         if (copyAssign.empty() && (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val))) {
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
