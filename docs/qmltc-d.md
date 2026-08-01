@@ -1544,10 +1544,25 @@ Ruled out by measurement, so the next attempt does not redo it:
 - **Not a missing `model` assignment.** Writing `model = 0` (the engine's own value) leaves
   rows/columns at -1, and the value does not even read back.
 
-What that leaves is the ORDER or the CONTEXT in which Qt's table view builds its instance model
-(`QQmlTableInstanceModel` needs a QQmlEngine, and the table only rebuilds when it decides to). The
-next step is to find what the engine-created object has that ours does not at the moment
-`componentComplete` runs — not to guess another assignment.
+RESOLVED as to CAUSE the same day, and it is not the document and not the compiler. Three objects,
+one process, one engine:
+
+| built by | rows | columns | model |
+|---|---|---|---|
+| the engine, from the styled type | 1 | 0 | 0 |
+| the engine, bare `T.HorizontalHeaderView {}` with an EMPTY body | 1 | 0 | 0 |
+| plain C++ `new QQuickHorizontalHeaderView()` + classBegin + componentComplete | -1 | -1 | (empty) |
+
+The bare instantiation already has the engine's numbers, so nothing in `HorizontalHeaderView.qml`
+explains them — and a plain C++ construction with a QML context and an engine attached (`qmlContext`
+non-null, `engine()` non-null) does NOT get them. Our compiled object behaves exactly like the plain
+C++ one, which is the honest baseline: this is Qt's own QML-instantiation path doing something
+C++ construction does not (the table's instance model is set up there).
+
+It is still a divergence we own — the engine is the specification — but it cannot be closed by
+compiling anything differently. The one route that would close it is the one the *Impl work built:
+create the object THROUGH the engine and wire it from outside. For a document's ROOT that is a
+different shape of compiler output, so it is written down here rather than attempted.
 
 ### The "unexportable *Impl" is NOT a ceiling — it is a ceiling on SUBCLASSING (2026-08-01)
 
