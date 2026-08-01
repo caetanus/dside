@@ -4648,6 +4648,46 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // type and QMetaType converts on write. `font: control.font` and `color:
         // control.palette.text` are the two commonest lines in Qt's own Controls, and neither
         // needs the generator to know what a QFont is.
+        // FLAGS: `closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutside`. Qt parses
+        // "A|B" for a flags property (QMetaEnum::keysToValue), so the keys are joined the way they
+        // are written and no table of flag values is needed. It sits OUTSIDE the `!scalar` gate
+        // below on purpose: with `|` the expression infers as int, so everything in there —
+        // including the enum recognisers — is skipped, which is why putting it inside did nothing.
+        // Its own key reader, because the one in there depends on locals defined with it.
+        {
+            // Recursive: `A | B | C` nests as ((A|B)|C), so an operand may itself be a chain. The
+            // real line in Qt's ToolTip has three.
+            std::function<std::string(ExpressionNode *)> flagKey = [&](ExpressionNode *x) -> std::string {
+                if (auto *bx = cast<BinaryExpression *>(x); bx && bx->op == QSOperator::BitOr) {
+                    std::string a = flagKey(bx->left), b = flagKey(bx->right);
+                    return (a.empty() || b.empty()) ? std::string() : a + "|" + b;
+                }
+                auto *f = cast<FieldMemberExpression *>(x);
+                if (!f) return "";
+                std::string mem = qs(f->name.toString());
+                if (mem.empty() || !std::isupper((unsigned char) mem[0])) return "";
+                std::string tn;
+                if (auto *fq = cast<FieldMemberExpression *>(f->base)) {          // Alias.Type.Key
+                    auto *ai = cast<IdentifierExpression *>(fq->base);
+                    if (!ai || !g_importAliases.count(qs(ai->name.toString()))) return "";
+                    tn = qs(fq->name.toString());
+                } else if (auto *ti = cast<IdentifierExpression *>(f->base)) {    // Type.Key
+                    tn = qs(ti->name.toString());
+                    if (g_scope.count(tn) || g_childIds.count(tn)) return "";
+                } else return "";
+                if (tn != "Qt" && !knownTypeName(tn)) return "";
+                return mem;
+            };
+            if (auto *bor = cast<BinaryExpression *>(ba.second); bor && bor->op == QSOperator::BitOr) {
+                std::string ka = flagKey(bor->left), kb = flagKey(bor->right);
+                if (!ka.empty() && !kb.empty()) {
+                    baseWire += "        setProp(this, \"" + ba.first + "\", \"" + ka + "|" + kb
+                              + "\");\n";
+                    node.baseProps.push_back({ba.first, "string"});
+                    continue;
+                }
+            }
+        }
         if (!scalar) {
             std::string srcObj, srcProp, srcGroup;
             // The source object is resolved through the SAME hop chain as a scalar read, so an
