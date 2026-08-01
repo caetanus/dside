@@ -429,6 +429,12 @@ static std::map<std::string, std::string> g_outerPropType, g_outerBaseProps;
 static bool g_outerUsed = false;
 // True while compiling an object that is a property VALUE SOURCE (`NumberAnimation on v`).
 static bool g_isValueSource = false;
+// Compiling the body of a `delegate:`/Component property. The class is emitted like any other, but
+// nobody CONSTRUCTS it here — the view does, N times — so it cannot be handed its enclosing object
+// at construction and must find it once it is parented into the document's tree.
+static bool g_isDelegate = false;
+// The class currently being compiled AS a delegate body — context names resolve only there.
+static std::string g_delegateCls;
 // The chain of ENCLOSING objects, innermost first. `__outer` is always the IMMEDIATE parent, so an
 // id further up is reached by hopping: `__outer.__outer.gap`. Without this the field was declared
 // as the id-bearing ancestor's class while the value published was the immediate parent's — and
@@ -1738,6 +1744,22 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                         return true;
                     }
                 }
+        }
+        {   // A CONTEXT name inside a delegate (`index`, `modelData`, a role): the view publishes
+            // them on the per-item QQmlContext, so they are properties of no object and cannot be
+            // resolved the way every other name here is. Only inside the delegate class itself —
+            // its own children get the DOCUMENT context, where these names do not exist, so
+            // reading them there would silently produce zero.
+            std::string n = qs(id->name.toString());
+            if (!g_delegateCls.empty() && g_className == g_delegateCls
+                    && !g_scope.count(n) && !g_childIds.count(n) && !g_propType.count(n)
+                    && !g_baseProps.count(n)) {
+                if (dtype == "int") { out = "contextInt(this, \"" + n + "\")"; return true; }
+                if (dtype == "double" || dtype == "float" || dtype == "real") {
+                    out = "contextDouble(this, \"" + n + "\")"; return true;
+                }
+                if (dtype == "string") { out = "contextStr(this, \"" + n + "\")"; return true; }
+            }
         }
         return readName(qs(id->name.toString()), out);
     }
@@ -4156,10 +4178,52 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
             auto it = qc->second.find(cb.field);
             if (it != qc->second.end() && it->second.find("QQmlComponent") != std::string::npos) {
-                std::fprintf(stderr, "qmltc-d: %s: '%s' in %s takes a Component (a template the "
-                             "type instantiates itself), not an object — skipped (later phase)\n",
-                             inPath, cb.field.c_str(), cls.c_str());
-                ++partial; continue;
+                // A TEMPLATE, not an instance: `delegate: Text {}` says what to build per item and
+                // the view builds it. So the body is compiled to a class like any other, and what
+                // the property gets is a QQmlComponent that instantiates THAT class — registered as
+                // a QML element, which is the only handle a view accepts.
+                auto dbt = boundTypeFor(cb.type);
+                if (unboundChildType(cb.type, dbt.first, inPath)) {
+                    std::fprintf(stderr, "qmltc-d: %s: the Component bound to '%s' in %s is a '%s', "
+                                 "which is not a bound Qt type — skipped (later phase)\n",
+                                 inPath, cb.field.c_str(), cls.c_str(), cb.type.c_str());
+                    ++partial; continue;
+                }
+                if (!dbt.first.empty() && !dbt.second.empty()) {
+                    std::string imp = "import " + dbt.second + ";\n";
+                    if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+                    std::string vimp = "import " + dbt.second.substr(0, dbt.second.rfind('.')) + ".qtvirt;\n";
+                    if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
+                }
+                bool savedDeleg = g_isDelegate;
+                auto savedDelegCls = g_delegateCls;
+                g_isDelegate = true;
+                g_delegateCls = childCls;
+                ObjNode dkid = compileObject(cb.init, childCls, classes, partial, inPath,
+                                             dbt.first, nullptr, cb.type);
+                g_isDelegate = savedDeleg;
+                g_delegateCls = savedDelegCls;
+                (void) dkid;
+                // A delegate that reads a DECLARED property of an enclosing object needs that
+                // object to EMIT its notify — the same two halves as any other child (record the
+                // dependency, then make the far side emit). Forgetting the drain here made every
+                // such connect throw at runtime ("no such signal tagChanged()"), which aborted the
+                // delegate's whole wire: the values were computed and then thrown away.
+                {
+                    auto pendingD = g_outerNeedsNotify;
+                    g_outerNeedsNotify.clear();
+                    for (auto &__on : pendingD) {
+                        if (__on.first == 0) {
+                            if (std::find(needsNotify.begin(), needsNotify.end(), __on.second)
+                                    == needsNotify.end())
+                                needsNotify.push_back(__on.second);
+                        } else {
+                            g_outerNeedsNotify.push_back({__on.first - 1, __on.second});
+                        }
+                    }
+                }
+                childWire += "        bindComponent!" + childCls + "(this, \"" + cb.field + "\");\n";
+                continue;
             }
         }
         auto cbt = boundTypeFor(cb.type);
@@ -4243,7 +4307,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         ? "        listAppend(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n"
                         : isBoundObjectProp(cb.field)
                         ? "        setPropObj(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n" : "")
-                   + "        classBegin(" + dIdent(cb.field) + ");\n";
+                   ;   // ...and NOT classBegin: the child already did it at the top of its own wire
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
@@ -4410,7 +4474,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                           + "        setPropObj(" + field + ", \"parent\", this);\n" : "")
                    + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
                         ? "        }\n" : "")
-                   + "        classBegin(" + field + ");\n";
+                   ;   // ...and NOT classBegin: the child already did it at the top of its own wire
         // A BARE child with an id is just as addressable as one bound to a property:
         // `property alias source: dps.source` where dps is a default child is the dominant shape
         // in real QML (241 of the alias skips measured against Qt's own .qml). Registering its
@@ -6009,9 +6073,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // read what its children settled. A type that does not implement the interface is a no-op.
         // Without this the objects are constructed but not COMPLETE: QQuickControl computes
         // hoverEnabled here, and Controls generally do their real initialisation in it.
-        for (auto &k : node.kids) wire += "        componentComplete(" + dIdent(k.first) + ");\n";
-    for (auto &k : node.vsKids) wire += "        componentComplete(" + k.first + ");\n";
-        for (auto &dk : node.defaultKids) wire += "        componentComplete(" + dk.first + ");\n";
+        // ...ONCE. Every generated object completes itself at the end of its own wire, and a child
+        // is constructed DURING its parent's wire, so children are already complete when the parent
+        // completes — the ordering this loop was for, without the second call. The second call was
+        // not harmless: a Repeater re-completed after it had created its items releases them
+        // through a QQmlDelegateModel that has already been completed, and Qt segfaults in
+        // QQuickRepeater::clear(). (Group, attached and value-source children are only ever
+        // completed by their own wire, which is the other reason self-completion is the one to
+        // keep.)
         wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         wire += "    }\n";
@@ -6035,8 +6104,39 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         auto at = wire.find("classBegin(this);\n");
         if (at != std::string::npos) wire.insert(at + 18, line);
     };
-    if (g_outerUsed && !g_outerClass.empty())   // taken BEFORE this object constructs its own kids
+    if (g_outerUsed && !g_outerClass.empty() && !g_isDelegate)   // taken BEFORE this object constructs its own kids
         afterClassBegin("        __outer = cast(" + g_outerClass + ") __qmltcOuter;\n");
+    // A DELEGATE is created by the view, not by its enclosing object, so there is no handoff to
+    // take: it learns its enclosing object from the tree it is parented into — which happens AFTER
+    // it is constructed. So everything that depends on the enclosing object waits for the parent,
+    // and the wait is the meta-object channel like everything else (parentChanged), not a new
+    // mechanism. Runs once; an item whose parent chain never reaches the class stays unwired,
+    // which is visible rather than silently wrong.
+    std::string delegFields;
+    bool delegRewrite = false;
+    if (g_isDelegate && g_outerUsed && !g_outerClass.empty() && !wire.empty()) {
+        auto at = wire.find("classBegin(this);\n");
+        if (at != std::string::npos) {
+            std::string head = wire.substr(0, at + 18), tail = wire.substr(at + 18);
+            // A compiled child reaches an enclosing object by HOPS (`__outer.__outer`), because
+            // each level was handed its own back-reference at construction. A delegate has no such
+            // chain: it is created by the view, so each level it reads has to be found on its own,
+            // by class, in the tree it is parented into. The chains are rewritten into one field
+            // per level at class assembly (where every buffer that can hold one exists), and this
+            // marks where the resolution goes.
+            wire = head
+                 + "        __qtdReady();   // already parented? then nothing to wait for\n"
+                 + "        tryConnectMeta(this, \"parentChanged(QQuickItem*)\", this, \"__qtdReady()\");\n"
+                 + "    }\n"
+                 + "    private bool __qtdWired;\n"
+                 + "    @Slot void __qtdReady() {\n"
+                 + "        if (__qtdWired) return;\n"
+                 + "//__QTD_RESOLVE__\n"
+                 + "        __qtdWired = true;\n"
+                 + tail;
+            delegRewrite = true;
+        }
+    }
     // A value source must know the property it drives BEFORE its own `running: true` is applied
     // and before it completes — otherwise it starts with nothing to animate. Taken at the top of
     // the wire, exactly like __outer.
@@ -6058,6 +6158,46 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
     std::string lateMethod = node.hasLate
         ? "    void __qmltcLate() {\n" + lateWire + lateKids + "    }\n" : "";
+    if (delegRewrite) {
+        // `__outer.__outer` -> `__o1`, as a WHOLE chain (the next character must not continue it,
+        // or the outermost level would be rewritten as the innermost). Longest first, and only the
+        // levels the object actually reads get a field: a level that is not an ancestor cannot be
+        // found by walking parents (a Repeater is a SIBLING of the items it creates), so resolving
+        // an unused one would gate the whole wire on something that can never resolve.
+        const int maxHop = g_outerHopsNeeded < 0 ? 0 : g_outerHopsNeeded;
+        std::vector<bool> used(maxHop + 1, false);
+        auto rewriteHops = [&](std::string &buf) {
+            for (int k = maxHop; k >= 0; --k) {
+                std::string chain = "__outer";
+                for (int i = 0; i < k; ++i) chain += ".__outer";
+                std::string var = "__o" + std::to_string(k);
+                size_t at3 = 0;
+                while ((at3 = buf.find(chain, at3)) != std::string::npos) {
+                    size_t end = at3 + chain.size();
+                    if (buf.compare(end, 8, ".__outer") == 0) { at3 = end; continue; }
+                    used[k] = true;
+                    buf.replace(at3, chain.size(), var);
+                    at3 += var.size();
+                }
+            }
+        };
+        for (auto *buf : {&wire, &methods, &recompute, &handlerSlots, &groupHandlerSlots,
+                          &attachedHandlerSlots, &lateMethod})
+            rewriteHops(*buf);
+        std::string resolve;
+        for (int k = 0; k <= maxHop; ++k) {
+            if (!used[k]) continue;
+            std::string ocls = k < (int) g_outerChain.size() ? g_outerChain[k].cls : g_outerClass;
+            if (ocls.empty()) continue;
+            delegFields += "    " + ocls + " __o" + std::to_string(k) + ";\n";
+            resolve += "        __o" + std::to_string(k) + " = cast(" + ocls
+                     + ") findOuter(this, \"" + ocls + "\");\n"
+                     + "        if (__o" + std::to_string(k) + " is null) return;\n";
+        }
+        outerField = delegFields;
+        if (auto rp = wire.find("//__QTD_RESOLVE__\n"); rp != std::string::npos)
+            wire.replace(rp, 18, resolve);
+    }
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + lateMethod + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods
              + childFields + methods + recompute + handlerSlots + groupHandlerSlots
              + attachedHandlerSlots + wire + "}\n";

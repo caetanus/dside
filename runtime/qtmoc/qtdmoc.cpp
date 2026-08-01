@@ -451,6 +451,70 @@ extern "C" void qtd_ensure_module(const char* uri) {
 #endif
 }
 
+// The nearest ENCLOSING object of a given class, found by walking Qt parents. An object the ENGINE
+// creates (a delegate instance) cannot be handed its enclosing document object the way a compiled
+// child is — it is created by a view, not by its parent — but it IS parented into that document's
+// object tree, and the class match goes through the meta-object like everything else here.
+extern "C" void* qtd_find_outer(void* o, const char* cls) {
+    if (!o || !cls) return nullptr;
+    QObject* cur = static_cast<QObject*>(o);
+    for (int hops = 0; cur && hops < 64; ++hops) {
+        // The VISUAL parent first: an item a view created is given a parentItem, and its QObject
+        // parent may be something else entirely (a Repeater's items are owned by the delegate model
+        // and shown under the Repeater's own parent). Falling back to the QObject parent keeps this
+        // working for objects that are not Items at all.
+        QObject* next = nullptr;
+        QVariant pv = cur->property("parent");
+        if (pv.isValid()) next = pv.value<QObject*>();
+        if (!next) next = cur->parent();
+        if (!next) return nullptr;
+        if (qtd_moc_classmatch(next, cls)) {
+            // ...and hand back the D OBJECT, not the C++ one: the caller casts it to the generated
+            // class, and a raw QObject* reinterpreted as a D reference is a wrong object that reads
+            // as a valid one (found by a delegate whose enclosing reads all came back empty).
+            auto it = g_moAttach.find(next);
+            return it != g_moAttach.end() ? it->second.dobj : nullptr;
+        }
+        cur = next;
+    }
+    return nullptr;
+}
+
+// A CONTEXT property (`index`, `model`, `modelData` inside a delegate): the view publishes them on
+// the QQmlContext it creates per item, not as properties of any object, so they are read by name
+// through the context chain. Returned as a QVariant the callers convert, same as every other value
+// channel here.
+extern "C" int qtd_context_prop_int(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (!o || !name) return 0;
+    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
+        return c->contextProperty(QString::fromUtf8(name)).toInt();
+    return 0;
+#else
+    (void) o; (void) name; return 0;
+#endif
+}
+extern "C" double qtd_context_prop_double(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (!o || !name) return 0;
+    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
+        return c->contextProperty(QString::fromUtf8(name)).toDouble();
+    return 0;
+#else
+    (void) o; (void) name; return 0;
+#endif
+}
+extern "C" void* qtd_context_prop_qs(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (o && name)
+        if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
+            return new QString(c->contextProperty(QString::fromUtf8(name)).toString());
+#else
+    (void) o; (void) name;
+#endif
+    return new QString();
+}
+
 // ---- a Component (a delegate) ------------------------------------------------------------------
 // `delegate: Text {}` is a TEMPLATE: the type instantiates it itself, N times, whenever its model
 // says so. A compiler cannot create those objects — only the type knows when — so what it hands

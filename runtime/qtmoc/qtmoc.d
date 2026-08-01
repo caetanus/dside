@@ -866,12 +866,40 @@ void* styleHintsObj() { return qtd_style_hints(); }
 /// is not always the field we appended from.
 void* listAt(T)(T o, string prop, int i) { return qtd_list_at(qobjOf(o), (prop ~ "\0").ptr, i); }
 
+private extern(C) void* qtd_find_outer(void*, const(char)*);
+/// The nearest ENCLOSING object of class `cls`, by visual then QObject parent, as the D OBJECT
+/// (what a cast to the generated class needs). What a compiled child gets handed at construction,
+/// an ENGINE-created object (a delegate instance) has to find — it is created by a view, not by
+/// its enclosing document object.
+void* findOuter(T)(T o, string cls) { return qtd_find_outer(qobjOf(o), (cls ~ "\0").ptr); }
+
+private extern(C) int qtd_context_prop_int(void*, const(char)*);
+private extern(C) double qtd_context_prop_double(void*, const(char)*);
+private extern(C) void* qtd_context_prop_qs(void*, const(char)*);
+/// A CONTEXT property (`index`, `model`, `modelData` in a delegate): the view publishes them on the
+/// per-item QQmlContext, so they belong to no object and are read by name through the context.
+int contextInt(T)(T o, string n) { return qtd_context_prop_int(qobjOf(o), (n ~ "\0").ptr); }
+double contextDouble(T)(T o, string n) { return qtd_context_prop_double(qobjOf(o), (n ~ "\0").ptr); }
+string contextStr(T)(T o, string n) {
+    auto p = qtd_context_prop_qs(qobjOf(o), (n ~ "\0").ptr);
+    auto s = qsToD(p); qtd_qs_free(p); return s;
+}
+
 extern(C) void* qtd_make_component(const(char)*, const(char)*, const(char)*);
 // The QQmlComponent for a compiled delegate class: `uri`/`typeName` are what the generated code
 // registered it as. Returned as an opaque pointer — the caller wraps it in whatever QQmlComponent
 // binding its module has, because this unit compiles for bindings that have no QtQml at all.
 void* makeComponent(string uri, string typeName, string docUrl = "") {
     return qtd_make_component((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);
+}
+
+/// `delegate: Text {}` — a TEMPLATE the type instantiates itself, N times. Registers the compiled
+/// delegate class as a QML element and gives `owner.<prop>` a QQmlComponent that builds it, which
+/// is the only thing a view accepts. One call, because the two halves are meaningless apart.
+void bindComponent(T, U)(U owner, string prop, string uri = "qtd.qmltc") {
+    qmlRegisterType!T(uri, 1, 0, T.stringof);
+    if (auto c = makeComponent(uri ~ " 1.0", T.stringof))
+        qtd_prop_set_obj(qobjOf(owner), (prop ~ "\0").ptr, c);
 }
 /// A QML singleton's one instance — the engine's, not one of ours: a singleton has state, and a
 /// second instance would be a different object that happens to share a type.
