@@ -1851,6 +1851,26 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             out = "cast(int) " + qs(b->name.toString()) + ".length"; return true;
         }
         auto *base = cast<IdentifierExpression *>(fm->base);
+        // `Fusion.topShadow` — a PROPERTY of a singleton, not a method. Qt's Fusion reads sixteen
+        // colours that way, next to the calls that already compiled. Same instance, same channel:
+        // the value crosses as text and QMetaType converts it on write. Lowercase member only, so an
+        // ENUM (`Type.Value`) keeps its own path.
+        if (base) {
+            std::string sn9 = qs(base->name.toString()), mn9 = qs(fm->name.toString());
+            auto sg9 = g_qmlSingletonUri.find(sn9);
+            if (sg9 != g_qmlSingletonUri.end() && !g_scope.count(sn9) && !g_childIds.count(sn9)
+                    && (g_selfId.empty() || sn9 != g_selfId)
+                    && !mn9.empty() && !std::isupper((unsigned char) mn9[0])) {
+                std::string inst = "qmlSingleton(\"" + sg9->second.first + "\", \"" + sn9 + "\", "
+                                 + std::to_string(sg9->second.second.first) + ", "
+                                 + std::to_string(sg9->second.second.second) + ")";
+                const std::string dt9 = dtype.toStdString();
+                const char *rd9 = dt9 == "double" ? "propDouble(" : dt9 == "int" ? "propInt("
+                                : dt9 == "bool" ? "propBool(" : "propStr(";
+                out = rd9 + inst + ", \"" + mn9 + "\")";
+                return true;
+            }
+        }
         // An object path of ANY depth used as a truth value: Qt's SearchField writes
         // `control.searchIndicator.indicator && !control.mirrored ? 6 : 0`. The two-level form has
         // its own handling below (which also records the dependency); this covers the deeper ones,
