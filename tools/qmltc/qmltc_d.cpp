@@ -435,6 +435,12 @@ static bool g_isValueSource = false;
 static bool g_isDelegate = false;
 // The class currently being compiled AS a delegate body — context names resolve only there.
 static std::string g_delegateCls;
+// This document hands a view a Component, so the view INSERTS objects into a list the document
+// also writes to — and where they land is the view's business, not the document's. Static
+// `data[N]` labels are then a guess: Qt's Repeater puts its items BEFORE itself. The dump drops
+// those labels rather than comparing a guessed index (the object PATHS keep them: there both sides
+// resolve the same index through the same list, which is a real comparison).
+static bool g_hasComponentBind = false;
 // The chain of ENCLOSING objects, innermost first. `__outer` is always the IMMEDIATE parent, so an
 // id further up is reached by hopping: `__outer.__outer.gap`. Without this the field was declared
 // as the id-bearing ancestor's class while the value published was the immediate parent's — and
@@ -4222,7 +4228,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         }
                     }
                 }
-                childWire += "        bindComponent!" + childCls + "(this, \"" + cb.field + "\");\n";
+                childWire += "        bindComponent!" + childCls + "(this, \"" + cb.field
+                           + "\", \"" + g_docUrl + "\");\n";
+                g_hasComponentBind = true;
                 continue;
             }
         }
@@ -5121,6 +5129,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     continue;
                 }
                 if (g_valueLists.count(d) || g_singletons.count(d)) continue;   // nothing mutates these
+                // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
+                // names, but the per-item context carries an object that publishes it as a property
+                // WITH a notify — so the binding is as live as any other, same channel.
+                if (!g_delegateCls.empty() && g_className == g_delegateCls
+                        && d.find('.') == std::string::npos && !g_propType.count(d)
+                        && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
+                    conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \"__rcb_"
+                           + ba.first + "()\");\n";
+                    continue;
+                }
                 std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s depends on '%s', which has "
                              "no known notify — it would not update (later phase)\n",
                              inPath, ba.first.c_str(), cls.c_str(), d.c_str());
@@ -5517,6 +5535,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             if (!sig.empty()) { conns += "        connectMeta(this, \"" + sig + "\", this, \"" + slot + "()\");\n"; continue; }
             if (g_valueLists.count(d) || g_singletons.count(d)) continue;
+            // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
+            // names, but the per-item context DOES carry an object that publishes it as a property
+            // with a notify — so the binding is as live as any other, through the same channel.
+            if (!g_delegateCls.empty() && g_className == g_delegateCls
+                    && d.find('.') == std::string::npos && !g_propType.count(d)
+                    && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
+                conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \""
+                       + slot + "()\");\n";
+                continue;
+            }
             std::fprintf(stderr, "qmltc-d: %s: %s in %s depends on '%s', which has no known notify "
                          "— it would not update (later phase)\n", inPath, what.c_str(), cls.c_str(), d.c_str());
             ++partial;
@@ -6530,10 +6558,17 @@ int main(int argc, char **argv) {
         }
         return partial ? 3 : 0;
     }
+    // Labels whose index a VIEW decides — see g_hasComponentBind.
+    auto dropGuessedIndices = [](std::vector<DumpLine> &ls) {
+        if (!g_hasComponentBind) return;
+        ls.erase(std::remove_if(ls.begin(), ls.end(), [](const DumpLine &l) {
+                     return l.label.find('[') != std::string::npos; }), ls.end());
+    };
     // --labels: print the sorted dump labels (property paths) for the oracle's --props mode.
     if (labels) {
         std::vector<DumpLine> lines;
         collectDump(rootNode, "o.", "", lines);
+        dropGuessedIndices(lines);
         std::sort(lines.begin(), lines.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });
         for (auto &l : lines) std::printf("%s\n", l.label.c_str());
         return partial ? 3 : 0;
@@ -6706,11 +6741,41 @@ int main(int argc, char **argv) {
                 std::string path = l.label.substr(0, lp);
                 if (path.find('@') != std::string::npos) continue;
                 if (!objs.insert(l.setObj).second) continue;
+                // A path with a LIST INDEX is resolved the way the oracle resolves it: by walking
+                // the meta-object list, not by reading the D field that happens to hold that child.
+                // They are not the same object — Qt reparents visual children of a Flickable into
+                // its content item, and a view INSERTS the items it creates — so comparing our
+                // field against the engine's `data[0]` compared two different objects under one
+                // label. Only indexed paths: a plain property path has no such ambiguity, and a
+                // DECLARED object property is not in the meta-object at all.
+                if (path.find('[') != std::string::npos) {
+                    std::string expr = "qobjOf(o)";
+                    for (size_t i = 0, j; i <= path.size(); i = j + 1) {
+                        j = path.find('.', i);
+                        if (j == std::string::npos) j = path.size();
+                        std::string seg = path.substr(i, j - i);
+                        auto br = seg.find('[');
+                        if (br != std::string::npos)
+                            expr = "listAt(" + expr + ", \"" + seg.substr(0, br) + "\", "
+                                 + seg.substr(br + 1, seg.size() - br - 2) + ")";
+                        else
+                            expr = "propObj(" + expr + ", \"" + seg + "\")";
+                        if (j == path.size()) break;
+                    }
+                    std::printf("        qtd_dump_object(%s, \"%s.\");\n", expr.c_str(), path.c_str());
+                    continue;
+                }
                 std::printf("        qtd_dump_object(qobjOf(%s), \"%s.\");\n",
                             l.setObj.c_str(), path.c_str());
             }
             std::printf("        return;\n    }\n");
         }
+        // The RECORDED-label dump — and only it — drops labels whose index a view decides
+        // (g_hasComponentBind). `--dumpall` above enumerates OBJECTS, where both sides resolve the
+        // same index through the same list: a real comparison rather than a guess. Filtering both
+        // would leave the oracle dumping objects our side no longer prints (measured: 23 -> 279
+        // paths "absent in ours", which is a harness artefact, not a compiler gap).
+        dropGuessedIndices(lines);
         for (auto &l : lines)
             // A double is printed with %.17g on BOTH sides: the default shortest forms disagree on
             // a value that sits exactly between two 6-digit renderings (3.765625 -> D 3.76562,

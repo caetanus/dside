@@ -613,7 +613,10 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
     corpus.sort();
     // Feature not implemented yet — see the gate below. `skip` is a different thing: a document the
     // ENGINE of this Qt cannot load, where there is no oracle to compare against at all.
-    static immutable string[] pendingFeature = ["CDelegate"];
+    // EMPTY, and that is the point: CDelegate lived here while `Component` was refused, and moved
+    // out the day the compiled document matched the engine. A file goes in only with its bar
+    // written down (docs/qmltc-d.md) and comes out by measurement, not by decision.
+    static immutable string[] pendingFeature = [];
     foreach (qmlFile; corpus) {
         auto name = baseName(qmlFile).stripExtension;
         if (skip.canFind(name)) continue;
@@ -1014,7 +1017,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     // and hide every other regression behind it. So the target asserts the refusal instead (a
     // diagnostic, on a file that does not compile clean). The day the feature works the refusal
     // stops and THIS target fails, which is the signal to move the file out of the list.
-    static immutable string[] pending = ["CDelegate"];   // same contract as pendingFeature above
+    static immutable string[] pending = [];   // same contract as pendingFeature above
     foreach (dc; DCS) {
         foreach (qmlFile; corpus) {
             auto name = baseName(qmlFile).stripExtension;

@@ -484,6 +484,18 @@ extern "C" void* qtd_find_outer(void* o, const char* cls) {
 // the QQmlContext it creates per item, not as properties of any object, so they are read by name
 // through the context chain. Returned as a QVariant the callers convert, same as every other value
 // channel here.
+// The object a per-item QQmlContext carries (QQmlDelegateModelItem for a view's delegate). It is
+// what publishes `index`/`model`, and it publishes them as real properties WITH notify — so a
+// binding on `index` can be as live as any other, through the same meta-object channel.
+extern "C" void* qtd_context_object(void* o) {
+#ifdef QTD_HAVE_QML
+    if (!o) return nullptr;
+    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o))) return c->contextObject();
+    return nullptr;
+#else
+    (void) o; return nullptr;
+#endif
+}
 extern "C" int qtd_context_prop_int(void* o, const char* name) {
 #ifdef QTD_HAVE_QML
     if (!o || !name) return 0;

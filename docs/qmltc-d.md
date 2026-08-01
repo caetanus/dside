@@ -1496,3 +1496,50 @@ registered type has to be created as the bound C++ base (its trampoline), which 
 knows how to build for `new` — the engine's `create` is a placement-new into memory it sized
 itself, so the shim needs to publish the size and a placement constructor per bound class. Driven
 by the bound class NAME, so it stays one mechanism rather than one per type.
+
+### DONE (2026-08-01): the fixture matches the engine property for property
+
+`CDelegate.qml` is out of `pendingFeature` and is an ordinary differential target. Both gates pass:
+the recorded-label dump is identical, and `--dumpall` compares 95 properties of the root and of the
+first delegate item with **zero** differences. The table above is met — three items at data[0..2]
+with text `outer-0/1/2` and x 1/11/21, the Repeater at data[3].
+
+What it took, beyond the registration feature above:
+
+- **The enclosing object is FOUND, not handed over.** A compiled child gets a back-reference at
+  construction; a delegate is built by the view, so it finds each level it reads by CLASS, walking
+  the visual parent first (a Repeater's items are shown under the Repeater's own parent). Only the
+  levels actually read get a field — a level that is not an ancestor cannot be found this way, and
+  gating the wire on it would wire nothing. The wait is `parentChanged`, through the meta-object.
+- **`index` is a CONTEXT name, and it is reactive.** The view publishes it on the per-item
+  QQmlContext, so it belongs to no object the document names — but that context carries an object
+  that publishes it as a property WITH a notify, so the binding connects like any other. Read via
+  the context, connected via the context object: same channel, no new mechanism.
+- **The component carries the DOCUMENT's url**, so a relative path inside a delegate resolves where
+  the engine resolves it. The differential caught this as a single `baseUrl` difference.
+- **A view-decided index is not a label.** Qt's Repeater inserts its items BEFORE itself in `data`,
+  so a statically numbered `data[N]` label is a guess. The recorded-label dump drops such labels in
+  a document that binds a Component; `--dumpall` keeps them, because there both sides resolve the
+  same index through the same list — which is a comparison rather than a guess.
+
+### One bug this exposed: every object was completed TWICE
+
+Each generated object ran `classBegin`/`componentComplete` on itself AND again from its parent's
+wire. Recorded earlier as "harmless in every measurement so far"; it is not. A Repeater
+re-completed after it has created its items releases them through an already-completed
+QQmlDelegateModel, and Qt segfaults in `QQuickRepeater::clear()`. Each object now completes itself
+exactly once, at the end of its own wire — children are constructed during the parent's wire, so
+they still complete first, which is the order this was for.
+
+Measured over Qt's own Basic controls, this one fix moved more than the feature did: files
+IDENTICAL to the engine in every property 33 -> 38, value-diff defects 74 -> 63.
+
+### The label fix, and what it revealed
+
+Resolving an INDEXED dump path through the meta-object list (as the oracle does) rather than
+through the D field that happens to hold that child: paths "absent in the engine" 135 -> 11, and
+paths "absent in ours" 1 -> 23. The 135 were almost entirely a harness artefact — our field and the
+engine's `data[0]` were two different objects under one label. The 23 are real and already
+attributed: the unbound `*Impl` ceiling (BusyIndicator, Dial), the documented baselineOffset
+layout-order difference, and one new one worth chasing — DelayButton's `contentItem.data[0]` and
+`data[1]` are SWAPPED relative to the engine.
