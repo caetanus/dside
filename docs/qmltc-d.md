@@ -1572,6 +1572,32 @@ With that fixed, imported-module resolution lands: **Fusion 52 of 55 constructin
 its diagnostics go 183 -> 446 because those 26 types now compile and report their own gaps instead
 of being one refusal each. Basic is unchanged on every axis.
 
+### The next Fusion cluster is a SCOPING defect, not a missing feature (2026-08-01)
+
+With imported-module types compiling, Fusion's largest remaining clusters are `color:
+Fusion.buttonColor(...)` (76 — a singleton call returning a value type) and `control: control` (20).
+
+The second one is not a feature gap. Qt writes, in Button.qml:
+
+    background: ButtonPanel { control: control }
+
+and ButtonPanel itself declares `property Item control`. In QML the two `control`s are different
+things: a binding written at the USE SITE is evaluated in the scope of the document that wrote it,
+so the right-hand `control` is Button.qml's own id — while the left-hand one is the property being
+assigned. This compiler merges the local type's body with the use site into ONE class, and with it
+the two scopes: the right-hand `control` resolves to the class's own property and the assignment is
+refused.
+
+Refused is the lucky outcome. The same merge makes a use-site binding that reads any name the local
+type also declares resolve to the WRONG one — and for a scalar it would compile and be silently
+wrong. So the fix is a scoping one (members spliced from the use site must resolve names without the
+local type's declared properties shadowing the enclosing document), and it is worth doing for
+correctness even before the 20 refusals it unblocks.
+
+Tried and removed rather than left in: an assignment path for declared object properties. It is the
+right rule and it cannot fire until the scoping is fixed — every `control:` in this corpus is the
+shadowed form — and untested code that never runs is worse than no code.
+
 ## Where the four axes stand (2026-08-01, end of day)
 
 Over Qt's own 57 Basic control documents, with the engine as the specification:
