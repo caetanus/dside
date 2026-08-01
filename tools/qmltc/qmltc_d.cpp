@@ -2298,6 +2298,18 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             auto enumKey = [&](ExpressionNode *x, std::string &key) {
                 auto *fm2 = cast<FieldMemberExpression *>(x);
                 if (!fm2) return false;
+                // `T.ScrollBar.AlwaysOff` — the type is reached through an IMPORT ALIAS, so the base
+                // is itself a member expression. Qt's controls import QtQuick.Templates as T and
+                // spell every enum this way; the unqualified form already compiled, which is how the
+                // alias was pinned as the only difference.
+                if (auto *fmq = cast<FieldMemberExpression *>(fm2->base))
+                    if (auto *ba2 = cast<IdentifierExpression *>(fmq->base);
+                            ba2 && g_importAliases.count(qs(ba2->name.toString()))) {
+                        std::string tq = qs(fmq->name.toString()), mq = qs(fm2->name.toString());
+                        if (mq.empty() || !std::isupper((unsigned char) mq[0])) return false;
+                        if (!knownTypeName(tq)) return false;
+                        key = mq; return true;
+                    }
                 auto *b2 = cast<IdentifierExpression *>(fm2->base);
                 if (!b2) return false;
                 std::string tn = qs(b2->name.toString()), mem = qs(fm2->name.toString());
@@ -2469,6 +2481,13 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                 }
             }
         }
+        // `T.ScrollBar.AlwaysOff` — an enum reached through an IMPORT ALIAS. Neither the alias nor
+        // the type is a value, so neither is a dependency; recursing down to `T` recorded the alias
+        // and reported that it has no notify. Same shape as the type name on the right of `as`.
+        if (auto *fmq = cast<FieldMemberExpression *>(fm->base))
+            if (auto *bq = cast<IdentifierExpression *>(fmq->base);
+                    bq && g_importAliases.count(qs(bq->name.toString())))
+                return;
         // `<outerId>.<objectProp>.<member>` (Qt's RangeSlider: `control.first.pressed`) is already a
         // DEEP READ: compileExpr records it in g_deepReads and the late phase wires it with
         // connectNotify/bindLeaf, which is what follows an object property that does not exist yet.
