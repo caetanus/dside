@@ -1,5 +1,283 @@
 # CRITICS.md
 
+## Rodada 10: o binding virou wrapper; agora o estado declarado ficou para trás
+
+Esta rodada mantém a régua corrigida da rodada 9. O objeto é o projeto inteiro, e o
+`qmltc-d` continua em desenvolvimento. Não considero a ausência de `Component`,
+keyboard parity ou qualquer outro item deliberadamente futuro como defeito por si só.
+Procurei novamente as duas classes que importam nesta fase:
+
+1. uma unidade chamada CLEAN que diverge silenciosamente do engine;
+2. governança que afirma um estado diferente daquele que o build realmente executa.
+
+Encontrei as duas.
+
+### Verificação desta rodada
+
+- A árvore começou limpa. Não havia mudanças locais a preservar.
+- `git diff --check` passou antes da edição desta crítica.
+- `./build --list` oferece **678 targets default** (679 linhas incluindo o cabeçalho),
+  dos quais **476** pertencem às famílias `qmltc*`.
+- `report-selftest` passou: **678 classificados, 0 unclassified**.
+- Os probes `qtmoc-probe-{noqml,qml5,qml6}` passaram; os executáveis
+  `noqml_helpers` também passaram em Qt5/Qt6 e ldc2/dmd.
+- Wrapper lifetime, moc/metaobject, Qt5/Qt6, QRC, WebEngine, UIC e seus diferenciais
+  passaram na execução observada. UIC: **60 OK, 2 waived, 0 mismatch**.
+- Os diferenciais Quick exercitados produziram frames pixel-idênticos; o gate de
+  construção de Controls terminou em **61 objetos, 0 falhas**.
+- O `./build` default, contudo, terminou **exit 1** ao gerar `CDelegate.qml`: a recusa
+  de `Component` é esperada, mas a fixture entrou no grafo obrigatório.
+- Construí ainda um probe C++ fora da suíte para `qtd_bind_leaf`: duas inscrições
+  retornaram sucesso, porém só a segunda continuou conectada
+  (`connected=1,1 leafA=0 leafB=1`).
+
+### O que a rodada 9 realmente fechou
+
+1. **O vazamento de `QQmlEngine` foi corrigido e ganhou os probes pedidos.** O helper
+   está guardado por `QTD_HAVE_QML`, compila em QtQml-free, Qt5 QML e Qt6 QML, e os
+   helpers no-op linkam dentro de bindings sem QtQml. A falha crítica anterior está
+   fechada.
+
+2. **O report passou a descrever a matriz atual.** As famílias `qmltc*`, o eixo Qt5
+   de `qmltc5`, os probes e os novos targets têm classificação; canários e a regra
+   “nenhum target vira other” estão em self-test. O achado anterior está fechado.
+
+3. **O wrapper deixou de ser caminho secundário.** QtWidgets, QtQml, QtQuick,
+   Controls, WebEngine e por fim libsample migraram; `X_new` foi removido do projeto.
+   Isto resolve uma das dívidas estruturais mais antigas e merece peso maior que uma
+   longa lista de features pequenas.
+
+4. **A migração pressionou o generator de maneira produtiva.** Foram corrigidos
+   dispatch virtual que bypassava vtable, overrides pure-virtual antes inalcançáveis,
+   container params/returns, referências tratadas como pointers, identidade de
+   wrapper e fates fantasmas no manifest. O manifest wrapper saltar de 731 para 8429
+   linhas tornou a cobertura mais honesta, não apenas maior.
+
+5. **O `qmltc-d` elevou de novo a qualidade do oracle.** Agora compara todas as
+   propriedades, identidade de objetos, estado após mudança, paths profundos,
+   attached properties, singleton real, baseUrl de documento e reatividade que passa
+   por value/object groups. Isso é avanço na régua 1:1, não simples feature counting.
+
+Permanecem abertos da rodada 9: `CompilationContext`/IR, worker QObjects, expected-fail
+runner, CI real e isolamento físico do runtime. O guard + probes tornou a separação de
+fontes menos urgente; não vou fingir que ausência de split é defeito enquanto a fronteira
+condicional estiver comprovadamente fechada nos três modos.
+
+### Achados críticos
+
+#### 1. Uma fixture que deveria medir uma ausência deliberada derruba o default build
+
+`docs/qmltc-d.md` diz corretamente que `tests/qmltc/controls/CDelegate.qml` é a
+fixture de aceitação escrita **antes** da implementação de `Component`, e conclui:
+
+> the fixture is deliberately NOT wired into the build
+
+Mas `qmltcTargets()` usa `dirEntries(corpusDir, "*.qml")` e transforma todo arquivo
+do diretório em target. O build lista:
+
+```text
+qmltcc-CDelegate-ldc2
+qmltcc-CDelegate-dmd
+```
+
+Ao chegar nele, `qmltc-d` faz exatamente o que deveria nesta fase: retorna PARTIAL e
+explica que `delegate` recebe um `Component` (template), não um objeto. O target, porém,
+espera exit zero e derruba a matriz:
+
+```text
+qmltc-d: CDelegate.qml: 'delegate' ... takes a Component ... skipped (later phase)
+```
+
+O defeito não é “Component ainda não existe”. O defeito é o grafo contradizer a
+política documentada e transformar uma recusa conhecida em falha tardia do build
+obrigatório, depois de executar quase toda a matriz.
+
+**Critério de resolução:**
+
+- mover acceptance fixtures incompletas para um diretório fora do glob, OU registrar
+  um target de expected-refusal que exija exit 3 e o diagnóstico canário;
+- o target deve falhar se a tool abortar, retornar outra classe de erro ou perder o
+  diagnóstico;
+- quando `Component` aterrissar, o mesmo fixture muda para o diferencial positivo de
+  itens, outer binding e mutação já especificado no documento;
+- `./build` volta a terminar zero.
+
+#### 2. Duas dependências profundas homônimas desconectam uma à outra silenciosamente
+
+`qtd_bind_leaf(owner, prop, sig, recv, slot)` mantém a conexão dinâmica numa tabela.
+A chave atual é:
+
+```cpp
+recv | slot | prop | sig
+```
+
+O argumento `owner` não participa. Assim, uma binding que precise acompanhar dois
+owners diferentes através da mesma property/signature — por exemplo, a forma
+`a.parent.width + b.parent.width`, ou dois object paths equivalentes — registra duas
+dependências sob a mesma chave. A segunda chama `QObject::disconnect` na primeira.
+
+O probe usou dois `QQuickItem` owners, cada um com seu próprio parent, ambos conectando
+`parent.widthChanged()` ao mesmo `QTimer::start()`:
+
+```text
+connected=1,1 leafA=0 leafB=1
+```
+
+As duas APIs informaram sucesso. Alterar o primeiro leaf não chamou o slot; alterar o
+segundo chamou. Não há PARTIAL, warning ou connect failure. Esta é uma divergência
+silenciosa da semântica de dependencies do QML.
+
+A tabela também não remove suas entradas quando o receiver morre. Qt invalida a
+`QMetaObject::Connection`, mas o `unordered_map` retém chave/conexão até uma eventual
+reutilização daquela combinação. Isso é leak de side-table e torna o problema pior
+quando delegates dinâmicos começarem a existir.
+
+**Critério de resolução:**
+
+- a identidade inclui `owner` além de receiver/slot/property/signal;
+- destruir owner ou receiver limpa a entrada, não apenas invalida a conexão Qt;
+- uma fixture diferencial lê dois paths homônimos, muta cada leaf separadamente e
+  exige recompute nas duas direções;
+- um lifecycle probe prova que a tabela volta ao baseline após destruir a árvore.
+
+### Achados altos
+
+#### 3. As fontes de verdade públicas ainda descrevem o projeto anterior ao wrapper flip
+
+Os commits removeram `X_new` e fizeram todos os bindings usarem wrapper. Mesmo assim:
+
+- `README.md` diz que raw mode ainda é default para QtWidgets, QML e UIC;
+- a seção Construction ainda mostra `QQmlApplicationEngine_new`/`QWidget_new` como API
+  corrente;
+- o Roadmap ainda manda tornar wrapper mode default;
+- `docs/FEATURES.md` chama wrapper de gated, raw de default e repete o mesmo TODO;
+- `docs/test-suite.md` diz que os manifest baselines são “raw-QtWidgets + raw-QML”,
+  embora os specs e baselines tenham sido migrados para wrapper;
+- `docs/test-suite.md` ainda fala em relatório sobre aproximadamente 162 targets,
+  contra 678 atuais.
+
+Isto não é atraso cosmético. Construction/ownership é o contrato público central de um
+binding. Hoje o código entregou uma melhora estrutural que a documentação oficial nega.
+
+**Critério de resolução:** README, FEATURES e test-suite passam por uma atualização
+atômica com o wrapper flip: um único modelo de construção, targets/manifest atuais e
+nenhum roadmap já concluído.
+
+#### 4. O expected-fails aceitou um gap que já foi resolvido
+
+`tests/expected-fails.json` ainda contém `virtual-container-return`:
+
+```text
+An overridden virtual that returns a container/QList still dispatches non-virtually
+remove_when: a container/QList-return-capable virtual shim lands
+```
+
+Esse shim aterrissou em `5b7d61d`: virtual QList returns passam por trampoline e vtable.
+`docs/FEATURES.md` repete o gap antigo. O linter segue verde porque `known_gap` não tem
+probe, não avalia `remove_when` e não detecta unexpected pass.
+
+Esta era uma limitação assumida do linter; agora existe uma demonstração concreta do
+seu custo: o structured state ficou falso e nenhum gate reclamou.
+
+**Critério de resolução:** remover/reescrever a entrada conforme o long tail real e
+transformar gaps testáveis em probes executáveis. O futuro runner precisa detectar
+quando `remove_when` se tornou verdade ou quando um probe passou inesperadamente.
+
+#### 5. A maior suíte pode desaparecer por capability sem um floor institucional
+
+O projeto corretamente colocou floor e canários em libsample. Não fez o equivalente
+para `qmltc`/Controls:
+
+- `qmltcControlsRuntimeTargets` retorna array vazio se um path absoluto
+  `/usr/lib/qt6/qml/QtQuick/Controls/Basic` não existir;
+- esse path é layout de instalação, não API do Qt, e o workflow declara outra distro;
+- a CI verifica 58 `sample_*`, mas não exige contagem mínima nem canários dos 476
+  targets `qmltc*`;
+- o report self-test valida como um nome seria classificado; não exige que o canário
+  exista no grafo.
+
+Logo o report pode estar perfeitamente classificado e ainda não executar o corpus de
+Controls que mais encontra bugs no wrapper. Como a CI continua declaradamente nunca
+comprovada verde, isto não é uma falha observada no runner, mas é uma rota concreta de
+conformance disappearance.
+
+**Critério de resolução:** descobrir `QT_INSTALL_QML` via Qt/qtpaths em vez de path
+absoluto; CI exige um floor e canários para corpus, render, click/time e Controls runtime;
+capability ausente aparece como skip explícito, não como target inexistente.
+
+### Achados estruturais
+
+#### 6. O compilador cresceu; o contexto explícito não começou
+
+`qmltc_d.cpp` passou de aproximadamente 5.200 para **6.528 linhas** e mantém **63
+globais estáticos**. Desde a rodada anterior, 44 commits tocaram o arquivo. A maioria
+das mudanças é semanticamente justificada e coberta; o problema é o custo cumulativo
+de preservar scopes/documentos por save/restore manual.
+
+O histórico recente já inclui bugs de source text errado, alias-only imports, outer
+objects com vários hops e use-site AST splice. Todos são exatamente estados que um
+`DocumentContext` tornaria locais por construção.
+
+Não proponho parar o trabalho de feature nem reescrever o lowering. Proponho começar
+pela parte menos controversa: source text, imports, document URL, resolution stack e
+diagnostics dentro de um contexto explícito, deixando registries imutáveis separados.
+
+#### 7. Worker QObject continua fora do contrato
+
+O owner-thread abort continua sendo uma contenção correta para mapas globais não
+sincronizados, mas networking/timers/workers com D `@QObject` continuam proibidos. O
+novo `g_leafConn` até usa mutex, porém outros side-tables e caches de context/singleton
+permanecem sob a política global de uma thread.
+
+Isto permanece dívida estrutural, não regressão desta rodada.
+
+### Correções documentais específicas do qmltc-d
+
+O documento técnico é valioso, mas já contém afirmações incompatíveis com o grafo:
+
+- diz que `CDelegate` não está wired, mas dois targets obrigatórios existem;
+- registra “472 green em ~4 min” enquanto o grafo agora oferece 476 targets e a matriz
+  comportamental atual tem outra duração operacional;
+- seções antigas ainda anunciam scores intermediários como “estado atual” antes das
+  medições mais novas.
+
+Preservar o diário de descobertas é útil. O que falta é separar claramente
+**current scoreboard** de **historical measurements**, para que uma busca não encontre
+três respostas válidas em datas diferentes sem saber qual governa o release atual.
+
+### Prioridade brutal da rodada 10
+
+1. **Tirar `CDelegate` do caminho positivo obrigatório** e restaurar `./build` verde;
+   manter a recusa como expected-refusal executável.
+2. **Corrigir a identidade e o lifetime de `g_leafConn`**, com diferencial de duas
+   dependências homônimas.
+3. **Atualizar README/FEATURES/test-suite/expected-fails** para o wrapper-only real.
+4. **Dar floor/canários à suíte qmltc na CI** e eliminar o path QML absoluto.
+5. **Formalizar expected-fail runner**, agora que há um unexpected pass histórico
+   concreto.
+6. **Começar `DocumentContext` incremental**, sem bloquear o avanço semântico.
+7. **Comprovar a CI real** sobre a matriz que a documentação declara.
+8. **Evoluir qtmoc para worker QObjects** quando as fronteiras de lifetime estiverem
+   cobertas.
+
+### Veredito da rodada 10
+
+Esta foi uma rodada tecnicamente forte. O projeto fechou a regressão crítica anterior,
+fez wrapper mode virar realidade em toda a superfície, corrigiu cobertura falsa no
+manifest e tornou o diferencial QML muito mais difícil de enganar. O núcleo está melhor
+que a documentação deixa parecer.
+
+Mas há duas falhas reais no estado atual. A primeira é visível: o default build termina
+vermelho porque uma fixture declarada “não wired” foi capturada por um glob. A segunda
+é pior: duas dependências profundas podem receber connect-success e uma delas ficar
+morta porque a side-table colide owners diferentes.
+
+Resumo brutal: **a pressão do `qmltc-d` continua funcionando**. Desta vez ela provou que
+o wrapper generator amadureceu mais rápido que suas fontes de verdade e que o runtime
+reativo ainda possui uma chave de identidade incompleta. Restaurem a honestidade em
+três níveis — build, state files e dependency identity — antes de usar a próxima leva
+de features para aumentar novamente a superfície.
+
 ## Rodada 9: o qmltc-d virou teste de integração; as fronteiras do projeto não acompanharam
 
 Esta rodada corrige a régua da crítica anterior. O objeto principal continua sendo o
@@ -1698,3 +1976,35 @@ Resta explícito como follow-up (não bloqueante): counters por-categoria com hi
 CI. **CORREÇÃO:** as features de QML/tr da rodada 5 foram feitas só no Qt6, violando a
 regra double-Qt (day 1) — Qt5 5.15 ESTÁ instalado. Paridade Qt5 sendo levada em seguida
 (binding Qt5 QML + targets Qt5 para tr/moc/qml; `RegisterType` do Qt5 tem layout distinto).
+
+
+## Resolução parcial da "prioridade brutal" (2026-08-01, sessão do audit qmltc)
+
+Não é uma rodada nova de crítica: é o que foi feito **de acordo com** a lista acima,
+durante o audit do qmltc, com o que cada item exigia — enforcement e estado, não narrativa.
+
+**Enforcement verificado, não assumido.** Mexi no gerador várias vezes nesta sessão
+(colunas novas no registro: `!const`, qmlsingletons, qmlmethods, qmlcxxnames) e rodei os
+dois portões que a rodada 5 instalou: `manifest-gate-qml` OK com 2593 símbolos e
+`manifest-gate-qtwidgets` OK com 8428, ambos sem regressão e sem novo drop. A governança
+sobreviveu às mudanças — que é a única forma de saber que ela existe.
+
+**Item 2/3 (placar, estado) aplicado ao compilador.** Passei a sessão classificando as
+recusas do qmltc com scripts improvisados no scratchpad; isso é exatamente a narrativa que
+o documento condena. Virou `tools/qmltc-diag-census.py`: classifica pela redação do próprio
+compilador e imprime o balde `other` POR EXTENSO, porque balde ilegível é como uma classe
+permanece opaca — aconteceu duas vezes neste corpus e custou várias rodadas cada.
+
+Ele se pagou na primeira execução: **8 das 93 recusas são `default child of type
+<Animation>`** (NumberAnimation, SmoothedAnimation, SequentialAnimation, XAnimator), uma
+classe que meus censos manuais borravam em "animação não implementada" sem nunca contar.
+
+Censo atual do corpus Basic do Qt (93): not-grouped 21, unbound-type 16, component 16,
+expression 15, other 12, member-unhandled 6, declared-type 3, unsupported-bind 2,
+state-shape 2. Cada um com procedência — teto verificado, recusa correta, portão medido, ou
+causa confirmada.
+
+**O que NÃO foi feito e continua aberto** da lista: IR/diagnostics no gerador (item 3, no
+gerador C++ — o que fiz foi no qmltc), ownership torture suite (5), ABI probes (6),
+typesystem semantics (8), Windows/MSVC (9), e o follow-up de counters por-categoria com
+histórico em CI. O censo acima é o insumo desse histórico, não o histórico.
