@@ -1463,6 +1463,36 @@ Measured today, with the engine on one side and the compiler on the other:
 
 So the bar is concrete: the compiled document must produce those three items, at those paths, with
 those values — `x` proving the index arithmetic and `text` proving the read of the enclosing
-document. The refusal today is honest (`'delegate' ... takes a Component ... not an object`), and
-the fixture is deliberately NOT wired into the build: it would fail, and a failing target teaches
-nothing that this table does not.
+document. The refusal today is honest (`'delegate' ... takes a Component ... not an object`).
+
+The fixture IS wired into the build, but as the refusal rather than as the differential
+(`pendingFeature` in reggaefile.d): the target asserts that the compiler emits a diagnostic for
+this file. A differential target here would leave the default build red, and a permanently red
+build hides every other regression behind it. The day the feature lands the refusal stops, that
+target fails, and the file moves out of the list into the normal differential.
+
+### What blocks it: an engine-created D object is not a QQuickItem (2026-08-01)
+
+The route was measured, not guessed, with a probe that builds the pieces by hand: register the
+delegate class with `qmlRegisterType`, build a one-line QQmlComponent that instantiates it
+(`qtd_make_component`, on the same engine every compiled object already uses), hand it to a
+Repeater. Three findings, in order:
+
+1. **The C++ half works.** With a stock `Text` as the registered type, the Repeater creates its
+   three items and they land exactly where the engine puts them: `data[0..2]`, then the Repeater at
+   `data[3]`. So driving a Repeater from compiled code — context, parenting, completion order — is
+   not the problem. (One real trap on the way: `QQmlDelegateModel::componentComplete` dereferences
+   the object's QQmlContext, so a Repeater whose `model` is set before `classBegin` SEGFAULTS.)
+2. **The component instantiates our compiled class.** `QQmlComponent::create` on the registered D
+   type returns an object whose meta-object class name is the D class. Registration reaches QML.
+3. **...but Qt does not see it as an Item.** `qt_metacast("QQuickItem")` on that engine-created
+   instance returns null, and a Repeater silently drops a delegate that is not an Item — which is
+   why the items never appeared. `qmlRegisterType` registers a QObject-derived shell and wires the
+   D object to it; a `QtdWidget!QQuickText` subclass constructed with `new` DOES metacast to
+   QQuickItem (tests/qml/subclasscast_test.d), so what is missing is the shell's C++ BASE.
+
+That is the next piece of work, and it is a registration feature rather than a compiler one: the
+registered type has to be created as the bound C++ base (its trampoline), which the shim already
+knows how to build for `new` — the engine's `create` is a placement-new into memory it sized
+itself, so the shim needs to publish the size and a placement constructor per bound class. Driven
+by the bound class NAME, so it stays one mechanism rather than one per type.

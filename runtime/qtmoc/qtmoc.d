@@ -806,6 +806,14 @@ void* styleHintsObj() { return qtd_style_hints(); }
 /// The Nth element of a list property, through the meta-object — where the ENGINE holds it, which
 /// is not always the field we appended from.
 void* listAt(T)(T o, string prop, int i) { return qtd_list_at(qobjOf(o), (prop ~ "\0").ptr, i); }
+
+extern(C) void* qtd_make_component(const(char)*, const(char)*, const(char)*);
+// The QQmlComponent for a compiled delegate class: `uri`/`typeName` are what the generated code
+// registered it as. Returned as an opaque pointer — the caller wraps it in whatever QQmlComponent
+// binding its module has, because this unit compiles for bindings that have no QtQml at all.
+void* makeComponent(string uri, string typeName, string docUrl = "") {
+    return qtd_make_component((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);
+}
 /// A QML singleton's one instance — the engine's, not one of ours: a singleton has state, and a
 /// second instance would be a different object that happens to share a type.
 void* qmlSingleton(string uri, string name, int major, int minor) {

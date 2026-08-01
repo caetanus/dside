@@ -451,6 +451,32 @@ extern "C" void qtd_ensure_module(const char* uri) {
 #endif
 }
 
+// ---- a Component (a delegate) ------------------------------------------------------------------
+// `delegate: Text {}` is a TEMPLATE: the type instantiates it itself, N times, whenever its model
+// says so. A compiler cannot create those objects — only the type knows when — so what it hands
+// over must be a real QQmlComponent. The delegate body is compiled to a class like any other and
+// registered as a QML type (qmlRegisterType, which is how a D @QObject reaches QML at all); this
+// builds the one-line document that instantiates it, on the SAME engine every compiled object
+// already uses, so the created items share the engine's contexts and its type registry.
+extern "C" void* qtd_make_component(const char* uri, const char* typeName, const char* docUrl) {
+#ifdef QTD_HAVE_QML
+    if (!uri || !typeName || !QCoreApplication::instance()) return nullptr;
+    QQmlEngine* e = qtd_qml_engine();
+    QQmlComponent* c = new QQmlComponent(e, e);
+    c->setData(QByteArray("import ") + uri + "\n" + typeName + " {}",
+               QUrl(QString::fromUtf8(docUrl && *docUrl ? docUrl : "file:///qtd_delegate.qml")));
+    if (c->isError()) {
+        std::fprintf(stderr, "qtd: delegate component for '%s' failed: %s\n", typeName,
+                     qPrintable(c->errorString()));
+        delete c;
+        return nullptr;
+    }
+    return c;
+#else
+    (void) uri; (void) typeName; (void) docUrl; return nullptr;
+#endif
+}
+
 // ---- dependencies reached THROUGH an object property ------------------------------------------
 // `x: (parent.width - width) / 2` depends on an object our constructor cannot see: a root's
 // `parent` (and HeaderView's `syncView`) is assigned by whoever instantiates it, AFTER the wire

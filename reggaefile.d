@@ -611,9 +611,27 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
     Target[] ts;
     auto corpus = dirEntries(corpusDir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
     corpus.sort();
+    // Feature not implemented yet — see the gate below. `skip` is a different thing: a document the
+    // ENGINE of this Qt cannot load, where there is no oracle to compare against at all.
+    static immutable string[] pendingFeature = ["CDelegate"];
     foreach (qmlFile; corpus) {
         auto name = baseName(qmlFile).stripExtension;
         if (skip.canFind(name)) continue;
+        // ...and a document whose FEATURE is not compiled yet: the fixture is committed so the bar
+        // is written down and the diff is measured the day it lands, but a differential cannot be
+        // the gate while the compiler correctly REFUSES the file — that leaves the default build
+        // red and hides every other regression behind it. The target asserts the REFUSAL instead.
+        // The day the feature works the refusal stops, THIS target fails, and the file moves out.
+        if (pendingFeature.canFind(name)) {
+            foreach (dc; DCS) {
+                auto diag = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".pending");
+                ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc,
+                    "sh -c '" ~ toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ " --qmlmap "
+                    ~ buildPath(bind.genDir, "qmlmap.tsv") ~ " > /dev/null 2>" ~ diag
+                    ~ "; test -s " ~ diag ~ "'", [tool]);
+            }
+            continue;
+        }
         foreach (dc; DCS) {
             // qmlmap.tsv (QML-name -> bound C++ class) is a build output of the binding's gend run;
             // the tool reads it so its bound-type vocabulary is DATA, not hard-coded. Absent (e.g.
@@ -990,10 +1008,24 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     Target[] ts;
     auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
     corpus.sort();
+    // Documents whose FEATURE the compiler does not implement yet. The fixture is committed so the
+    // bar is written down and the diff is measured the day it lands -- but a differential cannot be
+    // the gate while the compiler correctly REFUSES the file: it would leave the default build red
+    // and hide every other regression behind it. So the target asserts the refusal instead (a
+    // diagnostic, on a file that does not compile clean). The day the feature works the refusal
+    // stops and THIS target fails, which is the signal to move the file out of the list.
+    static immutable string[] pending = ["CDelegate"];   // same contract as pendingFeature above
     foreach (dc; DCS) {
         foreach (qmlFile; corpus) {
             auto name = baseName(qmlFile).stripExtension;
             auto arg = " --cpptypes " ~ typesFile ~ " qt.corpustypes";
+            if (pending.canFind(name)) {
+                auto diag = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ ".pending");
+                ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc,
+                    "sh -c '" ~ toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ arg
+                    ~ " > /dev/null 2>" ~ diag ~ "; test -s " ~ diag ~ "'", [tool]);
+                continue;
+            }
             auto genD = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ ".d");
             auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ arg ~ " > $out",
                 [tool, Target(qmlFile), regT, bind.gen]);   // regenerating the binding must re-emit
