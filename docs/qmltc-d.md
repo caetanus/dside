@@ -1641,6 +1641,33 @@ Two ways out, and only one of them is honest here:
 The second is the next step. It needs the use-site assignment to record the assigned type against
 the declared property, which is one map away from what `g_declObjProps` already holds.
 
+## A SECOND corpus, measured the same way (2026-08-01)
+
+Qt's FUSION style — 55 documents this compiler had never seen when the day started — now runs the
+same axes as Basic:
+
+| | Basic | Fusion |
+|---|---|---|
+| constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
+| files IDENTICAL to the engine in every property | 47 of 57 | 26 of 49 |
+| value differences | 21 (all attributed) | 63 |
+| diagnostics | 80 | 230 |
+
+Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 230 with those types
+compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
+cost and bought, in the order it happened: the value source's missing back-reference, one URI per
+style, the dump path through an engine child, versionless imports, the silent drop of a declaration,
+the QObject* metatype hijack, imported-module types, Gradient/GradientStop bound, object arguments
+to a singleton call, overload selection by argument count, use-site scoping, declared object
+properties (declared, assigned, and walked through), the registry rows a local type inherits, and
+singletons that are not dependencies.
+
+The largest remaining Fusion clusters, measured: `Color.transparent(indicator.checkMarkColor)` (28 —
+a singleton call whose argument is a declared COLOR property, which is still refused as a declared
+type), `indicator.control.checkState === …` (12), and a singleton reached through an IMPORT ALIAS
+(`FusionControls.Fusion.gradientStart(…)`, 8 — tried once and the branch did not fire, so it needs
+the call shape traced before writing more).
+
 ## Where the four axes stand (2026-08-01, end of day)
 
 Over Qt's own 57 Basic control documents, with the engine as the specification:
