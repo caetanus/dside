@@ -1522,6 +1522,29 @@ What it took, beyond the registration feature above:
   a document that binds a Component; `--dumpall` keeps them, because there both sides resolve the
   same index through the same list — which is a comparison rather than a guess.
 
+### Fusion, and the next step it made concrete (2026-08-01)
+
+Qt's FUSION style — 55 documents this compiler had never seen — was compiled for the first time and
+found four defects in one run, three of them construction failures (fixed and committed: the value
+source's missing back-reference, one URI per style for the impl types, the dump path through an
+engine child, and the versionless import). It stands at **52 of 55 constructing, 0 failures**, 183
+diagnostics.
+
+Its largest refusal cluster is 26 types Qt writes in QML inside the style's own module directory
+(`QtQuick/Controls/Fusion/impl/ButtonPanel.qml`, `CheckIndicator.qml`, `SliderGroove.qml`, …). They
+are refused as "not a bound Qt type" because only the DOCUMENT's own directory is searched for a
+local type.
+
+**Attempted and reverted, with what it exposed.** Resolving an imported module to its directory (the
+way the engine does: dots to slashes under the import root) does unlock all 26 — and then three
+documents die at construction, because a declared property whose INITIAL BINDING the compiler
+refuses is dropped entirely, so the use-site's write to it throws (`no writable property
+"highlighted"`). Declaring it anyway with its default is the obvious next move and does NOT work
+yet: `property Item control` has no D scalar type, and the generated D stops compiling where such a
+property is read (8 link failures). So the order is fixed — **declared OBJECT properties first, then
+imported-module types** — and neither was left half-applied: both experiments are reverted, Fusion
+is back to 52/55 with 0 failures and Basic is untouched at 78 diagnostics and 0 failures.
+
 ## Where the four axes stand (2026-08-01, end of day)
 
 Over Qt's own 57 Basic control documents, with the engine as the specification:
