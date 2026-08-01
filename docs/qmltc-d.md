@@ -1522,6 +1522,30 @@ What it took, beyond the registration feature above:
   a document that binds a Component; `--dumpall` keeps them, because there both sides resolve the
   same index through the same list — which is a comparison rather than a guess.
 
+### Attempted and REVERTED: `font.bold` / `origin.x` through QQmlProperty (2026-08-01)
+
+A value type reached through an EXTENSION (QFont via QQuickFontValueType, marked `^` in the
+registry) has no meta-object, so the gadget read-modify-write cannot reach it — the compiler
+refuses those, deliberately. The obvious channel is `QQmlProperty(obj, "font.bold", qmlContext(obj))`,
+which is how QML itself resolves value-type members. It was built end to end and measured, and it
+produced two findings, both worth keeping:
+
+1. **The write does not take on our objects.** `QQmlProperty` reports the path as not valid /
+   not writable, so the runtime's honest error fired (`setProp failed: no writable property
+   "font.bold"`) and Dialog went RUNFAIL. Whatever the channel is, it is not QQmlProperty against
+   the context we attach — that needs to be understood before writing any more of it.
+2. **It exposed a hazard in the LATE wiring.** With `origin.x` compiled (Dial's `transform:
+   Rotation { origin.x: handle.width / 2 }`), Dial stopped LINKING: the ROOT class gained four
+   `__outer.__outer` references in its own late wire — `bindLeaf(__outer.__outer, "handle", ...)`
+   for the root's `__rcb_implicitWidth` — and a root has no enclosing object at all. Counted per
+   class: the transform children legitimately hold such chains (10 and 3); the root held none
+   before and four after. So a deep-read late connect can be resolved against an outer chain that
+   belongs to a CHILD, and it took compiling one more expression to make it visible.
+
+Reverted whole (compiler and runtime), corpus back to 83 diagnostics and 0 link/run failures. The
+next attempt starts with finding 2, not with the feature: a root that connects through
+`__outer.__outer` is wrong however the value gets written.
+
 ### One bug this exposed: every object was completed TWICE
 
 Each generated object ran `classBegin`/`componentComplete` on itself AND again from its parent's
