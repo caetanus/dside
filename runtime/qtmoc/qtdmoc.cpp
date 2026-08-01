@@ -1215,8 +1215,27 @@ void* qtd_qml_register_sub(
     rt.valueInterceptorCast = -1;
 #if QT_VERSION >= 0x060000
     rt.structVersion = int(QQmlPrivate::RegisterType::CurrentVersion);
-    rt.typeId = QMetaType::fromType<QObject*>();
-    rt.listId = QMetaType::fromType<QQmlListProperty<QObject>>();
+    // NO metatype of our own, and NO list metatype. Registering `QObject*` as THIS type's id told
+    // Qt that the QObject* metatype IS this type, and from then on every QQmlListReference over a
+    // `data` list (whose element metatype is exactly that) resolved its element type to our last
+    // registered delegate class and REFUSED every append — silently, because the generated code has
+    // a parent-setting fallback. Measured on Qt's Fusion ComboBox: four appends failed and the
+    // background came out with an empty `data`.
+    // A metatype that is OURS and is not QObject*: registering `QObject*` as this type's id told Qt
+    // that the QObject* metatype IS this type, and every QQmlListReference over a `data` list (whose
+    // element metatype is exactly that) then resolved its element type to our last registered
+    // delegate class and REFUSED every append — silently, because the generated code falls back to
+    // parenting. Measured on Qt's Fusion ComboBox: four appends failed and the background came out
+    // with an empty `data`. An INVALID metatype is not an option either: Qt's type loader
+    // dereferences it and segfaults on the QQmlThread.
+    rt.typeId = QMetaType::fromType<QtdMocObject*>();
+    // NO list metatype. Registering `QQmlListProperty<QObject>` here told Qt that THAT metatype —
+    // the one every `data` list uses — is a list of THIS type, so afterwards every
+    // QQmlListReference on any object's `data` reported our last-registered delegate class as its
+    // element type and refused to append anything else. Measured on Qt's Fusion ComboBox: the
+    // background's child silently failed to append (`elem=ICB_delegate`) and the object came out
+    // with an empty `data`. A registered type needs no list type of its own.
+    rt.listId = QMetaType();
     rt.create = &qtd_qml_create_sub6;
     rt.userdata = t;
     rt.version = QTypeRevision::fromVersion(vmaj, vmin);
