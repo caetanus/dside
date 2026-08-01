@@ -5241,6 +5241,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // reaches, on the leaf's own notify. tryConnectMeta because that object may not
                 // exist yet at wire time (a control builds its background in componentComplete),
                 // and a throwing connect would kill the object for a reactivity detail.
+                // A bare name that is a property of THIS object belongs to THIS object — QML
+                // resolves a name in the nearest scope, and so must the dependency. Offering it to
+                // the enclosing chain first made `maximumFlickVelocity: 4 * width` inside a
+                // control's contentItem re-run when the CONTROL's width changed — before Qt had
+                // resized the contentItem — and never again. Measured on Qt's SwipeView and TabBar
+                // by mutating `width`: both matched at construction and were wrong after it.
+                if (d.find('.') == std::string::npos)
+                    if (auto qnS = g_qmlNotify.find(g_selfQmlType);
+                            qnS != g_qmlNotify.end() && qnS->second.count(d)
+                            && !qnS->second.at(d).empty()) {
+                        conns += "        connectMeta(this, \"" + qnS->second.at(d) + "\", this, \"__rcb_"
+                               + ba.first + "()\");\n";
+                        continue;
+                    }
                 if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)
                         || outerBareDep(d, so9, lf9)) {
                     conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"__rcb_"
@@ -5668,6 +5682,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // reaches, on the leaf's own notify. tryConnectMeta because that object may not
             // exist yet at wire time (a control builds its background in componentComplete),
             // and a throwing connect would kill the object for a reactivity detail.
+            // Nearest scope first — see the same guard in the base-binding wiring above.
+            if (d.find('.') == std::string::npos)
+                if (auto qnS = g_qmlNotify.find(g_selfQmlType);
+                        qnS != g_qmlNotify.end() && qnS->second.count(d) && !qnS->second.at(d).empty()) {
+                    conns += "        connectMeta(this, \"" + qnS->second.at(d) + "\", this, \""
+                           + slot + "()\");\n";
+                    continue;
+                }
             if (std::string so9, lf9; styleHintsDep(d, so9, lf9) || attachedOuterDep(d, so9, lf9)
                         || outerBareDep(d, so9, lf9)) {
                 conns += "        connectNotify(" + so9 + ", \"" + lf9 + "\", this, \"" + slot + "()\");\n";
