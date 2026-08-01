@@ -15,9 +15,19 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 
+// A reinterpret_cast to QQuickItem is a promise the CALLER cannot always keep: a QQuickPopup (and
+// every Drawer, Menu, Dialog, ToolTip built on it) is a QObject, not an Item, and Qt walked the
+// resulting garbage into a SIGSEGV inside QQuickItem::mapFromScene. Checked through the meta-object
+// instead, and refused with a code the caller prints — a document that has no item to render is a
+// fact about the document, not a crash.
+static QQuickItem *qtd_as_item(void *o) {
+    return qobject_cast<QQuickItem *>(reinterpret_cast<QObject *>(o));
+}
+
 extern "C" int qtd_render_item(void *item, const char *out) {
-    auto *it = reinterpret_cast<QQuickItem *>(item);
-    if (!it) return 1;
+    if (!item) return 1;
+    auto *it = qtd_as_item(item);
+    if (!it) return 4;   // not an Item (a Popup and friends): nothing to put in a window
     // SizeViewToRootObject sizes the root from its IMPLICIT size when it has no explicit one, and
     // then sets the item to that size. A Control's whole geometry comes from there — reading
     // width() alone gave 1x1 for a Pane the engine draws at 24x24, which reads as a render defect
@@ -38,8 +48,9 @@ extern "C" int qtd_render_item(void *item, const char *out) {
 // This is the BEHAVIOUR half of the criterion: a document can render pixel-identically and still
 // not react to input — a MouseArea whose handler never runs looks exactly right in a frame.
 extern "C" int qtd_click_item(void *item, int x, int y) {
-    auto *it = reinterpret_cast<QQuickItem *>(item);
-    if (!it) return 1;
+    if (!item) return 1;
+    auto *it = qtd_as_item(item);
+    if (!it) return 5;   // not an Item — see qtd_as_item
     static QQuickWindow *win = nullptr;      // outlives the call: the item stays in a live scene
     win = new QQuickWindow();
     win->setWidth(qMax(1, int(it->width())));
@@ -62,8 +73,9 @@ extern "C" int qtd_click_item(void *item, int x, int y) {
 // to a click, and still never see a key — which no frame comparison and no click test can reveal.
 // The item must have focus for the scene to route the event to it, so this sets it.
 extern "C" int qtd_key_item(void *item, int key, int modifiers) {
-    auto *it = reinterpret_cast<QQuickItem *>(item);
-    if (!it) return 1;
+    if (!item) return 1;
+    auto *it = qtd_as_item(item);
+    if (!it) return 5;   // not an Item — see qtd_as_item
     static QQuickWindow *win = nullptr;      // outlives the call, like the click path
     win = new QQuickWindow();
     win->setWidth(qMax(1, int(it->width())));
@@ -91,8 +103,9 @@ extern "C" int qtd_key_item(void *item, int key, int modifiers) {
 // never ticks — invisible to a property dump (read too early), to a frame comparison (one frame),
 // and to a click test. Time is its own axis.
 extern "C" int qtd_run_ms(void *item, int ms) {
-    auto *it = reinterpret_cast<QQuickItem *>(item);
-    if (!it) return 1;
+    if (!item) return 1;
+    auto *it = qtd_as_item(item);
+    if (!it) return 5;   // not an Item — see qtd_as_item
     static QQuickWindow *win = nullptr;
     win = new QQuickWindow();
     win->setWidth(qMax(1, int(it->width())));
