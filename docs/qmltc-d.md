@@ -1598,6 +1598,30 @@ Tried and removed rather than left in: an assignment path for declared object pr
 right rule and it cannot fire until the scoping is fixed — every `control:` in this corpus is the
 shadowed form — and untested code that never runs is worse than no code.
 
+### Fusion's biggest cluster, diagnosed: a declared type WEAKER than the object it gets (2026-08-01)
+
+About 80 of Fusion's remaining refusals are one shape: `indicator.control.checkState`, where the
+indicator declares `property Item control` and the use site assigns a CheckBox. The path is typed
+now (a declared object property can be walked through), and the read still fails — because `Item`
+has no `down`, no `checkState`, no `visualFocus`. QML does not care; a typed walk does.
+
+Isolated in six lines: the same read against a member `Item` DOES have (`enabled`) compiles and
+emits `propBool(propObj(__outer, "control"), "enabled")`. So the machinery is right and the TYPE is
+the problem.
+
+Two ways out, and only one of them is honest here:
+
+- read the member untyped through the meta-object. Tried before for a different cluster and
+  REVERTED by measurement: it also accepts a model ROLE as if it were a property, which is how
+  TreeViewDelegate died on `display`. Not this.
+- take the type from the ASSIGNMENT instead of the declaration: the use site writes
+  `control: control`, and the compiler knows exactly what that is (it is the enclosing document's
+  root, whose type it has). The document already says what the object is — the same pattern that
+  fixed `background.border` and the delegate's enclosing scope.
+
+The second is the next step. It needs the use-site assignment to record the assigned type against
+the declared property, which is one map away from what `g_declObjProps` already holds.
+
 ## Where the four axes stand (2026-08-01, end of day)
 
 Over Qt's own 57 Basic control documents, with the engine as the specification:
