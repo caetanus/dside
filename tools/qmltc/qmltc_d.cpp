@@ -96,6 +96,14 @@ static std::map<std::string, std::string> g_qmlTypeUri;
 static std::map<std::string, std::vector<std::string>> g_qmlTypeUris;
 // <QML type of a document-defined class> -> its declared OBJECT properties -> their QML type.
 static std::map<std::string, std::map<std::string, std::string>> g_declObjProps;
+
+// A type defined by a .qml FILE has no rows of its own: the registry only knows the type it DERIVES
+// from. Copying that type's rows under the local name makes every lookup that carries a QML type
+// name work for it too — a frame typed `ButtonPanel` could not answer `enabled`, so a binding on
+// `panel.enabled` two levels down was refused for want of a notify the registry does publish (under
+// `Rectangle`). Copied, not aliased, so the local type's own declarations can be added later
+// without touching the base.
+static void adoptLocalTypeRows(const std::string &localName, const std::string &baseQmlType);
 // The URI for `typeName` that THIS document imports, or the registry's first answer.
 // (defined below g_bareImports, which it consults)
 static std::string uriForType(const std::string &typeName);
@@ -3378,6 +3386,14 @@ static bool unboundChildType(const std::string &t, const std::string &bound, con
 // it is registered here and resolved through the same lookup.
 static std::map<std::string, UiObjectDefinition *> g_inlineTypes;
 
+static void adoptLocalTypeRows(const std::string &localName, const std::string &baseQmlType) {
+    if (localName.empty() || baseQmlType.empty() || localName == baseQmlType) return;
+    if (g_qmlProps.count(localName)) return;   // a real QML type, or already adopted
+    if (auto p = g_qmlProps.find(baseQmlType); p != g_qmlProps.end()) g_qmlProps[localName] = p->second;
+    if (auto n = g_qmlNotify.find(baseQmlType); n != g_qmlNotify.end()) g_qmlNotify[localName] = n->second;
+    if (auto c = g_qmlCxxType.find(baseQmlType); c != g_qmlCxxType.end()) g_qmlCxxType[localName] = c->second;
+}
+
 static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
                                          std::string *outPath = nullptr, bool *isSingleton = nullptr) {
     if (auto ic = g_inlineTypes.find(typeName); ic != g_inlineTypes.end()) {
@@ -4493,6 +4509,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (UiObjectDefinition *lt = loadLocalType(cb.type, inPath, &dResolved)) {
                         std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
                         dbt = boundTypeFor(ltRoot);
+                        adoptLocalTypeRows(cb.type, ltRoot);   // the registry knows the BASE, not the file
                         dInit = spliceUseSite(lt->initializer, cb.init);
                         // The registry knows the type it DERIVES from, not the local name: an
                         // inline component has no rows of its own, so `border.width` on a
@@ -4609,6 +4626,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (UiObjectDefinition *lt = loadLocalType(cb.type, inPath, &cbResolvedPath)) {
                 std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
                 cbt = boundTypeFor(ltRoot);
+                adoptLocalTypeRows(cb.type, ltRoot);   // the registry knows the BASE, not the file
                 cbInit = spliceUseSite(lt->initializer, cb.init);
             }
         }
@@ -4766,6 +4784,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
             childBase = boundTypeFor(ltRoot).first;
+            adoptLocalTypeRows(childType, ltRoot);   // the registry knows the BASE, not the file
             childBaseImport = boundTypeFor(ltRoot).second;
             childInit = lt->initializer;
             // Use-site members (`HelloWorld { property string text: ... }`) EXTEND the local type:
@@ -5708,6 +5727,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (UiObjectDefinition *lt = loadLocalType(ak.type, inPath, &akResolvedPath)) {
                 std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
                 akt = boundTypeFor(ltRoot);
+                adoptLocalTypeRows(ak.type, ltRoot);   // the registry knows the BASE, not the file
                 akInit = spliceUseSite(lt->initializer, ak.init);
             }
         }
@@ -6938,6 +6958,7 @@ int main(int argc, char **argv) {
             g_localMerged = true;
             std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
             bt = boundTypeFor(ltRoot);
+            adoptLocalTypeRows(rootType, ltRoot);   // the registry knows the BASE, not the file
             rootInit = lt->initializer ? lt->initializer : root->initializer;
             if (lt->initializer && root->initializer && root->initializer->members) {
                 if (!lt->initializer->members) lt->initializer->members = root->initializer->members;
