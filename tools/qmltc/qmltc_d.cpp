@@ -2398,6 +2398,20 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             // which is exactly what an enum property looks like in the tables.
             auto enumRead = [&](ExpressionNode *x, std::string &outRead) {
                 std::string tmp;
+                // The BARE form of the same read: Qt's ScrollBar writes
+                // `orientation === Qt.Horizontal`, not `control.orientation === ...`. Only the
+                // qualified form was accepted, so the whole binding (`minimumSize`) was refused for
+                // the spelling rather than for the shape.
+                if (auto *idb = cast<IdentifierExpression *>(x)) {
+                    std::string n0 = qs(idb->name.toString());
+                    if (g_scope.count(n0) || g_childIds.count(n0) || g_vgroups.count(n0)) return false;
+                    if (auto qp = g_qmlProps.find(g_selfQmlType);
+                            qp != g_qmlProps.end() && qp->second.count(n0)) return false;   // a scalar
+                    auto qc = g_qmlCxxType.find(g_selfQmlType);
+                    if (qc == g_qmlCxxType.end() || !qc->second.count(n0)) return false;
+                    outRead = "propStr(this, \"" + n0 + "\")";
+                    return true;
+                }
                 auto *fm2 = cast<FieldMemberExpression *>(x);
                 if (!fm2) return false;
                 // ...or a member of a Qt global object, whose base is a CHAIN, not an identifier.
