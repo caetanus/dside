@@ -4719,6 +4719,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             auto enumKeyOf = [&](ExpressionNode *x) -> std::string {
                 auto *fme = cast<FieldMemberExpression *>(x);
                 if (!fme) return "";
+                // ...also when the type is reached through an IMPORT ALIAS (`T.Popup.CloseOnEscape`):
+                // the base is then a member expression, not an identifier. Same shape the comparison
+                // path needed; this is the ASSIGNMENT side of it.
+                if (auto *fmq = cast<FieldMemberExpression *>(fme->base))
+                    if (auto *ba2 = cast<IdentifierExpression *>(fmq->base);
+                            ba2 && g_importAliases.count(qs(ba2->name.toString()))) {
+                        std::string tq = qs(fmq->name.toString()), mq = qs(fme->name.toString());
+                        if (mq.empty() || !std::isupper((unsigned char) mq[0])) return "";
+                        if (!knownTypeName(tq)) return "";
+                        return mq;
+                    }
                 auto *tb = cast<IdentifierExpression *>(fme->base);
                 if (!tb) return "";
                 std::string tn = qs(tb->name.toString()), mem = qs(fme->name.toString());
