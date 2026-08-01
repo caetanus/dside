@@ -1460,6 +1460,20 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         return false;
     }
     if (auto *f2 = cast<FieldMemberExpression *>(x)) {
+        // `parent.parent` — `parent` is the enclosing object here (Qt sets the visual parent AFTER
+        // construction, so it resolves to the back-reference, not to propObj(this,"parent")), and
+        // its parent is one level further out. Reading it through the meta-object would read null
+        // at wire time, which is exactly what the `parent` special case exists to avoid.
+        if (auto *bp = cast<IdentifierExpression *>(f2->base);
+                bp && qs(bp->name.toString()) == "parent"
+                && qs(f2->name.toString()) == "parent"
+                && !g_scope.count("parent") && !g_childIds.count("parent")
+                && g_outerChain.size() >= 2) {
+            g_outerUsed = true;
+            if (g_outerHopsNeeded < 1) g_outerHopsNeeded = 1;
+            oe = "__outer.__outer"; oq = g_outerChain[1].qmlType;
+            return true;
+        }
         std::string be, bq;
         if (!objPathExpr(f2->base, be, bq)) return false;
         std::string mem2 = qs(f2->name.toString());
