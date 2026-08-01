@@ -1432,6 +1432,18 @@ static bool objPropQml(const std::string &owner, const std::string &prop, std::s
 // does — so connecting to the head is connecting to nothing.
 static bool objPathFromString(const std::string &dotted, std::string &objExpr, std::string &leafSig);
 static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
+    // `(contentItem as ListView).width` — parentheses and a type assertion wrap the object without
+    // changing it, so the walk continues through both. Not unwrapping them stopped the path at the
+    // first hop, which is why compiling `as` alone was not enough.
+    if (auto *ne = cast<NestedExpression *>(x)) return objPathExpr(ne->expression, oe, oq);
+    if (auto *ba = cast<BinaryExpression *>(x); ba && ba->op == QSOperator::As) {
+        // NOTE: the ASSERTED type is deliberately NOT used to retype the walk yet. It should be —
+        // that is what `as` means, and `contentItem` being declared QQuickItem* is why
+        // `(contentItem as ListView).contentWidth` still fails while `.width` compiles. Tried and
+        // measured: overriding oq from the TypeExpression changed nothing, so the block is
+        // elsewhere and guessing further would be shipping something unverified.
+        return objPathExpr(ba->left, oe, oq);
+    }
     if (auto *id = cast<IdentifierExpression *>(x)) {
         std::string n2 = qs(id->name.toString());
         // A GROUP name is allowed here: the group IS an object property of this object, and the
