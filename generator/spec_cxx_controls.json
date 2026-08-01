@@ -36,6 +36,8 @@
     "QtQuick/private/qquicktextinput_p.h",
     "QtQuick/private/qquickmousearea_p.h",
     "QtQuick/private/qquickanimatedimage_p.h",
+    "QtQuick/private/qquickanimation_p.h",
+    "QtQuick/private/qquickanimator_p.h",
     "QtQuick/private/qquickborderimage_p.h",
     "QtQuick/private/qquickdroparea_p.h",
     "QtQuick/private/qquickflickable_p.h",
@@ -144,8 +146,7 @@
   "subclass_derived": [
     "QQuickItem",
     "QQuickPopup",
-    "QQuickTransform"
-  ],
+    "QQuickTransform", "QQuickAbstractAnimation"],
   "qmltypes": [
     "/usr/lib/qt6/qml/QtQuick/Templates/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes",
