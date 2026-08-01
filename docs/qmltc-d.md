@@ -1662,11 +1662,21 @@ to a singleton call, overload selection by argument count, use-site scoping, dec
 properties (declared, assigned, and walked through), the registry rows a local type inherits, and
 singletons that are not dependencies.
 
-The largest remaining Fusion clusters, measured: `Color.transparent(indicator.checkMarkColor)` (28 —
-a singleton call whose argument is a declared COLOR property, which is still refused as a declared
-type), `indicator.control.checkState === …` (12), and a singleton reached through an IMPORT ALIAS
-(`FusionControls.Fusion.gradientStart(…)`, 8 — tried once and the branch did not fire, so it needs
-the call shape traced before writing more).
+The largest remaining Fusion clusters, measured — and one of them is now cut in half by isolation:
+
+- a singleton call whose argument is a COLOUR READ (`Color.transparent(indicator.checkMarkColor)`,
+  28; `FusionControls.Fusion.gradientStart(backgroundRect.color)`, 8). The IMPORT ALIAS half of the
+  second one is done (both the gate that decides to compile the call as text and the compiler that
+  does it step past the alias), and three isolations put the line exactly: `color: bg.color`
+  compiles (a direct copy), `FC.Fusion.gradientStart("#abcdef")` compiles (aliased call, literal
+  argument), and `FC.Fusion.gradientStart(bg.color)` does NOT. So what is missing is reading a
+  QColor property through an id AS A STRING ARGUMENT — not the alias, not the call;
+- `indicator.control.checkState === …` (12).
+
+Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
+assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
+in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
+one line.
 
 ## Where the four axes stand (2026-08-01, end of day)
 

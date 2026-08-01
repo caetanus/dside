@@ -2284,8 +2284,14 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // the arguments cross as TEXT and QMetaType converts each to the parameter's own type, the
         // same channel every property here uses. So this is one mechanism for every method of
         // every singleton, not a rule about blend.
-        if (recv) {
-            std::string sn = qs(recv->name.toString());
+        std::string recvAlias;   // the singleton's name when it arrived through an import alias
+        if (!recv)
+            if (auto *fmA = cast<FieldMemberExpression *>(fm ? fm->base : nullptr))
+                if (auto *idA = cast<IdentifierExpression *>(fmA->base);
+                        idA && g_importAliases.count(qs(idA->name.toString())))
+                    recvAlias = qs(fmA->name.toString());
+        if (recv || !recvAlias.empty()) {
+            std::string sn = recvAlias.empty() ? qs(recv->name.toString()) : recvAlias;
             auto sg = g_qmlSingletonUri.find(sn);
             if (sg != g_qmlSingletonUri.end() && !g_scope.count(sn) && !g_childIds.count(sn)
                     && (g_selfId.empty() || sn != g_selfId)) {
@@ -5363,13 +5369,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
         if (copyAssign.empty() && !scalar)
             if (auto *cx = cast<CallExpression *>(ba.second))
-                if (auto *cfm = cast<FieldMemberExpression *>(cx->base))
+                if (auto *cfm = cast<FieldMemberExpression *>(cx->base)) {
+                    // The receiver is an identifier (`Fusion.buttonColor(…)`) or a singleton reached
+                    // through an IMPORT ALIAS (`FusionControls.Fusion.gradientStart(…)`, which Qt's
+                    // own Fusion writes wherever it imports its module aliased). The alias is not a
+                    // value — what decides is the name AFTER it.
+                    std::string sName;
                     if (auto *crv = cast<IdentifierExpression *>(cfm->base))
-                        if (g_qmlSingletonUri.count(qs(crv->name.toString()))
-                                && compileExpr(ba.second, "string", val)) {
-                            scalar = true;
-                            ty = "string";
-                        }
+                        sName = qs(crv->name.toString());
+                    else if (auto *cfa = cast<FieldMemberExpression *>(cfm->base))
+                        if (auto *cia = cast<IdentifierExpression *>(cfa->base);
+                                cia && g_importAliases.count(qs(cia->name.toString())))
+                            sName = qs(cfa->name.toString());
+                    if (!sName.empty() && g_qmlSingletonUri.count(sName)
+                            && compileExpr(ba.second, "string", val)) {
+                        scalar = true;
+                        ty = "string";
+                    }
+                }
         // ...or the target is a DECLARED OBJECT property and the value is an object: `control:
         // control` on Qt's Fusion ButtonPanel, where the right-hand side is the enclosing Button
         // (the use-site scope rule above is what makes it resolve to that and not to the property
