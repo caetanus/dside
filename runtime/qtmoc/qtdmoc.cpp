@@ -460,6 +460,62 @@ extern "C" void qtd_ensure_module(const char* uri) {
 #endif
 }
 
+// Invoke a Q_INVOKABLE by NAME with mixed arguments: text (converted to the declared parameter type
+// by QMetaType, the same channel every value here travels) and OBJECT pointers, which no text can
+// stand in for. Qt's Fusion style computes almost every colour this way —
+// `Fusion.buttonColor(control.palette, highlighted, down, hovered)` — and a string-only invoke could
+// not pass the palette. The result comes back as text for the same reason.
+extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int* kinds,
+                                  void* const* vals) {
+    if (!o || !method) return new QString();
+    QObject* obj = static_cast<QObject*>(o);
+    const QMetaObject* mo = obj->metaObject();
+    int idx = -1;
+    for (int i = 0; i < mo->methodCount(); ++i) {
+        QMetaMethod m = mo->method(i);
+        if (m.name() == QByteArray(method) && m.parameterCount() == n) { idx = i; break; }
+    }
+    if (idx < 0) {
+        std::fprintf(stderr, "qtd: no invokable '%s' with %d argument(s) on %s\n", method, n,
+                     mo->className());
+        return new QString();
+    }
+    QMetaMethod m = mo->method(idx);
+    // Qt5 names these differently (int ids, not QMetaType) — the same unit compiles for both.
+#if QT_VERSION >= 0x060000
+    const QMetaType retType = m.returnMetaType();
+    auto paramType = [&](int i) { return m.parameterMetaType(i); };
+#else
+    const QMetaType retType(m.returnType());
+    auto paramType = [&](int i) { return QMetaType(m.parameterType(i)); };
+#endif
+#if QT_VERSION >= 0x060000
+    QVariant ret(retType);
+#else
+    QVariant ret(retType.id(), nullptr);   // Qt5: QVariant has no QMetaType ctor
+#endif
+    std::vector<QVariant> conv(n);
+    std::vector<void*> argv(n + 1, nullptr);
+    argv[0] = retType.id() == QMetaType::Void ? nullptr : ret.data();
+    for (int i = 0; i < n; ++i) {
+        if (kinds[i] == 1) { argv[i + 1] = const_cast<void**>(&vals[i]); continue; }  // pointer slot
+        QVariant v(QString::fromUtf8(static_cast<const char*>(vals[i])));
+#if QT_VERSION >= 0x060000
+        if (!v.convert(paramType(i))) {
+#else
+        if (!v.convert(paramType(i).id())) {
+#endif
+            std::fprintf(stderr, "qtd: argument %d of '%s' does not convert to %s\n", i, method,
+                         QByteArray(paramType(i).name()).constData());
+            return new QString();
+        }
+        conv[i] = v;
+        argv[i + 1] = conv[i].data();
+    }
+    QMetaObject::metacall(obj, QMetaObject::InvokeMetaMethod, idx, argv.data());
+    return new QString(ret.toString());
+}
+
 // The nearest ENCLOSING object of a given class, found by walking Qt parents. An object the ENGINE
 // creates (a delegate instance) cannot be handed its enclosing document object the way a compiled
 // child is — it is created by a view, not by its parent — but it IS parented into that document's

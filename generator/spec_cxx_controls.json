@@ -152,7 +152,8 @@
     "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/Controls/impl/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/Controls/Basic/impl/plugins.qmltypes",
-    "/usr/lib/qt6/qml/QtQuick/Controls/Fusion/impl/plugins.qmltypes"
+    "/usr/lib/qt6/qml/QtQuick/Controls/Fusion/impl/plugins.qmltypes",
+    "/usr/lib/qt6/qml/QtQuick/Controls/Fusion/plugins.qmltypes"
   ],
   "subclass": [
     "QQuickAction",

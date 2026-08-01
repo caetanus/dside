@@ -2256,16 +2256,26 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                 if (compileExpr(a->expression, pt == "bool" ? "bool" : "double", one))
                                     as.push_back("to!string(" + one + ")");
                                 else ok2 = false;
-                            } else if (compileExpr(a->expression, "string", one)) as.push_back(one);
+                            }
+                            // An OBJECT parameter cannot travel as text: Qt's Fusion computes every
+                            // colour from `Fusion.buttonColor(control.palette, …)`, and a palette is
+                            // a pointer. Passed as one; the helper marshals text and objects side by
+                            // side.
+                            else if (!pt.empty() && pt.back() == '*') {
+                                std::string oe8, oq8;
+                                if (objPathExpr(a->expression, oe8, oq8)) as.push_back(oe8);
+                                else ok2 = false;
+                            }
+                            else if (compileExpr(a->expression, "string", one)) as.push_back(one);
                             else ok2 = false;
                         }
                         if (ok2 && as.size() == ptypes.size()) {
                             std::string joined;
                             for (auto &x : as) joined += (joined.empty() ? "" : ", ") + x;
-                            std::string c2 = "invokeStr(qmlSingleton(\"" + sg->second.first + "\", \""
+                            std::string c2 = "invokeMixed(qmlSingleton(\"" + sg->second.first + "\", \""
                                 + sn + "\", " + std::to_string(sg->second.second.first) + ", "
-                                + std::to_string(sg->second.second.second) + "), \"" + mn2 + "\", ["
-                                + joined + "])";
+                                + std::to_string(sg->second.second.second) + "), \"" + mn2 + "\", "
+                                + joined + ")";
                             if (dtype == "string") { out = c2; return true; }
                             if (dtype == "double" || dtype == "int" || dtype == "bool") {
                                 out = "(" + c2 + ").to!" + dtype.toStdString(); return true;

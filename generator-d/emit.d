@@ -573,8 +573,13 @@ void main(string[] args) {
                         if (mn.empty) continue;
                         auto mt = sig.matchFirst(reMType);
                         string ps;
-                        foreach (pp; sig.matchAll(regex(`Parameter \{[^}]*type: "([^"]+)"`)))
-                            ps ~= (ps.length ? "," : "") ~ pp[1];
+                        // ...with the POINTER marker the registry gives (`isPointer: true`). Qt's
+                        // Fusion computes its colours from `buttonColor(QQuickPalette*, bool, …)`,
+                        // and without the `*` the compiler could not tell an object parameter from
+                        // a value it could pass as text — so every one of those calls was refused.
+                        foreach (pp; sig.matchAll(regex(`Parameter \{([^}]*)type: "([^"]+)"([^}]*)\}`)))
+                            ps ~= (ps.length ? "," : "") ~ pp[2]
+                                ~ ((pp[1] ~ pp[3]).canFind("isPointer: true") ? "*" : "");
                         methodRows ~= qn0[2] ~ "\t" ~ mn[1] ~ "\t" ~ (mt.empty ? "" : mt[1])
                                     ~ "\t" ~ ps ~ "\n";
                     }

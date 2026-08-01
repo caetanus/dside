@@ -895,6 +895,25 @@ void* styleHintsObj() { return qtd_style_hints(); }
 /// is not always the field we appended from.
 void* listAt(T)(T o, string prop, int i) { return qtd_list_at(qobjOf(o), (prop ~ "\0").ptr, i); }
 
+private extern(C) void* qtd_invoke_mixed(void*, const(char)*, int, const(int)*, const(void*)*);
+/// Call a Q_INVOKABLE by name with mixed arguments — TEXT (QMetaType converts it to the declared
+/// parameter type) and OBJECTS, which no text can stand in for. Qt's Fusion style computes its
+/// colours as `Fusion.buttonColor(control.palette, …)`; the palette has to travel as a pointer.
+string invokeMixed(T, A...)(T recv, string method, A args) {
+    int[A.length] kinds; const(void)*[A.length] vals;
+    string[A.length] keep;
+    static foreach (i, a; args) {
+        static if (is(typeof(a) == string)) {
+            keep[i] = a ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        } else {
+            kinds[i] = 1; vals[i] = qobjOf(a);
+        }
+    }
+    auto p = qtd_invoke_mixed(qobjOf(recv), (method ~ "\0").ptr, cast(int) A.length,
+                              kinds.ptr, vals.ptr);
+    auto s = qsToD(p); qtd_qs_free(p); return s;
+}
+
 private extern(C) void* qtd_find_outer(void*, const(char)*);
 /// The nearest ENCLOSING object of class `cls`, by visual then QObject parent, as the D OBJECT
 /// (what a cast to the generated class needs). What a compiled child gets handed at construction,
