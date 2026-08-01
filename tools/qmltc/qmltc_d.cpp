@@ -435,7 +435,13 @@ static bool g_isValueSource = false;
 // since `cast(T) someVoidPtr` in D is an unchecked reinterpret, that read a different object's
 // fields rather than failing. Qt's Controls nest two and three deep routinely.
 struct OuterFrame { std::string id, cls, qmlType;
-                    std::map<std::string, std::string> propType, baseProps; };
+                    std::map<std::string, std::string> propType, baseProps;
+                    // What the DOCUMENT declares each property-bound child to be. The registry types
+                    // `background` as QQuickItem* because that is the property's declared type, but
+                    // the file says `background: Rectangle {}` — and Item has no `border` while
+                    // Rectangle does. Following that hop by NAME instead is not an option: it also
+                    // follows model roles, which is how TreeViewDelegate died on `display`.
+                    std::map<std::string, std::string> childTypes; };
 static std::vector<OuterFrame> g_outerChain;
 static int g_outerHopsNeeded = -1;   // deepest hop this object used; drained by its parent
 // Out-channel: a child that connects to `__outer.<prop>` needs that property to CARRY a notify,
@@ -915,6 +921,8 @@ struct ChildRef {
     std::set<std::string> methods0;
 };
 static std::map<std::string, ChildRef> g_childIds;
+// property name -> type the DOCUMENT declares for the object bound to it (see OuterFrame::childTypes)
+static std::map<std::string, std::string> g_childDeclType;
 
 // Properties a PARENT binding depends on, per child id. The child decides which of its properties
 // get a change signal, but only the parent knows it reads them — so the requirement is recorded
@@ -997,11 +1005,28 @@ static void prescanChildIds(UiObjectInitializer *init) {
             prescanChildBody(ci, field, dod->qualifiedTypeNameId);
             continue;
         }
+        // `background: Rectangle {}` — a property bound to an object, written as a plain member
+        // rather than a `property` declaration. Nothing else here records it, so the FILE's word on
+        // what `background` is was lost and `background.border` fell back to the property's declared
+        // type (QQuickItem, which has no border). Record-only: the child itself is compiled
+        // elsewhere, this just remembers its type for the path resolver.
+        if (auto *tob = cast<UiObjectBinding *>(m->member); tob && tob->qualifiedTypeNameId) {
+            std::string fn = qname(tob->qualifiedId);
+            if (!fn.empty() && fn.find('.') == std::string::npos)
+                g_childDeclType[fn] = typeName(tob->qualifiedTypeNameId);
+        }
         if (!pub || pub->type != UiPublicMember::Property || !pub->binding) continue;
-        if (auto *ob = cast<UiObjectBinding *>(pub->binding)) ci = ob->initializer;
-        else if (auto *od = cast<UiObjectDefinition *>(pub->binding)) ci = od->initializer;
+        std::string declTy;
+        if (auto *ob = cast<UiObjectBinding *>(pub->binding)) {
+            ci = ob->initializer;
+            if (ob->qualifiedTypeNameId) declTy = typeName(ob->qualifiedTypeNameId);
+        } else if (auto *od = cast<UiObjectDefinition *>(pub->binding)) {
+            ci = od->initializer;
+            if (od->qualifiedTypeNameId) declTy = typeName(od->qualifiedTypeNameId);
+        }
         if (!ci) continue;
         field = qs(pub->name.toString());
+        if (!declTy.empty()) g_childDeclType[field] = declTy;
         std::map<std::string, std::string> pts, bps, bns;
         // Seed from the child's bound type (its own properties), then let QML-declared ones win.
         {
@@ -1467,6 +1492,9 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         for (size_t k = 0; k < g_outerChain.size(); ++k) {
             pre3 += "__outer.";
             if (objPropQml(g_outerChain[k].qmlType, n2, oq)) {
+                if (auto d1 = g_outerChain[k].childTypes.find(n2);
+                        d1 != g_outerChain[k].childTypes.end() && g_qmlCxxType.count(d1->second))
+                    oq = d1->second;   // what the FILE declares, not what the property's type says
                 g_outerUsed = true;
                 if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
                 oe = "propObj(" + pre3.substr(0, pre3.size() - 1) + ", \"" + n2 + "\")";
@@ -1638,6 +1666,9 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     for (size_t k = 0; k < g_outerChain.size(); ++k) {
         pre3 += "__outer.";
         if (objPropQml(g_outerChain[k].qmlType, n2, oq)) {
+            if (auto d1 = g_outerChain[k].childTypes.find(n2);
+                    d1 != g_outerChain[k].childTypes.end() && g_qmlCxxType.count(d1->second))
+                oq = d1->second;   // what the FILE declares, not what the property's type says
             g_outerUsed = true;
             if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
             oe = "propObj(" + pre3.substr(0, pre3.size() - 1) + ", \"" + n2 + "\")";
@@ -2602,6 +2633,30 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                      return path(fm, qp2) && qp2.rfind("Qt.styleHints.", 0) == 0;
                  }())
             ids.push_back(qp2);
+        // A DEEP object path whose head is not an id: `background.border.width`, where `background`
+        // is a property of the enclosing object. The branch above only handles a two-hop path off an
+        // identifier, so this fell through to the recursion and recorded the HEAD — and `background`
+        // has no D-typed row (object properties carry no scalar type), so the wiring reported "no
+        // known notify" for a path whose leaf has one. Record the whole path: the wire re-resolves
+        // it with the same walk and connects on the leaf.
+        else if (std::string dp7, oe7, sig7; [&]{
+                     std::function<bool(ExpressionNode *, std::string &)> path7 =
+                         [&](ExpressionNode *x, std::string &outp) -> bool {
+                         if (auto *idq = cast<IdentifierExpression *>(x)) {
+                             outp = qs(idq->name.toString());
+                             return true;
+                         }
+                         if (auto *fq = cast<FieldMemberExpression *>(x)) {
+                             std::string h;
+                             if (!path7(fq->base, h)) return false;
+                             outp = h + "." + qs(fq->name.toString());
+                             return true;
+                         }
+                         return false;
+                     };
+                     return path7(fm, dp7) && objPathFromString(dp7, oe7, sig7);
+                 }())
+            ids.push_back(dp7);
         else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
         return;
     }
@@ -3313,7 +3368,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedOuterChain = g_outerChain;
     if (!g_selfClass.empty())
         g_outerChain.insert(g_outerChain.begin(),
-                            OuterFrame{savedId, g_selfClass, savedSelfQmlType, g_propType, g_baseProps});
+                            OuterFrame{savedId, g_selfClass, savedSelfQmlType, g_propType, g_baseProps,
+                                       g_childDeclType});
     if (!g_outerChain.empty()) {
         g_outerId = g_outerChain[0].id;
         g_outerClass = g_outerChain[0].cls;
@@ -3351,6 +3407,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedPropType = g_propType;
     auto savedChildIds = g_childIds;
     g_childIds.clear();
+    auto savedChildDecl = g_childDeclType;
+    g_childDeclType.clear();
     prescanChildIds(init);
     auto savedAliasRead = g_aliasRead;
     auto savedAliasDep = g_aliasDep;
@@ -6011,6 +6069,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     node.outerHops = g_outerHopsNeeded;
     g_outerHopsNeeded = savedHops;
     g_outerChain = savedOuterChain;
+    g_childDeclType = savedChildDecl;
     g_outerUsed = savedOuterUsed;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
