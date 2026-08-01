@@ -13,7 +13,16 @@ for f in $B/*.qml; do
   # failed write by throwing (which is right); the oracle silently ignores it, so comparing the
   # two would blame the compiler for the test's own bad input.
   grep -q "^${MUT%%=*}	" "$SP/cr/$n.dall.s" || continue
-  timeout 30 "$SP/cr/i$n.bin" "--set:$MUT" --dumpall 2>/dev/null </dev/null | sort > "$SP/cr/$n.rd" || { echo "$n ours-died" >> "$SP/react.txt"; continue; }
+  # ...and only where it is WRITABLE. `mirrored` is readable and read-only (Qt derives it from
+  # LayoutMirroring), so the mutation is the test's own bad input: our side reports the failed write
+  # by throwing, the oracle ignores it, and comparing them would blame the compiler. Told apart from
+  # a real crash by the message, and COUNTED — a skip nobody sees is how an axis quietly measures
+  # less than it claims.
+  if ! timeout 30 "$SP/cr/i$n.bin" "--set:$MUT" --dumpall 2>"$SP/cr/$n.rerr" </dev/null | sort > "$SP/cr/$n.rd"; then
+    if grep -q "no writable property" "$SP/cr/$n.rerr"; then echo "$n skip-readonly" >> "$SP/react.txt"
+    else echo "$n ours-died" >> "$SP/react.txt"; fi
+    continue
+  fi
   timeout 30 "$L/qmlvalues" "$f" "$MUT" --dumpall "$SP/cr/$n.objs" 2>/dev/null </dev/null | sort > "$SP/cr/$n.rq" || { echo "$n oracle-died" >> "$SP/react.txt"; continue; }
   [ -s "$SP/cr/$n.rq" ] || { echo "$n oracle-empty" >> "$SP/react.txt"; continue; }
   d=$(diff "$SP/cr/$n.rd" "$SP/cr/$n.rq" | grep -c '^[<>]')
