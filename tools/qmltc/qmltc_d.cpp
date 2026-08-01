@@ -5257,6 +5257,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     std::string oe6, sig6;
                     if (objPathFromString(dEff, oe6, sig6)) {
                         conns += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                        // ...and the object's OWN "something changed" signal. A value group can
+                        // change what it RESOLVES to without any member signal firing: disabling a
+                        // control switches its palette group, `windowTextChanged()` never fires,
+                        // and the colour stayed at the enabled one. Measured on Qt's Label —
+                        // `changed()` on the palette object is what the engine's binding follows.
+                        // tryConnectMeta because a group without that signal simply has none.
+                        conns += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"__rcb_"
+                              + ba.first + "()\");\n";
                         continue;
                     }
                     // ...and when it does not resolve, depend on the HEAD, which is what this did
@@ -5670,6 +5678,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string oe6, sig6;
                 if (objPathFromString(dEff, oe6, sig6)) {
                     conns += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"" + slot + "()\");\n";
+                    conns += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"" + slot + "()\");\n";
                     continue;
                 }
                 dEff = dEff.substr(0, dEff.find('.'));   // as before: depend on the head
@@ -6155,6 +6164,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         if (objPathFromString(dEff, oe7, sig7)) {
                             wire += "        tryConnectMeta(" + oe7 + ", \"" + sig7
                                   + "\", this, \"__rc_" + p.name + "()\");\n";
+                            wire += "        tryConnectMeta(" + oe7 + ", \"changed()\", this, \"__rc_"
+                                  + p.name + "()\");\n";
                             continue;
                         }
                         dEff = dEff.substr(0, dEff.find('.'));
