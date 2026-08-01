@@ -3248,6 +3248,18 @@ string virtCpp(string manifest, string includeLine) {
             // the D _reg), closing the QtdWidget lifetime the same way ~QtdMocObject closes newQObject.
             ~ "    ~Qtd_%s() { qtd_moc_detach((void*)this, d); }\n%s};\n"
             ~ "extern \"C\" void* qtd_sub_%s(void* dobj%s) { return new Qtd_%s(dobj%s); }\n"
+            // ...and the same trampoline built where SOMEONE ELSE allocated. QML's type
+            // registration hands `create` memory it sized itself (RegisterType::objectSize), so a
+            // D subclass can only be registered as a real Item/Control if the shim publishes the
+            // size and a placement constructor. Driven by the bound class, so it is one mechanism
+            // rather than one per registered type. qtd_sub_<T>_super is what makes the created
+            // object METACAST to its C++ base — without it the engine sees a bare QObject and a
+            // Repeater silently drops it.
+            ~ "extern \"C\" int qtd_sub_%s_size() { return (int) sizeof(Qtd_%s); }\n"
+            ~ "extern \"C\" void* qtd_sub_%s_place(void* mem, void* dobj%s) {\n"
+            ~ "    return new (mem) Qtd_%s(dobj%s); }\n"
+            ~ "extern \"C\" const void* qtd_sub_%s_super() { return &%s::staticMetaObject; }\n"
+            ~ "extern \"C\" int qtd_sub_%s_parser_cast() { return QTD_PARSER_CAST(Qtd_%s); }\n"
             // binds a runtime meta-object to the already-created trampoline (Base::staticMetaObject as super).
             ~ "extern \"C\" void qtd_sub_%s_attach(void* self, const char* cn,\n"
             ~ "    const char** sigs, int nsig, const char** slotSigs, int nslot,\n"
@@ -3256,7 +3268,12 @@ string virtCpp(string manifest, string includeLine) {
             ~ "    qtd_moc_attach(self, cn, &%s::staticMetaObject, sigs, nsig, slotSigs, nslot,\n"
             ~ "        propN, propT, propNotify, nprop, dobj, slotcb, propcb); }\n",
             t.dClass, t.cppClass, fields, moc, t.dClass, ctorPs, ctorInit, t.dClass, methods,
-            t.dClass, subPs, t.dClass, subAs, t.dClass, t.cppClass);
+            t.dClass, subPs, t.dClass, subAs,
+            t.dClass, t.dClass,                        // _size
+            t.dClass, subPs, t.dClass, subAs,          // _place
+            t.dClass, t.cppClass,                      // _super
+            t.dClass, t.dClass,                        // _parser_cast
+            t.dClass, t.cppClass);
     }
     // declares the generic moc helpers (in qtdmoc.cpp / lib qtmoc) used above.
     auto mocDecl =
@@ -3268,7 +3285,21 @@ string virtCpp(string manifest, string includeLine) {
         ~ "int qtd_moc_metacall(void*, int, int, void**);\n"
         ~ "void qtd_moc_attach(void*, const char*, const void*, const char**, int, const char**, int,\n"
         ~ "    const char**, const char**, const int*, int, void*, QtdSlotCb, QtdPropCb);\n"
-        ~ "void qtd_moc_detach(void*, void*);\n}\n";
+        ~ "void qtd_moc_detach(void*, void*);\n}\n"
+        // Placement construction (`new (mem) T`) and the QQmlParserStatus offset the QML type
+        // registration needs. The offset is what Qt's own QQmlPrivate::StaticCastSelector computes;
+        // it is spelled out here from the PUBLIC header so the shim never needs QtQml private
+        // headers, and it degrades to -1 (does not implement it) in a binding without QtQml.
+        ~ "#include <new>\n#include <type_traits>\n"
+        ~ "#if __has_include(<QQmlParserStatus>)\n#include <QQmlParserStatus>\n"
+        ~ "template<class T> static int qtd_parser_cast_of() {\n"
+        ~ "    if constexpr (std::is_base_of_v<QQmlParserStatus, T>) {\n"
+        ~ "        T* p = reinterpret_cast<T*>(0x1000);\n"
+        ~ "        return int(reinterpret_cast<char*>(static_cast<QQmlParserStatus*>(p))\n"
+        ~ "                 - reinterpret_cast<char*>(p));\n"
+        ~ "    } else return -1;\n}\n"
+        ~ "#define QTD_PARSER_CAST(T) qtd_parser_cast_of<T>()\n"
+        ~ "#else\n#define QTD_PARSER_CAST(T) (-1)\n#endif\n";
     // force a synchronous paintEvent on a QWidget (headless render / test): grab()
     // renders (repaint()/processEvents() with no args are inline, no symbol). Only compiled when
     // QtWidgets is on the include path — a non-widgets binding (e.g. QtQuick) has no <QWidget>.
@@ -3307,6 +3338,16 @@ string virtD(string manifest, string dpkg, out string[] imps) {
         decls ~= format("    void qtd_sub_%s_attach(void*, const(char)*, const(char)**, int, const(char)**, int,"
             ~ " const(char)**, const(char)**, const(int)*, int, void*, __QtdSlotCb, __QtdPropCb);\n", t.dClass);
         facts ~= format("%s %s_subclass(void* ctx, %s) {\n    return cast(%s) qtd_sub_%s(ctx, %s);\n}\n",
+            t.dClass, t.dClass, factPs.join(", "), t.dClass, t.dClass, factAs.join(", "));
+        // ...and the same construction INTO memory the caller owns, plus the three facts a QML type
+        // registration needs about this class: how big the trampoline is, its C++ base meta-object
+        // (what makes an engine-created instance metacast to the real type) and whether it
+        // implements QQmlParserStatus (so the engine calls classBegin/componentComplete).
+        decls ~= format("    void* qtd_sub_%s_place(void*, void*, %s);\n", t.dClass, declPs.join(", "));
+        decls ~= format("    int qtd_sub_%s_size();\n    const(void)* qtd_sub_%s_super();\n"
+            ~ "    int qtd_sub_%s_parser_cast();\n", t.dClass, t.dClass, t.dClass);
+        facts ~= format("%s %s_subclass_place(void* mem, void* ctx, %s) {\n"
+            ~ "    return cast(%s) qtd_sub_%s_place(mem, ctx, %s);\n}\n",
             t.dClass, t.dClass, factPs.join(", "), t.dClass, t.dClass, factAs.join(", "));
         facts ~= format("enum string[] __%s_vnames = [%s];\n",
             t.dClass, t.virts.map!(v => '"' ~ v.name ~ '"').join(", "));

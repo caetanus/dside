@@ -40,6 +40,13 @@ extern (C) nothrow {
                       const(char)*, const(char)**, int, const(char)**, int,
                       const(char)**, const(char)**, const(int)*, int,
                       MakeCb, DestroyCb, SlotCb, PropCb);
+    // ...and the same for a D subclass of a BOUND type: three extra facts about the C++ carrier
+    // (trampoline size, the base's meta-object, the QQmlParserStatus offset), which the shim
+    // publishes per bound class. See qmlRegisterType.
+    void* qtd_qml_register_sub(const(char)*, int, int, const(char)*,
+                      const(char)*, const(char)**, int, const(char)**, int,
+                      const(char)**, const(char)**, const(int)*, int,
+                      MakeCb, DestroyCb, SlotCb, PropCb, int, const(void)*, int);
     void  qtd_moc_activate(void*, int, void**);
     int qtd_connect_meta(void*, const(char)*, void*, const(char)*);
     int    qtd_vgroup_get_int(void*, const(char)*, const(char)*);
@@ -494,6 +501,13 @@ private extern (C) void* __qmlMake(void* self, void* qobj) nothrow {
     if (auto f = self in _qmlFactories) return (*f)(qobj);
     return null;
 }
+// The same table for a subclass of a BOUND type: there the engine passes MEMORY, not a carrier —
+// the D object placement-constructs its own trampoline there (see QtdPlace).
+private __gshared void* delegate(void* mem) nothrow[void*] _qmlPlacers;
+private extern (C) void* __qmlMakeAt(void* self, void* mem) nothrow {
+    if (auto f = self in _qmlPlacers) return (*f)(mem);
+    return null;
+}
 private extern (C) void __qmlDestroy(void* self, void* dobj) nothrow {
     _reg.remove(dobj);   // drops the T from the registry -> the GC can collect it
 }
@@ -538,6 +552,30 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
     static foreach (i; 0 .. pnames.length) pnp[i]  = (pnames[i] ~ "\0").ptr;
     static foreach (i; 0 .. ptypes.length) ptp[i]  = (ptypes[i] ~ "\0").ptr;
     static foreach (i; 0 .. pnotif.length) pnt[i]  = pnotif[i];
+    // A subclass of a BOUND type registers differently: the engine's `create` gets memory it sized
+    // itself, so the shim's placement constructor and the bound base's meta-object are what make the
+    // created object a real Item/Control rather than a bare QObject. Everything else — signals,
+    // slots, properties, dispatch — is identical, which is why this is one branch and not one path.
+    static if (__traits(hasMember, T, "__qtdBaseName")) {
+        void* subKey = qtd_qml_register_sub(
+            (uri ~ "\0").ptr, vmaj, vmin, (qmlName ~ "\0").ptr,
+            (T.stringof ~ "\0").ptr,
+            sigp.ptr, cast(int) sigs.length, sltp.ptr, cast(int) slts.length,
+            pnp.ptr, ptp.ptr, pnt.ptr, cast(int) pnames.length,
+            &__qmlMakeAt, &__qmlDestroy, &__mocGlobalDispatch, &__mocGlobalProp,
+            T.__qtdSize(), T.__qtdSuper(), T.__qtdParserCast());
+        if (subKey is null)
+            throw new Exception("qmlRegisterType failed for " ~ T.stringof ~ " as " ~ pubKey
+                ~ " (backend returned null; see stderr)");
+        // The engine hands the placement factory the memory; the D object builds its trampoline
+        // there and wires itself exactly as `new T()` does.
+        _qmlPlacers[subKey] = (void* mem) nothrow {
+            try { return cast(void*) new T(QtdPlace(mem)); }
+            catch (Exception e) { qtdOnCallbackError(e); return null; }
+        };
+        _qmlRegistered[pubKey] = typeId;
+        return;
+    }
     void* key = qtd_qml_register_type(
         (uri ~ "\0").ptr, vmaj, vmin, (qmlName ~ "\0").ptr,
         (T.stringof ~ "\0").ptr,
@@ -668,8 +706,19 @@ string __ovTramp(T, string vn, size_t idx)() {
 /// Mixin for a Qt class subclassed in D that is ALSO @QObject: it overrides
 /// virtuals (methods named after a base virtual, e.g. paintEvent) AND has
 /// its own signals/slots/props.
+/// Memory to construct into — the tag that selects the placement constructor (see QtdWidget).
+struct QtdPlace { void* mem; }
+
 mixin template QtdWidget(Base) {
     void* _qobj;
+    // What the QML type registration needs to know about the C++ carrier. The shim publishes it
+    // per bound class; these forwarders exist because the shim's symbols are visible HERE (the
+    // mixin is instantiated in the user's module, which imports the binding's qtvirt) and not in
+    // qtmoc, where qmlRegisterType lives.
+    enum string __qtdBaseName = Base.stringof;
+    static int __qtdSize() { mixin("return qtd_sub_" ~ Base.stringof ~ "_size();"); }
+    static const(void)* __qtdSuper() { mixin("return qtd_sub_" ~ Base.stringof ~ "_super();"); }
+    static int __qtdParserCast() { mixin("return qtd_sub_" ~ Base.stringof ~ "_parser_cast();"); }
     private alias _Self = typeof(this);
     final void* __qtdObj() { return _qobj; }
     private enum string[] __vn = mixin("__" ~ Base.stringof ~ "_vnames");  // base virtuals (qtvirt)
@@ -679,7 +728,13 @@ mixin template QtdWidget(Base) {
         static if (__traits(hasMember, _Self, vn) && __qtdIsFn!(_Self, vn))
             mixin(__ovTramp!(_Self, vn, i));
 
-    this() {
+    this() { __qtdBuild(null); }
+    /// Construct INTO memory somebody ELSE allocated. QML's type registration hands its `create`
+    /// hook memory it sized itself (RegisterType::objectSize), so an object the ENGINE instantiates
+    /// can only be a real Item/Control if its C++ trampoline is placement-constructed there. Same
+    /// object and same wiring as `this()` — only the allocation differs.
+    this(QtdPlace __p) { __qtdBuild(__p.mem); }
+    private void __qtdBuild(void* __mem) {
         // 1. create the subclass trampoline, plugging in the overridden cbs (the rest null)
         enum __callArgs = () {
             string a;
@@ -688,7 +743,11 @@ mixin template QtdWidget(Base) {
                     ? "&__ov_" ~ _Self.stringof ~ "_" ~ itoa(cast(int) i) : "null");
             return a;
         }();
-        mixin("_qobj = cast(void*) " ~ Base.stringof ~ "_subclass(cast(void*) this" ~ __callArgs ~ ");");
+        if (__mem is null)
+            mixin("_qobj = cast(void*) " ~ Base.stringof ~ "_subclass(cast(void*) this" ~ __callArgs ~ ");");
+        else
+            mixin("_qobj = cast(void*) " ~ Base.stringof ~ "_subclass_place(__mem, cast(void*) this"
+                  ~ __callArgs ~ ");");
         // WRAPPER mode: adopt the C++ trampoline as our _cpp + pin (C++ holds a raw dself).
         static if (__traits(hasMember, _Self, "_adopt")) this._adopt(_qobj);
 

@@ -1016,9 +1016,17 @@ static void qtd_qml_on_destroy(void* self) {
     g_moAttach.erase(self);
     if (t && o->dobj && t->destroyInstance) t->destroyInstance(t, o->dobj);
 }
+// A subclass of a BOUND type: the D factory placement-constructs its own C++ trampoline into the
+// engine's memory and attaches its own meta-object, so there is nothing to do here but call it.
+static void qtd_qml_construct_sub(void* mem, QtdQmlType* t) {
+    qtd_thread_guard("qml_construct_sub");
+    if (!t->makeInstance(t, mem))
+        qWarning("qtd: QML instantiation of '%s' failed (D constructor threw)", t->mo->className());
+}
 #if QT_VERSION >= 0x060000
 // Qt6: RegisterType.create carries userdata (the QtdQmlType*).
 static void qtd_qml_create6(void* mem, void* udata) { qtd_qml_construct(mem, static_cast<QtdQmlType*>(udata)); }
+static void qtd_qml_create_sub6(void* mem, void* udata) { qtd_qml_construct_sub(mem, static_cast<QtdQmlType*>(udata)); }
 #else
 // Qt5: RegisterType.create is `void(*)(void*)` with NO userdata field. Give each registered type
 // its own create trampoline from a fixed pool, each hardwired (compile-time) to a slot that holds
@@ -1033,9 +1041,80 @@ static std::array<void(*)(void*), sizeof...(Is)> mkCreators(std::integer_sequenc
     return {{ &qt5_create<Is>... }};
 }
 static const auto g_qt5Creators = mkCreators(std::make_index_sequence<256>());
+// ...and a second pool for the subclass path, which constructs differently.
+static QtdQmlType* g_qt5SubTypes[256];
+static int g_qt5SubCount = 0;
+template<size_t N> static void qt5_create_sub(void* mem) { qtd_qml_construct_sub(mem, g_qt5SubTypes[N]); }
+template<size_t... Is>
+static std::array<void(*)(void*), sizeof...(Is)> mkSubCreators(std::integer_sequence<size_t, Is...>) {
+    return {{ &qt5_create_sub<Is>... }};
+}
+static const auto g_qt5SubCreators = mkSubCreators(std::make_index_sequence<256>());
 }
 #endif
 } // namespace
+
+// ...and the same registration for a D subclass of a BOUND type (`mixin QtdWidget!QQuickText`).
+// Everything the engine needs about the C++ carrier comes from the shim, keyed by the bound class:
+// how big the trampoline is, its base meta-object (so the created object METACASTS to the real
+// type — without it a Repeater silently drops the delegate as "not an Item"), and whether it
+// implements QQmlParserStatus (so classBegin/componentComplete run as they do for any QML object).
+// The D factory placement-constructs into the engine's memory and does its own meta-object attach,
+// so there is no QtdMocObject in this path at all.
+void* qtd_qml_register_sub(
+    const char* uri, int vmaj, int vmin, const char* qmlName,
+    const char* cn, const char** sigs, int nsig, const char** slotSigs, int nslot,
+    const char** propNames, const char** propTypes, const int* propNotify, int nprop,
+    void* (*makeInstance)(void*, void*), void (*destroyInstance)(void*, void*),
+    QtdSlotCb slotcb, QtdPropCb propcb,
+    int objectSize, const void* superMo, int parserCast) {
+    const QMetaObject* mo = buildMo(cn, static_cast<const QMetaObject*>(superMo),
+        sigs, nsig, slotSigs, nslot, propNames, propTypes, propNotify, nprop);
+    auto* t = new QtdQmlType{mo, nsig, nslot, nprop, slotcb, propcb, makeInstance, destroyInstance};
+    QQmlPrivate::RegisterType rt{};
+    rt.objectSize = objectSize;
+    rt.uri = uri;
+    rt.elementName = qmlName;
+    rt.metaObject = mo;
+    rt.parserStatusCast = parserCast;
+    rt.valueSourceCast = -1;
+    rt.valueInterceptorCast = -1;
+#if QT_VERSION >= 0x060000
+    rt.structVersion = int(QQmlPrivate::RegisterType::CurrentVersion);
+    rt.typeId = QMetaType::fromType<QObject*>();
+    rt.listId = QMetaType::fromType<QQmlListProperty<QObject>>();
+    rt.create = &qtd_qml_create_sub6;
+    rt.userdata = t;
+    rt.version = QTypeRevision::fromVersion(vmaj, vmin);
+    rt.finalizerCast = -1;
+    rt.revision = QTypeRevision::fromVersion(vmaj, vmin);
+#else
+    rt.version = 0;
+    rt.typeId = int(QMetaType::QObjectStar);
+    rt.listId = 0;
+    if (g_qt5SubCount >= 256) {
+        fprintf(stderr, "qtd: qmlRegisterType Qt5 create-pool exhausted (>256 D QML subclass types);"
+                        " '%s' NOT registered\n", qmlName);
+        delete t; return nullptr;
+    }
+    rt.create = g_qt5SubCreators[g_qt5SubCount];
+    g_qt5SubTypes[g_qt5SubCount++] = t;
+    rt.versionMajor = vmaj;
+    rt.versionMinor = vmin;
+    rt.revision = 0;
+#endif
+    int tid = QQmlPrivate::qmlregister(QQmlPrivate::TypeRegistration, &rt);
+    if (tid < 0) {
+        fprintf(stderr, "qtd: qmlRegisterType (subclass) failed for '%s' (qmlregister returned %d)\n",
+                qmlName, tid);
+#if QT_VERSION < 0x060000
+        if (g_qt5SubCount > 0 && g_qt5SubTypes[g_qt5SubCount - 1] == t) g_qt5SubTypes[--g_qt5SubCount] = nullptr;
+#endif
+        delete t;
+        return nullptr;
+    }
+    return t;
+}
 
 // Register a D @QObject type `cn` as the QML element `uri/qmlName vmaj.vmin`. Same
 // sig/slot/prop arrays as qtd_moc_new. Returns the QtdQmlType* (the D side keys its
