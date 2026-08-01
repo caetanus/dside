@@ -4427,6 +4427,28 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childBindings.swap(dedup);
     }
 
+    // What a declared OBJECT property is actually ASSIGNED, before any child is compiled. Qt's
+    // Fusion declares `property Item control` and assigns a CheckBox to it; every child that reads
+    // `indicator.control.checkState` needs the type of the OBJECT, not of the declaration, and the
+    // document says which it is right here. Recorded against the same key the walk consults, so the
+    // declared type stays the fallback for a property nobody assigns.
+    if (!g_selfQmlType.empty())
+        for (auto &ba0 : rawBaseAssigns) {
+            bool declaredObj = false;
+            for (auto &p0 : props)
+                if (p0.name == ba0.first)
+                    declaredObj = !p0.dtype.empty() && p0.dtype != "int" && p0.dtype != "bool"
+                               && p0.dtype != "double" && p0.dtype != "string";
+            if (!declaredObj) continue;
+            // ...resolved in the scope the assignment was WRITTEN in, or `control: control` reads
+            // the property being assigned and records the declared type over itself.
+            if (ba0.useSite) for (auto &p1 : props) g_useSiteShadowed.insert(p1.name);
+            std::string oeA, oqA;
+            bool okA = objPathExpr(ba0.second, oeA, oqA);
+            g_useSiteShadowed.clear();
+            if (okA && !oqA.empty()) g_declObjProps[g_selfQmlType][ba0.first] = oqA;
+        }
+
     // A child target `<childId>.<prop>` for an alias -> (dtype, D access `<field>.<prop>`, notified?).
     std::map<std::string, std::string> childType, childAccess;
     std::map<std::string, bool> childNotified;
