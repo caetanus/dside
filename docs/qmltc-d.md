@@ -1555,12 +1555,18 @@ use-site's own write then threw at construction with no diagnostic anywhere. The
 and its binding stripped (two bindings for one name is what that dedup exists to prevent).
 Reproduced first in eight lines of QML, which is what made it findable.
 
-**Imported-module resolution is STILL out, and now for one measured reason.** With it applied and
-everything above in place, Fusion goes to 51 of 55 constructing with ONE failure — the harness's own
-linkage assert: `background.data[0].color is not parented to o.background as an ITEM`. Qt's Fusion
-ButtonPanel has two default children (a Gradient and a Rectangle) and the second one does not end up
-parented to it. One object that does not construct is worse than 26 honest refusals, so the lookup
-waits for that. Fusion stays at 52 of 55, 0 failures, 183 diagnostics.
+**Imported-module resolution is STILL out, and the one blocker is now measured to the call.** With
+it applied and everything above in place, Fusion goes to 51 of 55 constructing with ONE failure, and
+the cause is not the assert that reports it: `listAppend(this, "data", _dc1)` RETURNS FALSE inside
+Qt's Fusion ButtonPanel, so its second default child is only QObject-parented and the harness's
+linkage assert fires (`background.data[0].color is not parented to o.background as an ITEM`).
+
+Ruled out by an eight-line reproduction that does NOT fail: the class having declared properties
+(two of them, appended fine), the parent/child types (Rectangle inside Rectangle either way), and
+the QtQuick import (ensured inside listAppend since the typed-list fix). So the next step is to find
+what is different about THAT object at the moment of the append — not to re-apply the lookup. One
+object that does not construct is worse than 26 honest refusals. Fusion stays at 52 of 55, 0
+failures, 183 diagnostics.
 
 ## Where the four axes stand (2026-08-01, end of day)
 
