@@ -527,6 +527,11 @@ static bool splitOuterDep(const std::string &d, std::string &obj, std::string &m
 // instead, which is a different file or none. Saved and restored exactly where g_srcText is,
 // because an inlined child comes from ITS OWN document and the engine gives it that one.
 static std::string g_docUrl;
+// The document being COMPILED, as opposed to the file a local type was read from. Measured against
+// the engine: Qt's Dialog instantiates the Basic `Label.qml` as its header, and the engine reports
+// that object's context baseUrl as Dialog.qml — the instantiating document — not Label.qml. So a
+// relative url inside a local type resolves against the file that USES it.
+static std::string g_rootDocUrl;
 
 // One hop of an OBJECT path: is `owner.prop` an object, and of what type? The registry types a
 // property by its C++ name, and an object-valued one ends in `*`. It also keys some types by QML
@@ -5880,7 +5885,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // after it, and changing that text silently dropped the splice — leaving __outer null and
         // every connection through it failing at construction. classBegin attaches the root
         // context only when the object has none, so this one wins.
-        wire += "        attachContext(this, \"" + g_docUrl + "\");\n";
+        wire += "        attachContext(this, \"" + (g_rootDocUrl.empty() ? g_docUrl : g_rootDocUrl)
+              + "\");\n";
         wire += "        classBegin(this);\n";
         wire += dcWire;      // ...default children first, as the engine's `data` has them...
     wire += childWire;   // ...then the property-bound ones
@@ -6440,6 +6446,7 @@ int main(int argc, char **argv) {
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
     const char *inPath = pos[0];
     g_docUrl = "file://" + QFileInfo(inPath).absoluteFilePath().toStdString();
+    g_rootDocUrl = g_docUrl;
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
     g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name
     loadDocModule(inPath);   // the module this document belongs to (its style/theme comes with it)

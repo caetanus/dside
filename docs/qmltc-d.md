@@ -1540,10 +1540,12 @@ Measured after landing: diagnostics 83 -> 78, value-diff defects 56 -> 55, 0 lin
 Qt's Dialog now differs from the engine in exactly ONE property (`header.baseUrl`) where it
 previously differed in the header's FONT as well.
 
-That remaining one is worth writing down: a child compiled from a LOCAL `.qml` type emits its own
-file's url as the context baseUrl (`Label.qml`), and the engine reports the INSTANTIATING
-document's (`Dialog.qml`). The emitter does this deliberately today ("a class emits ITS document's
-baseUrl, not ours"); the engine says otherwise, and the engine is the specification.
+That remaining one is fixed too, and it inverted a deliberate decision: a child compiled from a
+LOCAL `.qml` type used to emit its own file's url as the context baseUrl (`Label.qml`), on the
+reasoning that a class should carry ITS document's. The engine reports the INSTANTIATING document
+(`Dialog.qml`), so a relative url inside a local type resolves against the file that USES it — and
+the engine is the specification. Measured after the change: files identical 38 -> 39, value-diff
+54, nothing else moved, full build green. **Qt's Dialog is now byte-identical to the engine.**
 
 ### (superseded) Attempted and REVERTED: `font.bold` / `origin.x` through QQmlProperty
 
