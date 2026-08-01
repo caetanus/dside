@@ -3231,8 +3231,18 @@ static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectIni
 // counts as unbound here.
 static bool unboundChildType(const std::string &t, const std::string &bound, const char *inPath);
 
+// `component Handle : Rectangle { ... }` — a type DECLARED INSIDE the document, usable anywhere in
+// it (Qt's SelectionRectangle declares its handle that way and binds it to two properties). It is a
+// local type like any other; the only difference is that it does not live in a file of its own, so
+// it is registered here and resolved through the same lookup.
+static std::map<std::string, UiObjectDefinition *> g_inlineTypes;
+
 static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
                                          std::string *outPath = nullptr, bool *isSingleton = nullptr) {
+    if (auto ic = g_inlineTypes.find(typeName); ic != g_inlineTypes.end()) {
+        if (isSingleton) *isSingleton = false;   // an inline component is never a singleton
+        return ic->second;                       // same document: text and url stay as they are
+    }
     QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
     QString path = dir + "/" + QString::fromStdString(typeName) + ".qml";
     std::string p = qs(path);
@@ -3444,6 +3454,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedScope = g_scope;
     auto savedPropType = g_propType;
     auto savedChildIds = g_childIds;
+    // An inline component is usable ANYWHERE in the document, including above its declaration
+    // (Qt's SelectionRectangle binds `Handle` two lines before declaring it), so register them all
+    // before compiling any member.
+    for (auto *m0 = init ? init->members : nullptr; m0; m0 = m0->next)
+        if (auto *ic = cast<UiInlineComponent *>(m0->member))
+            if (ic->component) g_inlineTypes[qs(ic->name.toString())] = ic->component;
     g_childIds.clear();
     auto savedChildDecl = g_childDeclType;
     g_childDeclType.clear();
@@ -4156,6 +4172,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             continue;
         }
+        // `component X : Base { ... }` declares a TYPE, it does not build anything here — it was
+        // registered before the members were compiled (see the prescan) and is resolved wherever a
+        // local type is.
+        if (cast<UiInlineComponent *>(m->member)) continue;
         // Say WHAT was refused. This was the largest remaining cluster and carried no detail at
         // all, so it could not be acted on — the same reason the expression diagnostics were made
         // to quote their source.
@@ -4224,12 +4244,41 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     std::string vimp = "import " + dbt.second.substr(0, dbt.second.rfind('.')) + ".qtvirt;\n";
                     if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
                 }
+                // A LOCAL type here is compiled from its own root, exactly as a property-bound
+                // child already is — `component Handle : Rectangle {}` declared in the same
+                // document included. Without it the class came out EMPTY (no base, no members) and
+                // the view instantiated an object with nothing on it.
+                UiObjectInitializer *dInit = cb.init;
+                std::string dResolved, dQmlType = cb.type;
+                QString savedDSrc = g_srcText;
+                auto savedDBare = g_bareImports, savedDQual = g_qualifiedTypes;
+                if (dbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
+                    if (UiObjectDefinition *lt = loadLocalType(cb.type, inPath, &dResolved)) {
+                        std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
+                        dbt = boundTypeFor(ltRoot);
+                        dInit = spliceUseSite(lt->initializer, cb.init);
+                        // The registry knows the type it DERIVES from, not the local name: an
+                        // inline component has no rows of its own, so `border.width` on a
+                        // `component Handle : Rectangle` was looked up on "Handle" and refused.
+                        if (!g_qmlCxxType.count(dQmlType) && !ltRoot.empty()) dQmlType = ltRoot;
+                        if (!dbt.first.empty() && !dbt.second.empty()) {
+                            std::string imp2 = "import " + dbt.second + ";\n";
+                            if (g_extraImports.find(imp2) == std::string::npos) g_extraImports += imp2;
+                            std::string vimp2 = "import " + dbt.second.substr(0, dbt.second.rfind('.'))
+                                              + ".qtvirt;\n";
+                            if (g_extraImports.find(vimp2) == std::string::npos) g_extraImports += vimp2;
+                        }
+                    }
+                }
                 bool savedDeleg = g_isDelegate;
                 auto savedDelegCls = g_delegateCls;
                 g_isDelegate = true;
                 g_delegateCls = childCls;
-                ObjNode dkid = compileObject(cb.init, childCls, classes, partial, inPath,
-                                             dbt.first, nullptr, cb.type);
+                if (!dResolved.empty()) g_resolving.insert(dResolved);
+                ObjNode dkid = compileObject(dInit, childCls, classes, partial, inPath,
+                                             dbt.first, nullptr, dQmlType);
+                if (!dResolved.empty()) g_resolving.erase(dResolved);
+                g_srcText = savedDSrc; g_bareImports = savedDBare; g_qualifiedTypes = savedDQual;
                 g_isDelegate = savedDeleg;
                 g_delegateCls = savedDelegCls;
                 (void) dkid;
