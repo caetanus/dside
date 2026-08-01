@@ -4114,7 +4114,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     props.push_back({name, dt, "", false, {}});
                     metaAssigns.push_back({name, expr});
                 } else props.push_back({name, dt, expr, false, {}});
-            } else if (dt[0] && es && compileExpr(es->expression, effType, expr)) {
+            } else if (dt[0] && (g_deepReads.clear(), es && compileExpr(es->expression, effType, expr))) {
                 std::vector<std::string> ids; collectIds(es->expression, ids);
                 props.push_back({name, dt, expr, true, ids, g_deepReads});
                 g_deepReads.clear();
@@ -4717,6 +4717,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // pass; every level forwards it to its children.
     std::string lateWire;
     for (auto &ba : rawBaseAssigns) {
+        // Deep reads belong to the binding being compiled RIGHT NOW. The accumulator is global and
+        // was only cleared after a consumer took it, so anything an earlier expression recorded and
+        // nobody consumed — a CHILD's, whose object expression is spelled `__outer.__outer` —
+        // stayed and was attributed to the next binding that did consume. That put a two-hop
+        // connect in a ROOT class, which has no enclosing object at all, and it only became visible
+        // when one more expression in Qt's Dial started compiling.
+        g_deepReads.clear();
         // `aliasName: <expr>` assigns THROUGH the alias — QML aliases are references, so this
         // writes the target rather than declaring anything of our own.
         if (auto aw = g_aliasWrite.find(ba.first); aw != g_aliasWrite.end()) {
