@@ -90,6 +90,13 @@ static std::map<std::string, std::pair<std::string, std::string>> g_qmlMap;
 // QML name -> its module URI, which is what attachedObj needs to resolve an ATTACHED type of a
 // bound module (`Overlay.modal` lives in QtQuick.Templates, not in this document's own uri).
 static std::map<std::string, std::string> g_qmlTypeUri;
+// ...and every OTHER module that exports the same name. Each Controls style ships its own
+// `BusyIndicatorImpl`, `SliderGroove` and so on, so a single answer is right for at most one style:
+// Qt's Fusion BusyIndicator was built from the BASIC impl. The document's own imports decide.
+static std::map<std::string, std::vector<std::string>> g_qmlTypeUris;
+// The URI for `typeName` that THIS document imports, or the registry's first answer.
+// (defined below g_bareImports, which it consults)
+static std::string uriForType(const std::string &typeName);
 
 // Scalar properties of each bound QML type, and each one's notify signature, from qmlprops.tsv
 // (written next to qmlmap.tsv by the same generator pass, so the two cannot drift). qmlmap says
@@ -221,7 +228,11 @@ static void loadQmlUris(const std::string &mapPath) {
         if (t == std::string::npos) continue;
         std::string name = line.substr(0, t), uri = line.substr(t + 1);
         while (!uri.empty() && (uri.back() == '\r' || uri.back() == '\n')) uri.pop_back();
-        if (!name.empty() && !uri.empty()) g_qmlTypeUri.emplace(name, uri);
+        if (!name.empty() && !uri.empty()) {
+            g_qmlTypeUri.emplace(name, uri);
+            auto &v = g_qmlTypeUris[name];
+            if (std::find(v.begin(), v.end(), uri) == v.end()) v.push_back(uri);
+        }
     }
 }
 
@@ -315,6 +326,12 @@ static void loadQmlMap(const char *path) {
         // Control -- the engine appends default children THERE, and each type's rule differs.
         if (t3 != std::string::npos) {
             auto t4 = line.find('\t', t3 + 1);
+            {
+                std::string u9 = t4 == std::string::npos ? line.substr(t3 + 1)
+                                                        : line.substr(t3 + 1, t4 - t3 - 1);
+                auto &v = g_qmlTypeUris[qml];
+                if (std::find(v.begin(), v.end(), u9) == v.end()) v.push_back(u9);
+            }
             g_qmlTypeUri[qml] = t4 == std::string::npos ? line.substr(t3 + 1)
                                                         : line.substr(t3 + 1, t4 - t3 - 1);
             if (t4 != std::string::npos) {
@@ -335,6 +352,13 @@ static void loadQmlMap(const char *path) {
 // Modules imported WITHOUT an alias, and names that ARRIVED qualified — both filled while the
 // document's headers are read, and both needed here (see boundTypeFor).
 static std::set<std::string> g_bareImports;
+static std::string uriForType(const std::string &typeName) {
+    if (auto it = g_qmlTypeUris.find(typeName); it != g_qmlTypeUris.end())
+        for (auto &u : it->second)
+            if (g_bareImports.count(u)) return u;
+    auto it = g_qmlTypeUri.find(typeName);
+    return it == g_qmlTypeUri.end() ? std::string() : it->second;
+}
 static std::set<std::string> g_qualifiedTypes;
 
 // Empty D type = not a mapped bound type (a fresh @QObject / local type / unsupported).
@@ -4341,10 +4365,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // of them can exist — but they are registered QML types, and the engine builds them by
             // name. The generated class then holds that instance and writes it through the
             // meta-object, which is what every other object here already does.
-            auto uriIt = g_qmlTypeUri.find(cb.type);
-            if (uriIt != g_qmlTypeUri.end() && g_qmlCxxType.count(cb.type)) {
+            std::string ecUri = uriForType(cb.type);
+            if (!ecUri.empty() && g_qmlCxxType.count(cb.type)) {
                 auto savedEC = g_engineChildCls, savedET = g_engineChildType, savedEU = g_engineChildUri;
-                g_engineChildCls = childCls; g_engineChildType = cb.type; g_engineChildUri = uriIt->second;
+                g_engineChildCls = childCls; g_engineChildType = cb.type; g_engineChildUri = ecUri;
                 ObjNode ekid = compileObject(cb.init, childCls, classes, partial, inPath, "", nullptr, cb.type);
                 g_engineChildCls = savedEC; g_engineChildType = savedET; g_engineChildUri = savedEU;
                 {   // the same notify drain every child does
@@ -5757,6 +5781,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // passes straight through qobjOf — publishing the D reference handed Qt a pointer that is
         // not a QObject at all, which segfaulted inside QQmlProperty.
         childWire += "        __qmltcVsTarget = qobjOf(this); __qmltcVsProp = \"" + vs.prop + "\";\n"
+                   // ...and the back-reference handoff, which every other child site does and this
+                   // one did not: a value source that reads its enclosing object cast whatever the
+                   // PARENT had published, which between unrelated D classes is null. Qt's Fusion
+                   // BusyIndicator and ProgressBar died at construction on the resulting null
+                   // endpoint ("no such signal runningChanged() ... or a null endpoint").
+                   + (kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = new " + childCls + "();\n"
                    + "        setQtParent(" + field + ", this);\n";
         node.vsKids.push_back({field, kid});
@@ -6461,7 +6491,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Created FIRST: every line of the wire writes through it.
         auto wp = wire.find("__qmltcWire() {\n");
         if (wp != std::string::npos)
-            wire.insert(wp + 16, "        __inst = createQmlObject(\"" + g_engineChildUri + " 2.0\", \""
+            // VERSIONLESS: Qt 6 resolves the latest, and a style's impl module does not
+            // necessarily register its types at 2.0 — Fusion's DialImpl is not a type at that
+            // version, and asking for it failed the whole document at construction.
+            wire.insert(wp + 16, "        __inst = createQmlObject(\"" + g_engineChildUri + "\", \""
                                  + g_engineChildType + "\");\n        if (__inst is null) return;\n");
         outerField += mk;
     }
@@ -6511,7 +6544,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 struct DumpLine { std::string label, access, dtype, setObj, setProp; bool vgroup = false; };
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
                         std::vector<DumpLine> &out) {
+    // An ENGINE-CREATED child is not the object the property holds — the instance it wraps is — so
+    // its OWN reads go through `.__inst`. Its CHILDREN are still fields of the wiring object, and
+    // walking into them through `__inst` (a void*) does not even compile: Qt's Fusion Dial has a
+    // DialImpl handle with two transforms, and the generated main named `handle.__inst._al_transform_1`.
     std::string self = acc.substr(0, acc.size() - 1);
+    if (n.engineInst) self += ".__inst";
     for (auto &s : n.scalars) {
         // A value type has no meaningful default text (a QColor prints its raw struct), so it is
         // dumped the way the engine formats it: QColor as #rrggbb, which is what QVariant gives
@@ -6576,8 +6614,7 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         std::string klab = k.first + (n.listKids.count(k.first) ? "[0]" : "");
         // An ENGINE-CREATED child is not the object the property holds — the instance it wraps is.
         // Dumping (and asserting the linkage on) the wiring object compared the wrong thing.
-        collectDump(k.second, acc + dIdent(k.first) + (k.second.engineInst ? ".__inst." : "."),
-                    lab + klab + ".", out);
+        collectDump(k.second, acc + dIdent(k.first) + ".", lab + klab + ".", out);
     }
     // Group children: read through the D field, but label with the QML path the oracle walks.
     for (auto &a : n.attachedProps) {

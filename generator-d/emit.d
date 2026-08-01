@@ -516,7 +516,11 @@ void main(string[] args) {
         // notify handlers, which were the only ones reachable while this table did not exist.
         string[string][string] ownProps, ownNotify, ownSignals;
         string qmap, qprops; int rows2, rows3; string[][] qmapRows;
-        string[string] uriRows;   // QML name -> module URI, for EVERY exported type
+        // QML name -> module URIs, for EVERY exported type. A LIST, not one answer: each Controls
+        // style ships its own BusyIndicatorImpl/SliderGroove/..., so one row per name silently
+        // picked whichever module was scanned last and Qt's Fusion BusyIndicator was compiled to
+        // build the BASIC impl. The compiler picks the one the document imports.
+        string[][string] uriRows;
         string[string] singletonRows;   // QML name -> "<uri>\t<version>", for every QML SINGLETON
         string methodRows;              // <QML name>\t<method>\t<return type>\t<param types>
         foreach (qtj; qt.array) {
@@ -538,7 +542,11 @@ void main(string[] args) {
                 // guess the URI, which would make attachedObj fail, return null, and the expression
                 // yield a value that matches the engine BY ACCIDENT.
                 auto qn0 = ex[1].matchFirst(reQml);
-                if (!qn0.empty) { uriRows[qn0[2]] = qn0[1]; qmlOfAll[cpp] = qn0[2]; }
+                if (!qn0.empty) {
+                    if (auto known = qn0[2] in uriRows) { if (!(*known).canFind(qn0[1])) *known ~= qn0[1]; }
+                    else uriRows[qn0[2]] = [qn0[1]];
+                    qmlOfAll[cpp] = qn0[2];
+                }
                 // A Component with NO export is still reachable: `RangeSlider.first` is a
                 // QQuickRangeSliderNode*, a grouped-property helper Qt does not export as an element,
                 // and a read through it (`control.first.pressed`) could not be typed because the
@@ -684,7 +692,7 @@ void main(string[] args) {
         std.file.write(buildPath(outDir, "qmlmap.tsv"), qmap);
         {
             string u;
-            foreach (n2_, u2; uriRows) u ~= n2_ ~ "\t" ~ u2 ~ "\n";
+            foreach (n2_, us2; uriRows) foreach (u2; us2) u ~= n2_ ~ "\t" ~ u2 ~ "\n";
             std.file.write(buildPath(outDir, "qmluris.tsv"), u);
             string sg;
             foreach (n3_, u3; singletonRows) sg ~= n3_ ~ "\t" ~ u3 ~ "\n";

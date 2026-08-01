@@ -931,7 +931,7 @@ void bindComponent(T, U)(U owner, string prop, string docUrl = "", string uri = 
     // ...with the DOCUMENT's url: the delegate's context inherits the component's, and a relative
     // `source:` inside a delegate resolves against it. A synthetic url made every such path resolve
     // somewhere else, which is what the differential caught on `baseUrl`.
-    if (auto c = makeComponent(uri ~ " 1.0", T.stringof, docUrl))
+    if (auto c = makeComponent(uri, T.stringof, docUrl))   // versionless: Qt 6 takes the latest
         qtd_prop_set_obj(qobjOf(owner), (prop ~ "\0").ptr, c);
 }
 /// A QML singleton's one instance — the engine's, not one of ours: a singleton has state, and a
