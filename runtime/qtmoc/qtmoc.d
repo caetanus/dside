@@ -915,6 +915,14 @@ void* makeComponent(string uri, string typeName, string docUrl = "") {
     return qtd_make_component((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);
 }
 
+extern(C) void* qtd_qml_create_object(const(char)*, const(char)*);
+/// An object of a registered QML type that exports no C++ symbol (Qt's DialImpl and friends live in
+/// a style plugin): it cannot be SUBCLASSED, but the engine builds it by name and everything after
+/// that goes through the meta-object like any other object.
+void* createQmlObject(string uri, string typeName) {
+    return qtd_qml_create_object((uri ~ "\0").ptr, (typeName ~ "\0").ptr);
+}
+
 /// `delegate: Text {}` — a TEMPLATE the type instantiates itself, N times. Registers the compiled
 /// delegate class as a QML element and gives `owner.<prop>` a QQmlComponent that builds it, which
 /// is the only thing a view accepts. One call, because the two halves are meaningless apart.

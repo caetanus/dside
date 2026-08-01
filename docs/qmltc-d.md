@@ -1544,7 +1544,27 @@ holds the engine-created instance and writes it BY NAME — its reactive binding
 helper, its connects are made on the instance, and the parent assigns the instance to the property.
 Every piece already exists (the delegate work built the component + registration path).
 
-That is the next feature, and it is the largest single bucket left.
+DONE the same day. The generated class holds the instance in `__inst` and every self read, write
+and connect goes to it — the emitter's own text, rewritten at class assembly: `(this` is always the
+first argument of a self operation, and a RECEIVER is always `, this, "slot()"`, told apart from a
+DESTINATION (`copyProp(src, "p", this, "q")`) by the signature's trailing `()`. Getting that
+distinction wrong is silent — the value lands on the wiring object and the instance keeps its
+default — so it is spelled out in the code. The dump follows the same rule: an engine-created child
+is dumped (and its linkage asserted) through `.__inst`, because the wiring object is not what the
+property holds.
+
+Prerequisite, and the recurring pattern again: the compiler could not know the URI because the
+generator never scanned `QtQuick/Controls/Basic/impl/plugins.qmltypes`. Adding it to the spec gave
+`DialImpl -> QtQuick.Controls.Basic.impl` plus 52 property rows for it — the fact was published, we
+were not reading it.
+
+Measured on Qt's own Basic controls: **value-diff defects 54 -> 29**, files identical 39 -> 42,
+diagnostics 78 -> 76, 61/61 construct, 0 link/run failures, full build green.
+
+Not covered by this and still true: an engine-created child cannot have CHILDREN of its own yet
+(they would take the wiring object as their enclosing scope, not the instance). Qt's three uses are
+leaf objects, so nothing in this corpus exercises it — but a document that nests inside one would
+be wrong, so that is the next thing to close here.
 
 ### LANDED, after the two findings below were fixed: `font.bold` / `origin.x` (2026-08-01)
 

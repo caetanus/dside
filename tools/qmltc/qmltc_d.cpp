@@ -435,6 +435,9 @@ static bool g_isValueSource = false;
 static bool g_isDelegate = false;
 // The class currently being compiled AS a delegate body — context names resolve only there.
 static std::string g_delegateCls;
+// The class being compiled as an ENGINE-CREATED child: a registered QML type with no exported C++
+// symbol, so it cannot be subclassed. The class holds the instance and writes it by name.
+static std::string g_engineChildCls, g_engineChildType, g_engineChildUri;
 // This document hands a view a Component, so the view INSERTS objects into a list the document
 // also writes to — and where they land is the view's business, not the document's. Static
 // `data[N]` labels are then a guess: Qt's Repeater puts its items BEFORE itself. The dump drops
@@ -3277,6 +3280,8 @@ struct ObjNode {
     bool usesOuter = false;   // reads its enclosing object -> needs the __outer back-reference
     int outerHops = -1;       // deepest enclosing level it reached (0 = immediate parent)
     bool hasLate = false;     // it (or a descendant) has late-phase work
+    bool engineInst = false;  // a registered QML type with no exported symbol: the class WRAPS the
+                              // instance the engine built (see g_engineChildCls) rather than being it
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
     std::set<std::string> listKids;   // ...of those, the ones whose property is a LIST: the engine
                                       // holds them at <prop>[0], so that is the path to compare.
@@ -4260,6 +4265,45 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // QtObject legitimately IS a bare QObject, and a local .qml type is resolved further down,
         // so neither is refused.
         if (unboundChildType(cb.type, cbt.first, inPath)) {
+            // ...unless the ENGINE knows the type. Qt's DialImpl, BusyIndicatorImpl and
+            // ProgressBarImpl export no C++ symbol (they live in a style plugin), so no D subclass
+            // of them can exist — but they are registered QML types, and the engine builds them by
+            // name. The generated class then holds that instance and writes it through the
+            // meta-object, which is what every other object here already does.
+            auto uriIt = g_qmlTypeUri.find(cb.type);
+            if (uriIt != g_qmlTypeUri.end() && g_qmlCxxType.count(cb.type)) {
+                auto savedEC = g_engineChildCls, savedET = g_engineChildType, savedEU = g_engineChildUri;
+                g_engineChildCls = childCls; g_engineChildType = cb.type; g_engineChildUri = uriIt->second;
+                ObjNode ekid = compileObject(cb.init, childCls, classes, partial, inPath, "", nullptr, cb.type);
+                g_engineChildCls = savedEC; g_engineChildType = savedET; g_engineChildUri = savedEU;
+                {   // the same notify drain every child does
+                    auto pendingE = g_outerNeedsNotify;
+                    g_outerNeedsNotify.clear();
+                    for (auto &__on : pendingE) {
+                        if (__on.first == 0) {
+                            if (std::find(needsNotify.begin(), needsNotify.end(), __on.second) == needsNotify.end())
+                                needsNotify.push_back(__on.second);
+                        } else g_outerNeedsNotify.push_back({__on.first - 1, __on.second});
+                    }
+                }
+                if (ekid.outerHops >= 1) {
+                    g_outerUsed = true;
+                    if (ekid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = ekid.outerHops - 1;
+                }
+                childFields += "    " + childCls + " " + dIdent(cb.field) + ";\n";
+                childWire += std::string(ekid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+                           + "        " + dIdent(cb.field) + " = newQObject!" + childCls + "();\n"
+                           // the INSTANCE is what the property takes and what gets parented; the
+                           // generated class is only its wiring.
+                           + "        setQtParent(" + dIdent(cb.field) + ".__inst, this);\n"
+                           + (isListProp(g_selfQmlType, cb.field)
+                                ? "        listAppend(this, \"" + cb.field + "\", " + dIdent(cb.field) + ".__inst);\n"
+                                : isBoundObjectProp(cb.field)
+                                ? "        setPropObj(this, \"" + cb.field + "\", " + dIdent(cb.field) + ".__inst);\n"
+                                : "");
+                node.kids.push_back({cb.field, ekid});
+                continue;
+            }
             std::fprintf(stderr, "qmltc-d: %s: '%s' in %s is bound to '%s', which is not a bound Qt "
                          "type — building it as a bare object would drop every property set on it "
                          "— skipped (later phase)\n",
@@ -6271,6 +6315,42 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (auto rp = wire.find("//__QTD_RESOLVE__\n"); rp != std::string::npos)
             wire.replace(rp, 18, resolve);
     }
+    // An ENGINE-CREATED child: everything this class does to "itself" is done to the instance the
+    // engine built, because the type cannot be subclassed. `(this` is the first argument of every
+    // self read/write/connect the emitter produces; a RECEIVER is always `, this, "slot"`, so it
+    // keeps pointing at this object, which is where the slots live.
+    if (!g_engineChildCls.empty() && cls == g_engineChildCls) {
+        node.engineInst = true;
+        auto toInst = [](std::string &buf) {
+            size_t at = 0;
+            while ((at = buf.find("(this", at)) != std::string::npos) {
+                buf.replace(at, 5, "(__inst");
+                at += 7;
+            }
+            // ...and `this` as a DESTINATION (`copyProp(src, "p", this, "q")`), which is not the
+            // same position as a RECEIVER (`connectMeta(obj, "sig", this, "__rcb_x()")`). The two
+            // are told apart by what follows: a receiver's next argument is a SIGNATURE, ending in
+            // `()`. Getting this wrong is silent — the value lands on the wiring object instead of
+            // on the instance, and the instance keeps its default.
+            at = 0;
+            while ((at = buf.find(", this, \"", at)) != std::string::npos) {
+                size_t q = at + 9, e = buf.find('"', q);
+                bool receiver = e != std::string::npos && e >= q + 2 && buf.compare(e - 2, 2, "()") == 0;
+                if (!receiver) { buf.replace(at + 2, 4, "__inst"); at += 8; }
+                else at = e;
+            }
+        };
+        for (auto *buf : {&wire, &methods, &recompute, &handlerSlots, &groupHandlerSlots,
+                          &attachedHandlerSlots, &lateMethod, &childFields})
+            toInst(*buf);
+        std::string mk = "    void* __inst;\n";
+        // Created FIRST: every line of the wire writes through it.
+        auto wp = wire.find("__qmltcWire() {\n");
+        if (wp != std::string::npos)
+            wire.insert(wp + 16, "        __inst = createQmlObject(\"" + g_engineChildUri + " 2.0\", \""
+                                 + g_engineChildType + "\");\n        if (__inst is null) return;\n");
+        outerField += mk;
+    }
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + lateMethod + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods
              + childFields + methods + recompute + handlerSlots + groupHandlerSlots
              + attachedHandlerSlots + wire + "}\n";
@@ -6380,7 +6460,10 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         // and labelling it <prop> asked the oracle for a path that does not exist (ScrollBar's
         // `transitions: Transition {}`).
         std::string klab = k.first + (n.listKids.count(k.first) ? "[0]" : "");
-        collectDump(k.second, acc + dIdent(k.first) + ".", lab + klab + ".", out);
+        // An ENGINE-CREATED child is not the object the property holds — the instance it wraps is.
+        // Dumping (and asserting the linkage on) the wiring object compared the wrong thing.
+        collectDump(k.second, acc + dIdent(k.first) + (k.second.engineInst ? ".__inst." : "."),
+                    lab + klab + ".", out);
     }
     // Group children: read through the D field, but label with the QML path the oracle walks.
     for (auto &a : n.attachedProps) {

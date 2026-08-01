@@ -584,6 +584,24 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
 #endif
 }
 
+// An object of a registered QML TYPE that exports no C++ symbol — Qt's own DialImpl,
+// BusyIndicatorImpl, ProgressBarImpl are compiled into their style plugin and cannot be linked
+// against, so no D subclass of them can exist. They can still be BUILT: the engine knows them by
+// name, and everything after that is the meta-object channel like any other object.
+extern "C" void* qtd_qml_create_object(const char* uri, const char* typeName) {
+#ifdef QTD_HAVE_QML
+    void* c = qtd_make_component(uri, typeName, nullptr);
+    if (!c) return nullptr;
+    auto* comp = static_cast<QQmlComponent*>(c);
+    QObject* o = comp->create();
+    if (!o) std::fprintf(stderr, "qtd: creating '%s' from '%s' failed: %s\n", typeName, uri,
+                         qPrintable(comp->errorString()));
+    return o;
+#else
+    (void) uri; (void) typeName; return nullptr;
+#endif
+}
+
 // ---- dependencies reached THROUGH an object property ------------------------------------------
 // `x: (parent.width - width) / 2` depends on an object our constructor cannot see: a root's
 // `parent` (and HeaderView's `syncView`) is assigned by whoever instantiates it, AFTER the wire

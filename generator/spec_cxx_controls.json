@@ -150,7 +150,8 @@
   "qmltypes": [
     "/usr/lib/qt6/qml/QtQuick/Templates/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes",
-    "/usr/lib/qt6/qml/QtQuick/Controls/impl/plugins.qmltypes"
+    "/usr/lib/qt6/qml/QtQuick/Controls/impl/plugins.qmltypes",
+    "/usr/lib/qt6/qml/QtQuick/Controls/Basic/impl/plugins.qmltypes"
   ],
   "subclass": [
     "QQuickAction",
