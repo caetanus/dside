@@ -1522,6 +1522,39 @@ What it took, beyond the registration feature above:
   a document that binds a Component; `--dumpall` keeps them, because there both sides resolve the
   same index through the same list — which is a comparison rather than a guess.
 
+## Where the four axes stand (2026-08-01, end of day)
+
+Over Qt's own 57 Basic control documents, with the engine as the specification:
+
+| axis | result |
+|---|---|
+| constructs | 61 of 61, 0 failures |
+| VALUES, every property of every object | **47 of 57 documents identical**; 21 differences, 1 path the engine has and we do not, 121 unmeasurable |
+| REACTIVITY, mutate then compare | six properties swept (`enabled`, `width`, `visible`, `padding`, `spacing`, `focus`); **no document that matches at construction and differs after a mutation** |
+| RENDER, PNG byte for byte | **48 identical**, 1 differing, 12 the engine cannot render either |
+
+The 21 value differences are attributed, not open: 10 are the header views (Qt's QML-instantiation
+path, below), 9 are the `baselineOffset` layout-order difference, 2 are a popup `model` where the
+engine keeps an empty variant and we keep a null object. The single missing path and the single
+render difference are the SAME defect — RangeSlider's `readonly property color`, still refused.
+
+The "unmeasurable" bucket is new and deliberate: Qt leaves a Transition's public `animations` list
+empty at construction while holding the animations internally, so the oracle cannot read what our
+side exposes there. Counting those as differences would have said 121 defects where there is no
+comparison to make; counting them as matches would have hidden the same thing. They have their own
+line.
+
+What the day's measurements bought, in order of how much they moved:
+
+- a TYPED list append needs the module imported, or QQmlListReference's type check fails silently:
+  Transitions and transforms were built, wired and never linked (48 -> 47 identical was the cost of
+  finding it, and 44 -> 47 the result of fixing it);
+- a child is completed by its PARENT, once, after it is in the tree (popup.parent);
+- a value group can change what it RESOLVES to with no member signal (palette, on `enabled`);
+- a bare dependency resolves in the NEAREST scope, like the read does (SwipeView, TabBar);
+- a QML type that cannot be subclassed can still be USED (the *Impl ceiling, 24 defects);
+- `component X : Base {}` is a type, and a Component can be built from it (SelectionRectangle).
+
 ### OPEN, and SILENT: the header views differ with no diagnostic (2026-08-01)
 
 `HorizontalHeaderView.qml` and `VerticalHeaderView.qml` compile with ZERO diagnostics and still
