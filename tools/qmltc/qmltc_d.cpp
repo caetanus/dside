@@ -3302,6 +3302,39 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     }
     QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
     QString path = dir + "/" + QString::fromStdString(typeName) + ".qml";
+    // ...or a type the document IMPORTS that is itself written in QML. Qt's Fusion style puts
+    // ButtonPanel, CheckIndicator, SliderGroove and friends in QtQuick.Controls.Fusion.impl, a
+    // directory of .qml files next to the style — 26 refusals in that corpus, all "not a bound Qt
+    // type", because only the document's OWN directory was searched. The module maps to a directory
+    // the way the engine maps it: dots become slashes under the import root, an ancestor of this
+    // document.
+    if (!QFileInfo::exists(path)) {
+        for (auto &imp : g_bareImports) {
+            QString rel = QString::fromStdString(imp);
+            rel.replace('.', '/');
+            QString up = dir;
+            for (int i = 0; i < 8 && !up.isEmpty(); ++i) {
+                QString cand = up + "/" + rel + "/" + QString::fromStdString(typeName) + ".qml";
+                if (QFileInfo::exists(cand)) { path = cand; break; }
+                int slash = up.lastIndexOf('/');
+                if (slash <= 0) break;
+                up.truncate(slash);
+            }
+            if (QFileInfo::exists(path)) break;
+        }
+    }
+    if (!QFileInfo::exists(path) && getenv("QTD_IMPORT_TYPES")) {   // PROBE
+        for (auto &imp : g_bareImports) {
+            QString rel = QString::fromStdString(imp); rel.replace('.', '/');
+            QString up = dir;
+            for (int i = 0; i < 8 && !up.isEmpty(); ++i) {
+                QString cand = up + "/" + rel + "/" + QString::fromStdString(typeName) + ".qml";
+                if (QFileInfo::exists(cand)) { path = cand; break; }
+                int slash = up.lastIndexOf('/'); if (slash <= 0) break; up.truncate(slash);
+            }
+            if (QFileInfo::exists(path)) break;
+        }
+    }
     std::string p = qs(path);
     if (g_resolving.count(p)) return nullptr;   // cycle: this file is already being resolved
     if (!QFileInfo::exists(path)) return nullptr;

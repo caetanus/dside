@@ -1555,18 +1555,22 @@ use-site's own write then threw at construction with no diagnostic anywhere. The
 and its binding stripped (two bindings for one name is what that dedup exists to prevent).
 Reproduced first in eight lines of QML, which is what made it findable.
 
-**Imported-module resolution is STILL out, and the one blocker is now measured to the call.** With
-it applied and everything above in place, Fusion goes to 51 of 55 constructing with ONE failure, and
-the cause is not the assert that reports it: `listAppend(this, "data", _dc1)` RETURNS FALSE inside
-Qt's Fusion ButtonPanel, so its second default child is only QObject-parented and the harness's
-linkage assert fires (`background.data[0].color is not parented to o.background as an ITEM`).
+**LANDED, once the blocker turned out to be a registration bug of ours.** The failing append was
+not about ButtonPanel at all: `qmlRegisterType` for a bound subclass registered the delegate type
+with `typeId = QMetaType::fromType<QObject*>()`, which tells Qt that the QObject* metatype IS that
+type. `data` is a `QQmlListProperty<QObject>`, so from the first delegate registration onward every
+QQmlListReference over any `data` list resolved its element type to the last registered delegate
+class and refused every append — silently, because the generated code falls back to parenting.
 
-Ruled out by an eight-line reproduction that does NOT fail: the class having declared properties
-(two of them, appended fine), the parent/child types (Rectangle inside Rectangle either way), and
-the QtQuick import (ensured inside listAppend since the typed-list fix). So the next step is to find
-what is different about THAT object at the moment of the append — not to re-apply the lookup. One
-object that does not construct is worse than 26 honest refusals. Fusion stays at 52 of 55, 0
-failures, 183 diagnostics.
+Five reproductions failed to reproduce it (ButtonPanel copied next to a document, with the style
+imported, as a Control's background, with the use-site body, after an engine-created object), which
+is what said the difference was not in the DOCUMENT. Tracing the call printed `elem=ICB_delegate`
+for a list of QObject and named the cause in one line. An invalid metatype is not the fix — Qt's
+type loader dereferences it and segfaults on the QQmlThread; the carrier's own metatype is.
+
+With that fixed, imported-module resolution lands: **Fusion 52 of 55 constructing, 0 failures**, and
+its diagnostics go 183 -> 446 because those 26 types now compile and report their own gaps instead
+of being one refusal each. Basic is unchanged on every axis.
 
 ## Where the four axes stand (2026-08-01, end of day)
 
