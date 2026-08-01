@@ -1522,6 +1522,33 @@ What it took, beyond the registration feature above:
   a document that binds a Component; `--dumpall` keeps them, because there both sides resolve the
   same index through the same list — which is a comparison rather than a guess.
 
+### OPEN, and SILENT: the header views differ with no diagnostic (2026-08-01)
+
+`HorizontalHeaderView.qml` and `VerticalHeaderView.qml` compile with ZERO diagnostics and still
+differ from the engine in five properties each — the worst class of difference this compiler can
+produce, because nothing reports it:
+
+| property | ours | engine |
+|---|---|---|
+| rows | -1 | 1 (H) / 0 (V) |
+| columns | -1 | 0 (H) / 1 (V) |
+| contentWidth / contentHeight | -1 | 0 |
+| model | `<null>` | 0 |
+
+Ruled out by measurement, so the next attempt does not redo it:
+
+- **Not the type.** `__class` is `QQuickHorizontalHeaderView` on BOTH sides.
+- **Not the delegate.** Ours holds one (`delegate=true`); the Component compiles and binds.
+- **Not completion or the event loop.** rows/columns stay -1 after a second `componentComplete`
+  and after 50 ms of event processing.
+- **Not a missing `model` assignment.** Writing `model = 0` (the engine's own value) leaves
+  rows/columns at -1, and the value does not even read back.
+
+What that leaves is the ORDER or the CONTEXT in which Qt's table view builds its instance model
+(`QQmlTableInstanceModel` needs a QQmlEngine, and the table only rebuilds when it decides to). The
+next step is to find what the engine-created object has that ours does not at the moment
+`componentComplete` runs — not to guess another assignment.
+
 ### The "unexportable *Impl" is NOT a ceiling — it is a ceiling on SUBCLASSING (2026-08-01)
 
 Twenty-four of the 54 remaining value defects are one story: Dial's `background: DialImpl {}`,
