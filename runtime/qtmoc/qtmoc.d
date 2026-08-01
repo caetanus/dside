@@ -404,19 +404,22 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
                     qtd_moc_activate(qobj, notifyIdx, argv.ptr);
                 }
             }
-            return;
-        }
-        else static if (is(X == string)) X nv = qsToD(a[0]);
-        else                        X nv = *cast(X*) a[0];
-        if (__traits(getMember, o, m) != nv) {
-            __traits(getMember, o, m) = nv;
-            if (notifyIdx >= 0) {
-                void*[2] argv; argv[0] = null;
-                static if (is(X == string)) {
-                    auto qs = qtd_str_to_qs(nv.ptr, cast(int) nv.length);
-                    argv[1] = qs; qtd_moc_activate(qobj, notifyIdx, argv.ptr); qtd_qs_free(qs);
-                } else {
-                    argv[1] = cast(void*) &nv; qtd_moc_activate(qobj, notifyIdx, argv.ptr);
+        } else {
+            // ...and the value path, which must not even be COMPILED for a class: `nv` does not
+            // exist there, and a `return` inside the static-if does not stop the rest from being
+            // type-checked (17 link failures in Fusion said so).
+            static if (is(X == string)) X nv = qsToD(a[0]);
+            else                        X nv = *cast(X*) a[0];
+            if (__traits(getMember, o, m) != nv) {
+                __traits(getMember, o, m) = nv;
+                if (notifyIdx >= 0) {
+                    void*[2] argv; argv[0] = null;
+                    static if (is(X == string)) {
+                        auto qs = qtd_str_to_qs(nv.ptr, cast(int) nv.length);
+                        argv[1] = qs; qtd_moc_activate(qobj, notifyIdx, argv.ptr); qtd_qs_free(qs);
+                    } else {
+                        argv[1] = cast(void*) &nv; qtd_moc_activate(qobj, notifyIdx, argv.ptr);
+                    }
                 }
             }
         }

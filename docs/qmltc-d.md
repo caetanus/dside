@@ -1547,12 +1547,20 @@ local type.
   refusal path takes the name out of scope so reads fall back to the meta-object (measured: 8 link
   failures in Fusion and 1 in Basic when it was not restricted).
 
-**The third is not done, and imported-module resolution stays out until it is.** With the module
-resolution applied, Qt's Fusion ComboBox/CheckBox/DelayButton still die at construction on
-`no writable property "highlighted"`: the ButtonPanel that declares it is merged with the use-site
-assignment, and the declaration disappears with NO diagnostic — the property is neither declared nor
-refused. A silent drop is the one outcome this compiler must not have, so that is the next thing to
-find, not the module lookup. Fusion stays at 52 of 55 with 0 failures and 183 diagnostics.
+**The silent drop is FOUND and fixed** (the third prerequisite): the merge of a local type with its
+use site dropped any definition member the use site also binds — right for a binding, wrong for a
+DECLARATION. `property bool highlighted: <expr>` both declares the property and gives it a first
+value; the use site only replaces the value. Dropping it whole removed the property, so the
+use-site's own write then threw at construction with no diagnostic anywhere. The declaration is kept
+and its binding stripped (two bindings for one name is what that dedup exists to prevent).
+Reproduced first in eight lines of QML, which is what made it findable.
+
+**Imported-module resolution is STILL out, and now for one measured reason.** With it applied and
+everything above in place, Fusion goes to 51 of 55 constructing with ONE failure — the harness's own
+linkage assert: `background.data[0].color is not parented to o.background as an ITEM`. Qt's Fusion
+ButtonPanel has two default children (a Gradient and a Rectangle) and the second one does not end up
+parented to it. One object that does not construct is worse than 26 honest refusals, so the lookup
+waits for that. Fusion stays at 52 of 55, 0 failures, 183 diagnostics.
 
 ## Where the four axes stand (2026-08-01, end of day)
 

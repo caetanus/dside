@@ -3255,7 +3255,21 @@ static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectIni
     for (auto *m = defn->members; m;) {
         auto *nx = m->next;
         std::string n = memberBoundName(m->member);
-        if (n.empty() || !overridden.count(n)) {
+        bool keep = n.empty() || !overridden.count(n);
+        // A DECLARATION is not a binding: `property bool highlighted: <expr>` both declares the
+        // property and gives it a first value, and the use site only replaces the VALUE. Dropping it
+        // whole removed the property itself — the use-site assignment then wrote a name the object
+        // does not have and threw at construction, with no diagnostic anywhere (Qt's Fusion
+        // ButtonPanel, through ComboBox/CheckBox/DelayButton). Keep the declaration, strip its
+        // binding: two bindings for one name is what this dedup exists to prevent.
+        if (!keep)
+            if (auto *pubD = cast<UiPublicMember *>(m->member);
+                    pubD && pubD->type == UiPublicMember::Property) {
+                pubD->statement = nullptr;
+                pubD->binding = nullptr;
+                keep = true;
+            }
+        if (keep) {
             if (!first) first = m; else last->next = m;
             last = m; last->next = nullptr;
         }
