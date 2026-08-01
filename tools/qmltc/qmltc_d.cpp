@@ -1437,12 +1437,16 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
     // first hop, which is why compiling `as` alone was not enough.
     if (auto *ne = cast<NestedExpression *>(x)) return objPathExpr(ne->expression, oe, oq);
     if (auto *ba = cast<BinaryExpression *>(x); ba && ba->op == QSOperator::As) {
-        // NOTE: the ASSERTED type is deliberately NOT used to retype the walk yet. It should be —
-        // that is what `as` means, and `contentItem` being declared QQuickItem* is why
-        // `(contentItem as ListView).contentWidth` still fails while `.width` compiles. Tried and
-        // measured: overriding oq from the TypeExpression changed nothing, so the block is
-        // elsewhere and guessing further would be shipping something unverified.
-        return objPathExpr(ba->left, oe, oq);
+        if (!objPathExpr(ba->left, oe, oq)) return false;
+        // ...and the ASSERTED type retypes the walk, which is what `as` is for: `contentItem` is
+        // declared QQuickItem* and Item has no `contentWidth`, so without this the walk stops one
+        // hop short. The right side parses as an IDENTIFIER, not a TypeExpression — reading it as
+        // the latter is why the first attempt at this changed nothing.
+        if (auto *tid = cast<IdentifierExpression *>(ba->right)) {
+            std::string tn = qs(tid->name.toString());
+            if (g_qmlProps.count(tn) || g_qmlCxxType.count(tn)) oq = tn;
+        }
+        return true;
     }
     if (auto *id = cast<IdentifierExpression *>(x)) {
         std::string n2 = qs(id->name.toString());
