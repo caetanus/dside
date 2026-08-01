@@ -484,6 +484,37 @@ extern "C" void* qtd_find_outer(void* o, const char* cls) {
 // the QQmlContext it creates per item, not as properties of any object, so they are read by name
 // through the context chain. Returned as a QVariant the callers convert, same as every other value
 // channel here.
+// `font.bold: true` — a member of a value type reached through an EXTENSION (QFont via
+// QQuickFontValueType), which has no meta-object of its own, so the gadget read-modify-write cannot
+// reach it. QQmlProperty resolves exactly these by NAME, through QML's own value-type registry:
+// the same public channel the engine uses for the same line in the .qml.
+//
+// That registry is populated by IMPORTING the module — measured: with no import, `font.bold` is not
+// even a valid QQmlProperty on a plain QQuickText created in C++ (while `text` is); after
+// `import QtQuick` it is valid, writable and typed `bool`. Importing the STYLE module is not
+// enough, so this asks for QtQuick by name, once. A binding without QtQuick gets a failed import
+// and a refused write, which is the honest outcome there.
+extern "C" void qtd_ensure_module(const char* uri);
+extern "C" int qtd_qml_write(void* o, const char* path, const char* value, int kind) {
+#ifdef QTD_HAVE_QML
+    if (!o || !path || !value) return 0;
+    static bool imported = false;
+    if (!imported) { imported = true; qtd_ensure_module("QtQuick"); }
+    QObject* obj = static_cast<QObject*>(o);
+    QQmlProperty p(obj, QString::fromUtf8(path), qmlContext(obj));
+    if (!p.isValid() || !p.isWritable()) return 0;
+    QString v = QString::fromUtf8(value);
+    switch (kind) {
+        case 0: return p.write(QVariant(v == QLatin1String("true"))) ? 1 : 0;   // bool
+        case 1: return p.write(QVariant(v.toInt())) ? 1 : 0;                    // int
+        case 2: return p.write(QVariant(v.toDouble())) ? 1 : 0;                 // double
+        default: return p.write(QVariant(v)) ? 1 : 0;                           // string
+    }
+#else
+    (void) o; (void) path; (void) value; (void) kind; return 0;
+#endif
+}
+
 // The object a per-item QQmlContext carries (QQmlDelegateModelItem for a view's delegate). It is
 // what publishes `index`/`model`, and it publishes them as real properties WITH notify — so a
 // binding on `index` can be as live as any other, through the same meta-object channel.

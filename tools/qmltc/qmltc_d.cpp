@@ -3696,6 +3696,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<ValueSource> valueSources;
     // `<baseProp>.<member>: expr` where baseProp is a plain Q_GADGET value (icon.width).
     std::vector<std::pair<std::string, ExpressionNode *>> rawBaseVGroupAssigns;
+    // ...and the ones whose value type is reached through an EXTENSION (font.*), written by name.
+    std::vector<std::pair<std::string, ExpressionNode *>> rawExtVGroupAssigns;
     std::vector<std::pair<std::string, Statement *>> rawGroupHandlers;            // `group.on<Sig>: body`
     std::vector<std::pair<std::string, ExpressionNode *>> rawAttachedAssigns;     // `Type.member: expr`
     std::vector<std::pair<std::string, Statement *>> rawAttachedHandlers;         // `Type.on<Sig>: body`
@@ -3796,6 +3798,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         if (it != qc->second.end() && !it->second.empty()
                                 && it->second.back() != '*' && it->second.back() != '^') {
                             rawBaseVGroupAssigns.push_back({hid, sbExpr});
+                            continue;
+                        }
+                    }
+                    // ...and one reached through an EXTENSION (`^`: QFont via QQuickFontValueType)
+                    // goes through QQmlProperty, which resolves value-type members by name using
+                    // QML's own registry — the channel the engine uses for the same line. The
+                    // gadget read-modify-write cannot: there is no meta-object to read.
+                    if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
+                        auto it = qc->second.find(head);
+                        if (it != qc->second.end() && !it->second.empty() && it->second.back() == '^') {
+                            rawExtVGroupAssigns.push_back({hid, sbExpr});
                             continue;
                         }
                     }
@@ -5603,6 +5616,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string st = "        setVgroup(this, \"" + gname + "\", \"" + mem + "\", " + val + ");\n";
         baseWire += st;
         wireGroupDeps(ga.second, "__rcv_" + gname + "_" + mem, st, "value-group member '" + ga.first + "'");
+        node.valueGroupProps.push_back({ga.first, vty});
+    }
+
+    // ...and on a value type reached through an extension: written BY NAME through QML's own
+    // value-type registry, since there is no gadget meta-object to read-modify-write.
+    for (auto &ga : rawExtVGroupAssigns) {
+        std::string vty = inferType(ga.second, ptype), val;
+        if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
+                || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
+            std::fprintf(stderr, "qmltc-d: %s: value-type member '%s' in %s: value is not a scalar "
+                         "the channel can convert [%s] — skipped (later phase)\n",
+                         inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
+            ++partial; continue;
+        }
+        std::string st = "        setQmlProp(this, \"" + ga.first + "\", " + val + ");\n";
+        baseWire += st;
+        auto dotE = ga.first.find('.');
+        wireGroupDeps(ga.second, "__rcx_" + ga.first.substr(0, dotE) + "_" + ga.first.substr(dotE + 1),
+                      st, "value-type member '" + ga.first + "'");
         node.valueGroupProps.push_back({ga.first, vty});
     }
 

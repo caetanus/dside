@@ -873,6 +873,23 @@ private extern(C) void* qtd_find_outer(void*, const(char)*);
 /// its enclosing document object.
 void* findOuter(T)(T o, string cls) { return qtd_find_outer(qobjOf(o), (cls ~ "\0").ptr); }
 
+private extern(C) int qtd_qml_write(void*, const(char)*, const(char)*, int);
+/// Write a member of a value type QML resolves through its own registry (`font.bold`), by NAME. A
+/// QFont member has no gadget meta-object to read-modify-write, so this is the channel — the same
+/// one the engine uses for that line in the .qml. Reports failure rather than pretending.
+void setQmlProp(T, V)(T o, string path, V v) {
+    import std.conv : to;
+    static if (is(V == bool)) enum kind = 0;
+    else static if (is(V : long)) enum kind = 1;
+    else static if (is(V : double)) enum kind = 2;
+    else enum kind = 3;
+    static if (kind == 0) string sv = v ? "true" : "false";
+    else static if (kind == 3) string sv = v;
+    else string sv = v.to!string;
+    if (!qtd_qml_write(qobjOf(o), (path ~ "\0").ptr, (sv ~ "\0").ptr, kind))
+        __propWriteFailed(path, "value-type member");
+}
+
 private extern(C) void* qtd_context_object(void*);
 /// The object the per-item QQmlContext carries — what publishes `index`/`model` for a delegate,
 /// with notify signals, so a binding on them can be connected like any other.

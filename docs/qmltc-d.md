@@ -1522,7 +1522,30 @@ What it took, beyond the registration feature above:
   a document that binds a Component; `--dumpall` keeps them, because there both sides resolve the
   same index through the same list — which is a comparison rather than a guess.
 
-### Attempted and REVERTED: `font.bold` / `origin.x` through QQmlProperty (2026-08-01)
+### LANDED, after the two findings below were fixed: `font.bold` / `origin.x` (2026-08-01)
+
+Both blockers turned out to be real bugs elsewhere, which is why the first attempt was reverted
+rather than patched:
+
+1. **The write needed the module IMPORTED.** Measured with a probe: on a plain QQuickText created
+   in C++, `QQmlProperty(obj, "font.bold", ctx)` is not even VALID (while `text` is) — and after
+   `import QtQuick` it is valid, writable and typed `bool`. QML's value-type registry is populated
+   by the import, and importing the STYLE module is not enough. The write helper asks for QtQuick
+   by name, once.
+2. **The deep-read accumulator leaked across objects** — fixed separately (see the commit "a deep
+   read belongs to the binding being compiled"). That is what made compiling ONE more expression
+   put `bindLeaf(__outer.__outer, ...)` in a ROOT class and break the link.
+
+Measured after landing: diagnostics 83 -> 78, value-diff defects 56 -> 55, 0 link/run failures, and
+Qt's Dialog now differs from the engine in exactly ONE property (`header.baseUrl`) where it
+previously differed in the header's FONT as well.
+
+That remaining one is worth writing down: a child compiled from a LOCAL `.qml` type emits its own
+file's url as the context baseUrl (`Label.qml`), and the engine reports the INSTANTIATING
+document's (`Dialog.qml`). The emitter does this deliberately today ("a class emits ITS document's
+baseUrl, not ours"); the engine says otherwise, and the engine is the specification.
+
+### (superseded) Attempted and REVERTED: `font.bold` / `origin.x` through QQmlProperty
 
 A value type reached through an EXTENSION (QFont via QQuickFontValueType, marked `^` in the
 registry) has no meta-object, so the gadget read-modify-write cannot reach it — the compiler
