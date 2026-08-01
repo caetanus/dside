@@ -240,7 +240,12 @@ static void loadQmlUris(const std::string &mapPath) {
 // instance is fetched with, and each method's parameter types. All of it published by the registry
 // (`isSingleton`, the export string, the Method blocks) — nothing here is a list of known names.
 static std::map<std::string, std::pair<std::string, std::pair<int, int>>> g_qmlSingletonUri;
-static std::map<std::string, std::map<std::string, std::pair<std::string, std::vector<std::string>>>>
+// ...with EVERY overload, not one: Qt's Fusion declares buttonColor four times (one per optional
+// argument), and keeping a single row meant a four-argument call was matched against a one-argument
+// signature and refused. The call picks the overload whose parameter count it has.
+static std::map<std::string,
+                std::map<std::string,
+                         std::vector<std::pair<std::string, std::vector<std::string>>>>>
     g_qmlMethods;
 // C++ class -> QML name for every EXPORTED type, not just the ones we subclass. Without it a
 // property typed by an unbound helper class could not be followed to its own properties.
@@ -302,7 +307,7 @@ static void loadQmlSingletons(const std::string &mapPath) {
                 ps.push_back(c[3].substr(i, j - i));
                 if (j == c[3].size()) break;
             }
-            g_qmlMethods[c[0]][c[1]] = {c[2], ps};
+            g_qmlMethods[c[0]][c[1]].push_back({c[2], ps});
         }
     }
 }
@@ -2238,6 +2243,13 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 auto mi = g_qmlMethods.find(sn);
                 if (mi != g_qmlMethods.end())
                     if (auto me = mi->second.find(mn2); me != mi->second.end()) {
+                        // Pick the overload with the argument count this call has.
+                        size_t argc = 0;
+                        for (auto *a0 = call->arguments; a0; a0 = a0->next) ++argc;
+                        const std::pair<std::string, std::vector<std::string>> *ovl = nullptr;
+                        for (auto &cand : me->second)
+                            if (cand.second.size() == argc) { ovl = &cand; break; }
+                        if (!ovl) return false;
                         // Each argument is compiled AS ITS PARAMETER'S TYPE, which the registry
                         // publishes. Trying `string` first and falling back was wrong in a way that
                         // compiled: a numeric ternary compiles fine with a string target and stays
@@ -2245,7 +2257,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                         std::vector<std::string> as;
                         bool ok2 = true;
                         size_t pi = 0;
-                        const auto &ptypes = me->second.second;
+                        const auto &ptypes = ovl->second;
                         for (auto *a = call->arguments; a && ok2; a = a->next, ++pi) {
                             if (pi >= ptypes.size()) { ok2 = false; break; }
                             const std::string &pt = ptypes[pi];
