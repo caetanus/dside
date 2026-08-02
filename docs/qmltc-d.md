@@ -1651,7 +1651,7 @@ same axes as Basic:
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 41 of 49 |
 | value differences | 21 (all attributed) | 20 |
-| diagnostics | 69 | 66 |
+| diagnostics | 67 | 60 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
@@ -1963,6 +1963,22 @@ first patch went into the one this shape does not use — which a print at the d
 in one run, after re-reading the code had not.
 
 Fusion 70 → 66 diagnostics. Values and render unchanged on both corpora.
+
+### Reading an extension value type, and `undefined` inside a chain (2026-08-02)
+
+Both are the same correction applied where it was missed:
+
+- **`^` means "not writable through the plain channel", not "not readable".** `control.locale.name`
+  (Qt's SpinBox hands its validator the control's locale) reads a QLocale, which the registry marks
+  with `^` because its MEMBERS are written through QML's value-type registry. It is a Q_GADGET all
+  the same, so the reader resolves the member by name like any other. The mark was being used as a
+  blanket refusal;
+- **the `=== undefined` test needed the same loose read the enum-key test got.** `checkState ===
+  Qt.Checked || (checked && checkState === undefined)` is one expression; the first half compiled
+  and the second did not, so the whole binding was refused. Reordering the two lambdas so the
+  undefined branch can use the loose read is the entire change.
+
+Fusion 66 → 60 diagnostics, Basic 69 → 67. Values, render and construction unchanged on both.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

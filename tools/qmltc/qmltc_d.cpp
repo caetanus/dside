@@ -2349,9 +2349,14 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (objPathExpr(fmv->base, oev, oqv) && !oqv.empty())
                 if (auto qcv = g_qmlCxxType.find(oqv); qcv != g_qmlCxxType.end()) {
                     auto gt = qcv->second.find(grpv);
-                    if (gt != qcv->second.end() && !gt->second.empty()
-                            && gt->second.back() != '*' && gt->second.back() != '^'
-                            && !g_qmlProps.count(gt->second)) {
+                    // `^` marks a value type reached through an EXTENSION — it says the members
+                    // are not WRITABLE through the plain channel, not that they cannot be read.
+                    // QLocale is one (`control.locale.name`, which Qt's SpinBox hands its
+                    // validator) and it is a Q_GADGET all the same, so the reader resolves the
+                    // member by name like any other.
+                    std::string gtn = gt == qcv->second.end() ? std::string() : gt->second;
+                    if (!gtn.empty() && gtn.back() == '^') gtn.pop_back();
+                    if (!gtn.empty() && gtn.back() != '*' && !g_qmlProps.count(gtn)) {
                         std::string dtv = dtype.toStdString();
                         const char *rdv = dtv == "string" ? "vgroupStr(" : dtv == "bool" ? "vgroupBool("
                                         : dtv == "int" ? "vgroupInt(" : "vgroupDouble(";
@@ -2840,26 +2845,6 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     return true;
                 }
             }
-            // `indicator.control.checkState === undefined` (Qt's Fusion CheckIndicator) asks
-            // whether the object HAS the property at all — the declared type is AbstractButton,
-            // which has no checkState, and the object put there may or may not be a CheckBox. The
-            // meta channel answers exactly that question: a property the object does not declare
-            // reads as the empty string, and one it does reads as its key.
-            {
-                auto isUndef = [&](ExpressionNode *x) {
-                    auto *id = cast<IdentifierExpression *>(x);
-                    if (!id) return false;
-                    std::string n = qs(id->name.toString());
-                    return n == "undefined" && !g_scope.count(n) && !g_childIds.count(n);
-                };
-                std::string rd;
-                if ((isUndef(bin->right) && enumRead(bin->left, rd))
-                        || (isUndef(bin->left) && enumRead(bin->right, rd))) {
-                    bool neg = bin->op == QSOperator::StrictNotEqual || bin->op == QSOperator::NotEqual;
-                    out = "(" + rd + (neg ? " != \"\")" : " == \"\")");
-                    return true;
-                }
-            }
             // ...and the SAME read when the registry says the object's type does not declare that
             // member at all. QML is dynamically typed: Qt's Fusion CheckIndicator is used by
             // MenuItem, whose `control` has no `checkState`, and the engine evaluates the read as
@@ -2878,6 +2863,26 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 outRead = "propStr(" + oeL + ", \"" + memL + "\")";
                 return true;
             };
+            // `indicator.control.checkState === undefined` (Qt's Fusion CheckIndicator) asks
+            // whether the object HAS the property at all — the declared type is AbstractButton,
+            // which has no checkState, and the object put there may or may not be a CheckBox. The
+            // meta channel answers exactly that question: a property the object does not declare
+            // reads as the empty string, and one it does reads as its key.
+            {
+                auto isUndef = [&](ExpressionNode *x) {
+                    auto *id = cast<IdentifierExpression *>(x);
+                    if (!id) return false;
+                    std::string n = qs(id->name.toString());
+                    return n == "undefined" && !g_scope.count(n) && !g_childIds.count(n);
+                };
+                std::string rd;
+                if ((isUndef(bin->right) && enumReadAny(bin->left, rd))
+                        || (isUndef(bin->left) && enumReadAny(bin->right, rd))) {
+                    bool neg = bin->op == QSOperator::StrictNotEqual || bin->op == QSOperator::NotEqual;
+                    out = "(" + rd + (neg ? " != \"\")" : " == \"\")");
+                    return true;
+                }
+            }
             std::string key, read;
             if ((enumKey(bin->right, key) && enumReadAny(bin->left, read))
                     || (enumKey(bin->left, key) && enumReadAny(bin->right, read))) {
