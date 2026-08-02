@@ -2400,6 +2400,27 @@ inside the ContextMenu's Menu, which the attached-child gate still holds shut. T
 landing before the thing it is a prerequisite for, measured and said plainly rather than counted as
 progress.
 
+### What `ContextMenu.menu` needs, counted (2026-08-02)
+
+The gate note has said "the blocker is the children" for two measurements. Compiling those children
+one by one turns that into three named items — and the Actions turn out to be nearly finished
+already. `UndoAction.qml` compiles its text (through `qsTr`), its whole `icon` group, and its
+`enabled: editor.canUndo` binding WITH the connect. What is left, across all seven:
+
+1. **`onTriggered: editor.undo()`** — a no-argument METHOD call on a declared object property. The
+   registry publishes properties and signals per type but NOT methods: `qmlmethods.tsv` has 139 rows
+   and all of them are singletons. So this is a generator change (publish per-type methods) before
+   it is a compiler one, and `qtd_invoke0` is already in the runtime waiting for it. Seven of seven.
+2. **`shortcut: StandardKey.Undo`** — an enum member of a namespace assigned into a property Qt
+   declares as `QVariant`. Same shape as `Easing.OutCubic`, which is solved: read it through the
+   singleton channel as an int, or fall back to its key. Seven of seven.
+3. **`editor.hasOwnProperty("cut")`** — a JS built-in on an object. Three of seven (Cut, Copy,
+   Paste). The meta channel can answer it exactly: whether the object's meta-object declares that
+   property, which is what `typeKnownWithoutMember` already asks in the other direction.
+
+None of the three is large, none of them is blocked on anything, and none of them is the ATTACHMENT
+— which is what the gate has been saying since it was first measured. That is the queue, in order.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
