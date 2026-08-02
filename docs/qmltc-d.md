@@ -2001,6 +2001,30 @@ plus the general "compile it only if it compiles WHOLE" rule gives 158 diagnosti
 attached children, because every one of them is still partial. The number to watch is not the gate —
 it is whether `ContextMenu.menu`'s Actions compile.
 
+### The fourth axis on Fusion, and the defect it found (2026-08-02)
+
+`react_corpus.sh` now takes the style and output directory too — the last of the three scripts to
+get them, and the reason is the finding: **a declared VALUE-TYPE property was written once and never
+again.** Qt's Fusion RadioIndicator computes
+
+    readonly property color pressedColor: Fusion.mergedColors(control.palette.base, …)
+
+and disabling the control switches which palette GROUP `control.palette` resolves to. The engine
+repaints; we kept the enabled colour (`#e7e7e7` against the engine's `#d8d8d8`). The property is
+written through the meta channel as text, and that path had no dependency wiring at all — the value
+is correct at construction, which is exactly why three axes could not see it and only a mutation
+could.
+
+The fix is the wiring every other binding already gets, applied to that path. Measured after, on
+BOTH corpora, six mutations each (`enabled`, `width`, `visible`, `padding`, `spacing`, `focus`):
+
+| axis | Basic | Fusion |
+|---|---|---|
+| REACTIVITY: documents identical at construction that differ after a mutation | **none**, 6 of 6 | **none**, 6 of 6 |
+
+Fusion's fourth axis had never been run. It found one defect, in the one place the other three are
+blind by construction.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

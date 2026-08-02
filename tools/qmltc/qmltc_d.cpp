@@ -4233,6 +4233,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Declared properties whose value must go through the meta-object rather than into the D
     // field: a value type takes its literal as a string and QMetaType converts it.
     std::vector<std::pair<std::string, std::string>> metaAssigns;
+    // ...and the EXPRESSION behind each, so its dependencies can be wired once wireGroupDeps
+    // exists. A declared value-type property was written ONCE and never again: Qt's Fusion
+    // RadioIndicator computes `pressedColor` from `control.palette`, and disabling the control
+    // switches which palette GROUP that resolves to — the engine repaints, we kept the enabled
+    // colour. Found by the reactivity sweep on Fusion, which nothing had run before.
+    std::vector<std::pair<std::string, ExpressionNode *>> metaAssignDeps;
     std::vector<StateEntry> stateTable;          // `states:` compiled as data, not as objects
     std::string initialState;                    // the document's `state: "..."`, if any
     // ("group.member", init, child QML type). The type used to be dropped, so every grouped child
@@ -4765,6 +4771,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                        && compileExpr(es->expression, "string", expr)) {
                 props.push_back({name, "QColor", "", false, {}});
                 metaAssigns.push_back({name, expr});
+                metaAssignDeps.push_back({name, es->expression});
                 g_metaTextProps.insert(name);
             } else if (!std::strcmp(dt, "int") || !std::strcmp(dt, "bool")
                        || !std::strcmp(dt, "double") || !std::strcmp(dt, "string") || !objDt.empty()) {
@@ -6598,6 +6605,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    + "        " + field + " = new " + childCls + "();\n"
                    + "        setQtParent(" + field + ", this);\n";
         node.vsKids.push_back({field, kid});
+    }
+
+    // A declared VALUE-TYPE property is live like any other binding: same channel, same connects.
+    for (auto &md : metaAssignDeps) {
+        std::string st;
+        for (auto &ma : metaAssigns)
+            if (ma.first == md.first) { st = "        setProp(this, \"" + ma.first + "\", " + ma.second + ");\n"; break; }
+        if (st.empty()) continue;
+        wireGroupDeps(md.second, "__rcm_" + md.first, st,
+                      "declared value property '" + md.first + "'");
     }
 
     // Grouped assignment on a plain Q_GADGET value: read-modify-write of the whole value.
