@@ -4475,7 +4475,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // engine's by more than its absence does, so shipping it would trade a reported
                     // gap for a silent wrong object. Re-open only when a compiled ScrollBar.vertical
                     // matches the engine property-for-property.
-                    // GATE STILL SHUT — re-measured 2026-08-02, after the object write, the
+                    // GATE STILL SHUT — re-measured a SECOND time at the end of 2026-08-02, with
+                    // Fusion down to 60 diagnostics: opening it plus the "compile it only if it
+                    // compiles WHOLE" rule gives 158 diagnostics and emits ZERO attached children,
+                    // exactly as it did at 83. Every one is still partial. The number to watch is
+                    // not the gate, it is whether `ContextMenu.menu`'s Actions compile.
+                    // (first measurement) — re-measured 2026-08-02, after the object write, the
                     // sibling ids, the colour precision and the ordering fixes, i.e. with every
                     // prerequisite the earlier note asked for. Opening it: Fusion 83 -> 171
                     // diagnostics, 41 -> 39 documents identical, 20 -> 26 value differences, 0 ->

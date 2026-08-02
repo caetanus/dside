@@ -1980,6 +1980,27 @@ Both are the same correction applied where it was missed:
 
 Fusion 66 → 60 diagnostics, Basic 69 → 67. Values, render and construction unchanged on both.
 
+### Two experiments that were reverted, and what they settled (2026-08-02)
+
+Neither shipped. Both are worth more written down than the code would have been.
+
+**SpinBox and DoubleSpinBox are not bindable.** Their headers were missing from the controls spec,
+and adding them DOES map both types — and then every subclass fails to LINK.
+`QQuickAbstractSpinBox` is a TEMPLATE whose inline `handleComponentComplete` calls
+`QQuickIndicatorButtonPrivate::executeIndicator(bool)`, which libQt6QuickTemplates2 does not export,
+so the trampoline instantiates code against a symbol that is not there. Same shape as the Basic
+style impls. A compiled-but-unlinkable root is worse than an honestly refused one: the
+controls-runtime gate went from 0 failures to 2. ApplicationWindow, Calendar, CalendarModel,
+DayOfWeekRow, MonthGrid and WeekNumberColumn were added in the same experiment and are INERT —
+their classes generate but nothing maps them, because none is a QQuickItem and `QQuickCalendar` has
+no export macro at all. The reason is now in the spec, next to the one for the Basic impls.
+
+**The attached-child gate, measured a second time.** The first measurement was taken at 83
+diagnostics; this one at 60, after every fix of the day. The result is identical: opening the gate
+plus the general "compile it only if it compiles WHOLE" rule gives 158 diagnostics and emits ZERO
+attached children, because every one of them is still partial. The number to watch is not the gate —
+it is whether `ContextMenu.menu`'s Actions compile.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
