@@ -2436,6 +2436,15 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                 out = "propStr(" + oe + ", \"" + qs(fm->name.toString()) + "\")";
                                 return true;
                             }
+                    // A member the type DOES NOT DECLARE was tried here and REVERTED by
+                    // measurement (2026-08-02). QML answers `undefined` for one, and the meta
+                    // channel answers the same in the target's terms — which is why Qt's Fusion
+                    // ButtonPanel asking `control.down || control.checked` about a ComboBox (no
+                    // `checked`) costs that panel its colour and its gradient. Compiling the read
+                    // is not enough: every one of them then reports a dead dependency, because the
+                    // member has no notify either. Fusion went 51 -> 149 diagnostics (98 of them
+                    // no-notify), 43 -> 41 documents identical and 17 -> 22 value differences.
+                    // Both halves have to land together, as they did for the enum-key comparison.
                     if (auto qp = g_qmlProps.find(own); qp != g_qmlProps.end()) {
                         auto t2 = qp->second.find(qs(fm->name.toString()));
                         if (t2 != qp->second.end()) {
