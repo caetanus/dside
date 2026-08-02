@@ -6779,6 +6779,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (!sig.empty())
                     bindWire += "        connectMeta(" + so + ", \"" + sig + "\", this, \""
                                  + slot + "()\");\n";
+                // ...and every dependency of the CONDITION, which this connected none of: Qt's
+                // SearchField paints its border with the accent colour while
+                // `control.activeFocus || control.contentItem.activeFocus` holds, and only the
+                // colour SOURCE was followed — so clicking into the field left the border grey.
+                // Same defect the text-channel branch below had, in the branch that takes the
+                // ternary-between-two-reads shape instead.
+                if (ga.second)
+                    wireGroupDeps(ga.second, slot, stmt, "object-group member '" + ga.first + "'", false);
                 lateWire += "        " + slot + "();\n";
                 node.groupProps.push_back({ga.first, "string"});
                 continue;

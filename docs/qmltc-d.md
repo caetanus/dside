@@ -2109,6 +2109,20 @@ exactly the bug it was meant to fix, which is what made it easy to miss.
 Qt's ScrollBar and ScrollIndicator hide their contentItem with `opacity: 0.0` and reveal it from
 that state; both are byte-identical after a click now, in both styles.
 
+### The same defect in the other branch (2026-08-02)
+
+An object-group member whose value is a TERNARY BETWEEN TWO READS takes its own branch — the one
+that emits a copy rather than a computed value — and that branch connected only what the colour
+SOURCE hangs off, never the CONDITION. Qt's SearchField paints its border with the accent colour
+while `control.activeFocus || control.contentItem.activeFocus` holds; clicking into the field left
+it grey. Exactly the defect fixed an hour earlier in the text-channel branch beside it, and the
+click axis found both.
+
+Basic's frame after a click: **31 identical, 2 differing** — and both of those are named: `Switch`
+and `SwitchDelegate` carry `Behavior on x { SmoothedAnimation }`, so the engine's handle is caught
+mid-flight where ours has already arrived. That is the one remaining cause in Basic, and it is the
+`Behavior` cluster the diagnostics already report.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
