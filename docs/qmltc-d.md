@@ -1671,7 +1671,15 @@ The largest remaining Fusion clusters, measured — and one of them is now cut i
   compiles (a direct copy), `FC.Fusion.gradientStart("#abcdef")` compiles (aliased call, literal
   argument), and `FC.Fusion.gradientStart(bg.color)` does NOT. So what is missing is reading a
   QColor property through an id AS A STRING ARGUMENT — not the alias, not the call;
-- `indicator.control.checkState === …` (12).
+- `indicator.control.checkState === …` (12);
+- a declared VALUE-TYPE property (`readonly property color pressedColor: …`, 20). The property is
+  built now — it is declared with the value type so the meta-object records it, its initial value is
+  written as TEXT through the meta-object, a read of it compiles to `propStr`, and a colour-typed
+  target accepts anything that compiles as text. Proven by isolation, and the corpus did NOT move:
+  Qt writes the BARE head (`control.palette.base`, not `indicator.control.palette.base`), and a bare
+  name that is a declared OBJECT property of the same object still does not resolve as the head of a
+  path. The qualified form compiles; that one line is the whole difference, and it is where the next
+  attempt starts.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

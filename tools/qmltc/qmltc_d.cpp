@@ -96,6 +96,9 @@ static std::map<std::string, std::string> g_qmlTypeUri;
 static std::map<std::string, std::vector<std::string>> g_qmlTypeUris;
 // <QML type of a document-defined class> -> its declared OBJECT properties -> their QML type.
 static std::map<std::string, std::map<std::string, std::string>> g_declObjProps;
+// Declared properties whose value type crosses as TEXT through the meta-object (a colour): reading
+// the D field would hand an expression a QColor where it wants a string.
+static std::set<std::string> g_metaTextProps;
 
 // A type defined by a .qml FILE has no rows of its own: the registry only knows the type it DERIVES
 // from. Copying that type's rows under the local name makes every lookup that carries a QML type
@@ -1451,6 +1454,7 @@ static std::set<std::string> g_useSiteShadowed;
 static bool shadowedByLocalType(const std::string &n) { return g_useSiteShadowed.count(n) > 0; }
 
 static bool readName(const std::string &n, std::string &out) {
+    if (g_metaTextProps.count(n)) { out = "propStr(this, \"" + n + "\")"; return true; }
     if (shadowedByLocalType(n)) return false;   // resolve it in the enclosing scope instead
     if (auto a = g_aliasRead.find(n); a != g_aliasRead.end()) { out = a->second; return true; }
     auto bp = g_baseProps.find(n);
@@ -4388,6 +4392,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::vector<std::string> ids; collectIds(es->expression, ids);
                 props.push_back({name, dt, expr, true, ids, g_deepReads});
                 g_deepReads.clear();
+            // A declared VALUE-TYPE property (`readonly property color checkMarkColor: <expr>`):
+            // Qt's Fusion declares twenty of them and reads them from its children. The property
+            // has to EXIST — the field carries the value type so the meta-object records it as
+            // such, and both the initial value and every read cross as TEXT through the meta-object,
+            // which is how every colour here already travels. Reading the D FIELD instead is what
+            // broke the first attempt (a QColor where the expression wants a string).
+            } else if (!std::strcmp(dt, "QColor") && es
+                       && compileExpr(es->expression, "string", expr)) {
+                props.push_back({name, "QColor", "", false, {}});
+                metaAssigns.push_back({name, expr});
+                g_metaTextProps.insert(name);
             } else if (!std::strcmp(dt, "int") || !std::strcmp(dt, "bool")
                        || !std::strcmp(dt, "double") || !std::strcmp(dt, "string") || !objDt.empty()) {
                 // The property EXISTS whether or not its INITIAL BINDING compiles.
@@ -5367,6 +5382,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 scalar = true;
                 ty = "string";
             }
+        // ...and a target whose declared type IS a colour, fed from anything that compiles as text:
+        // `color: pressedColor`, where `pressedColor` is a declared `property color` that now exists
+        // and is read through the meta-object. The value crosses as text and QMetaType converts it,
+        // the same channel the colour literals and singleton calls already use.
+        if (copyAssign.empty() && !scalar && ty == "QColor"
+                && compileExpr(ba.second, "string", val)) {
+            scalar = true;
+            ty = "string";
+        }
         // ...and a bare singleton PROPERTY read into the same unrouted type: `color: Fusion.topShadow`
         // (Qt's Fusion, eleven times). Same channel as the call below — the value crosses as text
         // and QMetaType converts it on write.
