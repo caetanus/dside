@@ -2223,6 +2223,26 @@ Basic is unchanged and remains at 33 identical / 0 differing after a click. Fusi
 BusyIndicator (a perpetual animation), SwitchDelegate (266 pixels, delta 65) and TabButton
 (18 pixels, delta 1 — antialiasing).
 
+### `Window.active` cannot be made to agree, and that is the answer (2026-08-02)
+
+Fusion's SwitchDelegate is the last click difference with a real cause: its indicator dims the
+highlight by half when `indicator.Window.active` is false, and the two harnesses disagree about
+whether their window is active. Both attempts to fix it were REVERTED by measurement:
+
+- activating OUR window took Fusion from 28 identical to 25 (RangeSlider, RoundButton and Slider
+  joined the differing list);
+- activating BOTH gave the same 25 — under the offscreen platform a bare QQuickWindow becomes
+  active on `requestActivate` and a QQuickView does not, so the asymmetry is the platform's and not
+  something either side chose.
+
+So a document that reads `Window.active` is unmeasurable on this axis, the way a Transition's empty
+`animations` list is unmeasurable on the value axis. It stays in the differing list rather than
+being papered over, and the reason is written next to the script.
+
+One process note, because it nearly became a false finding: the corpus binaries LINK `qtd_render.o`.
+Re-running only the comparison after reverting reported three regressions that were nothing but
+stale binaries — the same "build nodes missing their real inputs" trap this project has hit before.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

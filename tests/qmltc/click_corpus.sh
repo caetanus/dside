@@ -7,6 +7,17 @@
 # Usage: bash tests/qmltc/click_corpus.sh <scratchdir> [Style] [outdir-under-scratch]
 # Needs render_corpus.sh to have run first: the click point is the centre of the ENGINE's frame,
 # which is the only place the document's real size is already written down.
+#
+# A document that reads `Window.active` is UNMEASURABLE here, and the two sides cannot be made to
+# agree about it: under the offscreen platform a bare QQuickWindow (ours) becomes active on
+# requestActivate and a QQuickView (the engine's) does not. Measured both ways — activating only
+# ours took Fusion from 28 identical to 25, and activating BOTH gave the same 25. Qt's Fusion
+# Switch dims its highlight by half when the window is inactive, which is why SwitchDelegate stays
+# in the differing list. Left as a difference rather than papered over.
+#
+# The corpus binaries LINK qtd_render.o: after any change to it they must be relinked before this
+# script means anything. Re-running only the comparison once reported three extra regressions that
+# were nothing but stale binaries.
 set -u
 SP=$1; STYLE=${2:-Basic}; OUT=${3:-cr}
 B=/usr/lib/qt6/qml/QtQuick/Controls/$STYLE; L=/home/caetano/lab/qt-dlang-gen/.build/qt-6.11-cxx-controls
