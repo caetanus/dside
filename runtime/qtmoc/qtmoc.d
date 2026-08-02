@@ -76,6 +76,7 @@ void qtd_parser_status(void*, int);
     void* qtd_color_shade_rgba(uint, double, int);          // ...from a QColor's ARGB word
     void* qtd_color_name(uint);                             // a QColor's `#aarrggbb` spelling
     void* qtd_platform_name();                              // Qt.platform.pluginName -> QString*
+    int   qtd_enum_value(const(char)*, const(char)*, int);  // enum KEY -> number, via QMetaEnum
     void* qtd_color_alpha(const(char)*, double);            // Qt.alpha -> QString*
     void* qtd_color_alpha_rgba(uint, double);               // ...from a QColor's ARGB word
     void* qtd_tr(const(char)*, const(char)*, const(char)*, int);   // QCoreApplication::translate
@@ -932,6 +933,12 @@ private string __shade(C)(C c, double f, int lighter) {
     static if (is(C : string)) auto qs = qtd_color_shade((c ~ "\0").ptr, f, lighter);
     else                       auto qs = qtd_color_shade_rgba(cast(uint)c.rgba(), f, lighter);
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
+/// The NUMBER behind an enum key, on the C++ type that declares it. QML spells these as
+/// `StandardKey.Undo` — an uncreatable type exported for its enum alone, with no object to read
+/// from — and the number is what QML assigns. Falls back to `def` when the lookup fails.
+int enumValue(string cxxType, string key, int def = 0) {
+    return qtd_enum_value((cxxType ~ "\0").ptr, (key ~ "\0").ptr, def);
 }
 /// The QML global `Qt.platform.pluginName` — QGuiApplication::platformName(), which is what QML
 /// returns there. Empty in a binding without QtGui.

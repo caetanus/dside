@@ -1156,6 +1156,28 @@ bool qtd_invoke0(void* o, const char* member) {
 // `Qt.platform.pluginName` — a QML global with no QObject behind it, like the colour helpers.
 // QML returns QGuiApplication::platformName() there, so that is what this returns; empty in a
 // binding without QtGui, which is also what a document reading it would see.
+// The NUMERIC value of an enum key, looked up on the C++ type that declares it. QML spells these
+// as `StandardKey.Undo`, where `StandardKey` is an UNCREATABLE type (QKeySequence) exported for its
+// enum alone — there is no object to read the member from, and the key as text is no use either
+// (Qt would parse "Undo" as three letters). The number is what QML assigns, and QMetaEnum is where
+// it lives. Returns `def` when the type or the key is unknown, so a wrong guess is a value the
+// caller chose rather than a silent zero.
+extern "C" int qtd_enum_value(const char* cxxType, const char* key, int def) {
+    if (!cxxType || !key) return def;
+    // QMetaType::fromName is Qt6; Qt5 answers the same question through the type id.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QMetaObject* mo = QMetaType::fromName(cxxType).metaObject();
+#else
+    const QMetaObject* mo = QMetaType::metaObjectForType(QMetaType::type(cxxType));
+#endif
+    if (!mo) return def;
+    for (int i = 0; i < mo->enumeratorCount(); ++i) {
+        bool ok = false;
+        int v = mo->enumerator(i).keyToValue(key, &ok);
+        if (ok) return v;
+    }
+    return def;
+}
 extern "C" void* qtd_platform_name() {
 #ifdef QT_GUI_LIB
     return new QString(QGuiApplication::platformName());

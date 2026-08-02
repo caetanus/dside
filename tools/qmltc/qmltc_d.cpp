@@ -263,6 +263,7 @@ static std::map<std::string,
 // C++ class -> QML name for every EXPORTED type, not just the ones we subclass. Without it a
 // property typed by an unbound helper class could not be followed to its own properties.
 static std::map<std::string, std::string> g_cxxQmlName;
+static std::map<std::string, std::string> g_qmlCxxName;   // ...and the reverse
 static void loadQmlCxxNames(const std::string &mapPath) {
     auto slash = mapPath.find_last_of('/');
     std::string p = (slash == std::string::npos ? std::string() : mapPath.substr(0, slash + 1))
@@ -274,7 +275,13 @@ static void loadQmlCxxNames(const std::string &mapPath) {
         if (t == std::string::npos) continue;
         std::string cxx = line.substr(0, t), qml = line.substr(t + 1);
         while (!qml.empty() && (qml.back() == '\r' || qml.back() == '\n')) qml.pop_back();
-        if (!cxx.empty() && !qml.empty()) g_cxxQmlName.emplace(cxx, qml);
+        if (!cxx.empty() && !qml.empty()) {
+            g_cxxQmlName.emplace(cxx, qml);
+            // ...and the reverse, for a type exported ONLY for its enum: `StandardKey` is
+            // QKeySequence, which has no object to read a member from, and the NUMBER behind the
+            // key is what QML assigns. The C++ name is what the runtime needs to find the QMetaEnum.
+            g_qmlCxxName.emplace(qml, cxx);
+        }
     }
 }
 
@@ -5926,6 +5933,26 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 scalar = true;
                 ty = "string";
             }
+        // ...and a NON-SCALAR target fed an enum member of a type exported for its enum alone:
+        // `shortcut: StandardKey.Undo` on Qt's editing Actions, where `shortcut` is a QVariant and
+        // `StandardKey` is QKeySequence. There is no object to read the member from and the key as
+        // text is no use (Qt would parse "Undo" as three letters), so the NUMBER goes across —
+        // which is exactly what QML assigns there. Resolved at runtime through QMetaEnum, so no
+        // table of enum values is needed anywhere.
+        if (copyAssign.empty() && !scalar)
+            if (auto *ee = cast<FieldMemberExpression *>(ba.second))
+                if (auto *et = cast<IdentifierExpression *>(ee->base)) {
+                    std::string tn = qs(et->name.toString()), key = qs(ee->name.toString());
+                    auto cx = g_qmlCxxName.find(tn);
+                    if (cx != g_qmlCxxName.end() && !key.empty()
+                            && std::isupper((unsigned char) key[0])
+                            && !g_scope.count(tn) && !g_childIds.count(tn)) {
+                        baseWire += "        setProp(this, \"" + ba.first + "\", enumValue(\""
+                                  + cx->second + "\", \"" + key + "\"));\n";
+                        node.baseProps.push_back({ba.first, "int"});
+                        continue;
+                    }
+                }
         // ...and a target whose declared type IS a colour, fed from anything that compiles as text:
         // `color: pressedColor`, where `pressedColor` is a declared `property color` that now exists
         // and is read through the meta-object. The value crosses as text and QMetaType converts it,

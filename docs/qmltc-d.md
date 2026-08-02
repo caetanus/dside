@@ -2428,6 +2428,29 @@ per-type methods or enum values**, and both are sitting in the qmltypes the gene
 parses. None of the three is the ATTACHMENT — which is what the gate has been saying since it was
 first measured — and the first move is in the generator, not the compiler.
 
+### The enum of a type exported for its enum alone (2026-08-02)
+
+Second of the three the ContextMenu needs, and the note that named it was itself corrected on the
+way: `StandardKey` is not a singleton (`Easing` is), it is `QKeySequence` — uncreatable, exported
+for its `Enum` block. There is no object to read `StandardKey.Undo` from, the key as TEXT is no use
+(Qt parses `"Undo"` as three letters), and qmltypes lists the enum's KEYS without their numbers.
+
+The number is what QML assigns there, and `QMetaEnum` on the C++ type is where it lives — resolved
+at RUNTIME, so no table of enum values is needed anywhere and the lookup works for any such type
+without naming one. The registry already carried the C++ name (`qmlcxxnames.tsv` has
+`QKeySequence → StandardKey`); only the reverse direction was missing.
+
+`tests/qmltc/quick/QEnumOnlyType.qml` writes `Shortcut { sequence: StandardKey.Copy }` and reads
+`nativeText` back: **Ctrl+C**, identical to the engine. A wrong number would show up as a different
+shortcut rather than as a silent no-op.
+
+Qt's seven editing Actions now compile everything except their `onTriggered` handler — text through
+`qsTr`, the whole `icon` group, `enabled: editor.canUndo` with its connect, and the shortcut. The
+last one needs per-type METHODS in the registry, which is the same generator job.
+
+Neither corpus moves, for the same reason `Qt.platform` did not: the only place either style writes
+this is inside the ContextMenu's Menu, behind the gate.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
