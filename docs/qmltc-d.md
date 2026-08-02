@@ -2082,6 +2082,33 @@ and is identical at rest; the ScrollBars are attributed — Qt's ScrollBar hides
 `PropertyChanges { control.contentItem.opacity: 0.75 }`, neither of which is compiled (the four
 `states` diagnostics). That is the first cluster the click axis has named for itself.
 
+### `when:` and a PropertyChanges that names its own target (2026-08-02)
+
+The click axis named this cluster on its first run and it is now compiled. Two halves, both small
+once the shape was clear:
+
+- **`when:` is an ordinary binding on `state`** — which is exactly what the engine does with it, so
+  entering AND leaving both go through the save/apply/restore machinery that already existed, with
+  no new case at all;
+- **`PropertyChanges { control.contentItem.opacity: 0.75 }`** — Qt 6 spells the target in the NAME
+  instead of in a `target:` line. The path is resolved where the scope is complete and accepted only
+  when it lands on THIS object, which is the same rule the `target:` form enforces. Knowing that it
+  does requires knowing which property of the enclosing object holds us, so a compile now carries
+  that name.
+
+It took one relocation to work: the `when` wiring was written next to the rest of the state
+machinery, which runs AFTER `bindWire` has been folded into the constructor — so the connects went
+into a buffer nobody reads again, and the slot was called once and never more. The symptom was
+exactly the bug it was meant to fix, which is what made it easy to miss.
+
+| | Basic | Fusion |
+|---|---|---|
+| diagnostics | 67 → **65** | 60 → **58** |
+| frame after a click | 29 → **30 identical**, 3 differing | 24 → **25 identical**, 5 differing |
+
+Qt's ScrollBar and ScrollIndicator hide their contentItem with `opacity: 0.0` and reveal it from
+that state; both are byte-identical after a click now, in both styles.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

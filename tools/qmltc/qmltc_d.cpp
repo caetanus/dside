@@ -1231,6 +1231,9 @@ static std::map<std::string, std::pair<std::string, std::string>> g_aliasWrite;
 // out-of-scope identifier is a compile FAILURE (-> PARTIAL), never a silent wrong emission.
 // Scoped per object, saved/restored across compileObject recursion like the other maps.
 static std::set<std::string> g_scope;
+// The property of the ENCLOSING object that holds the object being compiled, when it is a
+// property-bound child. Empty for a default child or a root.
+static std::string g_selfBoundProp;
 
 // `Easing.OutCubic`, `Font.DemiBold` — an ENUM MEMBER whose TYPE the registry does not carry.
 // `Easing` and `Font` are value-type namespaces: QtQuick registers the enums, not a type with
@@ -3866,7 +3869,11 @@ struct ObjNode {
 // One `State`: its name and the overrides its PropertyChanges blocks declare, as raw expressions
 // (compiled later, once the property types of the enclosing object are known).
 struct StateOverride { std::string prop; ExpressionNode *value; };
-struct StateEntry { std::string name; std::vector<StateOverride> overrides; };
+// `when:` is a CONDITION, not a name — QML enters the state while it holds. Kept as the
+// expression: the emission turns it into an ordinary binding on `state`, which is exactly what the
+// engine does, so the save/apply/restore machinery below needs no new case at all.
+struct StateEntry { std::string name; std::vector<StateOverride> overrides;
+                    ExpressionNode *when = nullptr; };
 
 // Reads `states: State { ... }` (or a list of them) into a table. Returns false for any shape not
 // handled — a target other than the enclosing object, or a member that is neither `name` nor a
@@ -3888,8 +3895,14 @@ static bool collectStates(UiObjectMember *binding, std::vector<StateEntry> &out)
         StateEntry e;
         for (auto *m = si ? si->members : nullptr; m; m = m->next) {
             if (auto *sb = cast<UiScriptBinding *>(m->member)) {
-                if (qname(sb->qualifiedId) != "name") return false;
+                std::string sn = qname(sb->qualifiedId);
                 auto *es = cast<ExpressionStatement *>(sb->statement);
+                if (sn == "when") {
+                    if (!es) return false;
+                    e.when = es->expression;
+                    continue;
+                }
+                if (sn != "name") return false;
                 auto *sl = es ? cast<StringLiteral *>(es->expression) : nullptr;
                 if (!sl) return false;
                 e.name = qs(sl->value.toString());
@@ -3911,6 +3924,11 @@ static bool collectStates(UiObjectMember *binding, std::vector<StateEntry> &out)
                     if (!idx || g_selfId.empty() || qs(idx->name.toString()) != g_selfId) return false;
                     continue;
                 }
+                // `PropertyChanges { control.contentItem.opacity: 0.75 }` — Qt 6 spells the target
+                // in the NAME instead of in a `target:` line. Kept whole; the emission resolves the
+                // path and accepts it only when it lands on THIS object, which is the same rule the
+                // `target:` form enforces (Qt's ScrollBar writes it that way about its own
+                // contentItem, from inside that contentItem).
                 e.overrides.push_back({pn, pes->expression});
             }
         }
@@ -5040,7 +5058,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (!cbResolvedPath.empty()) g_resolving.insert(cbResolvedPath);
         g_parentCompletes = true;   // ...after this wire assigns and parents it
+        // The PROPERTY this child is bound to, for the length of its compile. A `PropertyChanges`
+        // inside it can name itself the long way — `control.contentItem.opacity`, which Qt's
+        // ScrollBar does — and the only way to know that path lands on THIS object is to know which
+        // property of the enclosing one holds it.
+        std::string savedBoundProp = g_selfBoundProp;
+        g_selfBoundProp = cb.field;
         ObjNode kid = compileObject(cbInit, childCls, classes, partial, inPath, cbt.first, nullptr, cb.type);
+        g_selfBoundProp = savedBoundProp;
         if (!cbResolvedPath.empty()) g_resolving.erase(cbResolvedPath);
         // The imports (and what arrived qualified) belong to the DOCUMENT they were read from.
         g_srcText = savedCbSrc; g_bareImports = savedBare; g_qualifiedTypes = savedQual;
@@ -6615,6 +6640,28 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         node.vsKids.push_back({field, kid});
     }
 
+    std::string whenMethods;   // folded into stateMethods where the rest of the state machinery is
+    // `when:` is an ordinary binding on `state` — which is what the engine does with it,
+    // so entering AND leaving both go through the machinery above with no new case. Qt's
+    // ScrollBar hides its contentItem with `opacity: 0.0` and reveals it from a state whose
+    // `when` follows `control.active`; without this the bar never appeared at all, which
+    // the CLICK differential is what noticed.
+    for (auto &st : stateTable) {
+        if (!st.when) continue;
+        std::string ce;
+        if (!compileExpr(st.when, "bool", ce)) {
+            std::fprintf(stderr, "qmltc-d: %s: `when` of state '%s' in %s not yet supported "
+                         "— skipped (later phase)\n", inPath, st.name.c_str(), cls.c_str());
+            ++partial; continue;
+        }
+        std::string slot = "__rcw_" + st.name;
+        std::string stmt = "        setProp(this, \"state\", " + ce + " ? \"" + st.name
+                         + "\" : \"\");\n";
+        whenMethods += "    @Slot void " + slot + "() {\n" + stmt + "    }\n";
+        wireGroupDeps(st.when, slot, stmt, "`when` of state '" + st.name + "'", false);
+        lateWire += "        " + slot + "();\n";
+    }
+
     // A declared VALUE-TYPE property is live like any other binding: same channel, same connects.
     for (auto &md : metaAssignDeps) {
         std::string st;
@@ -6846,7 +6893,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     node.notified = needsNotify;   // so a parent can tell whether an aliased child prop is live
 
     for (auto &vl : g_valueLists) node.valueLists.push_back({vl.first, vl.second});
-    std::string body, recompute, stateFields, stateMethods;
+    std::string body, recompute, stateFields, stateMethods = whenMethods;
     bool anyBound = false;
     // The store half of a recompute. A property whose D type is a VALUE TYPE (QColor and every
     // other type with no D scalar) can be driven by an expression that produced TEXT — a colour
@@ -7158,6 +7205,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // (not at compile time — a binding may have changed them since), so switching states
         // restores what was there before rather than what the document literally wrote.
         if (!stateTable.empty()) {
+            // A dotted override name is resolved HERE, where the scope is complete: everything up
+            // to the last segment must land on THIS object, and then the leaf is an ordinary
+            // property of ours. Anything else is left alone and the loops below refuse it by type,
+            // which is what they already do for a name they cannot place.
+            for (auto &st : stateTable)
+                for (auto &ov : st.overrides) {
+                    auto dot = ov.prop.rfind('.');
+                    if (dot == std::string::npos) continue;
+                    std::string headP = ov.prop.substr(0, dot), leafP = ov.prop.substr(dot + 1);
+                    std::string oeS, oqS;
+                    if (objPathWalkDotted(headP, oeS, oqS)
+                            && (oeS == "this"
+                                || (!g_selfBoundProp.empty()
+                                    && oeS == "propObj(__outer, \"" + g_selfBoundProp + "\")")))
+                        ov.prop = leafP;
+                }
             std::set<std::string> touched;
             for (auto &st : stateTable) for (auto &ov : st.overrides) touched.insert(ov.prop);
             std::string saves, restores, applies;
