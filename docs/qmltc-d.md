@@ -2523,6 +2523,28 @@ refusals; compiled as the ContextMenu's Menu — spliced, with a different enclo
 contentItem also refuses `model`, `interactive` and `currentIndex`. The same document, two scopes,
 two answers, which is the shape this file has recorded a dozen times and the next thing to isolate.
 
+### The Menu's two scopes: a hypothesis that measured to nothing (2026-08-02)
+
+The gate note names the next blocker as "the same document, two scopes, two answers": Qt's
+`Basic/Menu.qml` compiles with three refusals on its own and adds three more when spliced as the
+ContextMenu's Menu (`model`, `interactive`, `currentIndex` on its contentItem).
+
+The obvious hypothesis was IDS. A spliced local type has two — the definition's (`id: control`) and
+the use site's (`id: menu`) — and the pre-scan kept only the last, so `control.contentModel` would
+stop resolving. Every place that compares against the self id was changed to consult a SET, and
+`OuterFrame` was given one too so a child reaching up by name can use either.
+
+**It changed nothing.** Both corpora stayed at 64 and 48 diagnostics, both styles at zero
+construction failures, and the spliced Menu still refuses the same three. Reverted: a change that
+moves no number is not evidence of anything, and carrying it would only make the next person think
+the question was settled.
+
+What the standalone compile shows is that `model: control.contentModel` becomes
+`copyProp(__outer, "contentModel", this, "model")` — the COPY path, reached because `control`
+resolves through the outer hop. So the question is not whether `control` resolves; it is what the
+copy path does with a `QVariant` target in the spliced scope. That is the next thing to trace, and
+tracing it means a print at the decision point rather than another hypothesis.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
