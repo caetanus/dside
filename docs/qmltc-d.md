@@ -2346,6 +2346,22 @@ the Dial; our side cannot be asked the same question through the same tool. Wide
 descend one level into a value group is the next honest step on that axis, and it would be a
 measurement change rather than a compiler one.
 
+### Widening the dump: tried, reverted, and what it costs to do properly (2026-08-02)
+
+The previous note called descending one level into a value group "a measurement change rather than a
+compiler one" and the next honest step. It was tried and REVERTED, and the reason is worth the note:
+
+**there are TWO walkers, not one.** The compiled side dumps through `qtd_dump_object` in the shared
+runtime; the oracle has its own in `qtd_qmlvalues.cpp` and does not link the runtime at all — the
+earlier claim in this file that "both sides call THIS function" is true of the FORMATTER, not of the
+walk. Adding the descent to the runtime alone put 11704 rows on our side that the engine's had never
+heard of. Adding it to the oracle's `--dumpall` loop as well brought that to 805 and 629, still not
+level: `--dumpall` reaches its objects through a different path than the loop that was patched.
+
+Both corpora are back to where they were (Fusion 43 of 49 identical / 16 differences, Basic 48 of 57
+/ 21). The step is still the right one — the Dial's difference cannot be seen any other way — but it
+is a reconciliation of two walkers, not a one-line descent, and half of it is worse than none of it.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
