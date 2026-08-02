@@ -2482,6 +2482,17 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 return true;
             }
             if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
+            // `Math.round` is JS's, which is floor(x + 0.5) — NOT D's round(), which sends a
+            // half away from zero in both directions. Qt's Fusion Slider places its handle with
+            // `Math.round(visualPosition * (availableWidth - width))`, and refusing the call left
+            // the handle at the left edge forever: identical at rest, and wrong the moment the
+            // slider is clicked. ceil and floor come with it — Qt's Tumbler and ScrollView use
+            // them and they were refused for the same reason.
+            if (args.size() == 1 && (fn == "round" || fn == "ceil" || fn == "floor")) {
+                const char *dfn = fn == "round" ? "__qmltcFloor((" : (fn == "ceil" ? "__qmltcCeil((" : "__qmltcFloor((");
+                out = dfn + args[0] + (fn == "round" ? ") + 0.5)" : "))");
+                return true;
+            }
             return false;
         }
         // `Qt.darker(c, f)` / `Qt.lighter(c, f)` — the colour globals. Unlike `Qt.styleHints` there
@@ -7831,7 +7842,8 @@ int main(int argc, char **argv) {
     std::printf("module %s;\n", qPrintable(cls));
     // Aliased so a QML property called `max` or `min` cannot collide with the import.
     std::printf("import qtmoc;\nimport std.conv : to;   // JS `+` string concatenation coerces\n"
-                "import std.algorithm : __qmltcMax = max, __qmltcMin = min;   // Math.max/min (variadic)\n%s\n%s%s",
+                "import std.algorithm : __qmltcMax = max, __qmltcMin = min;   // Math.max/min (variadic)\n"
+                "import std.math : __qmltcFloor = floor, __qmltcCeil = ceil;   // Math.round/ceil/floor\n%s\n%s%s",
                 g_extraImports.c_str(), singletonDecls.c_str(), classes.c_str());
     if (g_needsModuleRegistration) {
         std::string sym = g_qmlUri;

@@ -2195,6 +2195,34 @@ Fusion's four, measured rather than guessed and stable across runs: BusyIndicato
 171 — a perpetual animation, which cannot settle by construction), Slider (336, delta 217),
 SwitchDelegate (266, delta 65), TabButton (18, delta 1 — antialiasing). Two real ones left.
 
+### `Math.round` (2026-08-02)
+
+The Math branch compiled `max`, `min` and `abs`. Qt's Fusion Slider places its handle with
+
+    x: control.leftPadding + Math.round(control.visualPosition * (control.availableWidth - width))
+
+so the whole binding was refused and the handle sat at the left edge forever — **identical at rest**,
+which is why four axes had nothing to say about it, and wrong the moment the slider is clicked. The
+click axis is what found it.
+
+JS's `Math.round` is `floor(x + 0.5)`, not D's `round()`, which sends a half away from zero in both
+directions; `ceil` and `floor` come with it, refused until now for the same reason (Qt's Tumbler and
+ScrollView use them).
+
+One three-line branch, measured across four axes at once:
+
+| Fusion | before | after |
+|---|---|---|
+| diagnostics | 58 | **51** |
+| documents identical in every property | 41 of 49 | **43 of 49** |
+| value differences | 20 | **17** |
+| render at rest, byte for byte | 39 | **40** |
+| frame after a click | 26 identical, 4 differing | **28 identical, 3 differing** |
+
+Basic is unchanged and remains at 33 identical / 0 differing after a click. Fusion's three:
+BusyIndicator (a perpetual animation), SwitchDelegate (266 pixels, delta 65) and TabButton
+(18 pixels, delta 1 — antialiasing).
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
