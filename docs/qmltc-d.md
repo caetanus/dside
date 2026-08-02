@@ -1651,7 +1651,7 @@ same axes as Basic:
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 41 of 49 |
 | value differences | 21 (all attributed) | 20 |
-| diagnostics | 69 | 70 |
+| diagnostics | 69 | 66 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
@@ -1939,6 +1939,30 @@ The property differential could not see it — a gradient is not a property valu
 
 Fusion's five: ComboBox, Dial, RangeSlider, Switch, ToolBar — and three of them are the same
 documents the value differential already names, so the two axes agree about where the work is.
+
+### A property the type does not have (2026-08-02)
+
+QML is dynamically typed and Qt relies on it in both directions. Fusion's CheckIndicator is used by
+CheckBox AND by MenuItem, and it reads `indicator.control.checkState` — a property CheckBox has and
+MenuItem does not. The engine evaluates that as `undefined`, and `undefined === Qt.PartiallyChecked`
+is false. Two halves, and only both together compile the file:
+
+- the READ. The meta channel gives exactly the engine's answer: a property the object does not
+  declare reads as the empty string, and no enum key equals it. Correct too if the object turns out
+  to BE a CheckBox at runtime, which the declared type cannot promise either way. Offered only
+  against an enum KEY, which is what makes a bare path unambiguous there;
+- the DEPENDENCY. `<obj>.<leaf>` where the registry HAS rows for the object's type and none of them
+  is the leaf is a different statement from "we do not know this type": the type is described and
+  simply does not declare that member, so the ENGINE has nothing to connect to either. Best effort
+  on Qt's own notify convention, null-safe AND signal-safe — live if the object turns out to have
+  it, silent if not, which is what the engine does with the same document. Reporting it as "would
+  not update" was calling the document's own shape our defect.
+
+It took two edits because the dependency wiring has TWO consumers with the same fallback, and the
+first patch went into the one this shape does not use — which a print at the decision point showed
+in one run, after re-reading the code had not.
+
+Fusion 70 → 66 diagnostics. Values and render unchanged on both corpora.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

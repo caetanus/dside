@@ -1807,6 +1807,28 @@ static bool outerDepIsPath(const std::string &d) {
 // connect and the first evaluation belong to the late phase, which the root triggers once the
 // whole tree exists.
 static bool g_depIsSibling = false;
+// True when the registry HAS rows for `qmlType` and none of them is `mem`. That is a different
+// statement from "we do not know": the type is described and simply does not declare that member,
+// which is what QML's dynamic typing makes routine — Qt's Fusion CheckIndicator is used by MenuItem,
+// whose `control` has no `checkState`. The ENGINE has nothing to connect to there either, so a
+// missing notify is not our defect; it is the shape of the document.
+// Walk a DOTTED path (the spelling the wiring keeps deps in) to the object it names and the QML
+// type that object has. objPathFromString answers the same walk but returns the leaf's SIGNAL,
+// which is precisely what is missing in the case this exists for.
+static bool objPathWalkDotted(const std::string &dotted, std::string &oe, std::string &oq);
+
+static bool typeKnownWithoutMember(const std::string &qmlType, const std::string &mem) {
+    if (qmlType.empty()) return false;
+    auto c = g_qmlCxxType.find(qmlType);
+    auto p = g_qmlProps.find(qmlType);
+    bool known = (c != g_qmlCxxType.end() && !c->second.empty())
+              || (p != g_qmlProps.end() && !p->second.empty());
+    if (!known) return false;
+    if (c != g_qmlCxxType.end() && c->second.count(mem)) return false;
+    if (p != g_qmlProps.end() && p->second.count(mem)) return false;
+    return true;
+}
+
 static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq) {
     // `__outer` is a head like any other: the wiring holds deps spelled with it, and a path through
     // an enclosing object cannot be re-resolved there without this.
@@ -1858,6 +1880,46 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     }
     return false;
 }
+static bool objPathWalkDotted(const std::string &dotted, std::string &oe, std::string &oq) {
+    std::vector<std::string> parts;
+    for (size_t i = 0, j; i <= dotted.size(); i = j + 1) {
+        j = dotted.find('.', i);
+        if (j == std::string::npos) j = dotted.size();
+        parts.push_back(dotted.substr(i, j - i));
+        if (j == dotted.size()) break;
+    }
+    if (parts.empty()) return false;
+    size_t k0 = 0;
+    while (k0 + 1 < parts.size() && parts[k0] == "__outer") ++k0;
+    if (k0 > 0) {
+        if (g_outerChain.size() < k0) return false;
+        g_outerUsed = true;
+        if ((int) (k0 - 1) > g_outerHopsNeeded) g_outerHopsNeeded = (int) (k0 - 1);
+        oe.clear();
+        for (size_t i = 0; i < k0; ++i) oe += (i ? "." : "") + std::string("__outer");
+        oq = g_outerChain[k0 - 1].qmlType;
+    } else if (!objPathHead(parts[0], oe, oq)) return false;
+    for (size_t k = (k0 ? k0 : 1); k < parts.size(); ++k) {
+        std::string nq;
+        // A DECLARED object property of the enclosing object is a hop too — `__outer.control` on
+        // every Fusion indicator. The registry does not know it (the DOCUMENT declares it), so the
+        // frame's own table is where its QML type lives.
+        if (k0 > 0 && k == k0) {
+            auto &pt = g_outerChain[k0 - 1].propType;
+            if (auto it = pt.find(parts[k]);
+                    it != pt.end() && it->second.size() > 1 && it->second[0] == '@') {
+                oe = "propObj(" + oe + ", \"" + parts[k] + "\")";
+                oq = it->second.substr(1);
+                continue;
+            }
+        }
+        if (!objPropQml(oq, parts[k], nq)) return false;
+        oe = "propObj(" + oe + ", \"" + parts[k] + "\")";
+        oq = nq;
+    }
+    return true;
+}
+
 static bool objPathFromString(const std::string &dotted, std::string &objExpr, std::string &leafSig) {
     std::vector<std::string> parts;
     for (size_t i = 0, j; i <= dotted.size(); i = j + 1) {
@@ -2798,9 +2860,27 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     return true;
                 }
             }
+            // ...and the SAME read when the registry says the object's type does not declare that
+            // member at all. QML is dynamically typed: Qt's Fusion CheckIndicator is used by
+            // MenuItem, whose `control` has no `checkState`, and the engine evaluates the read as
+            // `undefined` — which `=== Qt.PartiallyChecked` answers false. The meta channel gives
+            // exactly that: a property the object does not declare reads as the empty string, and
+            // no key equals it. Correct too if the object turns out to BE a CheckBox at runtime,
+            // which the declared type cannot promise either way. Only offered against an enum KEY,
+            // which is what makes a bare path unambiguous here.
+            auto enumReadAny = [&](ExpressionNode *x, std::string &outRead) {
+                if (enumRead(x, outRead)) return true;
+                auto *fmL = cast<FieldMemberExpression *>(x);
+                if (!fmL) return false;
+                std::string oeL, oqL, memL = qs(fmL->name.toString());
+                if (memL.empty() || std::isupper((unsigned char) memL[0])) return false;
+                if (!objPathExpr(fmL->base, oeL, oqL)) return false;
+                outRead = "propStr(" + oeL + ", \"" + memL + "\")";
+                return true;
+            };
             std::string key, read;
-            if ((enumKey(bin->right, key) && enumRead(bin->left, read))
-                    || (enumKey(bin->left, key) && enumRead(bin->right, read))) {
+            if ((enumKey(bin->right, key) && enumReadAny(bin->left, read))
+                    || (enumKey(bin->left, key) && enumReadAny(bin->right, read))) {
                 bool neg = bin->op == QSOperator::StrictNotEqual || bin->op == QSOperator::NotEqual;
                 out = "(" + read + (neg ? " != \"" : " == \"") + key + "\")";
                 return true;
@@ -5953,6 +6033,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             reEval.insert("__rcb_" + ba.first);
                         continue;
                     }
+                    // ...or it resolves to an object whose TYPE simply does not declare the leaf.
+                    // QML is dynamically typed and Qt relies on it: `indicator.control.checkState`
+                    // where `control` is a MenuItem, which has no checkState. The ENGINE has
+                    // nothing to connect to there either, so best effort on Qt's notify convention
+                    // — null-safe AND signal-safe, so if the object turns out to have it the
+                    // binding is live, and if not, nothing happens.
+                    {
+                        std::string headD = dEff.substr(0, dEff.rfind('.'));
+                        std::string leafD = dEff.substr(dEff.rfind('.') + 1);
+                        std::string oeW, oqW;
+                        if (objPathWalkDotted(headD, oeW, oqW)
+                                && typeKnownWithoutMember(oqW, leafD)) {
+                            conns += "        tryConnectMeta(" + oeW + ", \"" + leafD
+                                   + "Changed()\", this, \"__rcb_" + ba.first + "()\");\n";
+                            conns += "        tryConnectMeta(" + oeW + ", \"changed()\", this, \"__rcb_"
+                                   + ba.first + "()\");\n";
+                            continue;
+                        }
+                    }
                     // ...and when it does not resolve, depend on the HEAD, which is what this did
                     // before the path was recorded at all. Reporting instead would turn a binding
                     // that used to connect into a refusal — a regression dressed as honesty.
@@ -6411,6 +6510,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     sink += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"" + slot + "()\");\n";
                     if (oe6.find("propObj(") != std::string::npos) reEval.insert(slot);
                     continue;
+                }
+                // ...or the path resolves to an object whose TYPE simply does not declare the
+                // leaf. Best effort on Qt's own notify convention, null-safe and signal-safe: if
+                // it is there at runtime the binding is live, and if it is not, nothing happens —
+                // which is exactly what the engine does with the same document.
+                {
+                    std::string headD = dEff.substr(0, dEff.rfind('.'));
+                    std::string leafD = dEff.substr(dEff.rfind('.') + 1);
+                    std::string oeW, oqW;
+                    if (objPathWalkDotted(headD, oeW, oqW)
+                            && typeKnownWithoutMember(oqW, leafD)) {
+                        conns += "        tryConnectMeta(" + oeW + ", \"" + leafD
+                               + "Changed()\", this, \"" + slot + "()\");\n";
+                        conns += "        tryConnectMeta(" + oeW + ", \"changed()\", this, \""
+                               + slot + "()\");\n";
+                        continue;
+                    }
                 }
                 dEff = dEff.substr(0, dEff.find('.'));   // as before: depend on the head
             }
