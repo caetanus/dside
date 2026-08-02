@@ -75,6 +75,7 @@ void qtd_parser_status(void*, int);
     void* qtd_color_shade(const(char)*, double, int);       // Qt.darker / Qt.lighter -> QString*
     void* qtd_color_shade_rgba(uint, double, int);          // ...from a QColor's ARGB word
     void* qtd_color_name(uint);                             // a QColor's `#aarrggbb` spelling
+    void* qtd_platform_name();                              // Qt.platform.pluginName -> QString*
     void* qtd_color_alpha(const(char)*, double);            // Qt.alpha -> QString*
     void* qtd_color_alpha_rgba(uint, double);               // ...from a QColor's ARGB word
     void* qtd_tr(const(char)*, const(char)*, const(char)*, int);   // QCoreApplication::translate
@@ -930,6 +931,12 @@ string colorName(C)(C c) {
 private string __shade(C)(C c, double f, int lighter) {
     static if (is(C : string)) auto qs = qtd_color_shade((c ~ "\0").ptr, f, lighter);
     else                       auto qs = qtd_color_shade_rgba(cast(uint)c.rgba(), f, lighter);
+    auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
+/// The QML global `Qt.platform.pluginName` — QGuiApplication::platformName(), which is what QML
+/// returns there. Empty in a binding without QtGui.
+string platformName() {
+    auto qs = qtd_platform_name();
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
 }
 /// The QML global `Qt.styleHints`: an ordinary QObject, so every member below it is reachable

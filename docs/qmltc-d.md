@@ -2378,6 +2378,28 @@ message replacing a harsher one, with the property now existing either way.
 Neither corpus moves on any axis, which is the expected shape for a file whose root is unbound. It
 is recorded because the branch's comment no longer matches the code.
 
+### `Qt.platform.pluginName`, and what the ContextMenu actually needs (2026-08-02)
+
+`ContextMenu.menu` is the largest single cluster left (12 refusals across the two corpora) and the
+gate note says the blocker is "the children". Reading them says exactly which:
+
+- the Action types (`UndoAction`, `CutAction`, …) are **local `.qml` files** in
+  QtQuick.Controls.impl, so they resolve like ButtonPanel does — not a missing binding;
+- `required property Item editor` already compiles: `required` is a modifier the declaration path
+  never had to care about;
+- `popupType: Qt.platform.pluginName !== "wayland" ? Popup.Window : Popup.Item` did NOT. That is the
+  third QML global with no QObject behind it, after the colour helpers and `Qt.styleHints`, and the
+  runtime returns what the engine returns there: `QGuiApplication::platformName()`. It is also a
+  CONSTANT for the life of the process, so it must not be recorded as a dependency — the other half,
+  and the one that would otherwise report a dead dependency on an object called `Qt`.
+
+`tests/qmltc/quick/QPlatform.qml` compares the value, the comparison Qt writes, and a concatenation.
+
+**Neither corpus moves**, and that is the expected shape: the only place either style writes it is
+inside the ContextMenu's Menu, which the attached-child gate still holds shut. This is a prerequisite
+landing before the thing it is a prerequisite for, measured and said plainly rather than counted as
+progress.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

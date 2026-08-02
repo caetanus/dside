@@ -2033,6 +2033,15 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         return false;
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
+        // `Qt.platform.pluginName` — the third QML global with no object behind it, after the
+        // colour helpers and Qt.styleHints. Qt's own context menus choose their popup type with it.
+        if (auto *fmP = cast<FieldMemberExpression *>(fm->base))
+            if (auto *bP = cast<IdentifierExpression *>(fmP->base);
+                    bP && qs(bP->name.toString()) == "Qt" && !g_scope.count("Qt")
+                    && !g_childIds.count("Qt") && qs(fmP->name.toString()) == "platform"
+                    && qs(fm->name.toString()) == "pluginName") {
+                out = "platformName()"; return true;
+            }
         // An ATTACHED object as a TRUTH VALUE: `indicator.Window ? … : …` — Qt's Fusion Switch
         // asks whether it is in a window before dimming its gradient. First, because the ordinary
         // member paths below decline a capitalised member and never reach the object-path test at
@@ -3063,6 +3072,11 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                     if (isDeclObj(f.propType, bn)) { ids.push_back(pre + bn + "." + mem); return; }
                 }
             }
+            // `Qt.platform.pluginName` is a CONSTANT for the life of the process, like an enum
+            // member: the platform does not change under a running application. Recording `Qt` as
+            // a dependency reported a dead one for something that can never fire.
+            if (bn == "Qt" && mem == "platform" && !g_scope.count(bn) && !g_childIds.count(bn))
+                return;
             // `<obj>.<AttachedType>` used as a whole — the truth test above. WHETHER an object has
             // an attached object of some type does not change over its life, so this is a constant,
             // not a dependency; recording it reported "depends on 'Window', which has no known

@@ -1153,6 +1153,16 @@ bool qtd_invoke0(void* o, const char* member) {
 // missing was the ROOT, which cannot be reached by name from any object we hold. Guarded on
 // QT_GUI_LIB — a define pkg-config supplies exactly when Gui is one of the binding's modules,
 // so a core-only binding neither compiles nor links QtGui for it (see the QTD_ENABLE_QML note).
+// `Qt.platform.pluginName` — a QML global with no QObject behind it, like the colour helpers.
+// QML returns QGuiApplication::platformName() there, so that is what this returns; empty in a
+// binding without QtGui, which is also what a document reading it would see.
+extern "C" void* qtd_platform_name() {
+#ifdef QT_GUI_LIB
+    return new QString(QGuiApplication::platformName());
+#else
+    return new QString();
+#endif
+}
 extern "C" void* qtd_style_hints() {
 #ifdef QT_GUI_LIB
     return QGuiApplication::styleHints();
