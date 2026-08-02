@@ -5737,6 +5737,29 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             && p.dtype != "double" && p.dtype != "string";
                 return false;
             };
+            // ...and a BASE property that holds an object, which the registry types with a name
+            // ending in `*` — or with QJSValue, which is how Qt's Rectangle declares `gradient`.
+            // `gradient: control.down || control.checked ? null : buttonGradient` is how every
+            // Fusion panel switches its gradient off: an OBJECT-or-null ternary, written through
+            // the same channel a plain object assignment uses (the runtime turns an object into a
+            // script value for a QJSValue target).
+            auto isNullLit = [](ExpressionNode *x) { return cast<NullExpression *>(x) != nullptr; };
+            if (copyAssign.empty() && !scalar
+                    && (ty == "QJSValue" || (!ty.empty() && ty.back() == '*')))
+                if (auto *cnd9 = cast<ConditionalExpression *>(ba.second)) {
+                    std::string ce9, oeA, oqA;
+                    ExpressionNode *objSide = isNullLit(cnd9->ok) ? cnd9->ko
+                                            : isNullLit(cnd9->ko) ? cnd9->ok : nullptr;
+                    if (objSide && compileExpr(cnd9->expression, "bool", ce9)
+                            && objPathExpr(objSide, oeA, oqA)) {
+                        std::string yes = isNullLit(cnd9->ok) ? "null" : oeA;
+                        std::string no  = isNullLit(cnd9->ok) ? oeA : "null";
+                        baseWire += "        setPropObj(this, \"" + ba.first + "\", "
+                                  + ce9 + " ? " + yes + " : " + no + ");\n";
+                        node.baseProps.push_back({ba.first, ty});
+                        continue;
+                    }
+                }
             std::string oe9, oq9;
             if (isObjProp(ba.first) && objPathExpr(ba.second, oe9, oq9)) {
                 (oe9.rfind("__outer", 0) == 0 ? earlyWire : baseWire)

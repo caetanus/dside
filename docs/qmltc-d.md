@@ -1651,7 +1651,7 @@ same axes as Basic:
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 41 of 49 |
 | value differences | 21 (all attributed) | 20 |
-| diagnostics | 69 | 75 |
+| diagnostics | 69 | 70 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
@@ -1920,6 +1920,25 @@ Four, and the first one is the registry again:
   'Window', which has no known notify" for a test that can never go stale.
 
 Fusion 78 → 75 diagnostics, Basic 74 → 69. Values unchanged on both, 0 construction failures.
+
+### The gradient switch, and Fusion's RENDER axis measured for the first time (2026-08-02)
+
+`gradient: control.down || control.checked ? null : buttonGradient` is how every Fusion panel turns
+its gradient off when pressed: an OBJECT-or-null ternary written into a property Qt declares as a
+QJSValue. The write channel for that landed earlier (the runtime turns an object into a script
+value); what was missing was compiling the ternary as an object expression. Fusion 75 → 70
+diagnostics.
+
+The property differential could not see it — a gradient is not a property value — so
+`render_corpus.sh` now takes the style and output directory, for the same reason
+`values_corpus.sh` does: a gradient only Fusion draws is invisible to a Basic-only render pass.
+
+| axis | Basic | Fusion |
+|---|---|---|
+| RENDER, PNG byte for byte | **48 identical**, 1 differing, 12 the engine cannot render either | **39 identical**, 5 differing, 8 the engine cannot render either |
+
+Fusion's five: ComboBox, Dial, RangeSlider, Switch, ToolBar — and three of them are the same
+documents the value differential already names, so the two axes agree about where the work is.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
