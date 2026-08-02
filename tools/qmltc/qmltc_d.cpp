@@ -1567,6 +1567,15 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         // registry types it like any other. (A VALUE group is not an object and has its own path.)
         // ...unless we are compiling a USE-SITE binding, where the merged class's own declarations are
     // not in scope (see shadowedByLocalType): `control: control` must reach the enclosing object.
+        // A DECLARED object property of THIS object is in scope and is STILL a path head: Qt's
+        // Fusion writes the bare form (`control.palette.base`, where `control` is this object's own
+        // `property Item control`). The guard below stops a SCALAR name from being walked through;
+        // an object one is what a path needs. (objPathHead has the same rule — this walker keeps its
+        // own copy of the resolution, which is why fixing only the other one changed nothing.)
+        if (auto pt0 = g_propType.find(n2); pt0 != g_propType.end() && pt0->second.size() > 1
+                && pt0->second[0] == '@' && !shadowedByLocalType(n2)) {
+            oe = dIdent(n2); oq = pt0->second.substr(1); return true;
+        }
     if ((g_scope.count(n2) && !shadowedByLocalType(n2)) || g_vgroups.count(n2)) return false;
         if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
         if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {

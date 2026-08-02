@@ -219,6 +219,12 @@ shared static this() { qtd_moc_set_destroy_cb(&__mocGlobalDestroy); }
 void* qobjOf(T)(T o) {
     static if (is(T == void*)) return o;
     else {
+        // A null reference has no object to ask, and ptr() would call through it. A compiled
+        // document reads exactly this: `control.palette` where `control` is a declared object
+        // property nobody has assigned yet — QML gives undefined there, and null is how that
+        // travels here. (Measured: Qt's Fusion Button, DelayButton and ToolButton segfaulted in
+        // checkAlive the moment such a read compiled.)
+        static if (__traits(compiles, o is null)) if (o is null) return null;
         if (auto p = cast(void*) o in _reg) return p.qobj;
         // A WRAPPER-mode bound object is not in `_reg` — that registry holds D-DEFINED @QObject
         // instances — and its address is the wrapper's, not the C++ object's. The C++ object is

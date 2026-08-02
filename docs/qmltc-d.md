@@ -1680,12 +1680,16 @@ The largest remaining Fusion clusters, measured — and one of them is now cut i
   name that is a declared OBJECT property of the same object still does not resolve as the head of a
   path. The qualified form compiles; that one line is the whole difference.
 
-  Attempted three times and reverted each time, so the next attempt starts past them: recording the
-  property's QML type in this scope is NOT enough (`g_propType[name] = "@Item"` is in, and it does
-  nothing on its own), and answering the head before `objPathHead`'s scope guard did not move the
-  isolation either. What is missing is a TRACE inside objPathHead for the bare name — every attempt
-  so far has been a guess about which check refuses it, and this file records what happens when I
-  guess: three edits, no measurement moved, all three removed.
+  DONE, and the trace is what did it after three guesses had failed: a print at the top of
+  `objPathHead` never fired, which said the bare name never reaches that function at all — the path
+  walker `objPathExpr` keeps its OWN copy of the identifier resolution, with its own scope guard.
+  Fixing the other one could not have worked. With the rule in the copy the walk uses, the read
+  compiles.
+
+  It cost one runtime fix on the way: reading through a declared object property that nobody has
+  assigned yet is a NULL wrapper, and `qobjOf` called through it — Qt's Fusion Button, DelayButton
+  and ToolButton segfaulted in `checkAlive` the moment those reads started compiling. A null
+  reference has no object to ask; it yields null, which is how QML's `undefined` travels here.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
