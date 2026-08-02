@@ -1271,6 +1271,20 @@ extern "C" void* qtd_prop_get_enum_key(void* o, const char* n) {
 }
 void* qtd_prop_get_qs(void* o, const char* n) { return new QString(o ? static_cast<QObject*>(o)->property(n).toString() : QString()); }
 int qtd_prop_set_qs(void* o, const char* n, const char* p, int len) {
+    // An EMPTY string is how this channel spells `undefined`: a read through an object that is
+    // not assigned yet comes back empty. QML leaves a property alone when a binding evaluates to
+    // undefined, so a non-string target takes no write rather than a failed conversion — which
+    // would otherwise be reported as an error and abort a document whose only fault is that the
+    // engine would have evaluated the binding later. A STRING target keeps taking it: "" is a
+    // value there.
+    if (len == 0 && o) {
+        auto* obj = static_cast<QObject*>(o);
+        int i = obj->metaObject()->indexOfProperty(n);
+        if (i >= 0) {
+            const char* tn = obj->metaObject()->property(i).typeName();
+            if (tn && std::strcmp(tn, "QString") != 0) return 1;
+        }
+    }
     return qtd_prop_write(o, n, QString::fromUtf8(p, len));
 }
 

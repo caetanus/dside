@@ -1651,7 +1651,7 @@ same axes as Basic:
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 38 of 49 |
 | value differences | 21 (all attributed) | 25 |
-| diagnostics | 79 | 90 |
+| diagnostics | 79 | 88 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
@@ -1802,6 +1802,28 @@ to 38:
 The first isolation of the colour one was wrong and said so: `gradientStop("#e8e8e8")` matched our
 output exactly, which looked like a clean bill. Feeding a colour PROPERTY instead of a literal is
 what separated them — the literal is 8-bit by construction, so it could not have shown the loss.
+
+### A global keyed by name alone, and what "undefined" writes (2026-08-02)
+
+Two more, both found by asking why the SAME panel compiled in one of Qt's files and was refused in
+another:
+
+- the declared type of a base property came from `g_baseProps`, a global keyed by property NAME —
+  so whichever type was prescanned last decided. `color` on Fusion's ButtonPanel was typed QColor
+  in Button (the last local type that document loaded) and untyped in ComboBox, where a later one
+  overwrote it. Same panel, same property, compiled in one file and refused in the other. The
+  registry is per-type and does not care about order; the `^` marker on it means "reached through
+  an extension" and says nothing about the type, so it is stripped before the branches match;
+- an EMPTY string is how this channel spells `undefined` — a read through an object that is not
+  assigned YET comes back empty. QML leaves a property alone when a binding evaluates to undefined,
+  so a non-string target now takes no write instead of a failed conversion. Reporting it as an
+  error aborted two of Qt's documents whose only fault was that the engine would have evaluated the
+  binding later.
+
+That second one names what is left. The remaining ComboBox, Switch, ProgressBar and TabButton
+differences are all one shape: our initial pass is EAGER and in document order, where QML builds
+the whole tree, then evaluates bindings, then completes. `earlyWire` moved the assignments a
+binding reads through ahead of the children, which is as far as that gets without the real model.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

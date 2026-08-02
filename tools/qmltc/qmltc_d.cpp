@@ -5314,6 +5314,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 auto pt = qp->second.find(ba.first);
                 if (pt != qp->second.end() && !pt->second.empty()) ty = pt->second;
             }
+        // ...and the C++ type for a property with NO D scalar — a colour, a font, an enum.
+        // g_baseProps is keyed by property NAME alone and is global, so whichever type was
+        // prescanned last decides: `color` on Qt's ButtonPanel was typed QColor in Button (the
+        // last local type that document loaded) and untyped in ComboBox, where a later one
+        // overwrote it. Same panel, same property, compiled in one file and refused in the other.
+        // g_qmlCxxType is per-type and does not care about order.
+        if (ty.empty())
+            if (auto qc0 = g_qmlCxxType.find(g_selfQmlType); qc0 != g_qmlCxxType.end()) {
+                auto ct0 = qc0->second.find(ba.first);
+                // `^` marks a value type reached through an EXTENSION (see the generator); it says
+                // nothing about the type itself, and the branches below match on the plain name.
+                if (ct0 != qc0->second.end() && !ct0->second.empty()) {
+                    ty = ct0->second;
+                    if (ty.back() == '^') ty.pop_back();
+                }
+            }
         std::string val;
         std::string copyAssign;   // set when the value is a plain property read (a QVariant copy)
         bool scalar = (ty == "int" || ty == "string" || ty == "double" || ty == "bool");
@@ -5568,8 +5584,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
             // problem as an EXPRESSION we can't compile into a type we do route.
-            std::fprintf(stderr, "qmltc-d: %s:%s: base property '%s' in %s not yet supported: %s '%s' [%s] — skipped (later phase)\n",
+            // ...and WHICH type the property was looked up on: "declared type '?'" alone never
+            // said whose table came back empty, which is the difference between an unrouted type
+            // and a type whose registry rows were never loaded.
+            std::fprintf(stderr, "qmltc-d: %s:%s: base property '%s' in %s (%s) not yet supported: %s '%s' [%s] — skipped (later phase)\n",
                          inPath, posOf(ba.second).c_str(), ba.first.c_str(), cls.c_str(),
+                         g_selfQmlType.empty() ? "?" : g_selfQmlType.c_str(),
                          scalar ? "expression for" : "declared type", ty.empty() ? "?" : ty.c_str(),
                          srcOf(ba.second).c_str());
             ++partial; continue;
