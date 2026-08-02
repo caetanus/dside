@@ -2170,6 +2170,31 @@ SwitchDelegate, TabButton, and RoundButton and SearchField — the last two diff
 grey on one pixel and are identical at rest, which puts them on the line between a defect and
 antialiasing and earns an isolation before any code. The set is deterministic across runs.
 
+### The comparator was reporting the first pixel, not the difference (2026-08-02)
+
+`--compare` printed where its scan happened to stop. That reads as "one step of one grey on one
+pixel" for a difference covering two thirds of the frame, and it is how Fusion's RoundButton and
+SearchField got written down as noise twice. It reports the EXTENT and the DEPTH now — how many
+pixels differ and by how much — which is what tells a wide shallow difference from antialiasing:
+
+    RoundButton   696 of 1024 pixels differ, max channel delta 9
+    TabButton      18 of  168 pixels differ, max channel delta 1
+
+The first is a defect and the second is antialiasing, and the old message made them look alike.
+
+**And the defect was the harness again.** A click was press+release with no MOVE, so the control was
+pressed by a pointer that had never been over it: Qt derives `hovered` from hover delivery, which
+only runs off a move, and Fusion's ButtonPanel colours everything from `control.hovered`. Both sides
+send the same three events now. RoundButton and SearchField are byte-identical after a click.
+
+| frame after a click | Basic | Fusion |
+|---|---|---|
+| now | **33 identical, 0 differing** | **26 identical, 4 differing** |
+
+Fusion's four, measured rather than guessed and stable across runs: BusyIndicator (431 pixels, delta
+171 — a perpetual animation, which cannot settle by construction), Slider (336, delta 217),
+SwitchDelegate (266, delta 65), TabButton (18, delta 1 — antialiasing). Two real ones left.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

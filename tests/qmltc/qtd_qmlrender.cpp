@@ -30,6 +30,13 @@
 // QtTest dependency) exercises the same delivery path the engine uses.
 static void clickAt(QWindow *w, int x, int y) {
     const QPointF p(x, y);
+    // A MOVE first, so the pointer is THERE before it presses. Qt derives `hovered` from hover
+    // delivery, which only runs off a move: without one the control is pressed by a pointer that
+    // was never over it, and `hovered` stays false on whichever side happens not to synthesise it.
+    // Both harnesses send the same three events now, so the state after a click is defined.
+    QMouseEvent move(QEvent::MouseMove, p, p, w->mapToGlobal(p.toPoint()),
+                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &move);
     QMouseEvent press(QEvent::MouseButtonPress, p, p, w->mapToGlobal(p.toPoint()),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QMouseEvent release(QEvent::MouseButtonRelease, p, p, w->mapToGlobal(p.toPoint()),
@@ -60,13 +67,26 @@ static int compare(const QString &a, const QString &b) {
                      "distinguish a correct render from an empty one\n");
         return 5;
     }
+    // The EXTENT and the DEPTH, not just the first pixel. Reporting only where the scan happened to
+    // stop reads as "one pixel of antialiasing" for a difference that covers two thirds of the
+    // frame — which is how a wide, shallow difference (a fill one step off everywhere) got written
+    // down twice as noise. How many pixels differ and by how much is what tells those apart.
+    int nDiff = 0, maxDelta = 0, fx = -1, fy = -1;
     for (int y = 0; y < ia.height(); ++y)
-        for (int x = 0; x < ia.width(); ++x)
-            if (ia.pixel(x, y) != ib.pixel(x, y)) {
-                std::fprintf(stderr, "qmlrender: pixel (%d,%d) differs: engine %08x, ours %08x\n",
-                             x, y, ia.pixel(x, y), ib.pixel(x, y));
-                return 2;
-            }
+        for (int x = 0; x < ia.width(); ++x) {
+            const QRgb pa = ia.pixel(x, y), pb = ib.pixel(x, y);
+            if (pa == pb) continue;
+            if (fx < 0) { fx = x; fy = y; }
+            ++nDiff;
+            maxDelta = qMax(maxDelta, qMax(qMax(qAbs(qRed(pa) - qRed(pb)), qAbs(qGreen(pa) - qGreen(pb))),
+                                           qMax(qAbs(qBlue(pa) - qBlue(pb)), qAbs(qAlpha(pa) - qAlpha(pb)))));
+        }
+    if (nDiff) {
+        std::fprintf(stderr, "qmlrender: %d of %d pixels differ, max channel delta %d; first at "
+                     "(%d,%d): engine %08x, ours %08x\n", nDiff, ia.width() * ia.height(), maxDelta,
+                     fx, fy, ia.pixel(fx, fy), ib.pixel(fx, fy));
+        return 2;
+    }
     std::printf("render OK: %dx%d, %d distinct colours, pixel-identical to the interpreted version\n",
                 ia.width(), ia.height(), int(colours.size()));
     return 0;

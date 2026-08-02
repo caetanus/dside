@@ -83,6 +83,12 @@ extern "C" int qtd_click_item(void *item, int x, int y) {
     if (!it) return 5;   // not an Item — see qtd_as_item
     QQuickWindow *win = qtd_scene_for(it);
     const QPointF p(x, y);
+    // A MOVE first — see the same note in qtd_qmlrender.cpp: `hovered` comes from hover delivery,
+    // which only runs off a move, and a press from a pointer that was never over the control
+    // leaves the two sides in different states for a reason that is the harness's.
+    QMouseEvent move(QEvent::MouseMove, p, p, win->mapToGlobal(p.toPoint()),
+                     Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(win, &move);
     QMouseEvent press(QEvent::MouseButtonPress, p, p, win->mapToGlobal(p.toPoint()),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
     QMouseEvent release(QEvent::MouseButtonRelease, p, p, win->mapToGlobal(p.toPoint()),
