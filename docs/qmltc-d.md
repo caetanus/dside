@@ -1649,11 +1649,11 @@ same axes as Basic:
 | | Basic | Fusion |
 |---|---|---|
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
-| files IDENTICAL to the engine in every property | 47 of 57 | 26 of 49 |
-| value differences | 21 (all attributed) | 63 |
-| diagnostics | 80 | 230 |
+| files IDENTICAL to the engine in every property | 47 of 57 | 29 of 49 |
+| value differences | 21 (all attributed) | 56 |
+| diagnostics | 80 | 123 |
 
-Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 230 with those types
+Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 123 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
 cost and bought, in the order it happened: the value source's missing back-reference, one URI per
 style, the dump path through an engine child, versionless imports, the silent drop of a declaration,
@@ -1690,6 +1690,44 @@ The largest remaining Fusion clusters, measured — and one of them is now cut i
   assigned yet is a NULL wrapper, and `qobjOf` called through it — Qt's Fusion Button, DelayButton
   and ToolButton segfaulted in `checkAlive` the moment those reads started compiling. A null
   reference has no object to ask; it yields null, which is how QML's `undefined` travels here.
+
+### `Qt.darker` / `Qt.lighter` — and the three defects they exposed
+
+The colour globals were the gate under the biggest cluster, not a cluster of their own: they appear
+34 times across Fusion, and the properties they FEED — `readonly property color checkMarkColor:
+Qt.darker(control.palette.text, 1.2)` and every `Color.transparent(indicator.checkMarkColor, …)`
+argument taken from one — were refused for want of them. Unlike `Qt.styleHints` there is no object
+behind `Qt`, so the meta channel cannot reach them and the runtime implements what the engine
+implements (`QColor::darker`/`lighter` with the factor as a percentage). Colours travel as text
+here, so it is string-in/string-out and composes with everything else.
+
+The fixture (`tests/qmltc/quick/QColorShade.qml`) is byte-identical to the engine on the default
+factors, a factor below 1, an alpha colour (`#8024496d` — QVariant's own spelling, which is why the
+result is formatted by QVariant and not by us), both argument shapes, and a nested call.
+
+Landing them turned three latent defects into failures, which is the point of running Qt's own QML:
+
+- a **bound value-type property** could not be stored. A colour computed as text cannot be assigned
+  to a `QColor` field; it goes back through the meta channel, which converts it and fires the notify
+  itself. Which branch applies is decided from the expression's own type, so `property color a: base`
+  still assigns the field directly. This is what Fusion's `readonly property color` needed all along;
+- **binding evaluation order**. In QML a binding is lazy, so every direct assignment on the same
+  object has happened before it runs — `control: <the enclosing Button>` is in place when
+  `color: control.palette.base` evaluates. Our initial pass is eager and in document order, so five
+  of Qt's Fusion documents read through a null `control` and wrote an empty colour. The assignments
+  whose value is the ENCLOSING object now run first; a child field cannot move with them, because it
+  does not exist yet;
+- **D initialises a `double` field to NaN; QML's default for `real` is 0.** CheckIndicator computes
+  `Qt.lighter(base, baseLightness)` before `baseLightness` is assigned, and Qt's `qRound` ASSERTS on
+  NaN — a hard abort, found with gdb (`!std::isnan(value)`, qnumeric.h:508). Two fixes, both real:
+  the field is initialised to QML's default, and a non-finite factor yields the colour unchanged
+  instead of killing the process.
+
+An invokable argument that is a COLOUR came with them: `Fusion.buttonColor(palette, …, tint)` mixes
+an object and a value in one call, and a value crosses as text like every other value here.
+
+Measured after: Fusion **199 → 123 diagnostics**, 52 of 55 constructing with **0 failures**,
+**29 of 49 documents identical** (was 26) and **56 value differences** (was 63). Basic unchanged.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

@@ -72,6 +72,9 @@ void qtd_parser_status(void*, int);
     // QString marshaling (implemented in qtdmoc.cpp, which links QtCore)
     void* qtd_str_to_qs(const(char)*, int);
     void  qtd_qs_free(void*);
+    void* qtd_color_shade(const(char)*, double, int);       // Qt.darker / Qt.lighter -> QString*
+    void* qtd_color_shade_rgba(uint, double, int);          // ...from a QColor's ARGB word
+    void* qtd_color_name(uint);                             // a QColor's `#aarrggbb` spelling
     void* qtd_tr(const(char)*, const(char)*, const(char)*, int);   // QCoreApplication::translate
     bool  qtd_install_translator(const(char)*);                    // new QTranslator + install (C++)
     void  qtd_qs_set(void*, const(char)*, int);   // assign a D string into an existing QString
@@ -894,6 +897,27 @@ T __qmltcOr(T)(T a, lazy T b) { return a != 0 ? a : b; }
 /// ...and its twin: `a && b` is `b` when `a` is truthy, else `a`.
 T __qmltcAnd(T)(T a, lazy T b) { return a != 0 ? b : a; }
 
+/// The QML globals `Qt.darker` / `Qt.lighter`. Both take a colour and a factor and return a
+/// colour; colours travel as TEXT here (a colour read is a propStr and a colour write goes through
+/// QMetaType), so this is string-in/string-out and composes with every other colour expression.
+/// The default factors are QML's own: 2.0 for darker, 1.5 for lighter.
+/// The argument is a string when it came off the meta channel and a real QColor when it is a
+/// DECLARED `property color` (a QColor field) — a colour written in the same document reaches both
+/// ways. QColor is a binding type this unit cannot name, so the value crosses as its ARGB word,
+/// which is a plain scalar; C++ rebuilds the colour from it and formats the result.
+string colorDarker(C)(C c, double f = 2.0) { return __shade(c, f, 0); }
+/// ditto
+string colorLighter(C)(C c, double f = 1.5) { return __shade(c, f, 1); }
+/// A colour's text, for the places a value has to cross as text (an invokable's argument).
+string colorName(C)(C c) {
+    auto qs = qtd_color_name(cast(uint) c.rgba());
+    auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
+private string __shade(C)(C c, double f, int lighter) {
+    static if (is(C : string)) auto qs = qtd_color_shade((c ~ "\0").ptr, f, lighter);
+    else                       auto qs = qtd_color_shade_rgba(cast(uint)c.rgba(), f, lighter);
+    auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
 /// The QML global `Qt.styleHints`: an ordinary QObject, so every member below it is reachable
 /// with the ordinary propObj/propEnumKey channel. Null in a binding without QtGui.
 void* styleHintsObj() { return qtd_style_hints(); }
@@ -911,6 +935,12 @@ string invokeMixed(T, A...)(T recv, string method, A args) {
     static foreach (i, a; args) {
         static if (is(typeof(a) == string)) {
             keep[i] = a ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        // A COLOUR is a value, not an object: `Fusion.buttonColor(control.palette, …, tint)` mixes
+        // the two in one call. It crosses as TEXT, which is how a colour crosses everywhere else
+        // here, and QMetaType converts it back on the far side. Keyed on the capability rather
+        // than on the type name: this unit cannot name QColor (it is a binding type).
+        } else static if (__traits(compiles, a.rgba())) {
+            keep[i] = colorName(a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
         } else {
             kinds[i] = 1; vals[i] = qobjOf(a);
         }
@@ -1011,11 +1041,18 @@ string propEnumKey(T)(T o, string name) {
 /// Writes a QString property by name (fires the notify, if any).
 void setProp(T)(T o, string name, string v) {
     if (!qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length))
-        __propWriteFailed(name, "string");
+        __propWriteFailed(name, "string", v, qtd_moc_classname(qobjOf(o)));
 }
 
-private void __propWriteFailed(string name, string ty) {
+private void __propWriteFailed(string name, string ty, string v = "",
+                               const(char)* cls = null) {
+    // The VALUE and the class, not just the name: a string write also fails when the value does
+    // not CONVERT to the property's declared type (an empty colour, say), and the two causes are
+    // indistinguishable from the name alone — which cost a bisect through a whole document.
+    import std.string : fromStringz;
     throw new Exception("setProp failed: no writable property \"" ~ name ~ "\" taking a " ~ ty
+                        ~ (cls ? " on " ~ cast(string) cls.fromStringz.idup : "")
+                        ~ (v.length ? " (value \"" ~ v ~ "\")" : " (empty value)")
                         ~ " (an undeclared name would silently have become a dynamic property)");
 }
 

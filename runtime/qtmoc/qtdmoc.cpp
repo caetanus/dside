@@ -18,6 +18,9 @@
 // qaccessibilityhints.h first exists — Qt5 has no such header and the whole binding stopped
 // compiling.
 #  include <QGuiApplication>
+// QColor is a VALUE type and the only one this file constructs, for Qt.darker/Qt.lighter — the
+// two QML globals with no object behind them.
+#  include <QtGui/QColor>
 #endif
 #include <QMetaType>
 #include <QCoreApplication>
@@ -1064,6 +1067,62 @@ extern "C" void* qtd_style_hints() {
     return QGuiApplication::styleHints();
 #else
     return nullptr;
+#endif
+}
+// `Qt.darker(c, f)` / `Qt.lighter(c, f)` — QML globals with no QObject behind them, so the meta
+// channel cannot reach them: the engine implements both by calling QColor::darker/lighter with the
+// factor as a PERCENTAGE (`qRound(f * 100)`), which is what this does. Colours travel through the
+// compiled code as text (a colour read is a propStr, a colour write a setProp of a string that
+// QMetaType converts), so the argument and the result are both strings and the result composes
+// with everything else — including `Color.transparent(...)`, the singleton whose arguments these
+// usually are. QVariant does the formatting, the same converter the dump uses, so a value produced
+// here and one read back off a property are spelled identically.
+#ifdef QT_GUI_LIB
+static QString qtd_shade_of(const QColor& c, double factor, int lighter) {
+    if (!c.isValid()) return QString();
+    // A non-finite factor is what a JS expression yields when an operand is still undefined. Qt's
+    // qRound ASSERTS on NaN (a hard abort, not a wrong colour), and QML's own conversion of a
+    // non-finite number to an int gives 0 — which QColor documents as returning the colour
+    // unchanged. Doing the same keeps the engine's outcome instead of killing the process.
+    int pct = qIsFinite(factor) ? qRound(factor * 100.0) : 0;
+    return QVariant::fromValue(lighter ? c.lighter(pct) : c.darker(pct)).toString();
+}
+#endif
+// The colour as its ARGB word: a DECLARED `property color` is a real QColor field on the D side,
+// and this unit cannot name QColor (it is a binding type, and this file compiles into bindings
+// that have no QtGui at all), so the scalar is what crosses.
+// A colour's TEXT, spelled the way every other colour here is spelled (QVariant's converter, the
+// one the dump uses). Needed because a colour is a value the meta channel carries as text: passing
+// a QColor to an invokable is `#aarrggbb` on the wire, exactly like a colour property write.
+extern "C" void* qtd_color_name(unsigned rgba) {
+#ifdef QT_GUI_LIB
+    return new QString(QVariant::fromValue(QColor::fromRgba(rgba)).toString());
+#else
+    (void)rgba;
+    return new QString();
+#endif
+}
+extern "C" void* qtd_color_shade_rgba(unsigned rgba, double factor, int lighter) {
+#ifdef QT_GUI_LIB
+    return new QString(qtd_shade_of(QColor::fromRgba(rgba), factor, lighter));
+#else
+    (void)rgba; (void)factor; (void)lighter;
+    return new QString();
+#endif
+}
+extern "C" void* qtd_color_shade(const char* s, double factor, int lighter) {
+#ifdef QT_GUI_LIB
+    // QColor::fromString is Qt 6.4+; setNamedColor is the spelling both versions accept (Qt6
+    // deprecates it, hence the version split rather than one call for both).
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+    QColor c = QColor::fromString(QString::fromUtf8(s));
+#else
+    QColor c; c.setNamedColor(QString::fromUtf8(s));
+#endif
+    return new QString(qtd_shade_of(c, factor, lighter));
+#else
+    (void)s; (void)factor; (void)lighter;
+    return new QString();
 #endif
 }
 // Dumps EVERY property an object's meta-object declares, as `<path>.<name>\t<value>`. Both the

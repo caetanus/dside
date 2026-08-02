@@ -2302,6 +2302,28 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (fn == "abs" && args.size() == 1) { out = "(" + args[0] + " < 0 ? -(" + args[0] + ") : (" + args[0] + "))"; return true; }
             return false;
         }
+        // `Qt.darker(c, f)` / `Qt.lighter(c, f)` — the colour globals. Unlike `Qt.styleHints` there
+        // is no object behind them, so nothing in the meta channel reaches them and the runtime
+        // implements the two calls the engine implements (QColor::darker/lighter). They gate a
+        // whole cluster rather than themselves: Fusion computes most of its palette this way, and
+        // the results are what `Color.transparent(...)` and the declared colour properties are
+        // handed — every one of which was refused for want of its argument.
+        if (recv && qs(recv->name.toString()) == "Qt" && !g_scope.count("Qt") && !g_childIds.count("Qt")) {
+            std::string fn = qs(fm->name.toString());
+            if (fn != "darker" && fn != "lighter") return false;
+            std::vector<std::string> args;
+            for (auto *a = call->arguments; a; a = a->next) {
+                std::string s;
+                // The colour is TEXT and the factor a real: compiled under the wrong target type
+                // the first argument came out as a number and the second as a string.
+                if (!compileExpr(a->expression, args.empty() ? "string" : "double", s)) return false;
+                args.push_back(s);
+            }
+            if (args.empty() || args.size() > 2) return false;
+            out = (fn == "darker" ? "colorDarker(" : "colorLighter(") + args[0]
+                + (args.size() > 1 ? ", " + args[1] : "") + ")";
+            return true;
+        }
         // `<Singleton>.<method>(args)` — Qt's own controls compute colours with
         // `Color.blend(a, b, f)`. The registry says which names are singletons, the module and
         // version their one instance is fetched with, and how many parameters each method takes;
@@ -2933,6 +2955,11 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
             std::string fn = qs(fm->name.toString());
             if ((fn == "max" || fn == "min" || fn == "abs") && call->arguments) return inferType(call->arguments->expression, ptype);
             return "double";
+        }
+        // Qt.darker/Qt.lighter yield a COLOUR, which travels as text here.
+        if (recv && qs(recv->name.toString()) == "Qt") {
+            std::string fn = qs(fm->name.toString());
+            if (fn == "darker" || fn == "lighter") return "string";
         }
         if (auto *fnId = cast<IdentifierExpression *>(call->base)) { auto it = g_funcRet.find(qs(fnId->name.toString())); return it != g_funcRet.end() ? it->second : ""; }
     }
@@ -5127,6 +5154,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Base C++ property assignments (`objectName: "hi"`) -> set through the meta-object in
     // __qmltcWire, and record for the dump (read back through the meta-object). int/string only.
     std::string baseWire;
+    // Assignments that must run BEFORE this object's own bindings are evaluated. In QML a binding
+    // is lazy — it is evaluated when its value is first needed, by which time every direct
+    // assignment on the same object has happened — so `control: <the enclosing Button>` is in
+    // place when `color: control.palette.base` runs. Our initial pass is eager and in document
+    // order, so the same binding read through a null `control` and produced an empty colour
+    // (Qt's Fusion RadioButton, CheckBox, MenuItem: the write failed outright once the colour
+    // expressions started compiling). Only the assignments whose value is the ENCLOSING object go
+    // here: it exists from the first line of the wire, where a child field does not.
+    std::string earlyWire;
     // Statements that must run only once the WHOLE tree is complete: connects to objects a Control
     // creates during its own completion (indicator/contentItem/background). The root triggers the
     // pass; every level forwards it to its children.
@@ -5447,7 +5483,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             };
             std::string oe9, oq9;
             if (isObjProp(ba.first) && objPathExpr(ba.second, oe9, oq9)) {
-                baseWire += "        setPropObj(this, \"" + ba.first + "\", " + oe9 + ");\n";
+                (oe9.rfind("__outer", 0) == 0 ? earlyWire : baseWire)
+                    += "        setPropObj(this, \"" + ba.first + "\", " + oe9 + ");\n";
                 node.baseProps.push_back({ba.first, ty});
                 continue;
             }
@@ -6312,11 +6349,35 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (auto &vl : g_valueLists) node.valueLists.push_back({vl.first, vl.second});
     std::string body, recompute, stateFields, stateMethods;
     bool anyBound = false;
+    // The store half of a recompute. A property whose D type is a VALUE TYPE (QColor and every
+    // other type with no D scalar) can be driven by an expression that produced TEXT — a colour
+    // read crosses the meta channel as text, and so does anything computed from one — and D will
+    // not put a string in a QColor field. Writing it back through the meta channel instead lets
+    // QMetaType convert it to the field's own type, and that write already fires the notify and
+    // already suppresses a no-op (callProp's value path), so this branch must not emit either.
+    // Which branch applies is decided by the compiler from the expression's own type, so a value
+    // type driven by a real value (`property color a: base`) still assigns the field directly.
+    auto storeInto = [&](const Prop &p) {
+        std::string direct = "if (" + p.name + " != _v) { " + p.name + " = _v;"
+                           + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }";
+        if (p.dtype == "int" || p.dtype == "double" || p.dtype == "float"
+                || p.dtype == "bool" || p.dtype == "string")
+            return "        " + direct + "\n";
+        // Braced: `static if (c) if (x) {...} else ...` binds the `else` to the INNER `if`.
+        return "        static if (is(typeof(_v) : typeof(" + p.name + "))) { " + direct + " }\n"
+             + "        else setProp(this, \"" + p.name + "\", _v);\n";
+    };
     for (auto &p : props) {
         node.scalars.push_back({p.name, p.dtype});
         std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
         if (p.bound) {
-            body += "    " + notifyUda + p.dtype + " " + p.name + ";\n";
+            // D initialises a floating-point field to NaN; QML's default for `real` is 0. The
+            // difference is observable the moment one binding reads another before it has been
+            // evaluated — Fusion's CheckIndicator computes `Qt.lighter(base, baseLightness)`
+            // before `baseLightness` is assigned, and a NaN factor aborts Qt inside qRound.
+            // (The value settles either way, through the notify; it is the transient that differs.)
+            const char *zero = (p.dtype == "double" || p.dtype == "float") ? " = 0" : "";
+            body += "    " + notifyUda + p.dtype + " " + p.name + zero + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
             // Which binding currently drives this property. 0 = the declarative one; a
             // `Qt.binding(...)` install switches it, and a plain assignment (`p = 42`) clears it
@@ -6329,15 +6390,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 recompute += "    @Slot void __rc_" + p.name + "() {\n"
                            + "        if (__bind_" + p.name + " != 0) return;\n"
                            + "        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
-                           + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
-                           + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
+                           + storeInto(p) + "    }\n";
                 anyBound = true;
                 continue;
             }
             recompute += "    @Slot void __rc_" + p.name + "() {\n"
                        + "        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
-                       + "        if (" + p.name + " != _v) { " + p.name + " = _v;"
-                       + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }\n    }\n";
+                       + storeInto(p) + "    }\n";
             anyBound = true;
         } else {
             // An empty expr means the value is written through the meta-object (see metaAssigns):
@@ -6371,7 +6430,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // all three bindings skipped, so the wire was empty, and inserting the handoff into it hit
     // `npos + 18` == 17 and ABORTED the compiler on three of Qt's files.
     if (anyBound || !handlerWire.empty() || (!childWire.empty() || !dcWire.empty()) || !onCompletedBody.empty()
-            || !baseWire.empty() || (g_outerUsed && !g_outerClass.empty()) || g_isValueSource) {
+            || !baseWire.empty() || !earlyWire.empty() || (g_outerUsed && !g_outerClass.empty())
+            || g_isValueSource) {
         wire = "    void __qmltcWire() {\n";
         // Before ANY property is read: a Control's palette comes from the theme its style module
         // installs, and resolution is lazy, so this only has to precede the first read.
@@ -6402,6 +6462,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         //    settle instead of looping.
         // A property initialised from a LITERAL is assigned in its field initialiser and emits
         // nothing, so none of this makes handlers fire on init.
+        wire += earlyWire;   // ...what the bindings READ THROUGH, before any of them evaluates
         wire += bindWire;    // bindings live BEFORE anything is assigned
         // ...and the SAME reasoning applies to base properties, which used to be assigned before
         // any of this. `padding: 12` on a Pane fires leftPaddingChanged, which is what recomputes
