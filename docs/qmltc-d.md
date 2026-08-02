@@ -2243,6 +2243,31 @@ One process note, because it nearly became a false finding: the corpus binaries 
 Re-running only the comparison after reverting reported three regressions that were nothing but
 stale binaries — the same "build nodes missing their real inputs" trap this project has hit before.
 
+### A block-valued declared property, and Basic goes to zero on two axes (2026-08-02)
+
+`readonly property color handleBorderColor: { if (activeFocus) return palette.highlight; else … }`
+— Qt's RangeSlider. A script binding that is a BLOCK is folded into the equivalent conditional by
+`blockToExpr`, which the base-property path has used since it was written; the DECLARED-property
+path never learned, so the whole property was refused for the SHAPE of its value and both handles
+drew their border with the type default.
+
+This is the defect the earlier notes name twice — "the single missing path and the single render
+difference are the SAME defect" — and it closes both:
+
+| Basic | before | after |
+|---|---|---|
+| documents identical in every property | 47 of 57 | **48 of 57** |
+| render at rest, byte for byte | 48 identical, 1 differing | **49 identical, 0 differing** |
+| frame after a click | 33 identical, 0 differing | **34 identical, 0 differing** |
+| diagnostics | 65 | **64** |
+
+**Qt's entire Basic style now renders byte-identically to the engine, at rest and after a click.**
+
+Fusion is unchanged by it (51 diagnostics, 43 of 49 identical, 40 renders, 28 clicks). Its four
+render differences, measured: ComboBox (2949 of 3240 pixels, delta 19 — the largest open defect
+left anywhere), Dial (390, delta 75), Switch (19, delta 1) and ToolBar (72, delta 1), the last two
+antialiasing.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

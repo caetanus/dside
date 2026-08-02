@@ -4707,6 +4707,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             std::string expr;
             auto *es = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+            // ...or a BLOCK, which blockToExpr folds into the equivalent conditional. Qt's
+            // RangeSlider declares `readonly property color handleBorderColor: { if (activeFocus)
+            // return ... }` and every path here takes an expression, so the whole property was
+            // refused for the SHAPE of its value. The base-property path has done this since it
+            // was written; the declared-property one never learned.
+            ExpressionStatement *esBlk = nullptr;
+            if (!es && pub->statement)
+                if (ExpressionNode *be = blockToExpr(pub->statement)) {
+                    esBlk = new (g_astEngine->pool()) ExpressionStatement(be);
+                    es = esBlk;
+                }
             // `property var x: <expr>` — QML gives `var` no static type; it holds a QVariant. The
             // type of the INITIALISER is nonetheless known, so a var whose value is a scalar
             // compiles as that scalar and behaves identically for every read the document makes.
