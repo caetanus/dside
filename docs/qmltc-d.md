@@ -1650,7 +1650,7 @@ same axes as Basic:
 |---|---|---|
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 41 of 49 |
-| value differences | 21 (all attributed) | 22 |
+| value differences | 21 (all attributed) | 20 |
 | diagnostics | 79 | 83 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
@@ -1850,6 +1850,25 @@ Two more shapes out of the remaining value differences, both structural rather t
 easy case, the FORWARD one is what exposes the eager order.
 
 Fusion: 88 → 83 diagnostics, 39 → 41 of 49 documents identical, 24 → 22 value differences.
+
+### Reading through an object assigned later, and the header views (2026-08-02)
+
+- a path that goes THROUGH a property-held object (`control.popup.palette.window`) reads something
+  the enclosing wire has not assigned yet. QML would have evaluated the binding later, when it is
+  there. Those bindings are re-evaluated in the late phase the root triggers once the whole tree
+  exists; a recompute only emits on an actual change, so a redundant one costs nothing. Fusion's
+  ComboBox and SearchField popup backgrounds match the engine now: 22 → 20 differences;
+- the wire is emitted UNCONDITIONALLY. The engine attaches a context and calls
+  classBegin/componentComplete on every object it creates, members or not; we skipped the whole
+  body when a document said nothing about an object.
+
+That second one was written to fix the header views and **did not**. The finding is worth more than
+the fix would have been: `T.HorizontalHeaderView { }` — two lines, no members, nothing to compile —
+already reproduces the whole difference. `model` is null and `rows` is -1 on our side where the
+engine reports 0 and 1, and neither completing the object nor running the event loop changes it. So
+those 10 of the remaining 20 Fusion differences are not about compilation at all: they are about how
+the object is CREATED, and the compiler cannot be the place to look. The unconditional wire stays
+because it is what the engine does, not because it moved a number.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

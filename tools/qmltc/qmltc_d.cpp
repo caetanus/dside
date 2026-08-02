@@ -5311,6 +5311,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // creates during its own completion (indicator/contentItem/background). The root triggers the
     // pass; every level forwards it to its children.
     std::string lateWire;
+    // Recompute slots that must run AGAIN once the whole tree exists: their expression reads
+    // through an object the enclosing wire assigns later. Collected as a set so a binding with
+    // several such reads is re-evaluated once.
+    std::set<std::string> reEval;
     for (auto &ba : rawBaseAssigns) {
         // A use-site binding resolves names in the USE SITE's scope: the local type's own declared
         // properties must not shadow the enclosing document. Qt's Fusion writes
@@ -5825,6 +5829,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         // tryConnectMeta because a group without that signal simply has none.
                         sink += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"__rcb_"
                               + ba.first + "()\");\n";
+                        // A path that goes THROUGH a property-held object (`control.popup.palette`)
+                        // reads an object the enclosing wire has not assigned yet — QML would have
+                        // evaluated the binding later, when it is there. Re-evaluated in the late
+                        // phase, which the root triggers once the whole tree exists; a recompute
+                        // only emits on an actual change, so a redundant one costs nothing.
+                        if (oe6.find("propObj(") != std::string::npos)
+                            reEval.insert("__rcb_" + ba.first);
                         continue;
                     }
                     // ...and when it does not resolve, depend on the HEAD, which is what this did
@@ -6283,6 +6294,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     std::string &sink = g_depIsSibling ? sibConns : conns;
                     sink += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"" + slot + "()\");\n";
                     sink += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"" + slot + "()\");\n";
+                    if (oe6.find("propObj(") != std::string::npos) reEval.insert(slot);
                     continue;
                 }
                 dEff = dEff.substr(0, dEff.find('.'));   // as before: depend on the head
@@ -6636,9 +6648,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // body even when every one of its own members was refused: SpinBox's IntValidator child had
     // all three bindings skipped, so the wire was empty, and inserting the handoff into it hit
     // `npos + 18` == 17 and ABORTED the compiler on three of Qt's files.
-    if (anyBound || !handlerWire.empty() || (!childWire.empty() || !dcWire.empty()) || !onCompletedBody.empty()
-            || !baseWire.empty() || !earlyWire.empty() || (g_outerUsed && !g_outerClass.empty())
-            || g_isValueSource) {
+    // ...and UNCONDITIONALLY otherwise: the engine attaches a context and calls
+    // classBegin/componentComplete on every object it creates, members or not, and a bound type
+    // can need that even when the document says nothing about it. `T.HorizontalHeaderView {}` —
+    // two lines, no members — got no wire at all, so it never completed: Qt's TableView builds its
+    // model in componentComplete, and the object reported model null and rows -1 where the engine
+    // reports 0 and 1. The wire costs three calls for an object that has nothing else to do.
+    {
         wire = "    void __qmltcWire() {\n";
         // Before ANY property is read: a Control's palette comes from the theme its style module
         // installs, and resolution is lazy, so this only has to precede the first read.
@@ -6999,6 +7015,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (auto &k : node.kids)        if (k.second.hasLate) lateKids += "        " + dIdent(k.first) + ".__qmltcLate();\n";
     for (auto &dk : node.defaultKids) if (dk.second.hasLate) lateKids += "        " + dk.first + ".__qmltcLate();\n";
     for (auto &gk : node.groupKids)  if (gk.second.hasLate) lateKids += "        " + gk.first + ".__qmltcLate();\n";
+    // ...and the bindings whose reads go through an object assigned later. Appended at the END of
+    // the late body, after every connect it makes, so the value they settle on is the final one.
+    for (auto &r : reEval) lateWire += "        " + r + "();\n";
     node.hasLate = !lateWire.empty() || !lateKids.empty();
     // Only the root fires it: at the end of ITS wire the whole tree exists and every
     // componentComplete has run, which is exactly when a Control has created its indicator.
