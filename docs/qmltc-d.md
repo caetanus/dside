@@ -1649,8 +1649,8 @@ same axes as Basic:
 | | Basic | Fusion |
 |---|---|---|
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
-| files IDENTICAL to the engine in every property | 47 of 57 | 29 of 49 |
-| value differences | 21 (all attributed) | 45 |
+| files IDENTICAL to the engine in every property | 47 of 57 | 38 of 49 |
+| value differences | 21 (all attributed) | 25 |
 | diagnostics | 79 | 90 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
@@ -1774,6 +1774,34 @@ site's members.
 Measured across the four: Fusion **123 → 90 diagnostics**, 52 of 55 constructing with 0 failures,
 value differences **56 → 45**, and the `only-engine` bucket — paths the ENGINE has that we do not —
 **82 → 0**. Basic unchanged at 79 diagnostics and 47 of 57 identical.
+
+### Four value defects, all about WHEN and with how many digits (2026-08-02)
+
+With `only-engine` at zero, the honest axis left is VALUES — properties both sides have, spelled
+differently. Four fixes took Fusion from 45 differences to 25, and 29 of 49 identical documents
+to 38:
+
+- **binding order, one level deeper.** The assignments a binding reads through now run before the
+  CHILDREN, not just before this object's own bindings. Fusion's ButtonPanel holds a Gradient whose
+  stops compute `panel.control.palette`, and a child is fully wired at construction — so the stops
+  ran with `control` still null, produced black, AND connected their notify to a null object, so
+  nothing ever recomputed them. 45 → 36;
+- **a real crossing as TEXT has to round-trip.** `to!string` formats a double with six significant
+  digits: `Color.transparent(c, 210 / 255)` arrived as 0.823529, which is 209.99989 alpha steps —
+  one short of the engine's 210 on every checkmark Fusion draws. 36 → 30, and six more documents
+  became identical;
+- **a colour crossing as text has to carry the precision QColor holds.** `#rrggbb` is 8-bit and
+  `Fusion.buttonColor(...)` does not return an 8-bit colour: spelled and parsed back it shifts one
+  step, which is what every `gradientStop(buttonColor(...))` showed. Proven inside the ENGINE, in
+  one document — `gradientStop("#e8e8e8")` is `#ededed` and `gradientStop(bc)` is `#ececec` where
+  `bc` PRINTS as `#e8e8e8`. `#rrrrggggbbbb` is Qt's own 16-bit spelling and QColor parses it back
+  exactly (there is no such form with alpha, so a translucent colour keeps the 8-bit one). 30 → 25;
+- ...and the same NaN-vs-0 rule as before, for a declared property whose initial binding was
+  REFUSED: it kept D's NaN and reported it as the value where the engine reads 0.
+
+The first isolation of the colour one was wrong and said so: `gradientStop("#e8e8e8")` matched our
+output exactly, which looked like a clean bill. Feeding a colour PROPERTY instead of a literal is
+what separated them — the literal is 8-bit by construction, so it could not have shown the loss.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

@@ -909,6 +909,10 @@ T __qmltcAnd(T)(T a, lazy T b) { return a != 0 ? b : a; }
 string colorDarker(C)(C c, double f = 2.0) { return __shade(c, f, 0); }
 /// ditto
 string colorLighter(C)(C c, double f = 1.5) { return __shade(c, f, 1); }
+/// A real crossing the meta channel as TEXT. `to!string` formats a double with six significant
+/// digits, which does not round-trip: `Color.transparent(c, 210 / 255)` reached Qt as 0.823529 and
+/// came back one alpha step short of what the engine computed. 17 digits always round-trips.
+string numText(double v) { import std.format : format; return format("%.17g", v); }
 /// A colour's text, for the places a value has to cross as text (an invokable's argument).
 string colorName(C)(C c) {
     auto qs = qtd_color_name(cast(uint) c.rgba());

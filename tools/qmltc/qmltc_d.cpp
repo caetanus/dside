@@ -2373,8 +2373,14 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                     || pt == "int" || pt == "uint" || pt == "bool";
                             std::string one;
                             if (num) {
+                                // numText, not to!string: a real crossing as TEXT has to
+                                // ROUND-TRIP, and `to!string` gives six significant digits.
+                                // `Color.transparent(c, 210 / 255)` arrived as 0.823529, which is
+                                // 209.99989 alpha steps — one short of the engine's 210 on every
+                                // checkmark Fusion draws.
                                 if (compileExpr(a->expression, pt == "bool" ? "bool" : "double", one))
-                                    as.push_back("to!string(" + one + ")");
+                                    as.push_back(pt == "bool" ? "to!string(" + one + ")"
+                                                              : "numText(" + one + ")");
                                 else ok2 = false;
                             }
                             // An OBJECT parameter cannot travel as text: Qt's Fusion computes every
@@ -6492,9 +6498,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             anyBound = true;
         } else {
             // An empty expr means the value is written through the meta-object (see metaAssigns):
-            // the field is declared bare and QMetaType fills it.
+            // the field is declared bare and QMetaType fills it — and a bare floating-point field
+            // is NaN in D where QML's `real` defaults to 0. A declared property whose initial
+            // binding was refused kept that NaN and reported it as the property's value (Fusion's
+            // SliderGroove `offset`, where the engine reads 0).
             body += "    " + notifyUda + p.dtype + " " + p.name
-                  + (p.expr.empty() ? "" : " = " + p.expr) + ";\n";
+                  + (p.expr.empty() ? ((p.dtype == "double" || p.dtype == "float") ? " = 0" : "")
+                                    : " = " + p.expr) + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
         }
     }
@@ -6541,6 +6551,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         wire += "        attachContext(this, \"" + (g_rootDocUrl.empty() ? g_docUrl : g_rootDocUrl)
               + "\");\n";
         wire += "        classBegin(this);\n";
+        // Before the CHILDREN, not just before our own bindings: a child's binding can read
+        // through this object too (Fusion's ButtonPanel holds a Gradient whose stops compute
+        // `panel.control.palette`), and a child is fully wired at construction. The `__outer`
+        // back-reference is spliced in right after classBegin by a later pass, so it is already
+        // set here — which is why only the assignments whose value is the enclosing object can
+        // move this far up.
+        wire += earlyWire;   // ...what every binding below READS THROUGH
         wire += dcWire;      // ...default children first, as the engine's `data` has them...
     wire += childWire;   // ...then the property-bound ones
         // Connect EVERYTHING before the initial binding pass. Two reasons:
@@ -6554,7 +6571,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         //    settle instead of looping.
         // A property initialised from a LITERAL is assigned in its field initialiser and emits
         // nothing, so none of this makes handlers fire on init.
-        wire += earlyWire;   // ...what the bindings READ THROUGH, before any of them evaluates
         wire += bindWire;    // bindings live BEFORE anything is assigned
         // ...and the SAME reasoning applies to base properties, which used to be assigned before
         // any of this. `padding: 12` on a Pane fires leftPaddingChanged, which is what recomputes

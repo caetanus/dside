@@ -485,6 +485,24 @@ extern "C" void qtd_ensure_module(const char* uri) {
 // stand in for. Qt's Fusion style computes almost every colour this way —
 // `Fusion.buttonColor(control.palette, highlighted, down, hovered)` — and a string-only invoke could
 // not pass the palette. The result comes back as text for the same reason.
+// A returned value as TEXT — the channel every result crosses on. A COLOUR is spelled with the
+// full precision QColor holds: Qt's Fusion computes `gradientStop(buttonColor(...))`, and
+// buttonColor's colour is NOT 8-bit — spelled `#rrggbb` and parsed back it shifts by one step,
+// which is exactly the difference the engine showed on every gradient stop. `#rrrrggggbbbb` is
+// Qt's own 16-bit-per-channel spelling and QColor parses it back exactly. There is no such form
+// WITH alpha, so a translucent colour keeps the 8-bit one QVariant gives.
+static QString qtd_var_text(const QVariant& v) {
+#ifdef QT_GUI_LIB
+    if (v.userType() == QMetaType::QColor) {
+        QColor c = v.value<QColor>();
+        if (c.isValid() && c.alpha() == 255) {
+            QRgba64 r = c.rgba64();
+            return QString::asprintf("#%04x%04x%04x", r.red(), r.green(), r.blue());
+        }
+    }
+#endif
+    return v.toString();
+}
 extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int* kinds,
                                   void* const* vals) {
     if (!o || !method) return new QString();
@@ -533,7 +551,7 @@ extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int*
         argv[i + 1] = conv[i].data();
     }
     QMetaObject::metacall(obj, QMetaObject::InvokeMetaMethod, idx, argv.data());
-    return new QString(ret.toString());
+    return new QString(qtd_var_text(ret));
 }
 
 // The nearest ENCLOSING object of a given class, found by walking Qt parents. An object the ENGINE
