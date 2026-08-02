@@ -2268,6 +2268,31 @@ render differences, measured: ComboBox (2949 of 3240 pixels, delta 19 — the la
 left anywhere), Dial (390, delta 75), Switch (19, delta 1) and ToolBar (72, delta 1), the last two
 antialiasing.
 
+### Two attempts at the same defect, both reverted, and what they narrowed it to (2026-08-02)
+
+Fusion's ComboBox is the largest render difference anywhere (2949 of 3240 pixels, delta 19) and the
+cause is known: Qt's ButtonPanel asks `control.down || control.checked` about a ComboBox, which has
+no `checked`. The engine reads the whole expression as `down`; we refuse the read, and the panel
+loses its colour AND its gradient.
+
+- **The read alone** — compile it as the meta read, which answers false/0/empty exactly as QML's
+  `undefined` does in each target type. Fusion 51 → **149** diagnostics: 98 of them dead
+  dependencies, because a member the type does not declare has no notify either. 43 → 41 documents
+  identical, 17 → 22 value differences.
+- **The read plus the dependency spelled as a PATH** (`control.down` instead of the bare `control`),
+  which needed the declared-object-property rule added to `objPathHead` as well — the copy the
+  WIRING re-resolves through, as opposed to `objPathExpr`, which the READ uses. That took the 98
+  away, and left Fusion at **55**: four bindings that used to connect to the head now report a dead
+  dependency on the member, and the ComboBox colour still does not compile. Every other number
+  unchanged.
+
+So it is not the read, and not the dependency spelling. The missing piece is the wiring answering
+"the engine has nothing to connect to there either" in the consumer THIS shape reaches — the third
+of three parts, with the other two written down in the code where the branch would go.
+
+The pattern is the one this file keeps recording: **two halves have to land together.** Here there
+are three, and shipping any two is worse than shipping none.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

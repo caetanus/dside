@@ -2437,14 +2437,25 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                 return true;
                             }
                     // A member the type DOES NOT DECLARE was tried here and REVERTED by
-                    // measurement (2026-08-02). QML answers `undefined` for one, and the meta
-                    // channel answers the same in the target's terms — which is why Qt's Fusion
-                    // ButtonPanel asking `control.down || control.checked` about a ComboBox (no
-                    // `checked`) costs that panel its colour and its gradient. Compiling the read
-                    // is not enough: every one of them then reports a dead dependency, because the
-                    // member has no notify either. Fusion went 51 -> 149 diagnostics (98 of them
-                    // no-notify), 43 -> 41 documents identical and 17 -> 22 value differences.
-                    // Both halves have to land together, as they did for the enum-key comparison.
+                    // measurement, TWICE (2026-08-02). QML answers `undefined` for one, and the
+                    // meta channel answers the same in the target's terms — which is why Qt's
+                    // Fusion ButtonPanel asking `control.down || control.checked` about a ComboBox
+                    // (no `checked`) costs that panel its colour and its gradient, 2949 of 3240
+                    // pixels. What the two attempts settled:
+                    //   1. the read ALONE: Fusion 51 -> 149 diagnostics (98 of them dead
+                    //      dependencies, since a member the type does not declare has no notify
+                    //      either), 43 -> 41 documents identical, 17 -> 22 value differences;
+                    //   2. the read plus the dependency spelled as a PATH (`control.down` instead
+                    //      of the bare `control`), which needed this same declared-object-property
+                    //      rule added to objPathHead — the copy the WIRING re-resolves through, as
+                    //      opposed to objPathExpr which the READ uses. That took the 98 back down,
+                    //      but left Fusion at 55: four bindings that used to connect to the HEAD
+                    //      now report a dead dependency on the member, and the ComboBox colour
+                    //      still does not compile. Every other number was unchanged.
+                    // So the missing piece is not the read and not the dependency spelling: it is
+                    // the wiring answering "the engine has nothing to connect to there either" in
+                    // the consumer this shape actually reaches. Two of the three parts are written
+                    // down here; the third is a measurement away.
                     if (auto qp = g_qmlProps.find(own); qp != g_qmlProps.end()) {
                         auto t2 = qp->second.find(qs(fm->name.toString()));
                         if (t2 != qp->second.end()) {
