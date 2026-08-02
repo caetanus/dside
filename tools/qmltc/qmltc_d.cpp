@@ -2396,7 +2396,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     // member by name like any other.
                     std::string gtn = gt == qcv->second.end() ? std::string() : gt->second;
                     if (!gtn.empty() && gtn.back() == '^') gtn.pop_back();
-                    if (!gtn.empty() && gtn.back() != '*' && !g_qmlProps.count(gtn)) {
+                    // ...and NOT a scalar: `field.selectedText.length` is a STRING's length, which
+                    // the rule below answers, and treating `selectedText` as a value GROUP asked a
+                    // gadget for a member it does not have — 0 where the engine reads 5.
+                    if (!gtn.empty() && gtn.back() != '*' && !g_qmlProps.count(gtn)
+                            && gtn != "string" && gtn != "int" && gtn != "double" && gtn != "bool"
+                            && gtn != "QString" && gtn != "float" && gtn != "uint") {
                         std::string dtv = dtype.toStdString();
                         const char *rdv = dtv == "string" ? "vgroupStr(" : dtv == "bool" ? "vgroupBool("
                                         : dtv == "int" ? "vgroupInt(" : "vgroupDouble(";
@@ -2555,6 +2560,21 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             }
             return false;
         }
+        // `<objPath>.hasOwnProperty("name")` — JS asking whether an object HAS a member. The meta
+        // channel answers exactly that question, and it is the one `typeKnownWithoutMember` asks in
+        // the other direction at compile time. Qt's Cut, Copy and Paste actions guard on it,
+        // because the editor they are handed may be a TextInput or a TextEdit or neither.
+        if (recv == nullptr || true)
+            if (auto *hf = cast<FieldMemberExpression *>(call->base);
+                    hf && qs(hf->name.toString()) == "hasOwnProperty"
+                    && call->arguments && !call->arguments->next)
+                if (auto *sl = cast<StringLiteral *>(call->arguments->expression)) {
+                    std::string oe, oq;
+                    if (objPathExpr(hf->base, oe, oq)) {
+                        out = "hasProp(" + oe + ", \"" + qs(sl->value.toString()) + "\")";
+                        return true;
+                    }
+                }
         // `Qt.darker(c, f)` / `Qt.lighter(c, f)` — the colour globals. Unlike `Qt.styleHints` there
         // is no object behind them, so nothing in the meta channel reaches them and the runtime
         // implements the two calls the engine implements (QColor::darker/lighter). They gate a
@@ -3576,6 +3596,48 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
             if (!an.empty() && g_attached[an]->signalSig.count(qs(fm->name.toString()))) {
                 body += "        invoke0(" + attachedExpr(an) + ", \"" + qs(fm->name.toString()) + "\");\n";
                 return true;
+            }
+        }
+    // `<objPath>.<method>(a, b)` — a method WITH arguments. Qt's DeleteAction writes
+    // `editor.remove(editor.selectionStart, editor.selectionEnd)`. Same channel a singleton call
+    // uses: each argument crosses as TEXT and QMetaType converts it to the parameter's own type,
+    // so the only thing needed beyond the no-argument case is the argument list. The result is
+    // discarded, which is what a statement does with it.
+    if (auto *call = cast<CallExpression *>(es->expression); call && call->arguments)
+        if (auto *fm = cast<FieldMemberExpression *>(call->base)) {
+            std::string oe, oq, mem = qs(fm->name.toString());
+            if (objPathExpr(fm->base, oe, oq) && !oq.empty()) {
+                // The PARAMETER TYPES decide how each argument crosses, exactly as they do for a
+                // singleton call: a number has to be spelled as text with numText (to!string gives
+                // six digits), and anything else compiles as text directly. Guessing per-argument
+                // instead put a `double` where invokeMixed wants a string and the generated D did
+                // not compile.
+                size_t nargs = 0;
+                for (auto *a = call->arguments; a; a = a->next) ++nargs;
+                const std::vector<std::string> *ptypes = nullptr;
+                if (auto mi = g_qmlMethods.find(oq); mi != g_qmlMethods.end())
+                    if (auto it = mi->second.find(mem); it != mi->second.end())
+                        for (auto &ov : it->second) if (ov.second.size() == nargs) ptypes = &ov.second;
+                bool known = ptypes != nullptr;
+                std::vector<std::string> as;
+                bool ok = true;
+                size_t pi = 0;
+                for (auto *a = call->arguments; a && ok; a = a->next, ++pi) {
+                    std::string one;
+                    std::string pt = ptypes ? (*ptypes)[pi] : inferType(a->expression, ptype);
+                    bool num = pt == "double" || pt == "qreal" || pt == "float" || pt == "int"
+                            || pt == "uint" || pt == "bool";
+                    if (num && compileExpr(a->expression, pt == "bool" ? "bool" : "double", one))
+                        as.push_back(pt == "bool" ? "to!string(" + one + ")" : "numText(" + one + ")");
+                    else if (!num && compileExpr(a->expression, "string", one)) as.push_back(one);
+                    else ok = false;
+                }
+                if (ok && (known || typeKnownWithoutMember(oq, mem))) {
+                    std::string args;
+                    for (auto &a : as) args += ", " + a;
+                    body += "        invokeMixed(" + oe + ", \"" + mem + "\"" + args + ");\n";
+                    return true;
+                }
             }
         }
     // `<objPath>.<method>()` — a no-argument METHOD on an object the document can name. Qt's seven

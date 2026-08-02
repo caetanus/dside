@@ -2475,6 +2475,32 @@ exactly, since it is the question `typeKnownWithoutMember` already asks in the o
 Neither corpus moves — the Actions are still behind the attached-child gate — and both are
 unchanged at 64 and 48 diagnostics with every axis intact.
 
+### All seven Actions, and a bug the fixture caught on its way (2026-08-02)
+
+The last two of Qt's editing Actions needed one thing each, and both landed:
+
+- **a method WITH arguments.** `editor.remove(editor.selectionStart, editor.selectionEnd)` goes
+  through the same channel a singleton call uses — each argument crosses as text, QMetaType converts
+  it to the parameter's own type — and the PARAMETER TYPES come from the registry row, which now
+  exists. Typing them per-argument instead put a `double` where `invokeMixed` wants a string and the
+  generated D did not compile;
+- **`hasOwnProperty("name")`.** JS asking whether an object HAS a member; the meta channel answers
+  exactly that, and it is the question `typeKnownWithoutMember` already asks at compile time. Cut,
+  Copy and Paste guard on it because the editor they are handed may be a TextInput or a TextEdit.
+
+**All seven of Qt's editing Actions now compile with zero diagnostics.**
+
+`tests/qmltc/quick/QCallMethod.qml` then failed — and it was right to. `field.selectedText.length`
+had compiled to `vgroupInt(field, "selectedText", "length")`: the value-group read added earlier
+treated a STRING as a group and asked a gadget for a member it does not have, giving 0 where the
+engine reads 5. A scalar is not a value group; the string-length rule beside it already answered
+that shape. Neither corpus writes it, so only a fixture could find it — which is what fixtures are
+for.
+
+The Menu those Actions live in is the next layer and has its own list (its contentItem's `model`,
+`interactive` and `currentIndex`, its background colour, and the attached children inside it). The
+three prerequisites the gate note asked for are done.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
