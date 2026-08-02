@@ -34,6 +34,19 @@ extern "C" int qtd_render_item(void *item, const char *out) {
     // and is not one.
     if (it->width() <= 0 && it->implicitWidth() > 0) it->setWidth(it->implicitWidth());
     if (it->height() <= 0 && it->implicitHeight() > 0) it->setHeight(it->implicitHeight());
+    // An item ALREADY in a scene is grabbed from THAT scene. Moving it into a fresh window drops
+    // everything the scene holds — activeFocus above all, which is per-window: `--click` put the
+    // item in a window and gave it focus, and `--render` then reparented it away, so the frame
+    // showed an unfocused control while the object itself reported activeFocus true. Qt's
+    // TextField paints its border with the accent colour when focused, and the click differential
+    // was measuring the harness rather than the compiler.
+    if (QQuickWindow *cur = it->window()) {
+        cur->setWidth(qMax(1, int(it->width())));
+        cur->setHeight(qMax(1, int(it->height())));
+        const QImage img0 = cur->grabWindow();
+        if (img0.isNull()) return 2;
+        return img0.save(QString::fromUtf8(out)) ? 0 : 3;
+    }
     QQuickWindow win;
     win.setWidth(qMax(1, int(it->width())));
     win.setHeight(qMax(1, int(it->height())));

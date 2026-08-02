@@ -2054,6 +2054,34 @@ at most. The click reaches our objects — a compiled Basic Switch toggles `chec
 `position` to 1 — so this is about what happens after, not about delivery. Unlike the value
 differences, none of these is attributed yet.
 
+### What the click axis found in its first hour (2026-08-02)
+
+Two things, and one of them was the harness measuring its own artefact — the recurring blind spot,
+caught this time by an axis that had just been built.
+
+- **an object-group member written through the TEXT channel was never connected.**
+  `border.color: control.activeFocus ? palette.highlight : palette.mid` on Qt's TextField is a
+  colour, so it takes the fallback that crosses as text; that path emitted a recompute slot, called
+  it once in the late phase, and wired NO dependencies. Clicking into the field left the border grey
+  where the engine paints it with the accent colour. The mutation sweep could not have found it —
+  `activeFocus` is read-only and is never mutated — and neither could the render-at-rest pass;
+- **and then the frame still differed, because `--render` moved the item to a NEW window.**
+  activeFocus is per-window: `--click` put the item in a window and focused it, and the render call
+  reparented it away, so the frame showed an unfocused control while the object itself reported
+  `activeFocus` true. An item already in a scene is grabbed from THAT scene now.
+
+| frame after a click | Basic | Fusion |
+|---|---|---|
+| before | 26 identical, 7 differing | 23 identical, 7 differing |
+| after | **29 identical, 4 differing** | **24 identical, 6 differing** |
+
+Basic's four: ScrollBar, SearchField, SwitchDelegate, Switch. Fusion's six: RoundButton, ScrollBar,
+SearchField, Slider, SwitchDelegate, TabButton. RoundButton is one step of one colour on one pixel
+and is identical at rest; the ScrollBars are attributed — Qt's ScrollBar hides its contentItem with
+`opacity: 0.0` and reveals it from a `State` with a `when:` condition and a dotted
+`PropertyChanges { control.contentItem.opacity: 0.75 }`, neither of which is compiled (the four
+`states` diagnostics). That is the first cluster the click axis has named for itself.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

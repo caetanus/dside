@@ -6446,8 +6446,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // this a grouped write is a one-shot that goes stale silently (`border.width: bw + 1` kept its
     // first value when bw changed). Mirrors the logic the base-property loop has inline; the two
     // must agree, which is why this is a named helper rather than a fourth copy.
+    // `emitSlot == false`: the caller already wrote the slot and only wants it CONNECTED. The
+    // text-channel fallback for an object-group member does that — it hand-writes the slot with a
+    // different name and, until this, wired no dependencies at all: `border.color:
+    // control.activeFocus ? palette.highlight : palette.mid` on Qt's TextField was computed once in
+    // the late phase and never again, so clicking into the field left the border grey where the
+    // engine paints it with the accent colour. Found by the CLICK axis; the mutation sweep could
+    // not see it, since `activeFocus` is read-only and never mutated.
     auto wireGroupDeps = [&](ExpressionNode *expr, const std::string &slot,
-                             const std::string &assign, const std::string &what) {
+                             const std::string &assign, const std::string &what,
+                             bool emitSlot = true) {
         std::vector<std::string> deps;
         collectIds(expr, deps);
         std::set<std::string> seen;
@@ -6569,7 +6577,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             ++partial;
         }
         if (!conns.empty() || !sibConns.empty()) {
-            handlerSlots += "    @Slot void " + slot + "() {\n    " + assign + "    }\n";
+            if (emitSlot) handlerSlots += "    @Slot void " + slot + "() {\n    " + assign + "    }\n";
             bindWire += conns;
             if (!sibConns.empty()) lateWire += sibConns + "        " + slot + "();\n";
         }
@@ -6734,8 +6742,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // throws if the member does not take one, so a wrong target stays loud.
             if (std::string sval; compileExpr(ga.second, "string", sval)) {
                 std::string slot = "__rcg_" + gname + "_" + mem;
-                handlerSlots += "    @Slot void " + slot + "() {\n        setProp(propObj(this, \""
-                              + gname + "\"), \"" + mem + "\", " + sval + ");\n    }\n";
+                std::string sst = "        setProp(propObj(this, \"" + gname + "\"), \"" + mem
+                                + "\", " + sval + ");\n";
+                handlerSlots += "    @Slot void " + slot + "() {\n" + sst + "    }\n";
+                // ...and CONNECTED, which it was not: the slot existed and nothing ever called it
+                // again after the late phase.
+                wireGroupDeps(ga.second, slot, sst, "object-group member '" + ga.first + "'", false);
                 lateWire += "        " + slot + "();\n";
                 node.groupProps.push_back({ga.first, "string"});
                 continue;
