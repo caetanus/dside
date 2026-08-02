@@ -1651,7 +1651,7 @@ same axes as Basic:
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 41 of 49 |
 | value differences | 21 (all attributed) | 20 |
-| diagnostics | 79 | 83 |
+| diagnostics | 74 | 78 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
@@ -1869,6 +1869,33 @@ engine reports 0 and 1, and neither completing the object nor running the event 
 those 10 of the remaining 20 Fusion differences are not about compilation at all: they are about how
 the object is CREATED, and the compiler cannot be the place to look. The unconditional wire stays
 because it is what the engine does, not because it moved a number.
+
+### Two that moved, one gate re-measured and left shut (2026-08-02)
+
+- **a VALUE-GROUP member read inside an expression.** `control.locale.name` (Qt's SpinBox hands its
+  validator the control's locale) and `control.font.family`. The group is a value, not an object —
+  the registry types it with a C++ name that does NOT end in `*`, which is exactly what separates
+  it from `control.palette.text`. Reading it as an object path walked into a null propObj, so the
+  whole binding was refused. The COPY form of the same read (as a whole binding) already worked and
+  the read inside an expression did not: the asymmetry that keeps turning up here;
+- **two types the binding never generated.** `SmoothedAnimation` and `PathLine` are ordinary
+  QtQuick types whose headers were simply not in the controls spec; `subclass_derived` already
+  covers everything under `QQuickAbstractAnimation`, and `QQuickPathElement` joins it. Six of Qt's
+  documents stopped refusing a child outright. (309 newly bound symbols came with them, and 5 new
+  drops on `QQuickPath`'s own list-typed methods — the manifest baseline is regenerated, which is
+  what the gate asks for when the drops are new symbols rather than lost ones.)
+
+Fusion 83 → 78 diagnostics, Basic 79 → 74. Values unchanged on both.
+
+**The attached-child gate, re-measured and left shut.** The earlier note asked for exactly this
+measurement once the prerequisites landed, and they have. Opening it: Fusion 83 → 171 diagnostics,
+41 → 39 documents identical, 20 → 26 value differences, 0 → 21 paths the engine has and we do not,
+and four documents throwing at construction. Adding a general rule — compile the attached child only
+if it compiles WHOLE — removes every one of those regressions, and then NOTHING is emitted: all 11
+attached children in that corpus are partial, so the corpus is byte-identical to the gate being
+shut, at the cost of 98 diagnostics for work that is thrown away. That is the useful finding: the
+blocker is not the attachment, it is the children. `ContextMenu.menu` is a Menu of Actions with
+script bindings we do not compile. Re-open when those compile, not before.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

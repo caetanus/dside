@@ -2230,6 +2230,29 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 }
             }
         }
+        // `<objectPath>.<valueGroup>.<member>` — `control.locale.name` (Qt's SpinBox hands its
+        // validator the control's locale) and `control.font.family`. The GROUP is a value, not an
+        // object: the registry types it with a C++ name that does NOT end in `*`, which is exactly
+        // what separates it from `control.palette.text` one line below. Reading it as an object
+        // path walked into a null propObj, so the whole binding was refused — the copy form
+        // (`locale: control.locale.name` as a whole binding) worked and the same read inside an
+        // expression did not, which is the asymmetry that keeps turning up here.
+        if (auto *fmv = cast<FieldMemberExpression *>(fm->base)) {
+            std::string oev, oqv, grpv = qs(fmv->name.toString());
+            if (objPathExpr(fmv->base, oev, oqv) && !oqv.empty())
+                if (auto qcv = g_qmlCxxType.find(oqv); qcv != g_qmlCxxType.end()) {
+                    auto gt = qcv->second.find(grpv);
+                    if (gt != qcv->second.end() && !gt->second.empty()
+                            && gt->second.back() != '*' && gt->second.back() != '^'
+                            && !g_qmlProps.count(gt->second)) {
+                        std::string dtv = dtype.toStdString();
+                        const char *rdv = dtv == "string" ? "vgroupStr(" : dtv == "bool" ? "vgroupBool("
+                                        : dtv == "int" ? "vgroupInt(" : "vgroupDouble(";
+                        out = rdv + oev + ", \"" + grpv + "\", \"" + qs(fm->name.toString()) + "\")";
+                        return true;
+                    }
+                }
+        }
         // `vgroup.member` -> a member of a VALUE-type group: no object to read through, so the
         // value is fetched and the member extracted from it.
         if (base) {
@@ -4310,7 +4333,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // engine's by more than its absence does, so shipping it would trade a reported
                     // gap for a silent wrong object. Re-open only when a compiled ScrollBar.vertical
                     // matches the engine property-for-property.
-                    // GATE STILL SHUT, and the number is now MEANINGFUL. Both prerequisites are
+                    // GATE STILL SHUT — re-measured 2026-08-02, after the object write, the
+                    // sibling ids, the colour precision and the ordering fixes, i.e. with every
+                    // prerequisite the earlier note asked for. Opening it: Fusion 83 -> 171
+                    // diagnostics, 41 -> 39 documents identical, 20 -> 26 value differences, 0 ->
+                    // 21 paths the engine has and we do not, and four documents throwing at
+                    // construction. Adding "compile it only if it compiles WHOLE" removes every
+                    // one of those regressions — and then NOTHING is emitted: all 11 attached
+                    // children in that corpus are partial, so the corpus is identical to the gate
+                    // being shut, at the cost of 98 diagnostics for work that is thrown away. The
+                    // blocker is not the attachment, it is the children: `ContextMenu.menu` is a
+                    // Menu of Actions with script bindings we do not compile. Re-open when those
+                    // compile, not before.
+                    // (earlier note) The number is now MEANINGFUL. Both prerequisites are
                     // done — the oracle descends past an attached object (2a744e5) and the colour
                     // that probe found is fixed (732f674) — so opening it no longer mixes our error
                     // with the oracle's blindness. Measured with both in place: divergences 96 ->
