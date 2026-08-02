@@ -1840,6 +1840,13 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
         if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;
         oe = "__outer"; oq = g_outerChain[0].qmlType; return true;
     }
+    // A DECLARED object property is in scope AND is still a path head — the same rule objPathExpr
+    // keeps, and this is the copy the WIRING re-resolves dependencies through. Without it every
+    // `control.<member>` dep was stripped back to `control` and reported as having no notify.
+    if (auto pt0 = g_propType.find(n2); pt0 != g_propType.end() && pt0->second.size() > 1
+            && pt0->second[0] == '@' && !shadowedByLocalType(n2)) {
+        oe = dIdent(n2); oq = pt0->second.substr(1); return true;
+    }
     // ...unless we are compiling a USE-SITE binding, where the merged class's own declarations are
     // not in scope (see shadowedByLocalType): `control: control` must reach the enclosing object.
     if ((g_scope.count(n2) && !shadowedByLocalType(n2)) || g_vgroups.count(n2)) return false;
@@ -2168,6 +2175,20 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                             out = "propStr(" + obj + ", \"" + mem + "\")";
                             return true;
                         }
+                // ...and a member that type DOES NOT DECLARE. QML answers `undefined`, and the
+                // meta channel answers the same in the target's own terms — false for the neutral
+                // hint the logical operators compile their operands with. Qt's Fusion ButtonPanel
+                // asks `control.down || control.checked` and is used by a ComboBox, which has no
+                // `checked`; the engine reads the whole expression as `down`, and refusing it cost
+                // that panel its colour AND its gradient (2949 of 3240 pixels, the largest render
+                // difference in either corpus). "Refused, not guessed" was right while the registry
+                // could not tell the two apart; typeKnownWithoutMember can.
+                if (typeKnownWithoutMember(fr->qmlType, mem)) {
+                    std::string dtE = dtype.isEmpty() ? std::string("bool") : dtype.toStdString();
+                    const char *rdE = dtE == "string" ? "propStr(" : dtE == "double" ? "propDouble("
+                                    : dtE == "bool" ? "propBool(" : dtE == "int" ? "propInt(" : nullptr;
+                    if (rdE) { out = rdE + obj + ", \"" + mem + "\")"; return true; }
+                }
                 return false;   // unknown member of that enclosing object: refused, not guessed
             }
         }
@@ -2436,26 +2457,6 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                 out = "propStr(" + oe + ", \"" + qs(fm->name.toString()) + "\")";
                                 return true;
                             }
-                    // A member the type DOES NOT DECLARE was tried here and REVERTED by
-                    // measurement, TWICE (2026-08-02). QML answers `undefined` for one, and the
-                    // meta channel answers the same in the target's terms — which is why Qt's
-                    // Fusion ButtonPanel asking `control.down || control.checked` about a ComboBox
-                    // (no `checked`) costs that panel its colour and its gradient, 2949 of 3240
-                    // pixels. What the two attempts settled:
-                    //   1. the read ALONE: Fusion 51 -> 149 diagnostics (98 of them dead
-                    //      dependencies, since a member the type does not declare has no notify
-                    //      either), 43 -> 41 documents identical, 17 -> 22 value differences;
-                    //   2. the read plus the dependency spelled as a PATH (`control.down` instead
-                    //      of the bare `control`), which needed this same declared-object-property
-                    //      rule added to objPathHead — the copy the WIRING re-resolves through, as
-                    //      opposed to objPathExpr which the READ uses. That took the 98 back down,
-                    //      but left Fusion at 55: four bindings that used to connect to the HEAD
-                    //      now report a dead dependency on the member, and the ComboBox colour
-                    //      still does not compile. Every other number was unchanged.
-                    // So the missing piece is not the read and not the dependency spelling: it is
-                    // the wiring answering "the engine has nothing to connect to there either" in
-                    // the consumer this shape actually reaches. Two of the three parts are written
-                    // down here; the third is a measurement away.
                     if (auto qp = g_qmlProps.find(own); qp != g_qmlProps.end()) {
                         auto t2 = qp->second.find(qs(fm->name.toString()));
                         if (t2 != qp->second.end()) {
@@ -2466,6 +2467,29 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                 out = rd2 + oe + ", \"" + qs(fm->name.toString()) + "\")";
                                 return true;
                             }
+                        }
+                    }
+                    // ...and a member the type DOES NOT DECLARE. QML answers `undefined` there and
+                    // the meta channel answers the same in the target's own terms: false, 0, empty.
+                    // Qt's Fusion ButtonPanel asks `control.down || control.checked` about a
+                    // ComboBox, which has no `checked`; the engine reads the whole expression as
+                    // `down`, and refusing the read cost that panel its colour AND its gradient —
+                    // 2949 of 3240 pixels, the largest render difference in either corpus. Not a
+                    // guess: the registry describes the type and the member is not in it. Two
+                    // other parts have to land with this one — see collectIds and the three
+                    // dependency consumers — and shipping any two of the three was measured worse
+                    // than shipping none.
+                    if (typeKnownWithoutMember(own, qs(fm->name.toString()))) {
+                        // An EMPTY target type is the neutral hint the logical operators compile
+                        // their operands with — `control.down || control.checked` is exactly that —
+                        // and the truthiness of a member the type does not declare is false. So the
+                        // bool reader is the answer there, which is also what `__qmltcOr` wants.
+                        std::string dt2 = dtype.isEmpty() ? std::string("bool") : dtype.toStdString();
+                        const char *rd3 = dt2 == "string" ? "propStr(" : dt2 == "double" ? "propDouble("
+                                        : dt2 == "bool" ? "propBool(" : dt2 == "int" ? "propInt(" : nullptr;
+                        if (rd3) {
+                            out = rd3 + oe + ", \"" + qs(fm->name.toString()) + "\")";
+                            return true;
                         }
                     }
                 }
@@ -3023,6 +3047,22 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
             if (!isObj && !mem.empty() && std::isupper((unsigned char)mem[0])
                     && (bn == "Qt" || g_qmlCxxType.count(bn)))
                 return;
+            // `<declaredObjProp>.<member>` — the dependency is on the MEMBER, not on the property
+            // that holds the object: `control` on Qt's Fusion ButtonPanel never changes after the
+            // use site assigns it, and what does change is `control.down`. Spelled with the hops so
+            // the wiring re-resolves the same path the READ took.
+            if (!mem.empty() && !std::isupper((unsigned char) mem[0])) {
+                auto isDeclObj = [](const std::map<std::string, std::string> &m, const std::string &n) {
+                    auto it = m.find(n);
+                    return it != m.end() && it->second.size() > 1 && it->second[0] == '@';
+                };
+                if (isDeclObj(g_propType, bn)) { ids.push_back(bn + "." + mem); return; }
+                std::string pre;
+                for (auto &f : g_outerChain) {
+                    pre += "__outer.";
+                    if (isDeclObj(f.propType, bn)) { ids.push_back(pre + bn + "." + mem); return; }
+                }
+            }
             // `<obj>.<AttachedType>` used as a whole — the truth test above. WHETHER an object has
             // an attached object of some type does not change over its life, so this is a constant,
             // not a dependency; recording it reported "depends on 'Window', which has no known
@@ -7209,6 +7249,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             wire += "        tryConnectMeta(" + oe7 + ", \"changed()\", this, \"__rc_"
                                   + p.name + "()\");\n";
                             continue;
+                        }
+                        // ...or the path lands on an object whose TYPE simply does not declare
+                        // the leaf. The ENGINE has nothing to connect to there either, so this is
+                        // a best-effort connect on Qt's notify convention — null-safe AND
+                        // signal-safe — rather than a report. Same rule as the other two consumers;
+                        // this is the one a DECLARED property's binding reaches.
+                        {
+                            std::string headD = dEff.substr(0, dEff.rfind('.'));
+                            std::string leafD = dEff.substr(dEff.rfind('.') + 1);
+                            std::string oeW, oqW;
+                            if (objPathWalkDotted(headD, oeW, oqW)
+                                    && typeKnownWithoutMember(oqW, leafD)) {
+                                wire += "        tryConnectMeta(" + oeW + ", \"" + leafD
+                                      + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
+                                wire += "        tryConnectMeta(" + oeW + ", \"changed()\", this, \"__rc_"
+                                      + p.name + "()\");\n";
+                                continue;
+                            }
                         }
                         dEff = dEff.substr(0, dEff.find('.'));
                     }

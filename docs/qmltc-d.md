@@ -2293,6 +2293,39 @@ of three parts, with the other two written down in the code where the branch wou
 The pattern is the one this file keeps recording: **two halves have to land together.** Here there
 are three, and shipping any two is worse than shipping none.
 
+### A member the type does not declare — the third attempt, landed (2026-08-02)
+
+Two earlier attempts were reverted; this one holds, and the difference is that it took FOUR parts,
+not two. Qt's Fusion ButtonPanel asks `control.down || control.checked` and is used by a ComboBox,
+which has no `checked`. The engine reads the whole expression as `down`; refusing the read cost that
+panel its colour AND its gradient — 2949 of 3240 pixels, the largest render difference anywhere.
+
+- **the READ**, when the registry describes the type and the member is simply not in it. QML answers
+  `undefined` and the meta channel answers the same in the target's own terms: false, 0, empty;
+- **the neutral hint.** `a || b` compiles its operands with NO target type, and the truthiness of a
+  member the type does not declare is false — so the bool reader is the answer there, which is also
+  what `__qmltcOr` wants. Without this the branch was never even reached for `control.checked`;
+- **the DEPENDENCY spelled as a path** (`control.down`, not the bare `control`), which needed the
+  declared-object-property rule added to `objPathHead` too — the copy the WIRING re-resolves
+  through, as opposed to `objPathExpr`, which the READ uses;
+- **the wiring answering "the engine has nothing to connect to there either"** in all THREE
+  dependency consumers. Two of them already had it; the one a declared property's binding reaches
+  did not.
+
+And the branch that actually refused was none of the four: `control` is BOTH ButtonPanel's own
+declared property and the enclosing ComboBox's id, so the read went down the enclosing-object path
+and hit its "unknown member of that enclosing object: refused, not guessed" — which was right while
+the registry could not tell "absent" from "unknown", and `typeKnownWithoutMember` can.
+
+| Fusion | before | after |
+|---|---|---|
+| diagnostics | 51 | **48** |
+| value differences | 17 | **16** |
+| render at rest, byte for byte | 40 identical, 4 differing | **41 identical, 3 differing** |
+
+ComboBox is identical at rest now and moves into the click axis, where it differs — an honest
+comparison it could not take part in before. Basic is unchanged and still zero on both frame axes.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
