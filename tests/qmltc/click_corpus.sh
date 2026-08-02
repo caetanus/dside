@@ -28,7 +28,11 @@ print(w//2, h//2)
 ") || { echo "$n no-size" >> "$SP/click_$STYLE.txt"; continue; }
   x=${xy%% *}; y=${xy##* }
   [ "$x" -gt 0 ] && [ "$y" -gt 0 ] || { echo "$n zero-size" >> "$SP/click_$STYLE.txt"; continue; }
-  timeout 30 "$SP/$OUT/i$n.bin" --click "$x" "$y" --render "$SP/clk_$STYLE/$n.d.png" >/dev/null 2>&1 </dev/null \
+  # --run before --render: both sides let the click SETTLE for the same 400ms, so a document with
+  # a `Behavior` is compared at its END state instead of at whatever phase each side's stopwatch
+  # happened to reach. The transient is genuinely unmeasurable this way and is not pretended away:
+  # a document that never settles would show up as a difference here just the same.
+  timeout 30 "$SP/$OUT/i$n.bin" --click "$x" "$y" --run 400 --render "$SP/clk_$STYLE/$n.d.png" >/dev/null 2>&1 </dev/null \
     || { echo "$n ours-failed" >> "$SP/click_$STYLE.txt"; continue; }
   timeout 30 "$L/qmlrender" --clickrender "$f" "$x" "$y" "$SP/clk_$STYLE/$n.q.png" >/dev/null 2>&1 </dev/null \
     || { echo "$n engine-failed" >> "$SP/click_$STYLE.txt"; continue; }

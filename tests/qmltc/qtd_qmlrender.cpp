@@ -156,6 +156,15 @@ int main(int argc, char **argv) {
         v.show();
         QCoreApplication::processEvents();
         clickAt(&v, QString::fromUtf8(argv[3]).toInt(), QString::fromUtf8(argv[4]).toInt());
+        // Let whatever the click started SETTLE before the frame is taken. A document with a
+        // `Behavior` animates from the old value to the new one, and grabbing mid-flight compares
+        // two stopwatches rather than two renderers — the phase depends on how long each side took
+        // to get here, which is not a property of the compiler. The END state is the well-defined
+        // thing, and it is what "behaves like the interpreted version" means for a toggle.
+        {
+            QElapsedTimer t; t.start();
+            while (t.elapsed() < 400) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
         const QImage img = v.grabWindow();
         if (img.isNull()) { std::fprintf(stderr, "qmlrender: null frame\n"); return 4; }
         return img.save(QString::fromUtf8(argv[5])) ? 0 : 5;

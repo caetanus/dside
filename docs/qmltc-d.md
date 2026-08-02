@@ -2123,6 +2123,28 @@ and `SwitchDelegate` carry `Behavior on x { SmoothedAnimation }`, so the engine'
 mid-flight where ours has already arrived. That is the one remaining cause in Basic, and it is the
 `Behavior` cluster the diagnostics already report.
 
+### Letting the click SETTLE, and why that is not hiding anything (2026-08-02)
+
+The click axis grabbed its frame immediately, and for a document with a `Behavior` that compares two
+stopwatches rather than two renderers: the animation phase depends on how long each side took to get
+there, which is not a property of the compiler. Both sides now let the click settle for the same
+400ms. The END state is the well-defined thing, and it is what "behaves like the interpreted
+version" means for a toggle.
+
+This does not pretend the transient away. A document that never settles still shows up as a
+difference — Fusion's BusyIndicator spins forever and is now the clearest entry in the list. And the
+axis is deterministic: two consecutive runs give the same set on both corpora, which a
+time-dependent comparison has to be before it is worth anything.
+
+| frame after a click | Basic | Fusion |
+|---|---|---|
+| immediate | 31 identical, 2 differing | 25 identical, 5 differing |
+| settled | **32 identical, 1 differing** | **26 identical, 4 differing** |
+
+What is left is four documents and one perpetual animation: Basic's ComboBox (`#bdbdbd` against our
+`#e0e0e0` at the corner), Fusion's Slider and SwitchDelegate (a different shade of the same blue),
+Fusion's TabButton (one step of one colour), and BusyIndicator, which cannot settle by construction.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
