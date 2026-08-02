@@ -503,7 +503,12 @@ struct OuterFrame { std::string id, cls, qmlType;
                     // the file says `background: Rectangle {}` — and Item has no `border` while
                     // Rectangle does. Following that hop by NAME instead is not an option: it also
                     // follows model roles, which is how TreeViewDelegate died on `display`.
-                    std::map<std::string, std::string> childTypes; };
+                    std::map<std::string, std::string> childTypes;
+                    // The ids of the enclosing object's CHILDREN — our siblings. QML resolves an
+                    // id anywhere in its component, and Qt's Fusion SwitchIndicator reads the
+                    // handle next to it (`handle.x + handle.width`) from the groove. Each is a
+                    // FIELD of that object, so the hop is the ordinary one. (id -> field, type)
+                    std::map<std::string, std::pair<std::string, std::string>> childIds; };
 static std::vector<OuterFrame> g_outerChain;
 static int g_outerHopsNeeded = -1;   // deepest hop this object used; drained by its parent
 // Out-channel: a child that connects to `__outer.<prop>` needs that property to CARRY a notify,
@@ -1606,6 +1611,22 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
                 return true;
             }
         }
+        // ...and LAST, a SIBLING's id — a child of an enclosing object. QML resolves an id
+        // anywhere in its component; here it is a plain field of that object, reached by the same
+        // hop. Last so that nothing which already resolved changes: a name is only looked up here
+        // once every property lookup has failed.
+        {
+            std::string preS;
+            for (size_t k = 0; k < g_outerChain.size(); ++k) {
+                preS += "__outer.";
+                auto sc = g_outerChain[k].childIds.find(n2);
+                if (sc == g_outerChain[k].childIds.end() || sc->second.second.empty()) continue;
+                g_outerUsed = true;
+                if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                oe = preS + sc->second.first; oq = sc->second.second;
+                return true;
+            }
+        }
         return false;
     }
     if (auto *f2 = cast<FieldMemberExpression *>(x)) {
@@ -1750,6 +1771,12 @@ static bool outerDepIsPath(const std::string &d) {
     return d.find('.', i) != std::string::npos;
 }
 
+// Set when the last path resolved through a SIBLING's id. A sibling is a field of the enclosing
+// object and is assigned as that object builds its children IN ORDER, so at our own wire time it
+// may still be null — connecting there connects to nothing and the binding never runs again. The
+// connect and the first evaluation belong to the late phase, which the root triggers once the
+// whole tree exists.
+static bool g_depIsSibling = false;
 static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq) {
     // `__outer` is a head like any other: the wiring holds deps spelled with it, and a path through
     // an enclosing object cannot be re-resolved there without this.
@@ -1785,6 +1812,17 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
             g_outerUsed = true;
             if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
             oe = "propObj(" + pre3.substr(0, pre3.size() - 1) + ", \"" + n2 + "\")";
+            return true;
+        }
+        // ...and a SIBLING's id, which is a field of that object. Same rule as the walker keeps —
+        // this function has its own copy of the resolution, and a dependency re-resolved here has
+        // to reach what the READ reached.
+        if (auto sc = g_outerChain[k].childIds.find(n2);
+                sc != g_outerChain[k].childIds.end() && !sc->second.second.empty()) {
+            g_depIsSibling = true;
+            g_outerUsed = true;
+            if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+            oe = pre3 + sc->second.first; oq = sc->second.second;
             return true;
         }
     }
@@ -2584,6 +2622,23 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 }
                 auto *fm2 = cast<FieldMemberExpression *>(x);
                 if (!fm2) return false;
+                // `control.TabBar.position !== T.TabBar.Header` (Qt's Fusion TabButton, deciding
+                // its own y). The read is an ATTACHED property on ANOTHER object, and it is an
+                // ENUM — so the typed reader the ordinary attached path uses cannot answer it, but
+                // the key channel can, exactly as for a plain enum property.
+                if (auto *fmA2 = cast<FieldMemberExpression *>(fm2->base))
+                    if (auto *bA2 = cast<IdentifierExpression *>(fmA2->base)) {
+                        std::string tgtA, tqA, anA = qs(fmA2->name.toString());
+                        std::string memA = qs(fm2->name.toString());
+                        if (!anA.empty() && std::isupper((unsigned char) anA[0]) && g_qmlTypeUri.count(anA)
+                                && objPathHead(qs(bA2->name.toString()), tgtA, tqA)) {
+                            auto amA = g_qmlAttachedCxx.find(anA);
+                            if (amA != g_qmlAttachedCxx.end() && amA->second.count(memA)) {
+                                outRead = "propStr(" + attachedExprOn(tgtA, anA) + ", \"" + memA + "\")";
+                                return true;
+                            }
+                        }
+                    }
                 // ...or a member of a Qt global object, whose base is a CHAIN, not an identifier.
                 if (std::string go = qtGlobalObj(fm2->base); !go.empty()) {
                     outRead = "propStr(" + go + ", \"" + qs(fm2->name.toString()) + "\")";
@@ -2763,6 +2818,16 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                       || (!g_selfId.empty() && bn == g_selfId);
             if (!isObj)
                 for (auto &f : g_outerChain) if (!f.id.empty() && f.id == bn) isObj = true;
+            // A SIBLING's id is an object too, and the dependency is on its MEMBER — recording the
+            // bare id said "depends on 'handle', which has no known notify" for a read that is
+            // perfectly connectable (Qt's Fusion SwitchIndicator sizes its groove from the handle
+            // next to it). The dotted form is re-resolved by the wiring through the same rule.
+            if (!isObj)
+                for (auto &f : g_outerChain)
+                    if (f.childIds.count(bn)) {
+                        ids.push_back(bn + "." + mem);
+                        return;
+                    }
             if (!isObj && !mem.empty() && std::isupper((unsigned char)mem[0])
                     && (bn == "Qt" || g_qmlCxxType.count(bn)))
                 return;
@@ -3716,10 +3781,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // g_propType also carries base names the document assigns (`width: 100`), and those are
     // Q_PROPERTYs on the C++ base, not D fields — reading them as `__outer.width` won't compile.
     auto savedOuterChain = g_outerChain;
-    if (!g_selfClass.empty())
-        g_outerChain.insert(g_outerChain.begin(),
-                            OuterFrame{savedId, g_selfClass, savedSelfQmlType, g_propType, g_baseProps,
-                                       g_childDeclType});
+    {
+        std::map<std::string, std::pair<std::string, std::string>> sibs;
+        for (auto &ci : g_childIds) sibs[ci.first] = {ci.second.field, ci.second.qmlType};
+        if (!g_selfClass.empty())
+            g_outerChain.insert(g_outerChain.begin(),
+                                OuterFrame{savedId, g_selfClass, savedSelfQmlType, g_propType,
+                                           g_baseProps, g_childDeclType, sibs});
+    }
     if (!g_outerChain.empty()) {
         g_outerId = g_outerChain[0].id;
         g_outerClass = g_outerChain[0].cls;
@@ -5613,6 +5682,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             collectIds(ba.second, deps);
             std::set<std::string> seen;
             std::string conns;
+            // ...and the connects that must wait for the whole tree: a SIBLING id.
+            std::string sibConns;
             for (auto &d : deps) {
                 if (d == ba.first || !seen.insert(d).second) continue;   // self-reference is not a dep
                 // `@Type.prop` — an ATTACHED read: connect to the attached object's own notify.
@@ -5739,15 +5810,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string dEff = d;
                 if (dEff.find('.') != std::string::npos) {
                     std::string oe6, sig6;
+                    g_depIsSibling = false;
                     if (objPathFromString(dEff, oe6, sig6)) {
-                        conns += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                        // lateConns, not conns: a sibling built after us is still null while our
+                        // own wire runs. The late phase already exists for exactly this, and it
+                        // re-evaluates once after connecting.
+                        std::string &sink = g_depIsSibling ? sibConns : conns;
+                        sink += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"__rcb_" + ba.first + "()\");\n";
                         // ...and the object's OWN "something changed" signal. A value group can
                         // change what it RESOLVES to without any member signal firing: disabling a
                         // control switches its palette group, `windowTextChanged()` never fires,
                         // and the colour stayed at the enabled one. Measured on Qt's Label —
                         // `changed()` on the palette object is what the engine's binding follows.
                         // tryConnectMeta because a group without that signal simply has none.
-                        conns += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"__rcb_"
+                        sink += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"__rcb_"
                               + ba.first + "()\");\n";
                         continue;
                     }
@@ -5807,11 +5883,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            + "\", this, \"__rcb_" + ba.first + "()\");\n";
             }
             g_deepReads.clear();
-            if (!conns.empty() || !lateConns.empty()) {
+            if (!conns.empty() || !lateConns.empty() || !sibConns.empty()) {
                 handlerSlots += "    @Slot void __rcb_" + ba.first + "() {\n" + lateLeaf
                               + "    " + assign + "    }\n";
                 bindWire += conns;
-                if (!lateConns.empty()) lateWire += lateConns + "        __rcb_" + ba.first + "();\n";
+                if (!lateConns.empty() || !sibConns.empty())
+                    lateWire += lateConns + sibConns + "        __rcb_" + ba.first + "();\n";
             }
         }
         node.baseProps.push_back({ba.first, ty});
@@ -6133,6 +6210,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         collectIds(expr, deps);
         std::set<std::string> seen;
         std::string conns;
+        // ...and the connects that must wait for the whole tree: a SIBLING id.
+        std::string sibConns;
         for (auto &d : deps) {
             if (!seen.insert(d).second) continue;
             if (d.rfind("__outer.", 0) == 0 && !outerDepIsPath(d)) {
@@ -6196,9 +6275,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string dEff = d;
             if (dEff.find('.') != std::string::npos) {
                 std::string oe6, sig6;
+                g_depIsSibling = false;
                 if (objPathFromString(dEff, oe6, sig6)) {
-                    conns += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"" + slot + "()\");\n";
-                    conns += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"" + slot + "()\");\n";
+                    // A SIBLING is null while our own wire runs (the enclosing object builds its
+                    // children in order), so both the connect and the first evaluation belong to
+                    // the late phase the root triggers once the whole tree exists.
+                    std::string &sink = g_depIsSibling ? sibConns : conns;
+                    sink += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"" + slot + "()\");\n";
+                    sink += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"" + slot + "()\");\n";
                     continue;
                 }
                 dEff = dEff.substr(0, dEff.find('.'));   // as before: depend on the head
@@ -6224,9 +6308,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          "— it would not update (later phase)\n", inPath, what.c_str(), cls.c_str(), d.c_str());
             ++partial;
         }
-        if (!conns.empty()) {
+        if (!conns.empty() || !sibConns.empty()) {
             handlerSlots += "    @Slot void " + slot + "() {\n    " + assign + "    }\n";
             bindWire += conns;
+            if (!sibConns.empty()) lateWire += sibConns + "        " + slot + "();\n";
         }
     };
 
