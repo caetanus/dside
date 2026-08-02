@@ -2326,6 +2326,26 @@ the registry could not tell "absent" from "unknown", and `typeKnownWithoutMember
 ComboBox is identical at rest now and moves into the click axis, where it differs — an honest
 comparison it could not take part in before. Basic is unchanged and still zero on both frame axes.
 
+### What is left on the render axis, and a blind spot it exposes (2026-08-02)
+
+Fusion's three remaining render differences, measured:
+
+- **Switch** (19 of 1798 pixels, max channel delta 1) and **ToolBar** (72 of 312, delta 1) — one
+  step of one channel at an edge. Antialiasing;
+- **Dial** (390 of 10000, delta 75) — and this one has ZERO diagnostics and a value dump that is
+  IDENTICAL to the engine's, line for line. The differing pixels are confined to a 24x34 box at
+  (16,46)–(39,79) of a 100x100 frame: the quadrant the knob occupies at the default angle. Both
+  sides agree on `handle.x/y/width/height/opacity/visible/rotation/scale` and on both entries of
+  `handle.transform`. Whatever differs is inside a C++-painted item (`KnobImpl` is a
+  QQuickPaintedItem), driven by something neither dump exposes.
+
+That last sentence names the blind spot: the value differential compares the property paths the
+DOCUMENT mentions, so a value group under an object we build — `handle.palette.button` and its
+siblings — is never compared unless some binding writes it. The engine reports `#efefef` there for
+the Dial; our side cannot be asked the same question through the same tool. Widening the dump to
+descend one level into a value group is the next honest step on that axis, and it would be a
+measurement change rather than a compiler one.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
