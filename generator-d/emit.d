@@ -562,12 +562,31 @@ void main(string[] args) {
                 // (`isSingleton: true`) and gives the module and version the instance is fetched
                 // with, so nothing here is guessed. Recorded with its METHODS and their parameter
                 // types, since a call has to marshal its arguments by type.
+                // METHODS are recorded for EVERY exported type, not only for singletons. A QML
+                // handler calls one on an ordinary object -- Qt's editing Actions are
+                // `onTriggered: editor.undo()` -- and without a row saying the type HAS that
+                // method, calling it would be a guess. The singleton case below needs the same
+                // rows and used to be the only one that collected them.
+                if (!qn0.empty) {
+                    foreach (mm; blk.matchAll(reMethod)) {
+                        string sig = mm[1];
+                        auto mn = sig.matchFirst(reMName);
+                        if (mn.empty) continue;
+                        auto mt = sig.matchFirst(reMType);
+                        string ps;
+                        foreach (pp; sig.matchAll(regex(`Parameter \{([^}]*)type: "([^"]+)"([^}]*)\}`)))
+                            ps ~= (ps.length ? "," : "") ~ pp[2]
+                                ~ ((pp[1] ~ pp[3]).canFind("isPointer: true") ? "*" : "");
+                        methodRows ~= qn0[2] ~ "\t" ~ mn[1] ~ "\t" ~ (mt.empty ? "" : mt[1])
+                                    ~ "\t" ~ ps ~ "\n";
+                    }
+                }
                 if (!qn0.empty && blk.canFind("isSingleton: true")) {
                     auto vv = ex[1].matchFirst(reQmlVer);
                     if (vv.empty) continue;      // no version, no way to fetch the one instance
                     string ver = vv[1];
                     singletonRows[qn0[2]] = qn0[1] ~ "\t" ~ ver;
-                    foreach (mm; blk.matchAll(reMethod)) {
+                    static if (false) foreach (mm; blk.matchAll(reMethod)) {
                         string sig = mm[1];
                         auto mn = sig.matchFirst(reMName);
                         if (mn.empty) continue;

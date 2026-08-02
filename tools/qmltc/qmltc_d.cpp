@@ -3578,6 +3578,33 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                 return true;
             }
         }
+    // `<objPath>.<method>()` — a no-argument METHOD on an object the document can name. Qt's seven
+    // editing Actions are all `onTriggered: editor.undo()`, where `editor` is a declared object
+    // property. The registry publishes methods per type now, so this is a row lookup rather than a
+    // guess: only a method the type declares, and only one that takes no parameters (an argument
+    // would have to be marshalled, which is the invokable path and a different shape).
+    if (auto *call = cast<CallExpression *>(es->expression); call && !call->arguments)
+        if (auto *fm = cast<FieldMemberExpression *>(call->base)) {
+            std::string oe, oq, mem = qs(fm->name.toString());
+            if (objPathExpr(fm->base, oe, oq) && !oq.empty()) {
+                if (auto mi = g_qmlMethods.find(oq); mi != g_qmlMethods.end())
+                    if (auto it = mi->second.find(mem); it != mi->second.end())
+                        for (auto &ov : it->second)
+                            if (ov.second.empty()) {
+                                body += "        invoke0(" + oe + ", \"" + mem + "\");\n";
+                                return true;
+                            }
+                // ...and a method the DECLARED type does not have. QML is dynamically typed and Qt
+                // relies on it here too: the editing Actions declare `property Item editor` and
+                // call `editor.undo()`, which no Item has — the object put there is a TextInput.
+                // The invoke resolves by name at runtime and returns false when there is nothing to
+                // call, which is the engine's own outcome for the same line.
+                if (typeKnownWithoutMember(oq, mem)) {
+                    body += "        invoke0(" + oe + ", \"" + mem + "\");\n";
+                    return true;
+                }
+            }
+        }
     // `group.<signal>()` — emit a signal that belongs to the GROUP object, not to this one.
     if (auto *call = cast<CallExpression *>(es->expression); call && !call->arguments)
         if (auto *fm = cast<FieldMemberExpression *>(call->base))

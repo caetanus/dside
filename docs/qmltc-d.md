@@ -2451,6 +2451,30 @@ last one needs per-type METHODS in the registry, which is the same generator job
 Neither corpus moves, for the same reason `Qt.platform` did not: the only place either style writes
 this is inside the ContextMenu's Menu, behind the gate.
 
+### Per-type methods in the registry, and five of the seven Actions (2026-08-02)
+
+Third of the three, and the generator half was the whole of it: `qmlmethods.tsv` collected methods
+only inside the `isSingleton: true` branch — 139 rows, all singletons. Lifting that loop out of the
+branch publishes them for **every exported type**: 675 rows, and `TextInput undo` is one of them.
+
+With the rows, `<objPath>.<method>()` in a handler body compiles to `invoke0`, which the runtime has
+had all along. Two cases, and the second is the one Qt's own code needs:
+
+- a method the type DECLARES and that takes no parameters — a row lookup, not a guess;
+- a method the DECLARED type does not have. The editing Actions declare `property Item editor` and
+  call `editor.undo()`, which no Item has: the object put there is a TextInput. `invoke0` resolves
+  by name at runtime and returns false when there is nothing to call, which is the engine's own
+  outcome for the same line.
+
+**Five of Qt's seven editing Actions now compile with ZERO diagnostics** — text, icon group,
+`enabled` with its connect, the shortcut, and the handler. The two left need one more thing each:
+`DeleteAction` calls `editor.remove(a, b)` (a method WITH arguments, which is the invokable path),
+and Cut/Copy/Paste ask `editor.hasOwnProperty("cut")` (a JS built-in the meta channel can answer
+exactly, since it is the question `typeKnownWithoutMember` already asks in the other direction).
+
+Neither corpus moves — the Actions are still behind the attached-child gate — and both are
+unchanged at 64 and 48 diagnostics with every axis intact.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
