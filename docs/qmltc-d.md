@@ -2362,6 +2362,22 @@ Both corpora are back to where they were (Fusion 43 of 49 identical / 16 differe
 / 21). The step is still the right one — the Dial's difference cannot be seen any other way — but it
 is a reconciliation of two walkers, not a one-line descent, and half of it is worse than none of it.
 
+### A declared object property with an initial value (2026-08-02)
+
+"Only the UNBOUND form: an initial binding to an object is still refused" — the note that stood
+beside that branch since it was written. Qt's SelectionRectangle writes
+`property Item control: SelectionRectangle.control`, and the whole property was refused for HAVING a
+value, which took the declaration with it: nothing that wrote to `control` afterwards had anything
+to write to.
+
+The property is declared the same way now and an object-valued initial binding is written through
+`setPropObj`, the channel a use-site assignment already uses. The value here is an ATTACHED read and
+`SelectionRectangle` is not a bound type, so its own initial value is still reported — one honest
+message replacing a harsher one, with the property now existing either way.
+
+Neither corpus moves on any axis, which is the expected shape for a file whose root is unbound. It
+is recorded because the branch's comment no longer matches the code.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in

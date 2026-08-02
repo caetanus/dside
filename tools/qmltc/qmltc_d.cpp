@@ -4322,6 +4322,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Declared properties whose value must go through the meta-object rather than into the D
     // field: a value type takes its literal as a string and QMetaType converts it.
     std::vector<std::pair<std::string, std::string>> metaAssigns;
+    // A declared OBJECT property with an initial binding: written through setPropObj, the channel a
+    // use-site assignment already uses. Collected here because baseWire does not exist yet.
+    std::vector<std::pair<std::string, std::string>> objInitAssigns;
     // ...and the EXPRESSION behind each, so its dependencies can be wired once wireGroupDeps
     // exists. A declared value-type property was written ONCE and never again: Qt's Fusion
     // RadioIndicator computes `pressedColor` from `control.palette`, and disabling the control
@@ -4734,7 +4737,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // sets it). Only the UNBOUND form: an initial binding to an object is still refused.
             std::string objDt;
             auto *es0 = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
-            if (!dt[0] && !es0 && !pub->binding) {
+            // An INITIAL BINDING to an object is allowed now: the property is declared exactly the
+            // same way and the value is written through setPropObj, the channel a use-site
+            // assignment already uses. Qt's SelectionRectangle writes
+            // `property Item control: SelectionRectangle.control` — an attached read — and the
+            // whole property was refused for having a value at all.
+            std::string objInit;
+            if (!dt[0] && es0 && !pub->binding) {
+                std::string oeI, oqI;
+                if (objPathExpr(es0->expression, oeI, oqI)) objInit = oeI;
+                else if (auto *fmI = cast<FieldMemberExpression *>(es0->expression))
+                    if (auto *bI = cast<IdentifierExpression *>(fmI->base)) {
+                        std::string tnI = qs(bI->name.toString()), memI = qs(fmI->name.toString());
+                        auto amI = g_qmlAttachedCxx.find(tnI);
+                        if (!g_scope.count(tnI) && !g_childIds.count(tnI)
+                                && amI != g_qmlAttachedCxx.end() && amI->second.count(memI))
+                            objInit = "propObj(" + attachedExpr(tnI) + ", \"" + memI + "\")";
+                    }
+            }
+            if (!dt[0] && (!es0 || !objInit.empty()) && !pub->binding) {
                 auto obt = boundTypeFor(qs(qmlType));
                 if (!obt.first.empty() && !obt.second.empty()) {
                     objDt = obt.first;
@@ -4760,6 +4781,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (!g_selfQmlType.empty())
                         g_declObjProps[g_selfQmlType][name] = ty;
                     g_propType[name] = "@" + ty;   // ...and as a path head in this scope
+                    if (!objInit.empty()) objInitAssigns.push_back({name, objInit});
                     std::string imp = "import " + obt.second + ";\n";
                     if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
                     dt = objDt.c_str();
@@ -5603,6 +5625,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // expressions started compiling). Only the assignments whose value is the ENCLOSING object go
     // here: it exists from the first line of the wire, where a child field does not.
     std::string earlyWire;
+    for (auto &oa : objInitAssigns)
+        baseWire += "        setPropObj(this, \"" + oa.first + "\", " + oa.second + ");\n";
     // Statements that must run only once the WHOLE tree is complete: connects to objects a Control
     // creates during its own completion (indicator/contentItem/background). The root triggers the
     // pass; every level forwards it to its children.
