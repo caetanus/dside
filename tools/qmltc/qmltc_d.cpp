@@ -3927,6 +3927,12 @@ static void adoptLocalTypeRows(const std::string &localName, const std::string &
     if (auto p = g_qmlProps.find(baseQmlType); p != g_qmlProps.end()) g_qmlProps[localName] = p->second;
     if (auto n = g_qmlNotify.find(baseQmlType); n != g_qmlNotify.end()) g_qmlNotify[localName] = n->second;
     if (auto c = g_qmlCxxType.find(baseQmlType); c != g_qmlCxxType.end()) g_qmlCxxType[localName] = c->second;
+    // ...and the SIGNALS and METHODS, for the same reason the properties are here. A local type
+    // inherits everything its base declares, and a handler written on it (`onTriggered:` on Qt's
+    // UndoAction, whose base is Action) was refused for want of the signature — the file compiled
+    // clean on its own, where the type IS Action, and refused as a child, where it is UndoAction.
+    if (auto g = g_qmlSignals.find(baseQmlType); g != g_qmlSignals.end()) g_qmlSignals[localName] = g->second;
+    if (auto m = g_qmlMethods.find(baseQmlType); m != g_qmlMethods.end()) g_qmlMethods[localName] = m->second;
 }
 
 static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
@@ -4699,7 +4705,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // engine's by more than its absence does, so shipping it would trade a reported
                     // gap for a silent wrong object. Re-open only when a compiled ScrollBar.vertical
                     // matches the engine property-for-property.
-                    // GATE STILL SHUT — re-measured a THIRD time once all three prerequisites the
+                    // GATE STILL SHUT — FOURTH measurement, after the local type learned to adopt
+                    // its base's SIGNALS and METHODS (which took Qt's spliced ContextMenu from 15
+                    // refusals to 3, all of them attached children). NINE attached children are
+                    // emitted in Basic now, up from three, and the diagnostics IMPROVE: 64 -> 59.
+                    // What disqualifies it is four documents THROWING at construction — ComboBox,
+                    // SearchField, TextArea, TextField — all on the same line:
+                    //   setProp failed: no writable property "parent" taking a QObject* on
+                    //   IComboBox_contentItem_ContextMenu_menu_dc2
+                    // which is the FALLBACK the child-append takes when `listAppend(this, "data",
+                    // child)` fails. A Menu's default property is `contentData`, not `data`, and
+                    // the registry publishes it (qmlmap's fifth column). Appending through the
+                    // type's own default property is the next step, and it is not about the gate.
+                    // (third measurement) — once all three prerequisites the
                     // ContextMenu needed had landed and all seven of Qt's editing Actions compiled
                     // whole. The number MOVED for the first time: with "compile it only if it
                     // compiles WHOLE", THREE attached children are emitted in Basic where the two

@@ -2550,6 +2550,29 @@ same two-scopes shape, one layer down, and the next thing to trace.
 The lesson is the one this file keeps writing down in different words: a null result is only
 evidence if the measurement could have shown the effect. This one could not.
 
+### A local type inherits its base's SIGNALS too (2026-08-02)
+
+`adoptLocalTypeRows` copies the base's properties, notifies and C++ types onto a local `.qml` type's
+name — the change that was once worth 93 diagnostics in one go. It did not copy the SIGNALS, and a
+handler written on such a type was refused for want of a signature: Qt's `UndoAction.qml` compiles
+`onTriggered:` cleanly on its own, where the type IS `Action`, and refused as a CHILD, where it is
+`UndoAction`. Methods are adopted with them, for the same reason.
+
+Two lines, and the spliced ContextMenu goes from **10 refusals to 3** — all three the attached
+children, which are the gate itself. Everything Qt writes in that document now compiles.
+
+**The gate, measured a fourth time.** Nine attached children are emitted in Basic (three before),
+and the diagnostics IMPROVE for the first time: 64 → 59. What disqualifies it is four documents
+THROWING at construction — ComboBox, SearchField, TextArea, TextField — all on one line:
+
+    setProp failed: no writable property "parent" taking a QObject*
+    on IComboBox_contentItem_ContextMenu_menu_dc2
+
+That is the FALLBACK the child-append takes when `listAppend(this, "data", child)` fails. A Menu's
+default property is `contentData`, not `data`, and the registry publishes it — qmlmap's fifth
+column. Appending through the type's own default property is the next step, and it is not about the
+gate at all.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
