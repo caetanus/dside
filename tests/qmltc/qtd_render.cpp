@@ -57,6 +57,23 @@ extern "C" int qtd_render_item(void *item, const char *out) {
     return img.save(QString::fromUtf8(out)) ? 0 : 3;
 }
 
+// The window the item is ALREADY in, or a fresh one it is moved into. Every entry point below
+// needs the same thing, and creating a NEW window each time is destructive: reparenting an item
+// out of a scene drops the scene's state — focus (which is per-window) and any Popup the item has
+// open. Measured twice: `--render` after `--click` showed an unfocused TextField whose object
+// reported activeFocus true, and `--run` after `--click` closed a ComboBox's popup, so both
+// differentials were reading an artefact of the harness.
+static QQuickWindow *qtd_scene_for(QQuickItem *it) {
+    if (QQuickWindow *cur = it->window()) return cur;
+    static QQuickWindow *win = nullptr;   // outlives the call: the item stays in a live scene
+    win = new QQuickWindow();
+    win->setWidth(qMax(1, int(it->width())));
+    win->setHeight(qMax(1, int(it->height())));
+    it->setParentItem(win->contentItem());
+    win->show();
+    return win;
+}
+
 // Put the item in a window and deliver a real click, then let the object be inspected as usual.
 // This is the BEHAVIOUR half of the criterion: a document can render pixel-identically and still
 // not react to input — a MouseArea whose handler never runs looks exactly right in a frame.
@@ -64,12 +81,7 @@ extern "C" int qtd_click_item(void *item, int x, int y) {
     if (!item) return 1;
     auto *it = qtd_as_item(item);
     if (!it) return 5;   // not an Item — see qtd_as_item
-    static QQuickWindow *win = nullptr;      // outlives the call: the item stays in a live scene
-    win = new QQuickWindow();
-    win->setWidth(qMax(1, int(it->width())));
-    win->setHeight(qMax(1, int(it->height())));
-    it->setParentItem(win->contentItem());
-    win->show();
+    QQuickWindow *win = qtd_scene_for(it);
     const QPointF p(x, y);
     QMouseEvent press(QEvent::MouseButtonPress, p, p, win->mapToGlobal(p.toPoint()),
                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
@@ -89,12 +101,7 @@ extern "C" int qtd_key_item(void *item, int key, int modifiers) {
     if (!item) return 1;
     auto *it = qtd_as_item(item);
     if (!it) return 5;   // not an Item — see qtd_as_item
-    static QQuickWindow *win = nullptr;      // outlives the call, like the click path
-    win = new QQuickWindow();
-    win->setWidth(qMax(1, int(it->width())));
-    win->setHeight(qMax(1, int(it->height())));
-    it->setParentItem(win->contentItem());
-    win->show();
+    QQuickWindow *win = qtd_scene_for(it);
     // A key only reaches an item in an ACTIVE window with ACTIVE focus: show() alone leaves the scene
     // routing to nobody, and both sides then "pass" having done nothing.
     win->requestActivate();
@@ -119,12 +126,7 @@ extern "C" int qtd_run_ms(void *item, int ms) {
     if (!item) return 1;
     auto *it = qtd_as_item(item);
     if (!it) return 5;   // not an Item — see qtd_as_item
-    static QQuickWindow *win = nullptr;
-    win = new QQuickWindow();
-    win->setWidth(qMax(1, int(it->width())));
-    win->setHeight(qMax(1, int(it->height())));
-    it->setParentItem(win->contentItem());
-    win->show();
+    QQuickWindow *win = qtd_scene_for(it);
     QElapsedTimer t; t.start();
     while (t.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
     return 0;

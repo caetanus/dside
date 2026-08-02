@@ -2145,6 +2145,31 @@ What is left is four documents and one perpetual animation: Basic's ComboBox (`#
 `#e0e0e0` at the corner), Fusion's Slider and SwitchDelegate (a different shade of the same blue),
 Fusion's TabButton (one step of one colour), and BusyIndicator, which cannot settle by construction.
 
+### One scene, and Basic's click axis goes to zero (2026-08-02)
+
+The same harness artefact, a third time, and this one made the last Basic difference disappear.
+
+Every input entry point — click, key, run — created a NEW QQuickWindow and reparented the item into
+it. Reparenting an item out of a scene drops what the scene holds: focus is per-window, and so is an
+open Popup. `--run` after `--click` therefore CLOSED the ComboBox's popup, and the settled frame
+showed a ComboBox at rest where the engine showed one with its popup open and `down` still true.
+Our object was right at the moment of the click — `down` true, `popup.visible` true — and the
+harness undid it before the frame was taken.
+
+An item already in a scene stays in it now, in all three entry points.
+
+| frame after a click | Basic | Fusion |
+|---|---|---|
+| before | 32 identical, 1 differing | 26 identical, 4 differing |
+| after | **33 identical, 0 differing** | 24 identical, 6 differing |
+
+**Every Basic document that can be clicked is byte-identical to the engine after a click.**
+
+Fusion's six: BusyIndicator (a perpetual animation, which cannot settle by construction), Slider and
+SwitchDelegate, TabButton, and RoundButton and SearchField — the last two differ by ONE step of one
+grey on one pixel and are identical at rest, which puts them on the line between a defect and
+antialiasing and earns an isolation before any code. The set is deterministic across runs.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
