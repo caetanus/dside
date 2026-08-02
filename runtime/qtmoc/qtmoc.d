@@ -850,10 +850,11 @@ private extern(C) bool qtd_prop_reset(void*, const(char)*);
 /// Reset a property to its default (QML's `prop: undefined`). Goes through QMetaProperty::reset —
 /// a Q_PROPERTY RESET method is not a slot, so it cannot be invoked by name.
 bool resetProp(T)(T o, string name) { return qtd_prop_reset(qobjOf(o), (name ~ "\0").ptr); }
-private extern(C) void qtd_prop_set_obj(void*, const(char)*, void*);
+private extern(C) int qtd_prop_set_obj(void*, const(char)*, void*);
 /// Attach an object to a QObject*-valued property (the write counterpart of [propObj]).
 void setPropObj(T, U)(T o, string name, U v) {
-    qtd_prop_set_obj(qobjOf(o), (name ~ "\0").ptr, qobjOf(v));
+    if (!qtd_prop_set_obj(qobjOf(o), (name ~ "\0").ptr, qobjOf(v)))
+        __propWriteFailed(name, "QObject*", "", qtd_moc_classname(qobjOf(o)));
 }
 private extern(C) bool qtd_invoke0(void*, const(char)*);
 /// Invoke a parameterless member (signal or invokable) by name — used to emit a signal that

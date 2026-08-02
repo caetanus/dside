@@ -1650,10 +1650,10 @@ same axes as Basic:
 |---|---|---|
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 29 of 49 |
-| value differences | 21 (all attributed) | 56 |
-| diagnostics | 80 | 123 |
+| value differences | 21 (all attributed) | 45 |
+| diagnostics | 79 | 90 |
 
-Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 123 with those types
+Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
 cost and bought, in the order it happened: the value source's missing back-reference, one URI per
 style, the dump path through an engine child, versionless imports, the silent drop of a declaration,
@@ -1728,6 +1728,52 @@ an object and a value in one call, and a value crosses as text like every other 
 
 Measured after: Fusion **199 → 123 diagnostics**, 52 of 55 constructing with **0 failures**,
 **29 of 49 documents identical** (was 26) and **56 value differences** (was 63). Basic unchanged.
+
+### The object write that never happened (2026-08-02)
+
+Four gaps, found by pulling on one thread: `indicator.control.checkState`, 40 of Fusion's 123
+diagnostics and the largest cluster left.
+
+- a **QUALIFIED declared type** (`property T.AbstractButton control`, which is how every Fusion
+  indicator declares its back-reference) is a UiQualifiedId whose `name` is only its FIRST segment
+  — the alias. Reading that alone typed the property as "T" and every path through it stopped
+  there. `typeName()` already strips aliases; four sites were not using it. Fusion 123 → 97;
+- the type used to walk through a declared object property is now the **ASSIGNED** one, not the
+  declared one, when the document assigns it. QML is dynamically typed here and Qt relies on it:
+  `AbstractButton` has no `checkState` and the CheckBox actually put there does. The declaration is
+  a lower bound on the object; the assignment names it;
+- `x === undefined` asks whether the object HAS the property at all — the same guard, for the case
+  where it is not a CheckBox. The meta channel answers exactly that: a property the object does not
+  declare reads as empty, one it does reads as its key;
+- ...and the enum comparison itself now accepts a path of ANY depth, since `objPathExpr` reports
+  both the object and its QML type.
+
+Then the fixture built for those (`tests/qmltc/quick/QDeclObjType.qml`) failed on something else
+entirely, and it was the biggest defect of the day: **an object write into a declared object
+property had never worked.** The property is declared by its precise type (`QQuickItem*`) and that
+name only resolves to a QMetaType if something in the process instantiated one — QtQuick registers
+its QML types, not a metatype under every pointer name. A property with no metatype cannot be
+written at all, so `control: control` on every Fusion indicator silently left it null and every
+read through it came back empty. Three parts:
+
+- the meta-object falls back to `QObject*` when the precise pointer name has no metatype. Every
+  read here goes through the meta-object by NAME, which never consults the declared type;
+- the write builds the variant AS the property's declared metatype — and only after checking the
+  object really is one, on the meta-object chain. Forcing it without that check handed a plain
+  QObject to `QQuickItem::setParentItem` and segfaulted (gdb, RangeSlider);
+- a property declared `QJSValue` takes a SCRIPT value, not a variant. Qt's Rectangle declares
+  `gradient` that way, so `gradient: Gradient { … }` — which most Fusion controls write — did
+  nothing and the shape drew flat. The engine turns the object into a script value.
+
+The failure is now REPORTED rather than swallowed, and that is what exposed the last one: a grouped
+property whose child is a LOCAL `.qml` type (`first.handle: SliderHandle { … }`) was built as a bare
+`@QObject`, because the local-type resolution existed only on the default-child path. Same three
+steps there now — base from the local definition's root, adopt its registry rows, splice the use
+site's members.
+
+Measured across the four: Fusion **123 → 90 diagnostics**, 52 of 55 constructing with 0 failures,
+value differences **56 → 45**, and the `only-engine` bucket — paths the ENGINE has that we do not —
+**82 → 0**. Basic unchanged at 79 diagnostics and 47 of 57 identical.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

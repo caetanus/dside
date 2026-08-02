@@ -1030,10 +1030,15 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
         }
         if (auto *cp = cast<UiPublicMember *>(cm->member);
                 cp && cp->type == UiPublicMember::Property && cp->memberType) {
-            const char *dt = dtypeOf(cp->memberType->name.toString());
+            // typeName(), not `->name`: a QUALIFIED declared type (`property T.AbstractButton
+            // control`, which is how Qt's own Fusion indicators declare theirs) is a UiQualifiedId
+            // whose `name` is only its FIRST segment — the alias. Reading that alone typed the
+            // property as "T" and every path through it stopped there.
+            const std::string mt = typeName(cp->memberType);
+            const char *dt = dtypeOf(QString::fromStdString(mt));
             if (dt[0]) pts[qs(cp->name.toString())] = dt;
-            else if (!boundTypeFor(qs(cp->memberType->name.toString())).first.empty())
-                pts[qs(cp->name.toString())] = "@" + qs(cp->memberType->name.toString());   // see above
+            else if (!boundTypeFor(mt).first.empty())
+                pts[qs(cp->name.toString())] = "@" + mt;   // see above
             continue;
         }
         if (auto *cp = cast<UiPublicMember *>(cm->member);
@@ -1122,14 +1127,15 @@ static void prescanChildIds(UiObjectInitializer *init) {
             }
             if (auto *cp = cast<UiPublicMember *>(cm->member);
                     cp && cp->type == UiPublicMember::Property && cp->memberType) {
-                const char *dt = dtypeOf(cp->memberType->name.toString());
+                const std::string mt = typeName(cp->memberType);   // qualified: see above
+                const char *dt = dtypeOf(QString::fromStdString(mt));
                 if (dt[0]) pts[qs(cp->name.toString())] = dt;
                 // ...and a declared OBJECT property keeps its QML TYPE, so a path THROUGH it can be
                 // typed: Qt's Fusion writes `indicator.control.checkState`, where `control` is the
                 // CheckIndicator's own `property Item control`. Marked with `@` and recorded as the
                 // QML type name — the vocabulary the registry uses — since it has no D type.
-                else if (!boundTypeFor(qs(cp->memberType->name.toString())).first.empty())
-                    pts[qs(cp->name.toString())] = "@" + qs(cp->memberType->name.toString());
+                else if (!boundTypeFor(mt).first.empty())
+                    pts[qs(cp->name.toString())] = "@" + mt;
                 continue;
             }
             if (auto *cp = cast<UiPublicMember *>(cm->member);
@@ -2577,6 +2583,23 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     outRead = "propStr(" + go + ", \"" + qs(fm2->name.toString()) + "\")";
                     return true;
                 }
+                // ...or a path of ANY DEPTH. `indicator.control.checkState === Qt.Checked` is how
+                // Qt's Fusion writes it, and the base is then a path in its own right, not an
+                // identifier. objPathExpr resolves the object AND reports the QML type it has,
+                // which is exactly what the registry lookup below needs — so the same enum rule
+                // applies at one hop or five, with no new vocabulary.
+                if (!cast<IdentifierExpression *>(fm2->base)) {
+                    std::string oe3, oq3, mem3 = qs(fm2->name.toString());
+                    if (objPathExpr(fm2->base, oe3, oq3) && !oq3.empty()) {
+                        if (auto qp = g_qmlProps.find(oq3);
+                                qp != g_qmlProps.end() && qp->second.count(mem3)) return false;
+                        if (auto qc = g_qmlCxxType.find(oq3);
+                                qc == g_qmlCxxType.end() || !qc->second.count(mem3)) return false;
+                        outRead = "propStr(" + oe3 + ", \"" + mem3 + "\")";
+                        return true;
+                    }
+                    return false;
+                }
                 auto *b2 = cast<IdentifierExpression *>(fm2->base);
                 if (!b2) return false;
                 std::string bn = qs(b2->name.toString()), mem = qs(fm2->name.toString()), pre;
@@ -2618,6 +2641,26 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 if ((bin->op == QSOperator::StrictEqual || bin->op == QSOperator::StrictNotEqual)
                         && objSide(bin->left, l1) && objSide(bin->right, r1)) {
                     out = "(" + l1 + (bin->op == QSOperator::StrictEqual ? " is " : " !is ") + r1 + ")";
+                    return true;
+                }
+            }
+            // `indicator.control.checkState === undefined` (Qt's Fusion CheckIndicator) asks
+            // whether the object HAS the property at all — the declared type is AbstractButton,
+            // which has no checkState, and the object put there may or may not be a CheckBox. The
+            // meta channel answers exactly that question: a property the object does not declare
+            // reads as the empty string, and one it does reads as its key.
+            {
+                auto isUndef = [&](ExpressionNode *x) {
+                    auto *id = cast<IdentifierExpression *>(x);
+                    if (!id) return false;
+                    std::string n = qs(id->name.toString());
+                    return n == "undefined" && !g_scope.count(n) && !g_childIds.count(n);
+                };
+                std::string rd;
+                if ((isUndef(bin->right) && enumRead(bin->left, rd))
+                        || (isUndef(bin->left) && enumRead(bin->right, rd))) {
+                    bool neg = bin->op == QSOperator::StrictNotEqual || bin->op == QSOperator::NotEqual;
+                    out = "(" + rd + (neg ? " != \"\")" : " == \"\")");
                     return true;
                 }
             }
@@ -2696,6 +2739,9 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
     if (auto *nested = cast<NestedExpression *>(e)) { collectIds(nested->expression, ids); return; }
     if (auto *id = cast<IdentifierExpression *>(e)) {
         auto n = qs(id->name.toString());
+        // `undefined` is a LITERAL that the parser spells as an identifier, not a name that could
+        // change: `x === undefined` reported a dead dependency on something that does not exist.
+        if (n == "undefined" && !g_scope.count(n) && !g_childIds.count(n)) return;
         auto a = g_aliasDep.find(n);
         ids.push_back(a != g_aliasDep.end() ? a->second : n);   // through an alias -> its target
         return;
@@ -3786,7 +3832,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::map<std::string, std::string> pt0;
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property)
-                if (pub->memberType) { const char *dt = dtypeOf(pub->memberType->name.toString()); if (dt[0]) pt0[qs(pub->name.toString())] = dt; }
+                if (pub->memberType) {   // typeName(): a QUALIFIED declared type, see above
+                    const char *dt = dtypeOf(QString::fromStdString(typeName(pub->memberType)));
+                    if (dt[0]) pt0[qs(pub->name.toString())] = dt;
+                }
         // Base C++ properties: the TYPE comes from the property table, which records what the
         // type actually declares. Inferring it from the assigned literal was wrong and quietly so:
         // `width: 120` on an Item made width an `int`, so it was read with propInt() and mutated
@@ -4281,7 +4330,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             continue;
         }
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
-            QString qmlType = pub->memberType ? pub->memberType->name.toString() : QString("var");
+            QString qmlType = pub->memberType
+                    ? QString::fromStdString(typeName(pub->memberType)) : QString("var");
             std::string name = qs(pub->name.toString());
             // A declared property becomes a D FIELD, and the meta-object exports it under that
             // field's name — so a name that is a D keyword cannot simply be renamed: Qt would stop
@@ -4336,9 +4386,28 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 auto obt = boundTypeFor(qs(qmlType));
                 if (!obt.first.empty() && !obt.second.empty()) {
                     objDt = obt.first;
+                    // The type the DOCUMENT ASSIGNS, when it assigns one, in preference to the
+                    // DECLARED one. QML is dynamically typed here and Qt exploits it: Fusion's
+                    // CheckIndicator declares `property T.AbstractButton control` and then reads
+                    // `control.checkState` — a property AbstractButton does not have and CheckBox
+                    // does, which is what the use site actually puts there. The declaration is a
+                    // lower bound on the object; the assignment names it. (An assignment that
+                    // resolves to nothing leaves the declared type alone.)
+                    std::string ty = qs(qmlType);
+                    for (auto *m2 = init ? init->members : nullptr; m2; m2 = m2->next) {
+                        auto *sb2 = cast<UiScriptBinding *>(m2->member);
+                        if (!sb2 || !sb2->qualifiedId || sb2->qualifiedId->next) continue;
+                        if (qs(sb2->qualifiedId->name.toString()) != name) continue;
+                        auto *es2 = cast<ExpressionStatement *>(sb2->statement);
+                        std::string oe2, oq2;
+                        if (es2 && objPathExpr(es2->expression, oe2, oq2) && !oq2.empty()
+                                && !boundTypeFor(oq2).first.empty())
+                            ty = oq2;
+                        break;
+                    }
                     if (!g_selfQmlType.empty())
-                        g_declObjProps[g_selfQmlType][name] = qs(qmlType);
-                    g_propType[name] = "@" + qs(qmlType);   // ...and as a path head in this scope
+                        g_declObjProps[g_selfQmlType][name] = ty;
+                    g_propType[name] = "@" + ty;   // ...and as a path head in this scope
                     std::string imp = "import " + obt.second + ";\n";
                     if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
                     dt = objDt.c_str();
@@ -5732,13 +5801,36 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string field = "_g_" + gname + "_" + mem;
         std::string childCls = cls + "_" + gname + "_" + mem;
         auto gkt = boundTypeFor(gk.type);          // a bound child type makes this a SUBCLASS
+        UiObjectInitializer *gkInit = gk.init;
+        // A LOCAL `.qml` type here too — `first.handle: SliderHandle { … }` is how Qt's Fusion
+        // RangeSlider builds both of its handles. Without this the child came out a bare @QObject,
+        // and writing a plain QObject into a `QQuickItem*` property is either refused (so the
+        // handle never appears) or, if forced, dereferenced by Qt as an item and segfaults. Same
+        // three steps the default-child path takes: take the base from the local definition's own
+        // root, adopt the registry rows the base publishes, and splice the use site's members onto
+        // the definition's.
+        std::string gkResolved;
+        if (gkt.first.empty() && gk.type != "QtObject") {
+            QString savedSrc2 = g_srcText;
+            std::string savedUrl2 = g_docUrl;
+            if (UiObjectDefinition *lt2 = loadLocalType(gk.type, inPath, &gkResolved)) {
+                std::string ltRoot2 = lt2->qualifiedTypeNameId ? typeName(lt2->qualifiedTypeNameId) : "";
+                gkt = boundTypeFor(ltRoot2);
+                adoptLocalTypeRows(gk.type, ltRoot2);
+                gkInit = spliceUseSite(lt2->initializer, gk.init);
+            }
+            g_srcText = savedSrc2;
+            g_docUrl = savedUrl2;
+        }
         if (!gkt.first.empty() && !gkt.second.empty()) {
             std::string imp = "import " + gkt.second + ";\n";
             if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
             std::string vimp = "import " + gkt.second.substr(0, gkt.second.rfind('.')) + ".qtvirt;\n";
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
-        ObjNode kid = compileObject(gk.init, childCls, classes, partial, inPath, gkt.first, nullptr, gk.type);
+        if (!gkResolved.empty()) g_resolving.insert(gkResolved);
+        ObjNode kid = compileObject(gkInit, childCls, classes, partial, inPath, gkt.first, nullptr, gk.type);
+        if (!gkResolved.empty()) g_resolving.erase(gkResolved);
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -6934,7 +7026,12 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         // A value-typed property is read back THROUGH the meta-object: QMetaType renders a
         // QColor as #rrggbb, which is exactly what the oracle's QVariant gives. Reading the D
         // field directly would print the raw struct and fail on formatting alone.
-        if (s.second == "QColor") {
+        // ...and the same for a declared OBJECT property, for the same reason: printing the D
+        // wrapper gives its module-qualified type name, where the engine's dump gives whatever
+        // QVariant makes of the pointer. One formatter on both sides or the comparison is about
+        // spelling instead of about values.
+        if (s.second == "QColor" || (!s.second.empty() && std::isupper((unsigned char) s.second[0])
+                                     && s.second.rfind("Q", 0) == 0)) {
             out.push_back({lab + s.first, "propStr(" + self + ", \"" + s.first + "\")",
                            "", self, s.first});
             continue;
@@ -6947,8 +7044,12 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
                        acc + s.first + ".map!(e => e.to!string).join(\",\")", "", self, s.first});
     // Base C++ properties have no D field — read them through the meta-object (prop<Int|Str>).
     for (auto &s : n.baseProps) {
-        const char *fn = (s.second == "string") ? "propStr(" : (s.second == "double") ? "propDouble("
-                       : (s.second == "bool") ? "propBool(" : "propInt(";
+        // An EMPTY type is "no D scalar maps this" — an enum, a colour, an object. Those were
+        // read with propInt, which prints 0 for every one of them; the engine's own dump renders
+        // them through QVariant, i.e. as text. propStr is the same channel, so the comparison is
+        // about the value again instead of about 0 vs the engine's spelling.
+        const char *fn = (s.second == "int") ? "propInt(" : (s.second == "double") ? "propDouble("
+                       : (s.second == "bool") ? "propBool(" : "propStr(";
         out.push_back({lab + s.first, fn + self + ", \"" + s.first + "\")", s.second, self, s.first});
     }
     for (auto &a : n.aliasLines) {

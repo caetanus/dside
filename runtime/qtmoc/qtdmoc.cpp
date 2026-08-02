@@ -46,6 +46,7 @@
 #  include <QtQml/qqmllist.h>
 #  include <QtQml/qqmlparserstatus.h>
 #  include <QtQml/QQmlEngine>
+#  include <QtQml/QJSValue>
 #  include <QtQml/QQmlContext>
 #  include <QtQml/QQmlComponent>
 #  if QT_VERSION >= 0x060000
@@ -173,7 +174,23 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
     for (int i = 0; i < nsig; ++i)  b.addSignal(sigs[i]);
     for (int i = 0; i < nslot; ++i) b.addSlot(slotSigs[i]);
     for (int i = 0; i < nprop; ++i) {
-        QMetaPropertyBuilder p = b.addProperty(propNames[i], propTypes[i]);
+        // An OBJECT property is declared by its precise type (`QQuickItem*`), and that name only
+        // resolves to a QMetaType if something in the process instantiated one — QtQuick registers
+        // its QML types, not a metatype under every pointer name. A property with NO metatype
+        // cannot be written at all: QVariant has nothing to convert to, so `control: control` on
+        // Qt's Fusion indicators silently left the property null and every read through it came
+        // back empty. QObject* is always registered and always convertible, and every read here
+        // goes through the meta-object by NAME, which never consults the declared type. So the
+        // precise name is kept whenever it resolves, and falls back only when it does not.
+        const char* pty = propTypes[i];
+        size_t plen = std::strlen(pty);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        bool known = QMetaType::fromName(pty).isValid();
+#else
+        bool known = QMetaType::type(pty) != QMetaType::UnknownType;
+#endif
+        if (plen > 1 && pty[plen - 1] == '*' && !known) pty = "QObject*";
+        QMetaPropertyBuilder p = b.addProperty(propNames[i], pty);
         p.setReadable(true); p.setWritable(true);
         if (propNotify[i] >= 0) p.setNotifySignal(b.method(propNotify[i]));  // signals are the first methods
     }
@@ -1045,9 +1062,51 @@ void qtd_set_parent(void* child, void* parent) {
 }
 // Write a QObject* into a property — how a child object built in D is attached to a member of a
 // GROUPED property (`group.object: QtObject { … }`).
-void qtd_prop_set_obj(void* o, const char* n, void* v) {
-    if (!o) return;
-    static_cast<QObject*>(o)->setProperty(n, QVariant::fromValue(static_cast<QObject*>(v)));
+int qtd_prop_set_obj(void* o, const char* n, void* v) {
+    if (!o) return 0;
+    QObject* q = static_cast<QObject*>(o);
+    // The property is usually declared as a DERIVED pointer (`QQuickItem*`, `AbstractButton*`)
+    // and a QVariant holding a plain QObject* does NOT convert to one — setProperty just returns
+    // false, leaving the property null and every binding that reads through it quietly empty
+    // (Qt's Fusion writes `control: control` on every indicator it builds). The declared metatype
+    // is right there in the meta-object, so the variant is built AS that type: one rule for every
+    // object property, with no type name crossing from D.
+    const QMetaObject* mo = q->metaObject();
+    int i = mo->indexOfProperty(n);
+    if (i >= 0) {
+        QMetaProperty mp = mo->property(i);
+#ifdef QTD_HAVE_QML
+        // ...and a property declared as a QJSValue takes a SCRIPT value, not a variant: Qt's
+        // Rectangle declares `gradient` that way, so `gradient: Gradient { ... }` — which every
+        // Fusion control writes — silently did nothing and the shape drew flat. The engine turns
+        // an object into a script value; it is the same engine the document is attached to.
+        if (std::strcmp(mp.typeName(), "QJSValue") == 0) {
+            QObject* vo = static_cast<QObject*>(v);
+            QQmlEngine* e = qmlEngine(q);
+            if (!e && vo) e = qmlEngine(vo);
+            if (e) return mp.write(q, QVariant::fromValue(e->newQObject(vo))) ? 1 : 0;
+        }
+#endif
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        QMetaType mt = mp.metaType();
+        // ...and only when the object REALLY IS one: the variant built this way is a
+        // reinterpretation, not a conversion, so an object of the wrong class would be handed to
+        // Qt as the declared type and dereferenced as one (a plain QObject written into
+        // `first.handle` segfaulted inside QQuickItem::setParentItem). The check is the one
+        // qobject_cast performs, on the meta-object chain.
+        if ((mt.flags() & QMetaType::PointerToQObject) && mt.metaObject()) {
+            QObject* vo = static_cast<QObject*>(v);
+            if (!vo || vo->metaObject()->inherits(mt.metaObject()))
+                return mp.write(q, QVariant(mt, &v)) ? 1 : 0;
+            return 0;
+        }
+#else
+        int tid = mp.userType();
+        if (QMetaType::typeFlags(tid) & QMetaType::PointerToQObject)
+            return mp.write(q, QVariant(tid, &v)) ? 1 : 0;
+#endif
+    }
+    return q->setProperty(n, QVariant::fromValue(static_cast<QObject*>(v))) ? 1 : 0;
 }
 // Invoke a parameterless member (a signal or an invokable) by name on any QObject — how a QML
 // handler emits a signal that belongs to a GROUPED property's object rather than to itself.
