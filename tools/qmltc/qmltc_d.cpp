@@ -4683,7 +4683,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // engine's by more than its absence does, so shipping it would trade a reported
                     // gap for a silent wrong object. Re-open only when a compiled ScrollBar.vertical
                     // matches the engine property-for-property.
-                    // GATE STILL SHUT — re-measured a SECOND time at the end of 2026-08-02, with
+                    // GATE STILL SHUT — re-measured a THIRD time once all three prerequisites the
+                    // ContextMenu needed had landed and all seven of Qt's editing Actions compiled
+                    // whole. The number MOVED for the first time: with "compile it only if it
+                    // compiles WHOLE", THREE attached children are emitted in Basic where the two
+                    // earlier measurements emitted zero. It is still net negative — documents
+                    // identical in every property 48 -> 47, paths the engine has and we do not
+                    // 0 -> 21, diagnostics 64 -> 107 (the children compile and report their own
+                    // gaps before being discarded) — but render and click stay at 49 and 34 with
+                    // zero differing. The blocker has moved up a layer: it is the MENU those
+                    // Actions live in, whose contentItem refuses `model`, `interactive` and
+                    // `currentIndex` when spliced.
+                    // (second measurement) — at the end of 2026-08-02, with
                     // Fusion down to 60 diagnostics: opening it plus the "compile it only if it
                     // compiles WHOLE" rule gives 158 diagnostics and emits ZERO attached children,
                     // exactly as it did at 83. Every one is still partial. The number to watch is

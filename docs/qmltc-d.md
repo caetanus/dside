@@ -2501,6 +2501,28 @@ The Menu those Actions live in is the next layer and has its own list (its conte
 `interactive` and `currentIndex`, its background colour, and the attached children inside it). The
 three prerequisites the gate note asked for are done.
 
+### The attached-child gate, measured a third time — and the number finally moved (2026-08-02)
+
+With all three prerequisites landed and all seven of Qt's editing Actions compiling whole, the gate
+was re-measured. **Three attached children are emitted in Basic** where the two earlier measurements
+emitted zero — the "compile it only if it compiles WHOLE" rule finally has something to let through.
+
+It is still net negative and still shut:
+
+| Basic, gate open + compile-whole | shut | open |
+|---|---|---|
+| documents identical in every property | 48 of 57 | 47 |
+| paths the engine has and we do not | 0 | **21** |
+| diagnostics | 64 | 107 |
+| render at rest / frame after a click | 49 / 34, zero differing | 49 / 34, zero differing |
+
+The diagnostics rise because the children compile and report their own gaps before being discarded;
+the 21 are the real cost. But the blocker has moved up a layer and is named: it is the MENU those
+Actions live in. Compiled on its own, Qt's `Basic/Menu.qml` has only the three attached-child
+refusals; compiled as the ContextMenu's Menu — spliced, with a different enclosing scope — its
+contentItem also refuses `model`, `interactive` and `currentIndex`. The same document, two scopes,
+two answers, which is the shape this file has recorded a dozen times and the next thing to isolate.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
