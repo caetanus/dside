@@ -60,6 +60,9 @@ static std::string dIdent(const std::string &n) {
 // resolves to the property `x`. Set once in main before any expression is compiled.
 // The parser engine whose POOL owns the AST, so a script binding can be rewritten into nodes.
 static Engine *g_astEngine = nullptr;
+// True when `n` is one of the ids the object being compiled answers to. A local `.qml` type spliced
+// at a use site has TWO — the definition's and the use site's — and they name the same object.
+static bool isSelfId(const std::string &n);
 static std::string g_selfId;
 
 // QML type name of the object being compiled (its BOUND type, e.g. "Item"), so a binding that
@@ -504,6 +507,8 @@ static bool g_hasComponentBind = false;
 // since `cast(T) someVoidPtr` in D is an unchecked reinterpret, that read a different object's
 // fields rather than failing. Qt's Controls nest two and three deep routinely.
 struct OuterFrame { std::string id, cls, qmlType;
+                    // EVERY id that object answers to — see g_selfIds.
+                    std::set<std::string> ids;
                     std::map<std::string, std::string> propType, baseProps;
                     // What the DOCUMENT declares each property-bound child to be. The registry types
                     // `background` as QQuickItem* because that is the property's declared type, but
@@ -617,9 +622,9 @@ static bool outerHop(const std::string &name, std::string &prefix, const OuterFr
     // is the root of the DialogButtonBox.qml it instantiates as its footer, and `control.count`
     // inside the footer means the FOOTER's count. (Deeper frames still resolve by hops, and the
     // walk returns the nearest match, so a child of the footer naming `control` still gets it.)
-    if (!g_selfId.empty() && name == g_selfId) return false;
+    if (isSelfId(name)) return false;
     for (size_t k = 0; k < g_outerChain.size(); ++k)
-        if (!g_outerChain[k].id.empty() && g_outerChain[k].id == name) {
+        if (g_outerChain[k].ids.count(name)) {
             prefix.clear();
             for (size_t i = 0; i <= k; ++i) prefix += "__outer.";
             *frame = &g_outerChain[k];
@@ -1192,7 +1197,7 @@ static bool connectionsHandlers(UiObjectInitializer *init, std::vector<RawHandle
             auto *idexp = es ? cast<IdentifierExpression *>(es->expression) : nullptr;
             if (!idexp) return false;
             std::string tid = qs(idexp->name.toString());
-            if (!g_selfId.empty() && tid == g_selfId) continue;      // target: this object
+            if (isSelfId(tid)) continue;      // target: this object
             // target: a CHILD's id — connect to the child's signal instead. This is the shape
             // Connections is actually used in; the enclosing object would just use `onSig:`.
             auto ci = g_childIds.find(tid);
@@ -1238,6 +1243,13 @@ static std::map<std::string, std::pair<std::string, std::string>> g_aliasWrite;
 // out-of-scope identifier is a compile FAILURE (-> PARTIAL), never a silent wrong emission.
 // Scoped per object, saved/restored across compileObject recursion like the other maps.
 static std::set<std::string> g_scope;
+// (declared above; defined here beside the scope it belongs to)
+// EVERY id this object answers to. A local `.qml` type spliced at a use site has TWO: the
+// definition's (`id: control` in Qt's Menu.qml) and the use site's (`id: menu` in the context menu
+// that instantiates it). They name the SAME object, and taking only the last one made the same
+// document compile standalone and refuse `control.contentModel` when spliced.
+static std::set<std::string> g_selfIds;
+bool isSelfId(const std::string &n) { return !n.empty() && g_selfIds.count(n) > 0; }
 // The property of the ENCLOSING object that holds the object being compiled, when it is a
 // property-bound child. Empty for a default child or a root.
 static std::string g_selfBoundProp;
@@ -1296,7 +1308,7 @@ static void resolveReadSrc(ExpressionNode *e, std::string &obj, std::string &grp
         const OuterFrame *fr = nullptr;
         if (outerHop(bn, pre, &fr)) return pre.substr(0, pre.size() - 1);
         if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) return ci->second.field;
-        if (!g_selfId.empty() && bn == g_selfId) return "this";
+        if (isSelfId(bn)) return "this";
         return "";
     };
     auto *fmv = cast<FieldMemberExpression *>(e);
@@ -1428,7 +1440,7 @@ static std::string groupNameOf(ExpressionNode *e) {
         return g_groups.count(qs(id->name.toString())) ? qs(id->name.toString()) : "";
     if (auto *fm = cast<FieldMemberExpression *>(e))
         if (auto *b = cast<IdentifierExpression *>(fm->base);
-                b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                b && isSelfId(qs(b->name.toString()))
                 && g_groups.count(qs(fm->name.toString())))
             return qs(fm->name.toString());
     return "";
@@ -1440,7 +1452,7 @@ static std::string valueGroupNameOf(ExpressionNode *e) {
         return g_vgroups.count(qs(id->name.toString())) ? qs(id->name.toString()) : "";
     if (auto *fm = cast<FieldMemberExpression *>(e))
         if (auto *b = cast<IdentifierExpression *>(fm->base);
-                b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                b && isSelfId(qs(b->name.toString()))
                 && g_vgroups.count(qs(fm->name.toString())))
             return qs(fm->name.toString());
     return "";
@@ -1452,7 +1464,7 @@ static std::string attachedNameOf(ExpressionNode *e) {
         return g_attached.count(qs(id->name.toString())) ? qs(id->name.toString()) : "";
     if (auto *fm = cast<FieldMemberExpression *>(e))
         if (auto *b = cast<IdentifierExpression *>(fm->base);
-                b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                b && isSelfId(qs(b->name.toString()))
                 && g_attached.count(qs(fm->name.toString())))
             return qs(fm->name.toString());
     return "";
@@ -1628,7 +1640,7 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
             oe = dIdent(n2); oq = pt0->second.substr(1); return true;
         }
     if ((g_scope.count(n2) && !shadowedByLocalType(n2)) || g_vgroups.count(n2)) return false;
-        if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
+        if (isSelfId(n2)) { oe = "this"; oq = g_selfQmlType; return true; }
         if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
             if (ci2->second.qmlType.empty()) return false;
             oe = ci2->second.field; oq = ci2->second.qmlType; return true;
@@ -1857,7 +1869,7 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     // ...unless we are compiling a USE-SITE binding, where the merged class's own declarations are
     // not in scope (see shadowedByLocalType): `control: control` must reach the enclosing object.
     if ((g_scope.count(n2) && !shadowedByLocalType(n2)) || g_vgroups.count(n2)) return false;
-    if (!g_selfId.empty() && n2 == g_selfId) { oe = "this"; oq = g_selfQmlType; return true; }
+    if (isSelfId(n2)) { oe = "this"; oq = g_selfQmlType; return true; }
     if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
         if (ci2->second.qmlType.empty()) return false;
         oe = ci2->second.field; oq = ci2->second.qmlType; return true;
@@ -2113,7 +2125,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             std::string bn = base ? qs(base->name.toString()) : "";
             if (!bn.empty()) {
                 if (outerHop(bn, pre, &fr)) { obj = pre.substr(0, pre.size() - 1); ownerType = fr->qmlType; }
-                else if (!g_selfId.empty() && bn == g_selfId) { obj = "this"; ownerType = g_selfQmlType; }
+                else if (isSelfId(bn)) { obj = "this"; ownerType = g_selfQmlType; }
                 // An ATTACHED read as a truth value: `Window.window ? … : false` (Qt's Menu.qml). The
                 // base is a TYPE NAME; the module comes from qmluris.tsv and the proof that the member
                 // is an object from qmlattached.tsv — neither guessed.
@@ -2142,7 +2154,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             }
         }
         // self reference `<id>.<prop>` -> the property; other object member access is a later phase.
-        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId)
+        if (base && isSelfId(qs(base->name.toString())))
             return readName(qs(fm->name.toString()), out);   // `self.x` reads x however x is stored
         // `<childId>.<prop>` -> the child object's D field. A child is a real @QObject field, so
         // this is a direct read, not a meta lookup.
@@ -2220,7 +2232,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 std::string mem = qs(fm->name.toString()), obj, ownerType, pre;
                 const OuterFrame *fr = nullptr;
                 if (outerHop(bn, pre, &fr)) { obj = pre.substr(0, pre.size() - 1); ownerType = fr->qmlType; }
-                else if (!g_selfId.empty() && bn == g_selfId) { obj = "this"; ownerType = g_selfQmlType; }
+                else if (isSelfId(bn)) { obj = "this"; ownerType = g_selfQmlType; }
                 if (!obj.empty() && !ownerType.empty() && !g_vgroups.count(inner)) {
                     std::string innerCxx;
                     if (auto qc = g_qmlCxxType.find(ownerType); qc != g_qmlCxxType.end()) {
@@ -2796,7 +2808,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (auto *b = cast<IdentifierExpression *>(f->base)) {
                 std::string bn = qs(b->name.toString());
                 if (bn != "Qt" || g_childIds.count(bn) || g_singletons.count(bn)
-                        || (!g_selfId.empty() && bn == g_selfId)
+                        || isSelfId(bn)
                         || (!g_outerId.empty() && bn == g_outerId)) return "";
                 return mem == "styleHints" ? "styleHintsObj()" : "";
             }
@@ -2902,7 +2914,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 std::string obj;
                 if (outerHop(bn, pre, &fr)) obj = pre.substr(0, pre.size() - 1);
                 else if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) obj = ci->second.field;
-                else if (!g_selfId.empty() && bn == g_selfId) obj = "this";
+                else if (isSelfId(bn)) obj = "this";
                 else return false;
                 const std::string &qt = fr ? fr->qmlType : g_selfQmlType;
                 bool scalar = false;
@@ -3067,9 +3079,9 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
         if (base) {
             std::string bn = qs(base->name.toString()), mem = qs(fm->name.toString());
             bool isObj = g_childIds.count(bn) || g_scope.count(bn) || g_singletons.count(bn)
-                      || (!g_selfId.empty() && bn == g_selfId);
+                      || isSelfId(bn);
             if (!isObj)
-                for (auto &f : g_outerChain) if (!f.id.empty() && f.id == bn) isObj = true;
+                for (auto &f : g_outerChain) if (f.ids.count(bn)) isObj = true;
             // A SIBLING's id is an object too, and the dependency is on its MEMBER — recording the
             // bare id said "depends on 'handle', which has no known notify" for a read that is
             // perfectly connectable (Qt's Fusion SwitchIndicator sizes its groove from the handle
@@ -3197,7 +3209,7 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                 return;
             }
         }
-        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) ids.push_back(qs(fm->name.toString()));
+        if (base && isSelfId(qs(base->name.toString()))) ids.push_back(qs(fm->name.toString()));
         // `group.member` depends on that member OF THE GROUP OBJECT — kept dotted so the wire
         // connects the group's own notify rather than looking for a property of this class.
         else if (base && g_groups.count(qs(base->name.toString())))
@@ -3317,7 +3329,7 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
-        if (base && !g_selfId.empty() && qs(base->name.toString()) == g_selfId) { auto it = ptype.find(qs(fm->name.toString())); return it != ptype.end() ? it->second : ""; }
+        if (base && isSelfId(qs(base->name.toString()))) { auto it = ptype.find(qs(fm->name.toString())); return it != ptype.end() ? it->second : ""; }
         if (base && qs(base->name.toString()) == g_className && g_enumMember.count(qs(fm->name.toString()))) return "int";   // enum member
         if (qs(fm->name.toString()) == "length") return "int";
         return "";
@@ -3564,7 +3576,7 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
     if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
         if (auto *fm = cast<FieldMemberExpression *>(bin->left))
             if (auto *b = cast<IdentifierExpression *>(fm->base);
-                    b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                    b && isSelfId(qs(b->name.toString()))
                     && attachedNameOf(fm->base).empty() && groupNameOf(fm->base).empty()) {
                 std::string nm = qs(fm->name.toString()), val;
                 auto ty = ptype.find(nm) != ptype.end() ? ptype.at(nm)
@@ -4133,6 +4145,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_parentCompletes = false;
     std::string savedSelfQmlType = g_selfQmlType;
     std::string savedId = g_selfId;
+    auto savedIds = g_selfIds;
     // Everything still in the globals belongs to the ENCLOSING object: capture it as the outer
     // scope before it is overwritten. Only an enclosing object with an `id` is addressable.
     std::string savedOuterId = g_outerId, savedOuterClass = g_outerClass,
@@ -4150,8 +4163,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &ci : g_childIds) sibs[ci.first] = {ci.second.field, ci.second.qmlType};
         if (!g_selfClass.empty())
             g_outerChain.insert(g_outerChain.begin(),
-                                OuterFrame{savedId, g_selfClass, savedSelfQmlType, g_propType,
-                                           g_baseProps, g_childDeclType, sibs});
+                                OuterFrame{savedId, g_selfClass, savedSelfQmlType, savedIds,
+                                           g_propType, g_baseProps, g_childDeclType, sibs});
     }
     if (!g_outerChain.empty()) {
         g_outerId = g_outerChain[0].id;
@@ -4169,12 +4182,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::vector<std::string> needsNotify;
     if (!qmlType.empty()) g_selfQmlType = qmlType;
     g_selfId = "";
-    for (auto *m = init ? init->members : nullptr; m; m = m->next)   // pre-scan this object's id
+    g_selfIds.clear();
+    for (auto *m = init ? init->members : nullptr; m; m = m->next)   // pre-scan this object's id(s)
         if (auto *sb = cast<UiScriptBinding *>(m->member))
             if (qname(sb->qualifiedId) == "id")
                 if (auto *es = cast<ExpressionStatement *>(sb->statement))
-                    if (auto *idn = cast<IdentifierExpression *>(es->expression))
+                    if (auto *idn = cast<IdentifierExpression *>(es->expression)) {
                         g_selfId = qs(idn->name.toString());
+                        g_selfIds.insert(g_selfId);
+                    }
 
     // Pre-scan declared property types and no-arg function return types, so a binding compiled in
     // the main loop below can resolve/coerce a call `f()` to its return type. (Declared types are
@@ -4350,8 +4366,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 bn = qs(base->name.toString());
             }
             std::string nm = qs(pub->name.toString()), rd, ty;
-            if (!g_selfId.empty() && bn == g_selfId && pt0.count(mem)) { ty = pt0[mem]; rd = mem; }
-            else if (!g_selfId.empty() && bn == g_selfId && g_baseProps.count(mem)) {
+            if (isSelfId(bn) && pt0.count(mem)) { ty = pt0[mem]; rd = mem; }
+            else if (isSelfId(bn) && g_baseProps.count(mem)) {
                 ty = g_baseProps[mem];
                 if (!readName(mem, rd)) continue;
             } else if (g_groups.count(bn)) {
@@ -4838,7 +4854,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (auto *aes = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr)
                         if (auto *fm = cast<FieldMemberExpression *>(aes->expression))
                             if (auto *b = cast<IdentifierExpression *>(fm->base);
-                                    b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId)
+                                    b && isSelfId(qs(b->name.toString())))
                                 defaultPropName = qs(fm->name.toString());
             }
             // `property alias <name>: <target>` — collect; resolved to a bound property (with the
@@ -5543,9 +5559,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string mem = qs(fm->name.toString());
                 std::string bn = groupNameOf(fm->base);          // `root.group.x` -> `group`
                 if (bn.empty()) bn = base ? qs(base->name.toString()) : "";
-                if (base && !g_selfId.empty() && bn == g_selfId && t.count(mem)) {
+                if (base && isSelfId(bn) && t.count(mem)) {
                     atype = t[mem]; read = SELF + "." + mem; setObj = SELF; setProp = mem;   // own property
-                } else if (base && !g_selfId.empty() && bn == g_selfId && g_baseProps.count(mem)) {
+                } else if (base && isSelfId(bn) && g_baseProps.count(mem)) {
                     // a property of the base type: read as the base is read, write through meta.
                     atype = g_baseProps[mem];
                     std::string rd = atype == "string" ? "propStr(" + SELF + ", \"" : atype == "double" ? "propDouble(" + SELF + ", \""
@@ -5588,7 +5604,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 bool objectAlias = false;
                 if (auto *fm = cast<FieldMemberExpression *>(al.second))
                     if (auto *b = cast<IdentifierExpression *>(fm->base);
-                            b && !g_selfId.empty() && qs(b->name.toString()) == g_selfId
+                            b && isSelfId(qs(b->name.toString()))
                             && g_scope.count(qs(fm->name.toString())))
                         objectAlias = true;
                 if (objectAlias) continue;
@@ -5901,7 +5917,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 const OuterFrame *fr = nullptr;
                 if (outerHop(bn, pre, &fr)) return pre.substr(0, pre.size() - 1);
                 if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) return ci->second.field;
-                if (!g_selfId.empty() && bn == g_selfId) return "this";
+                if (isSelfId(bn)) return "this";
                 return "";
             };
             // Resolves one property-read expression to (object, group, member); empty object
@@ -7730,6 +7746,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
              + childFields + methods + recompute + handlerSlots + groupHandlerSlots
              + attachedHandlerSlots + wire + "}\n";
     g_selfId = savedId;
+    g_selfIds = savedIds;
     g_selfQmlType = savedSelfQmlType;
     g_outerId = savedOuterId; g_outerClass = savedOuterClass; g_outerQmlType = savedOuterQmlType;
     g_outerPropType = savedOuterPropType; g_outerBaseProps = savedOuterBaseProps;
