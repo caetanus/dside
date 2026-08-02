@@ -143,6 +143,23 @@ int main(int argc, char **argv) {
         std::printf("%s\t%s\n", prop.constData(), qPrintable(val.toString()));
         return 0;
     }
+    // `--clickrender <qml> <x> <y> <out.png>`: load, deliver a click, THEN grab the frame. The
+    // plain render compares the document at rest and the property dump compares it after a
+    // MUTATION; neither sees what a control looks like once it has been pressed, which is the half
+    // of "behaves like the interpreted version" that a user actually touches. No property is
+    // picked, so nothing chooses what counts as behaviour.
+    if (argc == 6 && QString::fromUtf8(argv[1]) == "--clickrender") {
+        QQuickView v;
+        v.setResizeMode(QQuickView::SizeViewToRootObject);
+        v.setSource(QUrl::fromLocalFile(QString::fromUtf8(argv[2])));
+        if (v.status() != QQuickView::Ready) { std::fprintf(stderr, "qmlrender: not ready (status %d)\n", (int)v.status()); return 3; }
+        v.show();
+        QCoreApplication::processEvents();
+        clickAt(&v, QString::fromUtf8(argv[3]).toInt(), QString::fromUtf8(argv[4]).toInt());
+        const QImage img = v.grabWindow();
+        if (img.isNull()) { std::fprintf(stderr, "qmlrender: null frame\n"); return 4; }
+        return img.save(QString::fromUtf8(argv[5])) ? 0 : 5;
+    }
     if (argc != 3) { std::fprintf(stderr, "usage: qmlrender <qml> <out.png> | --compare <a> <b>\n"); return 64; }
     QQuickView v;
     v.setResizeMode(QQuickView::SizeViewToRootObject);

@@ -2025,6 +2025,35 @@ BOTH corpora, six mutations each (`enabled`, `width`, `visible`, `padding`, `spa
 Fusion's fourth axis had never been run. It found one defect, in the one place the other three are
 blind by construction.
 
+### A FIFTH axis: the frame after a CLICK (2026-08-02)
+
+The plain render compares a document at rest. The value differential compares it after a MUTATION
+written from outside. Neither sees what a control looks like once it has been PRESSED — which is the
+half of "behaves like the interpreted version" a user actually touches, and it was unmeasured on
+both corpora.
+
+`tests/qmltc/click_corpus.sh` clicks the CENTRE of each document and compares the frame byte for
+byte. Nothing picks a property, so nothing chooses what counts as behaviour. The click point is the
+centre of the ENGINE's frame from the render pass — the only place the document's real size is
+already written down — and a document the two sides already draw differently is SKIPPED and counted,
+not compared, so a difference here is always about the click. The engine side is a new
+`qmlrender --clickrender` mode; ours needed nothing, since `--click` already precedes `--render`.
+
+| | Basic | Fusion |
+|---|---|---|
+| frame after a click, byte for byte | **26 identical**, 7 differing | **23 identical**, 7 differing |
+| skipped: differ at rest already | 1 | 5 |
+| skipped: no frame to click into | 15 | 9 |
+
+Basic's seven: ComboBox, ScrollBar, SearchField, SwitchDelegate, Switch, TextArea, TextField.
+Fusion's: ScrollBar, SearchField, Slider, SwitchDelegate, TabButton, TextArea, TextField.
+
+They are NOT one cause, and saying so is the point of writing them down: only Basic's Switch and
+SwitchDelegate carry a `Behavior`, so "we jump where the engine animates" explains two of fourteen
+at most. The click reaches our objects — a compiled Basic Switch toggles `checked` to true and
+`position` to 1 — so this is about what happens after, not about delivery. Unlike the value
+differences, none of these is attributed yet.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
