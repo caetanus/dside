@@ -995,7 +995,21 @@ static int qtd_valuegroup_write(void* o, const char* group, const char* member, 
     QVariant v = obj->property(group);
     QMetaProperty p;
     if (!v.isValid() || !gadgetProp(v, member, p)) return 0;
-    if (!p.writeOnGadget(v.data(), val)) return 0;
+    // An ENUM member takes its KEY, which is how every enum crosses this channel — and
+    // writeOnGadget does NOT do the key lookup that QMetaProperty::write does for a QObject, so
+    // `easing.type: Easing.OutCubic` failed the write outright. QMetaEnum is the same translator
+    // the reader (qtd_prop_get_enum_key) uses in the other direction.
+    QVariant use = val;
+    if (p.isEnumType() && val.userType() == QMetaType::QString) {
+        bool ok = false;
+        QMetaEnum me = p.enumerator();
+        const QByteArray key = val.toString().toUtf8();
+        int iv = p.isFlagType() ? me.keysToValue(key.constData(), &ok)
+                                : me.keyToValue(key.constData(), &ok);
+        if (!ok) return 0;
+        use = QVariant(iv);
+    }
+    if (!p.writeOnGadget(v.data(), use)) return 0;
     return obj->setProperty(group, v) || true;   // setProperty is false for a non-Q_PROPERTY name
 }
 
@@ -1171,6 +1185,35 @@ static QString qtd_shade_of(const QColor& c, double factor, int lighter) {
 // A colour's TEXT, spelled the way every other colour here is spelled (QVariant's converter, the
 // one the dump uses). Needed because a colour is a value the meta channel carries as text: passing
 // a QColor to an invokable is `#aarrggbb` on the wire, exactly like a colour property write.
+// `Qt.alpha(c, a)` — the same colour at a new opacity, which is what the engine's own
+// QQuickColorProvider::alpha does (`setAlphaF`). Fusion's Switch draws both of its gradient stops
+// through it.
+extern "C" void* qtd_color_alpha(const char* s, double a) {
+#ifdef QT_GUI_LIB
+#if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
+    QColor c = QColor::fromString(QString::fromUtf8(s));
+#else
+    QColor c; c.setNamedColor(QString::fromUtf8(s));
+#endif
+    if (!c.isValid()) return new QString();
+    c.setAlphaF(qIsFinite(a) ? qBound(0.0, a, 1.0) : 1.0);
+    return new QString(QVariant::fromValue(c).toString());
+#else
+    (void)s; (void)a;
+    return new QString();
+#endif
+}
+extern "C" void* qtd_color_alpha_rgba(unsigned rgba, double a) {
+#ifdef QT_GUI_LIB
+    QColor c = QColor::fromRgba(rgba);
+    if (!c.isValid()) return new QString();
+    c.setAlphaF(qIsFinite(a) ? qBound(0.0, a, 1.0) : 1.0);
+    return new QString(QVariant::fromValue(c).toString());
+#else
+    (void)rgba; (void)a;
+    return new QString();
+#endif
+}
 extern "C" void* qtd_color_name(unsigned rgba) {
 #ifdef QT_GUI_LIB
     return new QString(QVariant::fromValue(QColor::fromRgba(rgba)).toString());

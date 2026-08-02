@@ -1232,6 +1232,36 @@ static std::map<std::string, std::pair<std::string, std::string>> g_aliasWrite;
 // Scoped per object, saved/restored across compileObject recursion like the other maps.
 static std::set<std::string> g_scope;
 
+// `Easing.OutCubic`, `Font.DemiBold` — an ENUM MEMBER whose TYPE the registry does not carry.
+// `Easing` and `Font` are value-type namespaces: QtQuick registers the enums, not a type with
+// properties, so knownTypeName says no and every enum-typed member of a value group was refused.
+// Accepting the KEY here is safe because the write is checked: setVgroup/setQmlProp resolve the
+// member through the gadget's own meta-object and THROW when the key does not convert, so a wrong
+// guess is loud rather than silent. Deliberately not offered to the general expression compiler,
+// where a name that is not a type has other meanings.
+static std::string enumMemberKeyLoose(ExpressionNode *x) {
+    auto *fme = cast<FieldMemberExpression *>(x);
+    if (!fme) return "";
+    std::string tn, mem = qs(fme->name.toString());
+    if (auto *fmq = cast<FieldMemberExpression *>(fme->base)) {          // Alias.Type.Key
+        auto *b2 = cast<IdentifierExpression *>(fmq->base);
+        if (!b2 || !g_importAliases.count(qs(b2->name.toString()))) return "";
+        tn = qs(fmq->name.toString());
+    } else if (auto *tb = cast<IdentifierExpression *>(fme->base)) {     // Type.Key
+        tn = qs(tb->name.toString());
+    } else return "";
+    if (tn.empty() || !std::isupper((unsigned char) tn[0])) return "";
+    if (mem.empty() || !std::isupper((unsigned char) mem[0])) return "";
+    if (g_scope.count(tn) || g_childIds.count(tn) || g_singletons.count(tn)
+            || g_vgroups.count(tn)) return "";
+    // ...but NOT on a singleton: `Easing` is a real QML singleton (the QML module exports it), so
+    // `Easing.InOutCubic` is a property read with a value, and reading it is better than guessing
+    // its key. The caller tries that channel first; this is the fallback for a namespace that is
+    // not exported at all.
+    return mem;
+}
+
+
 // True when `n` names a property of the object's BOUND type (so it lives in the meta-object)
 // rather than a property the document declares (a plain D field).
 // True when a QML type is an Item — it has QQuickItem's `parent` property. A DEFAULT child of an
@@ -1931,6 +1961,21 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         return false;
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
+        // An ATTACHED object as a TRUTH VALUE: `indicator.Window ? … : …` — Qt's Fusion Switch
+        // asks whether it is in a window before dimming its gradient. First, because the ordinary
+        // member paths below decline a capitalised member and never reach the object-path test at
+        // the end. `qmlAttachedPropertiesObject` returns null when the object is not under one of
+        // those types, which is exactly the question QML is asking.
+        if (dtype == "bool")
+            if (auto *bA = cast<IdentifierExpression *>(fm->base)) {
+                std::string anB = qs(fm->name.toString()), tgtB, tqB;
+                if (!anB.empty() && std::isupper((unsigned char) anB[0]) && g_qmlTypeUri.count(anB)
+                        && g_qmlAttachedCxx.count(anB) && !g_scope.count(anB) && !g_childIds.count(anB)
+                        && objPathHead(qs(bA->name.toString()), tgtB, tqB)) {
+                    out = "(" + attachedExprOn(tgtB, anB) + " !is null)";
+                    return true;
+                }
+            }
         // `nums.length` -> D's .length, but QML's is an int and D's is a size_t: cast so the
         // property's declared int type and any arithmetic on it stay int.
         if (auto *b = cast<IdentifierExpression *>(fm->base);
@@ -2377,7 +2422,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // handed — every one of which was refused for want of its argument.
         if (recv && qs(recv->name.toString()) == "Qt" && !g_scope.count("Qt") && !g_childIds.count("Qt")) {
             std::string fn = qs(fm->name.toString());
-            if (fn != "darker" && fn != "lighter") return false;
+            if (fn != "darker" && fn != "lighter" && fn != "alpha") return false;
             std::vector<std::string> args;
             for (auto *a = call->arguments; a; a = a->next) {
                 std::string s;
@@ -2387,6 +2432,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 args.push_back(s);
             }
             if (args.empty() || args.size() > 2) return false;
+            if (fn == "alpha") {   // ...which has no default: QML requires both arguments
+                if (args.size() != 2) return false;
+                out = "colorAlpha(" + args[0] + ", " + args[1] + ")";
+                return true;
+            }
             out = (fn == "darker" ? "colorDarker(" : "colorLighter(") + args[0]
                 + (args.size() > 1 ? ", " + args[1] : "") + ")";
             return true;
@@ -2854,6 +2904,13 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
             if (!isObj && !mem.empty() && std::isupper((unsigned char)mem[0])
                     && (bn == "Qt" || g_qmlCxxType.count(bn)))
                 return;
+            // `<obj>.<AttachedType>` used as a whole — the truth test above. WHETHER an object has
+            // an attached object of some type does not change over its life, so this is a constant,
+            // not a dependency; recording it reported "depends on 'Window', which has no known
+            // notify" for a test that can never go stale.
+            if (isObj && !mem.empty() && std::isupper((unsigned char) mem[0])
+                    && g_qmlAttachedCxx.count(mem) && !g_scope.count(mem) && !g_childIds.count(mem))
+                return;
             // An ATTACHED read (`Window.window`) is a real dependency on the ATTACHED object, not on
             // something named `Window` in scope. Tagged so the wiring connects to that object's own
             // notify — which qmlattached.tsv carries (windowChanged()).
@@ -3099,7 +3156,7 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
         // Qt.darker/Qt.lighter yield a COLOUR, which travels as text here.
         if (recv && qs(recv->name.toString()) == "Qt") {
             std::string fn = qs(fm->name.toString());
-            if (fn == "darker" || fn == "lighter") return "string";
+            if (fn == "darker" || fn == "lighter" || fn == "alpha") return "string";
         }
         if (auto *fnId = cast<IdentifierExpression *>(call->base)) { auto it = g_funcRet.find(qs(fnId->name.toString())); return it != g_funcRet.end() ? it->second : ""; }
     }
@@ -6399,6 +6456,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         auto dot = ga.first.find('.');
         std::string gname = ga.first.substr(0, dot), mem = ga.first.substr(dot + 1);
         std::string vty = inferType(ga.second, ptype), val;
+        // A value with NO inferred type is not necessarily unusable: an enum member crosses this
+        // channel as an INT (`Easing.InOutCubic` is a property of a real QML singleton, and QML's
+        // own value for it is a number), and anything else that compiles as text crosses as text.
+        // The KEY is the last resort, for a namespace the registry does not export at all.
+        if (vty.empty() && compileExpr(ga.second, "int", val)) vty = "int";
+        else if (vty.empty() && compileExpr(ga.second, "string", val)) vty = "string";
+        else if (std::string ek = enumMemberKeyLoose(ga.second); !ek.empty()) {
+            vty = "string"; val = "\"" + ek + "\"";
+        } else
         if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
                 || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
             std::fprintf(stderr, "qmltc-d: %s: value-group member '%s' in %s: value is not a scalar "
@@ -6416,6 +6482,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // value-type registry, since there is no gadget meta-object to read-modify-write.
     for (auto &ga : rawExtVGroupAssigns) {
         std::string vty = inferType(ga.second, ptype), val;
+        if (vty.empty() && compileExpr(ga.second, "int", val)) vty = "int";   // ...same as above
+        else if (vty.empty() && compileExpr(ga.second, "string", val)) vty = "string";
+        else if (std::string ek = enumMemberKeyLoose(ga.second); !ek.empty()) {
+            vty = "string"; val = "\"" + ek + "\"";
+        } else
         if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
                 || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
             std::fprintf(stderr, "qmltc-d: %s: value-type member '%s' in %s: value is not a scalar "

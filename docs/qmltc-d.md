@@ -1651,7 +1651,7 @@ same axes as Basic:
 | constructs | 61 of 61 | 52 of 55, 0 failures (3 have no visual root) |
 | files IDENTICAL to the engine in every property | 47 of 57 | 41 of 49 |
 | value differences | 21 (all attributed) | 20 |
-| diagnostics | 74 | 78 |
+| diagnostics | 69 | 75 |
 
 Fusion started the day at 183 diagnostics with 26 whole TYPES refused; it is at 90 with those types
 compiling and reporting their own gaps, which is the trade this compiler makes on purpose. What that
@@ -1896,6 +1896,30 @@ attached children in that corpus are partial, so the corpus is byte-identical to
 shut, at the cost of 98 diagnostics for work that is thrown away. That is the useful finding: the
 blocker is not the attachment, it is the children. `ContextMenu.menu` is a Menu of Actions with
 script bindings we do not compile. Re-open when those compile, not before.
+
+### `Qt.alpha`, an extension value type, and an attached object as a question (2026-08-02)
+
+Four, and the first one is the registry again:
+
+- **`easing.type: Easing.OutCubic` was refused because a whole qmltypes file was missing.**
+  QEasingCurve is declared `accessSemantics: "value"` with `extension: "QQmlEasingValueType"` — in
+  the **QML** module's plugins.qmltypes, which the controls spec did not read. Without that row the
+  type looked like a plain gadget, and QEasingCurve is not a Q_GADGET: `writeOnGadget` had nothing
+  to write through. With it the member goes down the extension channel (QQmlProperty, QML's own
+  value-type registry), which is the same channel `font.pixelSize` uses;
+- a value with NO inferred type is not necessarily unusable: an enum member crosses this channel as
+  an INT (`Easing` is a real QML singleton and its members have numeric values) or, failing that,
+  as its KEY. The key is the last resort, for a namespace the registry does not export at all;
+- **`Qt.alpha`** joins darker/lighter — the third colour global, the same string-in/string-out shape,
+  and the one Fusion's Switch draws both of its gradient stops with;
+- **an ATTACHED object as a TRUTH VALUE.** `indicator.Window ? … : …` asks whether the object is
+  under a window at all, and `qmlAttachedPropertiesObject` returns null when it is not — exactly the
+  question. It has to be answered FIRST: the ordinary member paths decline a capitalised member and
+  never reach the object-path test at the end. And it is not a DEPENDENCY: whether an object has an
+  attached object of some type does not change over its life, so recording it reported "depends on
+  'Window', which has no known notify" for a test that can never go stale.
+
+Fusion 78 → 75 diagnostics, Basic 74 → 69. Values unchanged on both, 0 construction failures.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

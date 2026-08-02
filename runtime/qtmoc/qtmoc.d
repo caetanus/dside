@@ -75,6 +75,8 @@ void qtd_parser_status(void*, int);
     void* qtd_color_shade(const(char)*, double, int);       // Qt.darker / Qt.lighter -> QString*
     void* qtd_color_shade_rgba(uint, double, int);          // ...from a QColor's ARGB word
     void* qtd_color_name(uint);                             // a QColor's `#aarrggbb` spelling
+    void* qtd_color_alpha(const(char)*, double);            // Qt.alpha -> QString*
+    void* qtd_color_alpha_rgba(uint, double);               // ...from a QColor's ARGB word
     void* qtd_tr(const(char)*, const(char)*, const(char)*, int);   // QCoreApplication::translate
     bool  qtd_install_translator(const(char)*);                    // new QTranslator + install (C++)
     void  qtd_qs_set(void*, const(char)*, int);   // assign a D string into an existing QString
@@ -913,6 +915,13 @@ string colorLighter(C)(C c, double f = 1.5) { return __shade(c, f, 1); }
 /// digits, which does not round-trip: `Color.transparent(c, 210 / 255)` reached Qt as 0.823529 and
 /// came back one alpha step short of what the engine computed. 17 digits always round-trips.
 string numText(double v) { import std.format : format; return format("%.17g", v); }
+/// The QML global `Qt.alpha`: the same colour at a new opacity. Same two argument shapes as the
+/// shade helpers, for the same reason — a colour arrives here as text or as a declared QColor.
+string colorAlpha(C)(C c, double a) {
+    static if (is(C : string)) auto qs = qtd_color_alpha((c ~ "\0").ptr, a);
+    else                       auto qs = qtd_color_alpha_rgba(cast(uint) c.rgba(), a);
+    auto s = qsToD(qs); qtd_qs_free(qs); return s;
+}
 /// A colour's text, for the places a value has to cross as text (an invokable's argument).
 string colorName(C)(C c) {
     auto qs = qtd_color_name(cast(uint) c.rgba());
