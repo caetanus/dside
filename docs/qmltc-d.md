@@ -2412,14 +2412,21 @@ already. `UndoAction.qml` compiles its text (through `qsTr`), its whole `icon` g
    and all of them are singletons. So this is a generator change (publish per-type methods) before
    it is a compiler one, and `qtd_invoke0` is already in the runtime waiting for it. Seven of seven.
 2. **`shortcut: StandardKey.Undo`** — an enum member of a namespace assigned into a property Qt
-   declares as `QVariant`. Same shape as `Easing.OutCubic`, which is solved: read it through the
-   singleton channel as an int, or fall back to its key. Seven of seven.
+   declares as `QVariant`. This was written down as "same shape as `Easing.OutCubic`, which is
+   solved"; checking rather than assuming says otherwise. `Easing` IS a singleton (the QML module
+   exports it, and its members are read as ordinary properties); `StandardKey` is an UNCREATABLE
+   type — `QKeySequence` with an `Enum` block — so there is no object to read from. The KEY string
+   is no use either: Qt would parse `"Undo"` as three letters, not as the standard key. What is
+   needed is the enum's VALUE, which qmltypes lists right there and the registry does not carry.
+   Seven of seven.
 3. **`editor.hasOwnProperty("cut")`** — a JS built-in on an object. Three of seven (Cut, Copy,
    Paste). The meta channel can answer it exactly: whether the object's meta-object declares that
    property, which is what `typeKnownWithoutMember` already asks in the other direction.
 
-None of the three is large, none of them is blocked on anything, and none of them is the ATTACHMENT
-— which is what the gate has been saying since it was first measured. That is the queue, in order.
+So TWO of the three are the same job before they are three jobs: **the registry does not publish
+per-type methods or enum values**, and both are sitting in the qmltypes the generator already
+parses. None of the three is the ATTACHMENT — which is what the gate has been saying since it was
+first measured — and the first move is in the generator, not the compiler.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
