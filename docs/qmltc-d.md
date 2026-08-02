@@ -1678,8 +1678,14 @@ The largest remaining Fusion clusters, measured — and one of them is now cut i
   target accepts anything that compiles as text. Proven by isolation, and the corpus did NOT move:
   Qt writes the BARE head (`control.palette.base`, not `indicator.control.palette.base`), and a bare
   name that is a declared OBJECT property of the same object still does not resolve as the head of a
-  path. The qualified form compiles; that one line is the whole difference, and it is where the next
-  attempt starts.
+  path. The qualified form compiles; that one line is the whole difference.
+
+  Attempted three times and reverted each time, so the next attempt starts past them: recording the
+  property's QML type in this scope is NOT enough (`g_propType[name] = "@Item"` is in, and it does
+  nothing on its own), and answering the head before `objPathHead`'s scope guard did not move the
+  isolation either. What is missing is a TRACE inside objPathHead for the bare name — every attempt
+  so far has been a guess about which check refuses it, and this file records what happens when I
+  guess: three edits, no measurement moved, all three removed.
 
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not

@@ -4302,6 +4302,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     objDt = obt.first;
                     if (!g_selfQmlType.empty())
                         g_declObjProps[g_selfQmlType][name] = qs(qmlType);
+                    g_propType[name] = "@" + qs(qmlType);   // ...and as a path head in this scope
                     std::string imp = "import " + obt.second + ";\n";
                     if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
                     dt = objDt.c_str();
