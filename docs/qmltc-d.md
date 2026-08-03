@@ -3292,3 +3292,30 @@ diagnostics 64 and 48).
 moved back after the appends in the generated D, `count` reads 0 against the engine's 2. It is the
 only observable that moves — a closed menu lays nothing out and the Action's own `text` reads the
 same either way, both checked rather than assumed.
+
+### What is left behind the gate, traced to one identifier (2026-08-03)
+
+With the delegate ordering fixed, the 247 value differences behind the open gate are one cause, and
+it is now named. The attached Menu reports `contentItem.count` 0 where the engine reports 9, so
+nothing under it is laid out — heights 0, `y` 0, `parent` null, which is every one of those
+differences.
+
+The generated line says why:
+
+    copyProp(__outer.__outer, "contentModel", this, "model");
+
+Qt's `Menu.qml` binds its ListView with `model: control.contentModel`, and `control` is the MENU's
+own id. Two hops out is the TextField — which also writes `id: control`, and has no `contentModel`,
+so the copy fails and the model is never set. Compiled on its own,
+`Basic/impl/TextEditingContextMenu.qml` gets this right: `count` 9, `contentHeight` 293, matching
+the engine exactly. As an attached CHILD it does not, because the spliced local type's own `control`
+is not in its `OuterFrame`'s id set and the lookup walks past it to the enclosing document's.
+
+That is the "same document, two scopes, two answers" shape this file has recorded before, and it is
+now a single identifier rather than a class of problems. One thing more is unexplained and worth
+keeping in view: with the gate open the attached menu reports `count` **10** where the engine reports
+9 — the document has seven Actions and two MenuSeparators — so something is appended one time too
+many.
+
+Both are behind the shut gate and neither is measurable from the corpora as they ship. Written down
+with the evidence so the next attempt starts from the identifier.
