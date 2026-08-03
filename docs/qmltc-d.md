@@ -3750,3 +3750,28 @@ default-property-holder family are both closed. Nothing else moved.
 Four exclusions left, in two families and one deliberate pair: list properties (ArrayBinding,
 UsesList) and the `Connections` desugaring (Connect, CrossCall) — plus the four `quick` fixtures
 whose `__class` is the harness name coincidence, which is an emitter decision and not a gap.
+
+### What a list property needs, and where this leaves the gate (2026-08-03)
+
+The last real family, scoped. `property list<QtObject> kids` with an array binding: the elements are
+ordinary child objects and we build them, but the engine reaches each one at its INDEX in that
+property and we expose no such path — `listAt(o, "kids", 0)` resolves nothing because `kids` is a D
+array field, not a meta-object list.
+
+That is not a variation on anything already here. A meta-object list property is a
+`QQmlListProperty` with `append`/`count`/`at`/`clear` callbacks and a registered element type; the
+moc would have to build and hand out one, and `QQmlListReference` on the other side would then find
+it. Real work, and unlike `@PropertyAlias` it is a new mechanism rather than a second shape of an
+existing one — so it is written down rather than started.
+
+Where the strong protocol stands after this session:
+
+| set | passing |
+|---|---|
+| controls | 23 of 23 |
+| quick | 42 of 46 |
+| corpus | **42 of 46** (33 when the gate was added) |
+
+Four exclusions, each with its own removal condition in `tests/expected-fails.json`: list properties
+(2), the deliberate `Connections` desugaring (2, permanent), and the four `quick` fixtures whose
+`__class` is the harness name coincidence — an emitter decision, not a compiler gap.
