@@ -5111,6 +5111,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 valueListDecls += "    " + std::string(dt) + "[] " + name + " = " + init + ";\n";
                 continue;
             }
+            // ...and a list of OBJECTS is a meta-object list property. The elements are ordinary
+            // children and the generated code ALREADY appends each through it
+            // (`listAppend(this, "kids", _al_kids_0)`); the call did nothing because the property
+            // did not exist, so the engine reached `kids[0]` and we reached nothing. The D side
+            // stores none of it: the runtime owns the elements behind the QQmlListProperty this
+            // property hands out, which is what that append writes into.
+            if (!dt[0] && pub->typeModifier == QLatin1String("list")
+                    && isQmlObjectType(qs(qmlType))) {
+                props.push_back({name, "QmlObjectList", "", false, {}});
+                continue;
+            }
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
             if (pub->binding) {
                 if (auto *ob = cast<UiObjectBinding *>(pub->binding);
@@ -8174,8 +8185,13 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         // wrapper gives its module-qualified type name, where the engine's dump gives whatever
         // QVariant makes of the pointer. One formatter on both sides or the comparison is about
         // spelling instead of about values.
-        if (s.second == "QColor" || (!s.second.empty() && std::isupper((unsigned char) s.second[0])
-                                     && s.second.rfind("Q", 0) == 0)) {
+        // ...except a LIST, which is not a value type and has no text on either side. Its D name
+        // starts with Q like every Qt value type, so without naming it here it took the propStr
+        // branch — which pushes the line with an EMPTY dtype — and the empty-print decision below
+        // never saw it.
+        if (s.second != "QmlObjectList"
+                && (s.second == "QColor" || (!s.second.empty() && std::isupper((unsigned char) s.second[0])
+                                             && s.second.rfind("Q", 0) == 0))) {
             out.push_back({lab + s.first, "propStr(" + self + ", \"" + s.first + "\")",
                            "", self, s.first});
             continue;
@@ -8726,7 +8742,8 @@ int main(int argc, char **argv) {
             // a value. (`--dumpall` is where the two are actually distinguished, as <object> and
             // <null>.)
             std::printf(l.dtype == "double" ? "    writefln(\"%s\\t%%.17g\", (%s) + 0.0);\n"
-                      : l.dtype == "Object" ? "    writefln(\"%s\\t\");%.0s\n"
+                      : (l.dtype == "Object" || l.dtype == "QmlObjectList")
+                                            ? "    writefln(\"%s\\t\");%.0s\n"
                                             : "    writefln(\"%s\\t%%s\", %s);\n",
                         l.label.c_str(), l.access.c_str());
         std::printf("}\n");

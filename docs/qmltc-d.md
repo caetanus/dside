@@ -3885,3 +3885,44 @@ wants a standalone probe against a `QMetaObjectBuilder`-built object rather than
 the whole pipeline.
 
 Reverted except the crash guard; build green, both corpora and all 111 fixtures unchanged.
+
+### DONE: the list property — and the two registrations it needed (2026-08-03)
+
+Third attempt, and this time the wall was isolated before any of it was rebuilt. A standalone probe
+against a `QMetaObjectBuilder`-built object, with a `QQmlListProperty<QObject>` served from
+`qt_metacall`, said it in four lines:
+
+    ref valid=1 canAppend=1 canAt=1
+    listValueType=<null>
+    append(null)=1 count=1
+    append(obj)=0 count=1
+
+A null element appends and a real one does not — which is `QQmlListReference::append` checking the
+object against the list's ELEMENT type, and finding none. Registering the metatype is not enough:
+`qmlRegisterAnonymousType<QObject>(…)` is what puts the element type in QQmlMetaType, and with it
+`listValueType=QObject` and `append(obj)=1`.
+
+So the recipe, all of it verified before it was written:
+
+1. the METATYPE, or `QMetaProperty::read` hands back an invalid QVariant and the dump dies in
+   `QMetaType::canConvert` (gdb named that one);
+2. the ELEMENT type in QQmlMetaType, or every non-null append is refused;
+3. both from a FUNCTION, called from `buildMo` before the property is added — `--gc-sections`
+   removes a file-scope `static` whose value nothing reads, and the registration then silently
+   never runs;
+4. the read served from `callProp`, handing out a `QQmlListProperty` over a side table the runtime
+   owns, one per (object, property), dropped through the same `destroyed()` hook as the other
+   side-tables;
+5. the emitter marks the property, and exempts it from the "read a Qt value type as text" branch,
+   which was swallowing its dtype because the name starts with Q.
+
+The generated code needed no change at all: `listAppend(this, "kids", _al_kids_0)` was already being
+emitted for every element of an array binding, and now it lands.
+
+**Corpus 42 of 46 to 44** — ArrayBinding and UsesList pass. Both corpora unchanged (Basic 56 of 57,
+Fusion 48 of 49, 2 value differences each, render 49 and 44 with none differing, click 34 and 34
+with one, diagnostics 64 and 48).
+
+**The strong protocol now covers 113 of the 115 fixtures**, and the two it does not are the
+`Connections` pair, which is a deliberate structural difference both fixtures document in their own
+headers. There is no remaining GAP in that gate — only a decision.

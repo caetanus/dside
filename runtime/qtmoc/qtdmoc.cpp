@@ -47,6 +47,7 @@
 #  include <QtQml/qqmlparserstatus.h>
 #  include <QtQml/QQmlEngine>
 #  include <QtQml/QJSValue>
+#  include <QtQml/QQmlListProperty>
 #  include <QtQml/QQmlContext>
 #  include <QtQml/QQmlComponent>
 #  if QT_VERSION >= 0x060000
@@ -152,6 +153,28 @@ struct QtdMocObject : QObject {
 // two homonymous D classes with different shapes would otherwise share, and get, the wrong
 // metaobject). Two identically-shaped homonyms still share (harmless — they ARE the same shape).
 std::unordered_map<std::string, const QMetaObject*> g_moCache;
+// A declared QML list property is `QQmlListProperty<QObject>`, and TWO registrations are needed
+// before one works — probed one at a time against a QMetaObjectBuilder-built object:
+//   * the METATYPE, or QMetaProperty::read hands back a QVariant with an invalid type and the
+//     property dump dies inside QMetaType::canConvert;
+//   * the list's ELEMENT type in QQmlMetaType, or `listElementType()` is null and
+//     QQmlListReference::append refuses every non-null object while happily taking a null one
+//     (that asymmetry is what named it).
+// From a FUNCTION, not a file-scope static: the link uses --gc-sections, and a static whose value
+// nothing reads is exactly what that removes — the registration silently never ran.
+// `extern "C++"` because this file is compiled inside an `extern "C"` region.
+#ifdef QTD_HAVE_QML
+extern "C++" {
+static void qtd_register_list_metatype() {
+    static const bool once = [] {
+        qRegisterMetaType<QQmlListProperty<QObject>>("QQmlListProperty<QObject>");
+        qmlRegisterAnonymousType<QObject>("qtd.list", 1);
+        return true;
+    }();
+    (void) once;
+}
+}
+#endif
 const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
                            const char** sigs, int nsig,
                            const char** slotSigs, int nslot,
@@ -184,6 +207,9 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
         // precise name is kept whenever it resolves, and falls back only when it does not.
         const char* pty = propTypes[i];
         size_t plen = std::strlen(pty);
+#ifdef QTD_HAVE_QML
+        if (std::strcmp(pty, "QQmlListProperty<QObject>") == 0) qtd_register_list_metatype();
+#endif
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         bool known = QMetaType::fromName(pty).isValid();
 #else
@@ -919,6 +945,56 @@ extern "C" void qtd_parser_status(void* o, int complete) {
     }
 #else
     (void) o; (void) complete;
+#endif
+}
+
+// ---- declared list properties (`property list<QtObject> kids`) ----------------
+// The compiled side ALREADY appends through the meta-object list property —
+// `listAppend(this, "kids", _al_kids_0)` is emitted for every element of an array binding — and the
+// call did nothing because the property did not exist. Only the callee was missing, and the storage
+// need not be on the D side: the runtime owns one vector per (object, property), the append that
+// already exists lands in it, and QQmlListReference finds it from either side. The entry dies with
+// the object, through the same destroyed() hook the meta-object side-tables use.
+#ifdef QTD_HAVE_QML
+extern "C++" {
+struct QtdListSlot { QObject* owner; QByteArray prop; QVector<QObject*> items; };
+static QVector<QtdListSlot*>& qtd_list_slots() { static QVector<QtdListSlot*> v; return v; }
+// Qt5 indexes a list property with `int` and Qt6 with `qsizetype`; the class NAMES the type, so
+// take it from there rather than branching on the version.
+using QtdLsIndex = decltype(QQmlListProperty<QObject>().count(nullptr));
+static void qtd_ls_append(QQmlListProperty<QObject>* p, QObject* v) {
+    static_cast<QtdListSlot*>(p->data)->items.append(v);
+}
+static QtdLsIndex qtd_ls_count(QQmlListProperty<QObject>* p) {
+    return static_cast<QtdLsIndex>(static_cast<QtdListSlot*>(p->data)->items.size());
+}
+static QObject* qtd_ls_at(QQmlListProperty<QObject>* p, QtdLsIndex i) {
+    auto& v = static_cast<QtdListSlot*>(p->data)->items;
+    return (i >= 0 && i < static_cast<QtdLsIndex>(v.size())) ? v.at(int(i)) : nullptr;
+}
+static void qtd_ls_clear(QQmlListProperty<QObject>* p) {
+    static_cast<QtdListSlot*>(p->data)->items.clear();
+}
+static QtdListSlot* qtd_list_slot(QObject* o, const char* name) {
+    for (QtdListSlot* s : qtd_list_slots())
+        if (s->owner == o && s->prop == name) return s;
+    auto* s = new QtdListSlot{o, QByteArray(name), {}};
+    qtd_list_slots().append(s);
+    QObject::connect(o, &QObject::destroyed, o, [s]() { qtd_list_slots().removeOne(s); delete s; });
+    return s;
+}
+}
+#endif
+// Fills `*out` with the QQmlListProperty for `<o>.<name>` — the only way one is ever handed out.
+extern "C" void qtd_moc_list_read(void* o, const char* name, void* out) {
+#ifdef QTD_HAVE_QML
+    if (!o || !out) return;
+    qtd_register_list_metatype();
+    auto* obj = static_cast<QObject*>(o);
+    *static_cast<QQmlListProperty<QObject>*>(out) = QQmlListProperty<QObject>(
+        obj, qtd_list_slot(obj, name), &qtd_ls_append, &qtd_ls_count, &qtd_ls_at, &qtd_ls_clear);
+#else
+    (void) o; (void) name; (void) out;
 #endif
 }
 

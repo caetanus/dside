@@ -680,15 +680,12 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // what found the deferred transitions, the gradients, the QJSValue slots and every
             // ordering defect this file records. Measured before adding it: 23 of the 23 controls
             // fixtures pass.
-            // ...for every fixture EXCEPT eight, each with a named cause in the
-            // `qml-declared-members-not-in-metaobject` entry of tests/expected-fails.json: LIST
-            // properties (`kids[0]`/`items[0]` are absent because a `property list<T>` is a D array
-            // field), the `Connections` pair (a deliberate desugaring — no object is built, and both
-            // fixtures say so in their own headers), and four whose `__class` reads our generated
-            // class where the engine reads the Qt base, which is a name coincidence in the harness
-            // and not a compiler gap. Measured: controls 23 of 23, quick 46 of 46, corpus 42 of 46.
+            // ...for every fixture EXCEPT the `Connections` pair, which is a DELIBERATE structural
+            // difference: the element is desugared into connects and no object is built, while the
+            // engine holds one in `conn`. Both fixtures say so in their own headers, and the entry
+            // `qml-declared-members-not-in-metaobject` in tests/expected-fails.json carries it. Measured: controls 23 of 23, quick 46 of 46, corpus 44 of 46.
             static immutable string[] dumpallGap = [
-                "ArrayBinding", "Connect", "CrossCall", "UsesList",
+                "Connect", "CrossCall",
             ];
             if (!dumpallGap.canFind(name)) {
             auto objs = genD ~ ".objs", da = genD ~ ".dall", qa = genD ~ ".qall";
