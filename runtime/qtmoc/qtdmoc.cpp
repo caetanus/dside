@@ -1402,6 +1402,14 @@ extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
     for (int i = 0; i < mo->propertyCount(); ++i) {
         QMetaProperty mp = mo->property(i);
         if (!mp.isReadable()) continue;
+        // A property whose metatype the type system does not know cannot be read into a QVariant
+        // safely: QMetaType::canConvert walks a null interface and the process dies there (gdb, on
+        // a `QQmlListProperty<QObject>` property added before its metatype was registered).
+        // Skipping is what every other untextable property here already does; crashing the dump is
+        // not one of the options.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        if (!mp.metaType().isValid()) continue;
+#endif
         QVariant v = mp.read(q);
         QString out;
         if (mp.isEnumType()) {

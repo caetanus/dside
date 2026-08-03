@@ -3855,3 +3855,33 @@ it is the whole of what is left: the runtime, the property, and the append are a
 
 Reverted whole; the build is green and both corpora and all 111 fixtures are unchanged. The next
 attempt starts by printing that dtype at the emission point rather than by rebuilding the design.
+
+### The list property, second attempt — three findings and one wall (2026-08-03)
+
+Went further this time. The open question from the last attempt turned out to be a one-line thing
+and the real wall is somewhere else, so the record is worth more than the code was.
+
+**Finding 1 — why the label dump ignored the dtype.** `collectDump` routes any dtype that starts
+with an uppercase `Q` through `propStr(...)` and pushes the line with an EMPTY dtype (that is how a
+QColor is read as text). `QmlObjectList` starts with Q, so it took that branch and lost its dtype
+before the empty-print decision ever saw it. Naming it in that condition fixes it — the previous
+entry's "open question", answered.
+
+**Finding 2 — a property with no metatype crashes the dump.** With the property added but the
+metatype unregistered, `--dumpall` segfaulted, and gdb named it: `qtd_dump_object_as` ->
+`QMetaType::canConvert`, walking a null interface. The guard for that is kept — a dump that crashes
+is not one of the options, whatever put the property there. That is the only part of this attempt
+that stays.
+
+**Finding 3 — `--gc-sections` eats a registration.** `static const int x = qRegisterMetaType<…>()`
+at file scope is exactly what the linker removes when nothing reads `x`, so the registration
+silently never ran. Registering from inside `buildMo`, before the property is added, is the shape
+that works.
+
+**The wall.** With the metatype registered and carrying `IsQmlList` (probed directly: flags `0x1005`,
+`isQmlList=1`), `listAppend(this, "kids", …)` still returns false — `QQmlListReference` refuses a
+property whose read is served by our runtime meta-object. That is the next thing to isolate, and it
+wants a standalone probe against a `QMetaObjectBuilder`-built object rather than another pass over
+the whole pipeline.
+
+Reverted except the crash guard; build green, both corpora and all 111 fixtures unchanged.
