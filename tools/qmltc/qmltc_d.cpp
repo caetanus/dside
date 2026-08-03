@@ -5232,6 +5232,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     ObjNode node;
     node.id = g_selfId;   // still this object's id here (the loop doesn't touch g_selfId)
     std::string childFields, childWire, crossConnects;
+    // Forwarding properties for this object's aliases — see where they are filled.
+    std::string aliasProps;
     std::string dcWire;   // default children, emitted before the property-bound ones (see below)
     // ...and Component-valued properties before BOTH: they are templates the type builds children
     // from, so they have to be in place before any child is appended.
@@ -5807,6 +5809,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ++partial; continue;
             }
             node.aliasLines.push_back({al.first, read, atype, setObj, setProp});
+            // ...and the alias is a PROPERTY of this object in the engine's meta-object, so it has
+            // to be one here too. It forwards rather than stores — a field would hold a copy, which
+            // is what an alias is not — so it is a getter with @PropertyAlias and a `<name>_set`
+            // beside it, which is the pair qtmoc routes a forwarding property through.
+            if (atype == "int" || atype == "double" || atype == "bool" || atype == "string") {
+                // The self marker is `this` INSIDE the class — collectDump resolves it to the
+                // object's access path for the dump, and these members are in the object itself.
+                auto self = [](std::string x) {
+                    for (size_t i; (i = x.find('\x01')) != std::string::npos;) x.replace(i, 1, "this");
+                    return x;
+                };
+                aliasProps += "    @PropertyAlias(\"" + al.first + "\") " + atype
+                            + " __pa_" + al.first + "() { return " + self(read) + "; }\n"
+                            + "    void __pa_" + al.first + "_set(" + atype + " v) { setProp("
+                            + self(setObj) + ", \"" + setProp + "\", v); }\n";
+            }
         }
     }
 
@@ -8046,7 +8064,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         outerField += mk;
     }
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + lateMethod + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods
-             + childFields + methods + recompute + handlerSlots + groupHandlerSlots
+             + childFields + aliasProps + methods + recompute + handlerSlots + groupHandlerSlots
              + attachedHandlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_selfIds = savedIds;

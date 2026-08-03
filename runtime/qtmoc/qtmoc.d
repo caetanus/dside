@@ -24,7 +24,7 @@
 // Real support for worker QObjects (locking / per-thread tables) is a structural follow-up.
 module qtmoc;
 
-import std.traits : Parameters, hasUDA, getUDAs;
+import std.traits : Parameters, hasUDA, getUDAs, ReturnType;
 import std.meta : AliasSeq, Filter, staticMap;
 
 // ---- runtime C++ (qtdmoc.cpp) -----------------------------------------------
@@ -162,6 +162,13 @@ struct Slot {}
 /// Field UDA: exposes the field as a Q_PROPERTY. `notify` = name of the change
 /// signal (optional), e.g. @Property("valueChanged") int value;
 struct Property { string notify = ""; }
+/// A property that FORWARDS instead of storing. A QML `property alias inner: kid.value` is a
+/// REFERENCE: nothing is kept, reads go straight to the target and writes land on it — which is
+/// what an alias means and why a field would be wrong (a copy can drift). qtmoc discovers ordinary
+/// properties over FIELDS, so a forwarding one needs its own marker: put it on the GETTER, and the
+/// setter is the same name with `_set`. The engine has these in its meta-object; without them the
+/// full property dump showed `inner` on its side and no such key on ours.
+struct PropertyAlias { string name; string notify = ""; }
 
 /// A signal with the given argument types. Emitting calls QMetaObject::activate.
 struct Signal(Args...) {
@@ -356,6 +363,59 @@ template propMembers(T) {
     }
     enum propMembers = mocFilter!(T, isProp);
 }
+// ---- forwarding properties (@PropertyAlias) ---------------------------------
+// The GETTERS, in allMembers order. A setter is found by name (`<getter>_set`) rather than by an
+// overload, so `__traits(getMember)` never has to re-resolve an overload set from argument types.
+template aliasPropMembers(T) {
+    template isAliasProp(string m) {
+        static if (is(typeof(__traits(getMember, T, m)) == function))
+            enum isAliasProp = hasUDA!(__traits(getMember, T, m), PropertyAlias);
+        else enum isAliasProp = false;
+    }
+    enum aliasPropMembers = mocFilter!(T, isAliasProp);
+}
+string[] aliasPropNames(T)() {
+    string[] r;
+    static foreach (m; aliasPropMembers!T) r ~= getUDAs!(__traits(getMember, T, m), PropertyAlias)[0].name;
+    return r;
+}
+string[] aliasPropTypes(T)() {
+    string[] r;
+    static foreach (m; aliasPropMembers!T) r ~= cppSig!(ReturnType!(__traits(getMember, T, m)));
+    return r;
+}
+int[] aliasPropNotify(T)() {
+    int[] r;
+    static foreach (m; aliasPropMembers!T) {{
+        enum note = getUDAs!(__traits(getMember, T, m), PropertyAlias)[0].notify;
+        int idx = -1, i = 0;
+        static foreach (s; signalMembers!T) { if (s == note) idx = i; i++; }
+        r ~= idx;
+    }}
+    return r;
+}
+// Read/write a forwarding property: the getter and `<getter>_set` do the forwarding, so this only
+// marshals, exactly as callProp does for a stored one.
+void callPropAlias(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) {
+    alias X = ReturnType!(__traits(getMember, T, m));
+    if (write) {
+        static if (is(X == string)) X nv = qsToD(a[0]);
+        else                        X nv = *cast(X*) a[0];
+        __traits(getMember, o, m ~ "_set")(nv);
+        if (notifyIdx >= 0) {
+            void*[2] argv; argv[0] = null;
+            static if (is(X == string)) {
+                auto qs = qtd_str_to_qs(nv.ptr, cast(int) nv.length);
+                argv[1] = qs; qtd_moc_activate(qobj, notifyIdx, argv.ptr); qtd_qs_free(qs);
+            } else { argv[1] = cast(void*) &nv; qtd_moc_activate(qobj, notifyIdx, argv.ptr); }
+        }
+    } else {
+        auto cur = __traits(getMember, o, m)();
+        static if (is(X == string)) qtd_qs_set(a[0], cur.ptr, cast(int) cur.length);
+        else                        *cast(X*) a[0] = cur;
+    }
+}
+
 string[] propTypes(T)() {
     string[] r;
     static foreach (m; propMembers!T) r ~= cppSig!(typeof(__traits(getMember, T, m)));
@@ -505,9 +565,11 @@ T newQObject(T, Args...)(Args ctorArgs) {
     T o = new T(ctorArgs);
     enum sigs  = signalSigs!T;
     enum slts  = slotSigs!T;
-    enum pnames = propMembers!T;
-    enum ptypes = propTypes!T;
-    enum pnotif = propNotify!T;
+    // The forwarding ones are appended AFTER the stored ones, so a property index is still the
+    // index into `propMembers` for everything below that length and into the alias list above it.
+    enum pnames = propMembers!T ~ aliasPropNames!T;
+    enum ptypes = propTypes!T ~ aliasPropTypes!T;
+    enum pnotif = propNotify!T ~ aliasPropNotify!T;
     // arrays of C-strings (signatures with \0 -> .ptr is safe in C); +1 avoids [0]
     const(char)*[sigs.length + 1] sigp;
     const(char)*[slts.length + 1] sltp;
@@ -532,7 +594,7 @@ T newQObject(T, Args...)(Args ctorArgs) {
 // Shared by newQObject (qobj comes from qtd_moc_new) and by the QML factory
 // (qobj = the QtdMocObject the engine allocated).
 private void wireQObject(T)(T o, void* qobj) {
-    enum pnotif = propNotify!T;
+    enum pnotif = propNotify!T ~ aliasPropNotify!T;
     int si = 0;
     static foreach (m; signalMembers!T) {
         __traits(getMember, o, m)._bind(qobj, si);
@@ -548,6 +610,10 @@ private void wireQObject(T)(T o, void* qobj) {
         try {
             static foreach (i, m; propMembers!T)
                 if (idx == i) { callProp!(T, m)(o, qobj, pnotif[i], write, a); return; }
+            static foreach (j, m; aliasPropMembers!T)
+                if (idx == propMembers!T.length + j) {
+                    callPropAlias!(T, m)(o, qobj, pnotif[propMembers!T.length + j], write, a); return;
+                }
         } catch (Exception e) { qtdOnCallbackError(e); }
     };
     _reg[cast(void*) o] = MocReg(qobj, disp, prop);
@@ -611,9 +677,9 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
     }
     enum sigs = signalSigs!T;
     enum slts = slotSigs!T;
-    enum pnames = propMembers!T;
-    enum ptypes = propTypes!T;
-    enum pnotif = propNotify!T;
+    enum pnames = propMembers!T ~ aliasPropNames!T;
+    enum ptypes = propTypes!T ~ aliasPropTypes!T;
+    enum pnotif = propNotify!T ~ aliasPropNotify!T;
     const(char)*[sigs.length + 1] sigp;
     const(char)*[slts.length + 1] sltp;
     const(char)*[pnames.length + 1] pnp;
@@ -825,7 +891,9 @@ mixin template QtdWidget(Base) {
 
         // 2. attach the runtime meta-object (own signals/slots/props)
         enum sigs = signalSigs!_Self; enum slts = slotSigs!_Self;
-        enum pnames = propMembers!_Self; enum ptypes = propTypes!_Self; enum pnotif = propNotify!_Self;
+        enum pnames = propMembers!_Self ~ aliasPropNames!_Self;
+        enum ptypes = propTypes!_Self ~ aliasPropTypes!_Self;
+        enum pnotif = propNotify!_Self ~ aliasPropNotify!_Self;
         const(char)*[sigs.length + 1] sigp; const(char)*[slts.length + 1] sltp;
         const(char)*[pnames.length + 1] pnp; const(char)*[ptypes.length + 1] ptp; int[pnotif.length + 1] pnt;
         static foreach (i; 0 .. sigs.length)   sigp[i] = (sigs[i] ~ "\0").ptr;
@@ -850,6 +918,11 @@ mixin template QtdWidget(Base) {
             try {
                 static foreach (i, m; propMembers!_Self)
                     if (idx == i) { callProp!(_Self, m)(__self, _qobj, pnotif[i], write, a); return; }
+                static foreach (j, m; aliasPropMembers!_Self)
+                    if (idx == propMembers!_Self.length + j) {
+                        callPropAlias!(_Self, m)(__self, _qobj,
+                                                 pnotif[propMembers!_Self.length + j], write, a); return;
+                    }
             } catch (Exception e) { qtdOnCallbackError(e); }
         };
         _reg[cast(void*) this] = MocReg(_qobj, __disp, __prp);

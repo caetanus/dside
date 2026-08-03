@@ -3706,3 +3706,25 @@ the default-property holder (AliasHolder, UsesAliasDefault).
 
 Written down here rather than begun, because starting a moc feature is not something to do at the
 end of a session — and because the shape above is the part that took the reading.
+
+### DONE: an alias is a FORWARDING property (2026-08-03)
+
+The design in the entry above, built. qtmoc gained `@PropertyAlias`: a property backed by a getter
+and a `<name>_set` beside it rather than by a field, because a field would hold a COPY and that is
+precisely what an alias is not. Discovery, the three build paths (free `newQObject`, the QML factory
+and the trampoline subclass) and the property dispatch all take the forwarding ones AFTER the stored
+ones, so an index below `propMembers.length` is still a field and above it is a forwarder.
+
+The emitter emits the pair from the alias line it already had — the same read expression the dump
+uses, with the self marker resolved to `this` because these members live in the object itself.
+
+**Corpus 35 of 46 to 40**: AliasBare, Aliased, AliasRebind, ChildAlias and ChildReactive all pass
+the strong protocol and come out of the gate's exclusion list. Nothing else moved — controls 23 of
+23, quick 42 of 46, both corpora identical on every axis (Basic 56 of 57, Fusion 48 of 49, 2 value
+differences each, render 49 and 44 with none differing, click 34 and 34 with one, diagnostics 64
+and 48).
+
+Six exclusions left, and the four families are down to three: an alias whose target is an OBJECT
+(AliasHolder, UsesAliasDefault — the emitter accepts those today and emits no dump line, so they
+need the object marshalling the scalar pair does not do), list properties (ArrayBinding, UsesList),
+and the deliberate `Connections` pair.
