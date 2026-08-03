@@ -3636,3 +3636,29 @@ keeps the document's name and a nested child reports its bound base. That is the
 the emitter, not in either dumper.
 
 Reverted whole; the gate and both corpora are unchanged.
+
+### A declared object property with NO value is still a property (2026-08-03)
+
+First of the four real gate-exclusion families, partly closed. `DefaultHolder.qml` is two lines —
+`property string tag` and `default property QtObject child` — and the engine's dump has `child
+<null>` where ours had no such key at all: the property did not exist, so a use site assigning it
+wrote a name the object does not have.
+
+The cause was narrow. A declared object property is only kept when `boundTypeFor(<its type>)` maps
+it to a D wrapper, and QML's own `QtObject` maps to nothing. It is still an object slot, and that is
+all the channel needs: `Object` is the D type, `cppSig` spells a class as `X*`, and the meta-object
+builder falls back to `QObject*` when that name has no metatype — which is exactly this case.
+
+Two things had to come with it, both caught by the gate rather than by reading:
+
+- a LIST is not an object slot. `default property list<QtObject> items` keeps `list` in the parser's
+  `typeModifier`, so the name alone does not say so, and declaring it as an object made `items` read
+  `null` against the engine's empty list.
+- an object slot has no TEXT on either side. The oracle's `--props` reads the property as a QVariant
+  and `toString()` of a `QObject*` is empty, filled or not; printing the D reference gave `"null"`
+  against that empty. `--dumpall` is where the two are actually distinguished, as `<object>` and
+  `<null>`.
+
+`DefaultHolder` now passes the strong protocol — corpus 33 of 46 to 34. What is left in this family
+is the other half: the bare child has to be ASSIGNED to the declared default property, which is why
+`UsesDefault` still reads `child <null>` where the engine has `<object>`.

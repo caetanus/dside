@@ -1340,6 +1340,14 @@ static bool isBoundObjectProp2(const std::string &qmlType, const std::string &n)
     return false;
 }
 
+// True when a declared property's type NAMES a QML object type rather than a value/scalar one.
+// `QtObject` is not in the bound map (nothing wraps it) and is still an object; anything the
+// registry lists is one by construction.
+static bool isQmlObjectType(const std::string &t) {
+    // A LIST is not one — `default property list<QtObject> items` keeps `list` in the parser's
+    // typeModifier and `QtObject` as the member type, so the caller checks that, not this name.
+    return t == "QtObject" || t == "QObject" || g_qmlMap.count(t) > 0 || g_qmlCxxType.count(t) > 0;
+}
 static bool isBoundObjectProp(const std::string &n) {
     if (g_propType.count(n) || g_scope.count(n)) return false;
     if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) return qc->second.count(n) > 0;
@@ -5043,6 +5051,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     std::string imp = "import " + obt.second + ";\n";
                     if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
                     dt = objDt.c_str();
+                } else if (isQmlObjectType(qs(qmlType))
+                           && pub->typeModifier != QLatin1String("list")) {
+                    // ...and an object type with no BOUND mapping is still a property. QML's own
+                    // `QtObject` is the case that shows it: `default property QtObject child` with
+                    // no value is `child <null>` in the engine's meta-object and was nothing at all
+                    // in ours — the property simply did not exist, so a use site assigning it wrote
+                    // a name the object does not have. `Object` is the D type here because the only
+                    // thing the channel needs is a QObject slot: cppSig spells a class as `X*` and
+                    // the meta-object builder falls back to QObject* when that name has no
+                    // metatype, which is exactly this.
+                    objDt = "Object";
+                    g_propType[name] = "@" + qs(qmlType);
+                    if (!objInit.empty()) objInitAssigns.push_back({name, objInit});
+                    dt = objDt.c_str();
                 }
             }
             std::string expr;
@@ -8620,7 +8642,13 @@ int main(int argc, char **argv) {
             // `+ 0.0` turns a NEGATIVE zero into a positive one (IEEE): -0 and 0 are the same
             // value and differ only in how %.17g prints them, so comparing them as text reported a
             // difference where there is none. The oracle normalises the same way.
+            // An OBJECT slot has no text of its own on either side: the oracle's `--props` reads
+            // the property as a QVariant and `toString()` of a QObject* is empty, filled or not.
+            // Printing the D reference gave "null" against that empty, which is a spelling and not
+            // a value. (`--dumpall` is where the two are actually distinguished, as <object> and
+            // <null>.)
             std::printf(l.dtype == "double" ? "    writefln(\"%s\\t%%.17g\", (%s) + 0.0);\n"
+                      : l.dtype == "Object" ? "    writefln(\"%s\\t\");%.0s\n"
                                             : "    writefln(\"%s\\t%%s\", %s);\n",
                         l.label.c_str(), l.access.c_str());
         std::printf("}\n");
