@@ -3832,3 +3832,26 @@ That is the shape: a declared list property becomes a meta-object property typed
 side table, and the emitter marks the property. Contained in `runtime/qtmoc/` plus one line in the
 emitter — smaller than the "new mechanism" the previous entry called it, because the caller already
 exists and only the callee is missing.
+
+### The list property, attempted and reverted — with the one open question (2026-08-03)
+
+Built both halves and put it back, because the second half did not converge and half of a mechanism
+in the moc is worse than none.
+
+**The runtime half worked and is the part worth keeping in mind.** A side table of
+`{owner, property, items}` with `append`/`count`/`at`/`clear` callbacks, handed out as a
+`QQmlListProperty<QObject>` from `callProp`'s READ path, with the entry dropped through the same
+`destroyed()` hook the other side-tables use. It compiled clean on Qt5 and Qt6 — the index type
+differs between them (`int` against `qsizetype`) and the class NAMES it, so
+`decltype(QQmlListProperty<QObject>().count(nullptr))` takes it from Qt instead of guessing per
+version.
+
+**The emitter half stopped on one thing.** A declared `property list<QtObject>` becomes
+`@Property QmlObjectList kids;` correctly — that much is in the generated D — but the label dump
+still emits `writefln("kids\t%s", propStr(o, "kids"))` where it should emit the empty form, and the
+branch that decides that is keyed on the DumpLine's dtype, which is set from the very same
+`p.dtype` that produced the field one line earlier. Why the two disagree is the open question, and
+it is the whole of what is left: the runtime, the property, and the append are all in place.
+
+Reverted whole; the build is green and both corpora and all 111 fixtures are unchanged. The next
+attempt starts by printing that dtype at the emission point rather than by rebuilding the design.
