@@ -3530,3 +3530,26 @@ property, then add a `--dumpall` phony beside every `--props` one. The second is
 `reggaefile.d`; the first is the actual work, and it is worth doing for its own sake — a document
 that reads `control.cb` through anything but the D field is compiling against something the object
 does not have.
+
+### ...and what the first of those two moves actually costs (2026-08-03)
+
+Tried, and reverted, because the estimate above was wrong in an instructive way. Marking a declared
+object property with `@Property` so it lands in the meta-object is one line in the emitter — and it
+is necessary but not sufficient.
+
+`qtmoc.callProp` marshals a CLASS-typed property like this:
+
+    __traits(getMember, o, m) = pv is null ? null : X.wrap(pv);
+
+`X.wrap(ptr)` is a BOUND WRAPPER's constructor from a C++ pointer. A generated `@QObject` class —
+which is what a compiled `property CheckBox cb: CheckBox { }` produces — has no `wrap`, so the
+fixture that exercises it (`CrossCall`, whose `kid` is exactly this shape) stopped compiling:
+`no property 'wrap' for type CrossCall.CrossCall_kid`.
+
+So the work is in the MOC, not in the compiler: writing a class-typed property from C++ has to
+resolve the pointer back to the D object that owns it, which is the registry's job and not
+`X.wrap`'s. Until that exists, marking these properties only moves the failure from a missing dump
+line to a build error — and the dump line is the honest one.
+
+Reverted whole; both corpora and every fixture unchanged. The `--dumpall` gate still wants this
+first, and now the estimate is right: it is a moc change with a reverse lookup in it, not a UDA.
