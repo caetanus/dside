@@ -2884,3 +2884,39 @@ So the blocker is the DELEGATE: our compiled Menu has no `QQmlComponent` in `del
 wrap anything, and every one of those nine children is the wrong class. That is a concrete,
 single-cause target — and it is the same `Component`-as-a-template machinery the delegate path
 already has, pointed at a property the Menu reads rather than at a view.
+
+### Every remaining "path we have and the engine does not" was ONE fact (2026-08-02)
+
+The value differential counted 155 paths in Basic (125 in Fusion) that we emit and the engine does
+not. Attributed by document, they are not scattered: StackView 60, Drawer 30, ScrollBar 19,
+ScrollIndicator 19, SwipeDelegate 15, DelayButton 12 — and **every one of them is a
+`Transition.animations[...]`**.
+
+Qt's `QQuickTransition` declares `Q_CLASSINFO("DeferredPropertyNames", "animations")`. The engine
+does not create a transition's animations until the transition RUNS; `QQuickTransition::prepare()`
+calls `qmlExecuteDeferred` on itself. Probed directly against the engine, `popEnter.animations` on a
+Basic StackView has **count 0** at rest. We create them eagerly, so at rest our object graph has
+objects the engine's does not — and both animate identically once the transition runs.
+
+So the difference is in WHEN, not in what, and at rest it is not comparable at all. The oracle
+already said so in its own output: it prints `<path>.<missing>` for a path it cannot walk, and
+there are exactly 14 of those in Basic — one per deferred transition, matching the six buckets above.
+
+`tools/qmltc-value-census.py` makes that distinction a bucket instead of a footnote. It reads the
+same `.dall.s`/`.qall.s` pair the comparison script writes and splits the differences into
+value-diff / only-ours / only-engine / **unmeasurable** (ours under a path the oracle marked
+`<missing>`). Measured on both corpora:
+
+| | Basic | Fusion |
+|---|---|---|
+| documents | 57 | 49 |
+| identical | **48** | **43** |
+| value differences | 21 | 16 |
+| paths we have, engine does not | **0** | **0** |
+| paths the engine has, we do not | **0** | **0** |
+| unmeasurable (deferred transitions) | 155 | 125 |
+
+The whole residue is 37 value differences across four causes, all already named: the
+`baselineOffset` layout-order difference (CheckBox, RadioButton, Switch, TextField), DelayButton's
+swapped `contentItem.data[0]`/`[1]`, the two HeaderViews' uninitialised `rows`/`columns`/
+`contentWidth`/`contentHeight`/`model`, and ComboBox/SearchField's `popup.contentItem.model`.
