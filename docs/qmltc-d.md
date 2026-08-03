@@ -3503,3 +3503,30 @@ and the group children go back with the deferred ones.
 Both measurements hold at once: Basic's click is back to 34 identical with none differing, and behind
 the open gate the menu still reports `count` 9 and `contentHeight` 306 — the engine's — with the
 same 21 value differences. Everything else unchanged on both corpora.
+
+### The strongest comparison this project has is NOT in the build gate (2026-08-03)
+
+Worth stating plainly, because every number in this file comes from it. There are two property
+protocols:
+
+- `--labels` / `--props`: the compiler writes down the paths it translated and the oracle is asked
+  for those. **This is what every build target uses.**
+- `--objpaths` / `--dumpall`: both sides enumerate EVERY property of every object in the tree. This
+  is what the corpus scripts use, and it is the one that found the deferred transitions, the
+  gradients, the QJSValue slots and the ordering defects.
+
+`grep -n "dumpall\|objpaths" reggaefile.d` returns nothing. The gate compares what the compiler chose
+to record — which is exactly the failure mode this file has documented over and over, sitting in the
+one place nobody re-reads.
+
+Measured before proposing it: run the strong protocol over the 23 controls fixtures and **22 pass**.
+The one that fails is `CWidgets`, and the difference is already known and named: `property CheckBox
+cb: CheckBox { … }` becomes a plain D field, not a `@Property`, so it is absent from our meta-object
+while the engine has `cb  <object>`. Every binding that reads it through the field works; a read
+through the META channel would not, and the engine's dump shows the property and ours does not.
+
+So the next step is two moves, in this order: make a declared OBJECT property a real meta-object
+property, then add a `--dumpall` phony beside every `--props` one. The second is a dozen lines in
+`reggaefile.d`; the first is the actual work, and it is worth doing for its own sake — a document
+that reads `control.cb` through anything but the D field is compiling against something the object
+does not have.
