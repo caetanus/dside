@@ -3176,3 +3176,32 @@ each, render at 49/0 and 42/2, diagnostics at 64 and 48.
 
 This is the same lesson as the indexed attached path, in a different property type: two walkers built
 from one tree are still two walkers, and a path neither of them can reach reports as agreement.
+
+### `Qt.lighter` lost 8 bits, and it cost two frames and four clicks (2026-08-03)
+
+With the gradient stops finally in the comparison and MATCHING, Fusion's ToolBar still rendered
+differently. Mapped pixel by pixel: six full rows of its 26 — rows 0, 3, 8, 11, 16, 19 — one grey
+step brighter on our side, and one row of Fusion's Switch the same way. Six rows is a gradient
+rounding boundary, not a colour someone wrote.
+
+The stop colours compare equal because the comparison reads `#f9f9f9`, and that is the whole
+problem: a QColor holds 16 bits per channel and `Qt.lighter(control.palette.window, 1.04)` produces
+a value that is not 8-bit. The invoke path already knew this — `qtd_var_text` spells a colour
+`#rrrrggggbbbb` for exactly this reason, and the note there says it was the difference "the engine
+showed on every gradient stop". The `Qt.*` colour helpers did not use it: `Qt.lighter`, `Qt.darker`,
+`Qt.alpha` and `Qt.color` each spelled their result with `QVariant::toString()`, so the colour was
+truncated on the way out and parsed back one step off.
+
+One line each, and the differential could not have caught it — both sides were reading the same
+truncated spelling.
+
+| | before | after |
+|---|---|---|
+| Fusion render at rest | 42 identical, 2 differ | **44 identical, 0 differ** |
+| Fusion frame after a click | 29 identical, 4 differ, 2 unmeasurable-at-rest | **33 identical, 2 differ, 0 at rest** |
+| Basic render / click | 49 / 34, zero differing | unchanged |
+| values, diagnostics, instantiation | — | unchanged |
+
+The two clicks that still differ are BusyIndicator and ComboBox. Everything else in Qt's Fusion
+style that this compiler can build now draws the same frame as the engine, at rest and after being
+pressed.

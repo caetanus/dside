@@ -1281,7 +1281,7 @@ static QString qtd_shade_of(const QColor& c, double factor, int lighter) {
     // non-finite number to an int gives 0 — which QColor documents as returning the colour
     // unchanged. Doing the same keeps the engine's outcome instead of killing the process.
     int pct = qIsFinite(factor) ? qRound(factor * 100.0) : 0;
-    return QVariant::fromValue(lighter ? c.lighter(pct) : c.darker(pct)).toString();
+    return qtd_var_text(QVariant::fromValue(lighter ? c.lighter(pct) : c.darker(pct)));
 }
 #endif
 // The colour as its ARGB word: a DECLARED `property color` is a real QColor field on the D side,
@@ -1293,6 +1293,12 @@ static QString qtd_shade_of(const QColor& c, double factor, int lighter) {
 // `Qt.alpha(c, a)` — the same colour at a new opacity, which is what the engine's own
 // QQuickColorProvider::alpha does (`setAlphaF`). Fusion's Switch draws both of its gradient stops
 // through it.
+//
+// Every helper below spells its result with qtd_var_text, for the reason written there: `#rrggbb`
+// loses the 16 bits QColor holds, and a colour that crosses this channel as text is parsed back
+// one step off. It showed as SIX full rows of a Fusion ToolBar's gradient rendering one grey
+// brighter than the engine's, with both sides' stop colours comparing equal — because the
+// comparison was reading the same truncated 8-bit spelling.
 extern "C" void* qtd_color_alpha(const char* s, double a) {
 #ifdef QT_GUI_LIB
 #if QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
@@ -1302,7 +1308,7 @@ extern "C" void* qtd_color_alpha(const char* s, double a) {
 #endif
     if (!c.isValid()) return new QString();
     c.setAlphaF(qIsFinite(a) ? qBound(0.0, a, 1.0) : 1.0);
-    return new QString(QVariant::fromValue(c).toString());
+    return new QString(qtd_var_text(QVariant::fromValue(c)));
 #else
     (void)s; (void)a;
     return new QString();
@@ -1313,7 +1319,7 @@ extern "C" void* qtd_color_alpha_rgba(unsigned rgba, double a) {
     QColor c = QColor::fromRgba(rgba);
     if (!c.isValid()) return new QString();
     c.setAlphaF(qIsFinite(a) ? qBound(0.0, a, 1.0) : 1.0);
-    return new QString(QVariant::fromValue(c).toString());
+    return new QString(qtd_var_text(QVariant::fromValue(c)));
 #else
     (void)rgba; (void)a;
     return new QString();
@@ -1321,7 +1327,7 @@ extern "C" void* qtd_color_alpha_rgba(unsigned rgba, double a) {
 }
 extern "C" void* qtd_color_name(unsigned rgba) {
 #ifdef QT_GUI_LIB
-    return new QString(QVariant::fromValue(QColor::fromRgba(rgba)).toString());
+    return new QString(qtd_var_text(QVariant::fromValue(QColor::fromRgba(rgba))));
 #else
     (void)rgba;
     return new QString();
