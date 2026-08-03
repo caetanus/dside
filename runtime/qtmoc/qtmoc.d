@@ -399,20 +399,34 @@ int[] aliasPropNotify(T)() {
 void callPropAlias(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) {
     alias X = ReturnType!(__traits(getMember, T, m));
     if (write) {
-        static if (is(X == string)) X nv = qsToD(a[0]);
-        else                        X nv = *cast(X*) a[0];
+        // An OBJECT target crosses as a POINTER, exactly as a stored object property does: a bound
+        // wrapper is rebuilt with X.wrap, a D-defined @QObject is looked up. `default property alias
+        // child: self.someObject` is this case — the engine holds the bare child through the alias.
+        static if (is(X == class)) {
+            auto pv = *cast(void**) a[0];
+            static if (__traits(hasMember, X, "wrap"))
+                X nv = pv is null ? null : X.wrap(pv);
+            else
+                X nv = pv is null ? null : cast(X) dObjectFor(pv);
+        }
+        else static if (is(X == string)) X nv = qsToD(a[0]);
+        else                             X nv = *cast(X*) a[0];
         __traits(getMember, o, m ~ "_set")(nv);
         if (notifyIdx >= 0) {
             void*[2] argv; argv[0] = null;
             static if (is(X == string)) {
                 auto qs = qtd_str_to_qs(nv.ptr, cast(int) nv.length);
                 argv[1] = qs; qtd_moc_activate(qobj, notifyIdx, argv.ptr); qtd_qs_free(qs);
+            } else static if (is(X == class)) {
+                auto pv2 = nv is null ? null : qobjOf(nv);
+                argv[1] = cast(void*) &pv2; qtd_moc_activate(qobj, notifyIdx, argv.ptr);
             } else { argv[1] = cast(void*) &nv; qtd_moc_activate(qobj, notifyIdx, argv.ptr); }
         }
     } else {
         auto cur = __traits(getMember, o, m)();
-        static if (is(X == string)) qtd_qs_set(a[0], cur.ptr, cast(int) cur.length);
-        else                        *cast(X*) a[0] = cur;
+        static if (is(X == class)) *cast(void**) a[0] = cur is null ? null : qobjOf(cur);
+        else static if (is(X == string)) qtd_qs_set(a[0], cur.ptr, cast(int) cur.length);
+        else                             *cast(X*) a[0] = cur;
     }
 }
 

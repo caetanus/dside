@@ -3728,3 +3728,25 @@ Six exclusions left, and the four families are down to three: an alias whose tar
 (AliasHolder, UsesAliasDefault — the emitter accepts those today and emits no dump line, so they
 need the object marshalling the scalar pair does not do), list properties (ArrayBinding, UsesList),
 and the deliberate `Connections` pair.
+
+### ...and an alias whose target is an OBJECT (2026-08-03)
+
+The rest of that family. The alias resolution already TYPED an object target — a declared
+`property QtObject someObject` now has a D type, so `atype` came back non-empty — and the emission
+was gated on the four scalar names, so the forwarding pair was simply never written for it.
+
+Two lines: the guard becomes "any type we resolved", and an OBJECT target is assigned through the D
+FIELD rather than through `setProp`, because the target is a member of this same class and the meta
+channel would only re-enter the property being defined. `callPropAlias` gained the pointer path a
+stored object property already had — `X.wrap` for a bound wrapper, the registry lookup for a
+D-defined `@QObject`.
+
+`default property alias child: self.someObject` is the shape this matters for, and it is how a bare
+child of a user of the type reaches its target at all.
+
+**Corpus 40 of 46 to 42.** AliasHolder and UsesAliasDefault pass; the alias family and the
+default-property-holder family are both closed. Nothing else moved.
+
+Four exclusions left, in two families and one deliberate pair: list properties (ArrayBinding,
+UsesList) and the `Connections` desugaring (Connect, CrossCall) — plus the four `quick` fixtures
+whose `__class` is the harness name coincidence, which is an emitter decision and not a gap.

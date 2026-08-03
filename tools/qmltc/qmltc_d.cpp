@@ -5804,7 +5804,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             b && isSelfId(qs(b->name.toString()))
                             && g_scope.count(qs(fm->name.toString())))
                         objectAlias = true;
-                if (objectAlias) continue;
+                if (objectAlias) {
+                    // An alias whose target is an OBJECT property of this same object. It carries
+                    // no scalar to dump, but it IS a property in the engine's meta-object — and a
+                    // `default property alias` is how a bare child reaches its target at all
+                    // (Qt's own shape in AliasHolder). Same forwarding pair as a scalar alias,
+                    // typed by the target property's own D type.
+                    if (auto *fm2 = cast<FieldMemberExpression *>(al.second)) {
+                        std::string mem2 = qs(fm2->name.toString()), dty;
+                        for (auto &p2 : props) if (p2.name == mem2) dty = p2.dtype;
+                        if (!dty.empty() && dty != "int" && dty != "double" && dty != "bool"
+                                && dty != "string") {
+                            aliasProps += "    @PropertyAlias(\"" + al.first + "\") " + dty
+                                        + " __pa_" + al.first + "() { return " + dIdent(mem2) + "; }\n"
+                                        + "    void __pa_" + al.first + "_set(" + dty + " v) { "
+                                        + dIdent(mem2) + " = v; }\n";
+                        }
+                    }
+                    continue;
+                }
                 std::fprintf(stderr, "qmltc-d: %s: alias '%s' target is unsupported — skipped (later phase)\n", inPath, al.first.c_str());
                 ++partial; continue;
             }
@@ -5813,17 +5831,26 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // to be one here too. It forwards rather than stores — a field would hold a copy, which
             // is what an alias is not — so it is a getter with @PropertyAlias and a `<name>_set`
             // beside it, which is the pair qtmoc routes a forwarding property through.
-            if (atype == "int" || atype == "double" || atype == "bool" || atype == "string") {
+            if (!atype.empty()) {
+                bool scalarAlias = atype == "int" || atype == "double" || atype == "bool"
+                                || atype == "string";
                 // The self marker is `this` INSIDE the class — collectDump resolves it to the
                 // object's access path for the dump, and these members are in the object itself.
                 auto self = [](std::string x) {
                     for (size_t i; (i = x.find('\x01')) != std::string::npos;) x.replace(i, 1, "this");
                     return x;
                 };
+                // An OBJECT target is assigned through the D field rather than through setProp:
+                // the target is a member of this same class, and the meta channel would only
+                // re-enter the property we are defining. `default property alias child:
+                // self.someObject` is that shape, and it is how a bare child of a user of the type
+                // reaches its target at all.
                 aliasProps += "    @PropertyAlias(\"" + al.first + "\") " + atype
                             + " __pa_" + al.first + "() { return " + self(read) + "; }\n"
-                            + "    void __pa_" + al.first + "_set(" + atype + " v) { setProp("
-                            + self(setObj) + ", \"" + setProp + "\", v); }\n";
+                            + "    void __pa_" + al.first + "_set(" + atype + " v) { "
+                            + (scalarAlias ? "setProp(" + self(setObj) + ", \"" + setProp + "\", v);"
+                                           : self(setObj) + "." + dIdent(setProp) + " = v;")
+                            + " }\n";
             }
         }
     }

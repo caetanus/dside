@@ -680,16 +680,15 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // what found the deferred transitions, the gradients, the QJSValue slots and every
             // ordering defect this file records. Measured before adding it: 23 of the 23 controls
             // fixtures pass.
-            // ...for every fixture EXCEPT the ones a measured, named gap makes fail today: a QML
-            // member that is not a plain scalar property — an alias, a default-property holder, a
-            // list property, and the object-property paths the emitter does not mark — is a D
-            // field and not a meta-object property, so the engine's dump has `conn <object>` (or
-            // `inner`, `child`, `kids[0]`) and ours has no such key. Measured: controls 23 of 23
-            // pass, quick 42 of 46, corpus 40 of 46. Listing them here rather than dropping the
-            // gate keeps the 98 that DO hold, and the list is the backlog — see the
-            // `qml-declared-members-not-in-metaobject` entry in tests/expected-fails.json.
+            // ...for every fixture EXCEPT eight, each with a named cause in the
+            // `qml-declared-members-not-in-metaobject` entry of tests/expected-fails.json: LIST
+            // properties (`kids[0]`/`items[0]` are absent because a `property list<T>` is a D array
+            // field), the `Connections` pair (a deliberate desugaring — no object is built, and both
+            // fixtures say so in their own headers), and four whose `__class` reads our generated
+            // class where the engine reads the Qt base, which is a name coincidence in the harness
+            // and not a compiler gap. Measured: controls 23 of 23, quick 42 of 46, corpus 42 of 46.
             static immutable string[] dumpallGap = [
-                "AliasHolder", "ArrayBinding", "Connect", "CrossCall", "UsesAliasDefault", "UsesList",
+                "ArrayBinding", "Connect", "CrossCall", "UsesList",
                 "QNested", "QObjProp", "QUsesLocalExt", "QUsesLocal",
             ];
             if (!dumpallGap.canFind(name)) {
