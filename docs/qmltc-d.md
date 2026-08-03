@@ -3583,3 +3583,29 @@ holders and list properties are what is left, and the skip list goes away when t
 Both corpora unchanged on every axis: Basic 56 of 57 and Fusion 48 of 49 identical, 2 value
 differences each, render 49 and 44 with none differing, click 34 and 34 with one, diagnostics 64
 and 48.
+
+### The 17 exclusions are FOUR unrelated things, not one (2026-08-03)
+
+The entry above lumped them together. Classified by reading every diff, they are:
+
+1. **Aliases** (5) — `property alias inner: kid.value` compiles to a read/write expression, not a
+   meta-object property, so the engine's dump has `inner`, `mirror`, `aliasToOrigin`, `kidSum` and
+   ours has no such key. AliasBare, Aliased, AliasRebind, ChildAlias, ChildReactive.
+2. **Default-property holders** (4) — a declared `default property QtObject child` names the bare
+   child in the engine's meta-object and is a plain D field in ours. AliasHolder, DefaultHolder,
+   UsesAliasDefault, UsesDefault.
+3. **List properties** (2) — `property list<T>` is a D array field, so `kids[0]`/`items[0]` are
+   absent. ArrayBinding, UsesList.
+4. **A deliberate structural difference** (2) — a `Connections` element is desugared into connects
+   and no object is built, while the engine holds one in `conn`. Both fixtures say so in their own
+   headers. Connect, CrossCall. Permanent for this protocol.
+5. **A harness heuristic** (4, the quick set) — the `__class` walk stops at the first class whose
+   name starts with `Q`, and every fixture in that directory is named `Q…`, so it stops on OUR
+   generated class (`QNested_dc0`) instead of the Qt base (`QQuickItem`). Not a compiler gap at all.
+
+The declared OBJECT property is done and measurable: `CrossCall` now reports `kid` and `kid2` as
+`<object>` exactly like the engine, and only the Connections pair keeps it out of the gate.
+
+Five families, four of them real, and each with a different fix. That is worth more than the single
+number the previous entry gave, and it is why the count is in the registry with the classification
+rather than as a list of names.

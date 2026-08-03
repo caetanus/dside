@@ -5396,7 +5396,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     g_outerUsed = true;
                     if (ekid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = ekid.outerHops - 1;
                 }
-                childFields += "    " + childCls + " " + dIdent(cb.field) + ";\n";
+                // Same rule as the bound-child path below: a DECLARED object property belongs in
+                // the meta-object, and a fresh @QObject is exactly the case the reverse lookup in
+                // qtmoc was added for (it has no `wrap`).
+                childFields += std::string(!isBoundObjectProp(cb.field) && !g_baseProps.count(cb.field)
+                                           && !isListProp(g_selfQmlType, cb.field)
+                                           ? "    @Property " : "    ")
+                             + childCls + " " + dIdent(cb.field) + ";\n";
                 childWire += std::string(ekid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                            + "        " + dIdent(cb.field) + " = newQObject!" + childCls + "();\n"
                            // the INSTANCE is what the property takes and what gets parented; the
