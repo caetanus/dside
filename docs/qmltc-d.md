@@ -3926,3 +3926,31 @@ with one, diagnostics 64 and 48).
 **The strong protocol now covers 113 of the 115 fixtures**, and the two it does not are the
 `Connections` pair, which is a deliberate structural difference both fixtures document in their own
 headers. There is no remaining GAP in that gate — only a decision.
+
+### The attached-child gate, measured a NINTH time — and the picture has changed (2026-08-03)
+
+Worth re-measuring after the property machinery landed, and it moved the gate from "obviously not"
+to "one ordering fact away".
+
+| Basic, gate open + compile-whole | shut | open |
+|---|---|---|
+| documents identical in every property | 56 of 57 | 51 |
+| value differences | 2 | 21 |
+| paths we have and the engine does not | 0 | 36 |
+| paths the engine has and we do not | 0 | 21 |
+| **render at rest** | 49, none differing | **49, none differing** |
+| **frame after a click** | 34, none differing | **34, none differing** |
+| diagnostics | 64 | 75 |
+
+The frame axes are IDENTICAL open and shut — the compiled ContextMenu subtree draws exactly what the
+engine draws, at rest and after a press. That has never been true before; the first measurement of
+this gate cost four documents that threw at construction, and the seventh still cost 2034 paths.
+
+What it costs now is five documents on the value axis, and the residue is one thing:
+`popup.contentItem.data[1]` is our ScrollIndicator where the engine has a Rectangle — an ORDER
+difference in the ListView's `data` — plus the transition under that indicator. 36 of the 36
+only-ours and 21 of the 21 only-engine are those two paths.
+
+The gate stays shut for now, because five documents is five documents. But the reason has been one
+ordering fact for the first time, and it is the same shape as every ordering fact this file has
+already recorded and fixed.
