@@ -3954,3 +3954,29 @@ only-ours and 21 of the 21 only-engine are those two paths.
 The gate stays shut for now, because five documents is five documents. But the reason has been one
 ordering fact for the first time, and it is the same shape as every ordering fact this file has
 already recorded and fixed.
+
+### Correction: it is not an ordering fact, it is two invisible internals (2026-08-03)
+
+The entry above called the gate's residue "an ORDER difference in the ListView's `data`". Looked at,
+it is not. Basic's ComboBox popup contentItem, dumped index by index:
+
+| | engine | ours |
+|---|---|---|
+| `data[0]` | QQuickItem (w 140) | QQuickItem |
+| `data[1]` | QQuickRectangle — z 10, `#00000000`, `visible false` | QQuickScrollIndicator |
+| `data[2]` | QQuickRectangle — z 11, `#00000000`, `visible false` | — |
+| `data[3]` | QQuickScrollIndicator (w 6) | — |
+
+Our indicator is not in the wrong place: the engine's ListView carries TWO extra children we never
+build, and they push its indicator from index 1 to index 3. Both are fully transparent, invisible,
+and above everything at z 10 and 11 — Qt internals for that view, not anything the document writes.
+
+Which explains the shape of the whole measurement. They cannot affect a frame — they are invisible
+and transparent — and that is exactly what the render and click axes said when they came out
+identical open and shut. Only a property census can see them, and what it sees is the engine having
+objects we do not, not us building the tree wrong.
+
+So the gate's cost is smaller than "five documents" makes it sound, and it is not a defect with a
+fix in the compiler. Re-open it when the census learns to say "the engine has an internal object
+here" the way it already says "this path is unmeasurable" — the marker exists, the classification
+does not.
