@@ -1872,6 +1872,12 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     if (isSelfId(n2)) { oe = "this"; oq = g_selfQmlType; return true; }
     if (auto ci2 = g_childIds.find(n2); ci2 != g_childIds.end()) {
         if (ci2->second.qmlType.empty()) return false;
+        // ...and it is built AFTER this object's own properties are assigned, which is the order
+        // the engine uses. So a dependency on it is in exactly the position the sibling case is in:
+        // the field is still null while our own wire runs, and connecting there threw. Same sink,
+        // same reason — the late phase connects and re-evaluates once. (Qt's TextField reads
+        // `placeholder.implicitWidth` for its own implicitWidth; that is this case.)
+        g_depIsSibling = true;
         oe = ci2->second.field; oq = ci2->second.qmlType; return true;
     }
     // A DECLARED object property of THIS object (`property Item control`): the field is the wrapper
@@ -6359,8 +6365,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             g_forceNotify[d.substr(0, dot)].insert(mem);
                         }
                         if (!csig.empty()) {
-                            conns += "        connectMeta(" + ci->second.field + ", \"" + csig
-                                   + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                            // sibConns, not conns: a CHILD is built after this object's own
+                            // properties are assigned (the order the engine uses), so its field is
+                            // still null while the wire's connect section runs and connectMeta
+                            // threw on it — Qt's TextField reads `placeholder.implicitWidth`. The
+                            // late phase already exists for exactly this shape and re-evaluates
+                            // once after connecting.
+                            sibConns += "        connectMeta(" + ci->second.field + ", \"" + csig
+                                      + "\", this, \"__rcb_" + ba.first + "()\");\n";
                             continue;
                         }
                     }
@@ -6864,8 +6876,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         g_forceNotify[d.substr(0, dot)].insert(mem);
                     }
                     if (!csig.empty()) {
-                        conns += "        connectMeta(" + ci->second.field + ", \"" + csig
-                               + "\", this, \"" + slot + "()\");\n";
+                        sibConns += "        connectMeta(" + ci->second.field + ", \"" + csig
+                                  + "\", this, \"" + slot + "()\");\n";   // ...built after us
                         continue;
                     }
                 }
@@ -7358,8 +7370,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // set here — which is why only the assignments whose value is the enclosing object can
         // move this far up.
         wire += earlyWire;   // ...what every binding below READS THROUGH
-        wire += dcWire;      // ...default children first, as the engine's `data` has them...
-    wire += childWire;   // ...then the property-bound ones
         // Connect EVERYTHING before the initial binding pass. Two reasons:
         //  - a bound property's first evaluation IS a change (`property int p: dummy` goes
         //    0 -> 42) and QML's handler observes it; wiring handlers afterwards would miss it.
@@ -7378,7 +7388,52 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // made afterwards, so the notification arrived with nobody listening and the Pane kept an
         // implicit width of 0 forever. The engine draws it 24x24; we drew 1x1. Found by rendering
         // a real Qt Controls file, which is the only kind of test that could see it.
-        wire += baseWire;    // set base C++ properties, with every BINDING already live
+        // ...but an assignment whose VALUE is a child cannot precede the children. This is the
+        // mirror of `earlyWire`, which moves up the assignments the children READ; here the flow
+        // goes the other way (`probe: label` names a child by id, and the fixture caught it
+        // assigning null). Split by whether the line mentions a child field — the fields are
+        // generated names, so the test is exact rather than heuristic.
+        std::set<std::string> kidFields;
+        for (auto &k : node.kids)         kidFields.insert(dIdent(k.first));
+        for (auto &dk : node.defaultKids) kidFields.insert(dk.first);
+        for (auto &gk : node.groupKids)   kidFields.insert(gk.first);
+        auto mentionsKid = [&](const std::string &line) {
+            for (auto &f : kidFields) {
+                for (size_t at = 0; (at = line.find(f, at)) != std::string::npos; ) {
+                    size_t e = at + f.size();
+                    bool lok = at == 0 || (!std::isalnum((unsigned char) line[at - 1]) && line[at - 1] != '_');
+                    bool rok = e >= line.size() || (!std::isalnum((unsigned char) line[e]) && line[e] != '_');
+                    if (lok && rok) return true;
+                    at = e;
+                }
+            }
+            return false;
+        };
+        std::string baseBeforeKids, baseAfterKids;
+        for (size_t i = 0, j; i < baseWire.size(); i = j + 1) {
+            j = baseWire.find('\n', i);
+            if (j == std::string::npos) j = baseWire.size() - 1;
+            std::string line = baseWire.substr(i, j - i + 1);
+            (mentionsKid(line) ? baseAfterKids : baseBeforeKids) += line;
+        }
+        wire += baseBeforeKids;   // set base C++ properties, with every BINDING already live
+        // ...and the CHILDREN only after this object's own properties, which is the order the
+        // engine uses: `background`, `contentItem` and `indicator` are DEFERRED properties
+        // (Q_CLASSINFO("DeferredPropertyNames", ...) on QQuickControl and friends), created inside
+        // componentComplete once everything written in the document body has been assigned.
+        //
+        // Building them first is observable, and the observable is not the child but the PARENT's
+        // effect on it. Qt's CheckBox writes `spacing: 6` and a contentItem whose `leftPadding`
+        // reads `indicator.width + control.spacing`. With the child built first, that binding
+        // settles at 28 (spacing still 0), the Control sizes the text, and the LATER `spacing: 6`
+        // re-runs it to 34 — a second text layout, this time with a valid height, which moves
+        // `baselineOffset` from the engine's 14.84375 to 19.34375. Same value in the end, wrong
+        // number of layouts. Measured by hand on the generated D before it was written here: with
+        // the two assignments moved above the children, both the root's and the contentItem's
+        // baselineOffset match the engine exactly.
+        wire += dcWire;      // ...default children first, as the engine's `data` has them...
+        wire += childWire;   // ...then the property-bound ones
+        wire += baseAfterKids;   // ...and the assignments that NAME one
         wire += handlerWire; // ...and user handlers only after, so they do not see the initial pass
         for (auto &p : props) if (p.bound) {
             std::string dleaf;   // re-subscription lines for this property's deep reads

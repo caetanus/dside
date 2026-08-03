@@ -2971,3 +2971,55 @@ produced false green, so the negative control is part of the work, not an aftert
 What is left is 17 value differences over both corpora and three causes: the `baselineOffset`
 layout-order difference, DelayButton's swapped `contentItem.data[0]`/`[1]`, and
 ComboBox/SearchField's `popup.contentItem.model`.
+
+### Children come AFTER the object's own assignments (2026-08-03)
+
+The `baselineOffset` difference, which this file has carried as "a layout-order difference" for
+several rounds, is now identified and fixed. It was an ORDERING defect on our side.
+
+The engine assigns everything written in a document body first and creates `background`,
+`contentItem` and `indicator` inside `componentComplete` — they are DEFERRED properties
+(`Q_CLASSINFO("DeferredPropertyNames", …)` on `QQuickControl` and friends). We built the children
+first. What that changes is not the child's final state but **how many times the parent makes it
+re-lay out**: Qt's CheckBox writes `spacing: 6` and a contentItem whose `leftPadding` reads
+`indicator.width + control.spacing`. Built child-first, that binding settles at 28 (spacing still
+0), the Control sizes the text, and the later `spacing: 6` re-runs it to 34 — a second text layout,
+this time with a valid height, which is what moved `baselineOffset` from 14.84375 to 19.34375.
+`leftPadding` ends at 34 either way, so only the baseline showed it.
+
+Getting there took isolating the case against the engine itself. Nine reconstructions of the shape
+(a Control with a Text contentItem, assigned in the document, assigned from C++ afterwards, with a
+CheckLabel, with implicit sizing) all produced OUR number; only Qt's own file produced the engine's,
+and the discriminating fact turned out to be that a bare CheckBox has **empty text** — an empty Text
+does not re-lay out on a width change, so its baseline stays from the first layout. That is also
+why the first version of the fixture below passed with the defect still in place.
+
+Three parts had to land together:
+
+1. **Order.** `baseWire` (this object's own property assignments) now precedes `dcWire`/`childWire`.
+2. **Assignments that NAME a child** move back after them — the mirror of the existing `earlyWire`,
+   which moves up the assignments the children READ. `probe: label` was assigning null; the
+   `QDeclObjType` fixture caught it.
+3. **Dependencies on a child** go to the late phase, like a sibling's. `connectMeta(_dc0, …)` in the
+   wire now runs before the child exists and threw — Qt's TextField reads
+   `placeholder.implicitWidth`. The late phase already existed for exactly this shape and
+   re-evaluates once after connecting.
+
+Measured over both corpora:
+
+| | Basic before | Basic after | Fusion before | Fusion after |
+|---|---|---|---|---|
+| documents identical in every property | 50 of 57 | **54** | 45 of 49 | **46** |
+| value differences | 11 | **4** | 6 | **5** |
+| render at rest | 49, 0 differ | 49, 0 differ | 41, 3 differ | **42, 2 differ** |
+| frame after a click | 34, 0 differ | 34, 0 differ | 28, 4 differ | **29, 4 differ** |
+| diagnostics | 64 | 64 | 48 | 48 |
+
+`tests/qmltc/controls/CAssignOrder.qml` pins it, and — as with the finalize hook — the fixture was
+verified able to FAIL: with the two assignments moved back after the children in the generated D,
+`contentBaseline` reads 5.34375 against the engine's 14.84375 and `ownBaseline` 11.34375 against
+20.84375.
+
+What is left is nine value differences over both corpora and two causes: DelayButton's two
+`contentItem.data[i].baselineOffset` (the same family, inside an `ItemGroup` whose children are
+built by a C++ type rather than by us) and ComboBox/SearchField's `popup.contentItem.model`.
