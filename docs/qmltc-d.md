@@ -3154,3 +3154,25 @@ Left as a difference rather than papered over. It is one read-only property, on 
 style, that no binding in either corpus reads, and both the frame at rest and the frame after a
 click are byte-identical for DelayButton on both sides. Recorded here with the probe that
 characterises it so the next attempt starts from the table rather than from the symptom.
+
+### A `QJSValue` property still holds an object — and it hid the gradients (2026-08-03)
+
+`Rectangle.gradient` is a `QJSValue` property: it takes either a `Gradient` object or a preset name.
+Read as `QObject*` it comes back null, and BOTH sides did exactly that — the oracle answered
+`<missing>` for `background.gradient` and for every stop under it, and our `--dumpall` walker
+resolved a null and printed nothing. So a Fusion ToolBar's two `GradientStop`s, which decide the
+whole frame, were emitted by neither side and compared by nobody, while the render differed by one
+step of grey with nothing in the value differential to show for it.
+
+Unwrapped on both sides — `QJSValue::toQObject()`, public API, null for a non-object, which lands on
+the same failure path as before. The oracle was fixed first, on purpose: with only that half, Fusion
+went from 0 to **227 paths the engine has and we do not**, in 13 documents, which is the honest size
+of the hole. With our side unwrapped too it is back to 0 — and the paths are now COMPARED rather
+than absent: Fusion's unmeasurable bucket drops 125 → 95, and all 30 of those paths match, including
+the ToolBar stops (`#f9f9f9`, `#efefef`) on both sides.
+
+Nothing else moved: Basic and Fusion stay at 56 and 48 documents identical with 2 value differences
+each, render at 49/0 and 42/2, diagnostics at 64 and 48.
+
+This is the same lesson as the indexed attached path, in a different property type: two walkers built
+from one tree are still two walkers, and a path neither of them can reach reports as agreement.

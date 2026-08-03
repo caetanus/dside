@@ -375,7 +375,17 @@ int qtd_prop_set_bool(void* o, const char* n, bool v) { return qtd_prop_write(o,
 // ordinary properties on it. Returns null if the property is absent or not an object.
 void* qtd_prop_get_obj(void* o, const char* n) {
     if (!o) return nullptr;
-    return static_cast<QObject*>(o)->property(n).value<QObject*>();
+    QVariant v = static_cast<QObject*>(o)->property(n);
+    if (QObject* p = v.value<QObject*>()) return p;
+    // ...and a property the engine exposes as a QJSValue still HOLDS an object. `Rectangle.gradient`
+    // is one — it takes either a Gradient or a preset name — so reading it as QObject* gave null and
+    // the dump walked no further: the two GradientStops that decide a Fusion ToolBar's whole frame
+    // were emitted by neither side, and the render differed by one step of grey with nothing in the
+    // value differential to show for it. The oracle unwraps it the same way.
+#ifdef QTD_HAVE_QML
+    if (v.canConvert<QJSValue>()) return v.value<QJSValue>().toQObject();
+#endif
+    return nullptr;
 }
 // ---- generic property access by TYPE NAME -------------------------------------
 // The typed helpers below (int/double/bool/QString) can only reach a value type that happens to

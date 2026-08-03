@@ -18,6 +18,7 @@
 #include <QQmlProperty>
 #include <QQmlContext>
 #include <QQmlListReference>
+#include <QJSValue>
 #include <QMetaProperty>
 
 // Qt5 spells the same three questions differently: a QVariant's type id, whether it holds a
@@ -137,6 +138,15 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                 continue;
             }
             QVariant v = cur->property(p.toUtf8().constData());
+            // A property the engine exposes as a QJSValue still HOLDS an object: `Rectangle.gradient`
+            // is one (it takes either a Gradient or a preset name), and reading it as QObject* gave
+            // null — so the oracle answered `<missing>` for the gradient and for every stop under
+            // it, the two GradientStops decided the whole frame, and nothing compared them. Unwrap
+            // it; QJSValue::toQObject is public API and returns null for a non-object, which lands
+            // on the same failure path as before.
+            if (v.isValid() && v.canConvert<QJSValue>() && !v.value<QObject *>()) {
+                if (QObject *jo = v.value<QJSValue>().toQObject()) { cur = jo; continue; }
+            }
             if (v.isValid()) { cur = v.value<QObject *>(); continue; }
 #ifdef QTD_HAVE_ATTACHED
             // Not a property: it may name a TYPE whose attached object is meant
