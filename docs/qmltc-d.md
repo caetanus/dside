@@ -3609,3 +3609,30 @@ The declared OBJECT property is done and measurable: `CrossCall` now reports `ki
 Five families, four of them real, and each with a different fix. That is worth more than the single
 number the previous entry gave, and it is why the count is in the registry with the classification
 rather than as a list of names.
+
+### `__class` agreement is a name coincidence (2026-08-03)
+
+Tried to close the smallest of the five families — the four `quick` fixtures whose `__class` reads
+our generated class where the engine reads the Qt base — and reverted, because the attempt showed
+the label is weaker than it looks.
+
+The walk stops at the first class whose name starts with `Q` and declares properties of its own.
+"Starts with Q" was standing in for "is a Qt class", so I replaced it with the real question — does
+the class have a REGISTERED metatype for its pointer — on our side, then on the oracle's. Each move
+broke a different fixture:
+
+- ours only: `QItemParent` went to `QQuickItem` while the engine kept `QItemParent`;
+- both: `QDeclObjType` went to `QQuickRectangle` while the engine kept `QDeclObjType`, because a
+  document-defined QML type IS a registered metatype on the engine's side.
+
+Which is the finding. The engine names a class after the DOCUMENT wherever the document defines a
+type — the root, and any local type. We name every generated class after the document, root and
+nested children alike. So `__class` matches whenever those two namings happen to line up, and the
+four `quick` fixtures are simply the case where they do not (`QNested_dc0` against `QQuickItem`).
+
+No runtime walk can fix that, because at runtime both names are just names. The label has to be
+decided where the distinction exists: at COMPILE time, where the root (and a spliced local type)
+keeps the document's name and a nested child reports its bound base. That is the fix, and it is in
+the emitter, not in either dumper.
+
+Reverted whole; the gate and both corpora are unchanged.
