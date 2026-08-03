@@ -3463,3 +3463,22 @@ sums what the children actually are: 26 with the fix, 13 without, against the en
 Behind the gate what is left is: `popup.contentItem.data[1]` is our ScrollIndicator where the engine
 has a Rectangle (an ordering difference in the ListView's `data`), `contentData[5].enabled` false
 against true, and the menu's own `editor` and `parent` reading null.
+
+### Where the remaining diagnostics are (2026-08-03)
+
+With the value and frame axes saturated at the shut gate, the 112 diagnostics across both corpora are
+worth a census rather than a guess. 41 are the attached-child gate. Of the rest, the largest single
+cluster is one FEATURE, not a scatter:
+
+**15 of them are `text`, and every one is a model role read by a computed key** —
+`text: model[control.textRole]` (ComboBox, SearchField), `control.model[control.headerView.textRole]`
+(both HeaderViews and their delegates), `modelData` (Tumbler), `model.day` (MonthGrid). That is a
+subscript into the per-item context object with a role name that is itself a binding, and the
+context channel already exists (`contextStr`/`contextInt` read a delegate's `index` and `model` by
+name). What is missing is the INDEXING, not the channel.
+
+The next four clusters are much smaller and unrelated to each other: `opacity` 5, `highlighted` 4,
+`loops` 2 (`Animation.Infinite`), and single instances of `x`/`y`/`width`/`visible`/`implicitWidth`/
+`height` on one ComboBox popup child.
+
+Written down so the next session picks the cluster rather than the first message it reads.
