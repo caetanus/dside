@@ -1020,6 +1020,24 @@ extern "C" int qtd_prop_copy(void* src, const char* sname, void* dst, const char
     if (!src || !dst) return 0;
     QVariant v = static_cast<QObject*>(src)->property(sname);
     if (!v.isValid()) return 0;
+    // A null OBJECT copied into a QVariant-typed property is QML's `null`, not "a pointer of this
+    // class that happens to be null". Qt's ComboBox binds `model: control.delegateModel`, which is
+    // null until a model is set: the engine leaves `std::nullptr_t` there and we left
+    // `QQmlInstanceModel*`, so the dump read `<null>` against the engine's empty — the same value,
+    // spelled as a different type. Only for a QVariant target: a typed object property must keep
+    // taking a typed null, or the write would simply fail.
+    if (v.canConvert<QObject*>() && !v.value<QObject*>()) {
+        auto* d = static_cast<QObject*>(dst);
+        int i = d->metaObject()->indexOfProperty(dname);
+        // Qt5 has no QMetaProperty::metaType(); userType() answers the same question there.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        bool variantTarget = i >= 0 && d->metaObject()->property(i).metaType()
+                                       == QMetaType::fromType<QVariant>();
+#else
+        bool variantTarget = i >= 0 && d->metaObject()->property(i).userType() == QMetaType::QVariant;
+#endif
+        if (variantTarget) return qtd_prop_write(dst, dname, QVariant::fromValue(nullptr));
+    }
     return qtd_prop_write(dst, dname, v);
 }
 

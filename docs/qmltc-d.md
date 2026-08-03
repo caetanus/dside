@@ -3091,3 +3091,32 @@ Eight value differences remain over both corpora: DelayButton's two
 same order argument applies one level further down than any property the compiler assigns) and
 ComboBox/SearchField's `popup.contentItem.model`, where the engine leaves an invalid QVariant and we
 write a null QObject.
+
+### A null object copied into a `QVariant` is QML's `null` (2026-08-03)
+
+`copyProp` carries a property between objects as a QVariant and lets QMetaType convert on write —
+which is what makes `font: control.font` compile without the generator knowing QFont. When the value
+is a null OBJECT and the target is a `QVariant` property, that is one conversion too few: the engine
+leaves `std::nullptr_t` there and we left the source's own pointer type.
+
+Qt's ComboBox binds `model: control.delegateModel`, and `delegateModel` is null until a model is
+set. The dump read `<null>` on our side (a `QQmlInstanceModel*` that is null) and empty on the
+engine's (a `nullptr_t`) — the same value, spelled as a different type, and nothing else would have
+shown it because the write succeeds either way. Probed against the engine: a bare `ListView {}`
+leaves the property INVALID, `model: null` leaves `std::nullptr_t`, and a straight QVariant copy of
+`delegateModel` leaves `QQmlInstanceModel*`.
+
+Only for a `QVariant` target — a typed object property must keep taking a typed null or the write
+would simply fail — and `QMetaProperty::metaType()` is Qt6, so Qt5 asks `userType()` instead.
+
+Measured: **Basic 54 → 56 documents identical (4 → 2 value differences), Fusion 46 → 48 (4 → 2)**.
+Render, click, diagnostics and the instantiation profile all unchanged.
+
+`tests/qmltc/controls/CNullModel.qml` pins it. Its negative control is not synthetic: the same shape
+in Qt's own ComboBox and SearchField, in both styles, read `<null>` against the engine's empty in the
+measurement immediately before this change.
+
+**What is left is one difference, in one document, in each style**: DelayButton's
+`contentItem.data[0]` and `[1]` `baselineOffset`, which are each other's. Its `ItemGroup` sizes the
+two `ClippedText`s itself, so the ordering argument that fixed the rest applies one level below any
+property the compiler assigns.
