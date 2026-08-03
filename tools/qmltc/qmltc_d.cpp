@@ -3933,6 +3933,13 @@ static void adoptLocalTypeRows(const std::string &localName, const std::string &
     // clean on its own, where the type IS Action, and refused as a child, where it is UndoAction.
     if (auto g = g_qmlSignals.find(baseQmlType); g != g_qmlSignals.end()) g_qmlSignals[localName] = g->second;
     if (auto m = g_qmlMethods.find(baseQmlType); m != g_qmlMethods.end()) g_qmlMethods[localName] = m->second;
+    // ...and the DEFAULT PROPERTY, which is where a bare child goes. A Menu holds its items in
+    // `contentData`, not in `data`; without this row a bare child of a local type derived from one
+    // fell back to hand-parenting and wrote `parent`, which threw at construction on four of Qt's
+    // documents. The registry has the answer for the base and the local type IS its base here.
+    if (auto d = g_qmlDefaultProp.find(baseQmlType); d != g_qmlDefaultProp.end())
+        g_qmlDefaultProp.emplace(localName, d->second);
+    if (g_qmlListProp.count(baseQmlType)) g_qmlListProp.emplace(localName, g_qmlListProp[baseQmlType]);
 }
 
 static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
@@ -4717,6 +4724,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // child)` fails. A Menu's default property is `contentData`, not `data`, and
                     // the registry publishes it (qmlmap's fifth column). Appending through the
                     // type's own default property is the next step, and it is not about the gate.
+                    // FIFTH: adopting the base's DEFAULT PROPERTY onto the local type as well
+                    // (a Menu holds its items in `contentData`) changed nothing — same nine
+                    // children, same four throws. The generated Menu emits NO listAppend at all for
+                    // its bare MenuSeparator children, only the hand-parenting fallback, so the
+                    // label is not reaching that object from the registry in the first place. That
+                    // is where to put the next print.
                     // (third measurement) — once all three prerequisites the
                     // ContextMenu needed had landed and all seven of Qt's editing Actions compiled
                     // whole. The number MOVED for the first time: with "compile it only if it

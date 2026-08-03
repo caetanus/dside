@@ -2573,6 +2573,23 @@ default property is `contentData`, not `data`, and the registry publishes it —
 column. Appending through the type's own default property is the next step, and it is not about the
 gate at all.
 
+### The gate, a fifth time: the append that falls back (2026-08-02)
+
+Adopting the base's DEFAULT PROPERTY onto a local `.qml` type as well — a Menu holds its items in
+`contentData`, not in `data` — is the same fix as the signals, in the same function, and it changed
+nothing: the same nine attached children, the same four documents throwing on
+
+    setProp failed: no writable property "parent" taking a QObject*
+
+The refinement is worth more than the change. The generated Menu emits **no `listAppend` at all**
+for its bare `MenuSeparator` children — only the hand-parenting fallback — so the label is not
+reaching that object from the registry in the first place, and adopting a row it never consults
+could not have helped. The registry has `Menu → contentData` in qmlmap's fifth column; what does not
+happen is the lookup. That is where the next print goes.
+
+The adoption stays: a local type inheriting its base's default property and list-property markers is
+right whatever this particular append does with it.
+
 Tracing beat guessing twice here, in opposite directions: the alias branch was written first from
 assumption and did not fire (the gate that never asks for a string is in the base-assign path, not
 in compileExpr), and then the argument turned out to be a separate gap that the same trace found in
