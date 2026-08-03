@@ -673,6 +673,35 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
+            // ...and the STRONGER protocol beside it, which until now lived only in the corpus
+            // scripts: `--objpaths` lists the objects and BOTH sides then enumerate every property
+            // each one declares. The `--props` diff above can only prove that what the compiler
+            // CHOSE to record matches; this one compares what the objects actually are, and it is
+            // what found the deferred transitions, the gradients, the QJSValue slots and every
+            // ordering defect this file records. Measured before adding it: 23 of the 23 controls
+            // fixtures pass.
+            // ...for every fixture EXCEPT the ones a measured, named gap makes fail today: a QML
+            // member that is not a plain scalar property — an alias, a default-property holder, a
+            // list property, and the object-property paths the emitter does not mark — is a D
+            // field and not a meta-object property, so the engine's dump has `conn <object>` (or
+            // `inner`, `child`, `kids[0]`) and ours has no such key. Measured: controls 23 of 23
+            // pass, quick 42 of 46, corpus 33 of 46. Listing them here rather than dropping the
+            // gate keeps the 98 that DO hold, and the list is the backlog — see the
+            // `qml-declared-members-not-in-metaobject` entry in tests/expected-fails.json.
+            static immutable string[] dumpallGap = [
+                "AliasBare", "Aliased", "AliasHolder", "AliasRebind", "ArrayBinding", "ChildAlias",
+                "ChildReactive", "Connect", "CrossCall", "DefaultHolder", "UsesAliasDefault",
+                "UsesDefault", "UsesList",
+                "QNested", "QObjProp", "QUsesLocalExt", "QUsesLocal",
+            ];
+            if (!dumpallGap.canFind(name)) {
+            auto objs = genD ~ ".objs", da = genD ~ ".dall", qa = genD ~ ".qall";
+            auto mkObjs = toolBin ~ " --objpaths " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > " ~ objs ~ " 2>/dev/null; ";
+            auto allCmd = "sh -c '" ~ mkObjs ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " --dumpall | sort > " ~ da
+                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --dumpall " ~ objs ~ " | sort > " ~ qa
+                ~ " && diff " ~ da ~ " " ~ qa ~ "'";
+            ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-all-" ~ dc, allCmd, [app, oracle, tool]);
+            }
             // RENDER differential: draw the same document both ways and compare the FRAME. The
             // property dump can agree while the two paint differently — that is the bar the
             // project is actually held to ("renders and behaves like the interpreted version"),

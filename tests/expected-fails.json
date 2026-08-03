@@ -1,7 +1,11 @@
 {
   "schema": "qt-dlang-gen expected-fails v2",
   "note": "Structured state for known gaps/exclusions/risks — CONSUMED by tests/expected_fails_check.d (schema + kind + probe-target existence). Each entry has an id, area, reason, since, remove_when, and a `kind`: `permanent_exclusion` (not public API / platform), `known_gap` (a generator limitation with no failing target), or `risk` (a private-API dependency that MUST keep compiling — its `probe_targets` name the build targets that guard it, and the checker verifies those targets exist).",
-  "kinds": ["permanent_exclusion", "known_gap", "risk"],
+  "kinds": [
+    "permanent_exclusion",
+    "known_gap",
+    "risk"
+  ],
   "entries": [
     {
       "id": "uic-private-widgets",
@@ -40,7 +44,12 @@
       "kind": "risk",
       "area": "qml/private-api",
       "reason": "qmlRegisterType fills QQmlPrivate::RegisterType and calls QQmlPrivate::qmlregister — a private struct whose layout differs Qt5<->Qt6 (handled behind a QT_VERSION seam) and can shift between Qt minor versions.",
-      "probe_targets": ["qmlreg-ldc2", "qmlreg-dmd", "qmlreg-qt5-ldc2", "qmlreg-qt5-dmd"],
+      "probe_targets": [
+        "qmlreg-ldc2",
+        "qmlreg-dmd",
+        "qmlreg-qt5-ldc2",
+        "qmlreg-qt5-dmd"
+      ],
       "since": "commit 5191609",
       "remove_when": "Qt exposes a public API to register a runtime QMetaObject as a QML type, or the probe runs across a Qt-version matrix in CI"
     },
@@ -57,7 +66,10 @@
       "kind": "risk",
       "area": "qml/private-api",
       "reason": ".qmltypes validation uses QQmlJSTypeDescriptionReader from Qt6QmlCompiler private API (the reader qmllint/qmltyperegistrar use). Qt6-only; can change across versions.",
-      "probe_targets": ["qmltypes-ldc2", "qmltypes-dmd"],
+      "probe_targets": [
+        "qmltypes-ldc2",
+        "qmltypes-dmd"
+      ],
       "since": "commit 0fc73b3",
       "remove_when": "a public qmltypes parser ships, or the probe runs across a Qt-version matrix"
     },
@@ -66,9 +78,22 @@
       "kind": "risk",
       "area": "moc/private-api",
       "reason": "The runtime moc (qtdmoc.cpp) builds QMetaObjects with QMetaObjectBuilder, a Qt private API. Long-standing dependency; every moc/qml/tr target compiles against it.",
-      "probe_targets": ["moc_test-ldc2-qt6", "moc_test-dmd-qt6", "moc_test-ldc2-qt5", "moc_test-dmd-qt5"],
+      "probe_targets": [
+        "moc_test-ldc2-qt6",
+        "moc_test-dmd-qt6",
+        "moc_test-ldc2-qt5",
+        "moc_test-dmd-qt5"
+      ],
       "since": "commit moc-via-ctfe",
       "remove_when": "never expected (no public equivalent); revisit if Qt ships a public runtime-metaobject builder"
+    },
+    {
+      "id": "qml-declared-members-not-in-metaobject",
+      "kind": "known_gap",
+      "area": "qmltc-d/property-differential",
+      "reason": "A QML member that is not a plain scalar property — an alias, a default-property holder, a list property, and the object-property paths the emitter does not mark — is emitted as a plain D field, not a meta-object property. The engine's full property dump therefore has `conn <object>` (or `inner`, `child`, `kids[0]`) where ours has no such key, so the `-all-` (--objpaths/--dumpall) target is not built for 17 fixtures: AliasBare, Aliased, AliasHolder, AliasRebind, ArrayBinding, ChildAlias, ChildReactive, Connect, CrossCall, DefaultHolder, UsesAliasDefault, UsesDefault, UsesList, QNested, QObjProp, QUsesLocalExt, QUsesLocal. Measured 2026-08-03: controls 23 of 23 pass, quick 42 of 46, corpus 33 of 46. The declared OBJECT property half is already done (qtmoc resolves a QObject* back to its D object instead of calling X.wrap); what is left is aliases, default-property holders and list properties.",
+      "since": "2026-08-03",
+      "remove_when": "an alias, a default-property holder and a list property are meta-object properties too — then the skip list in reggaefile.d goes away"
     }
   ]
 }

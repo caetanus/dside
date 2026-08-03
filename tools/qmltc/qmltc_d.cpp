@@ -5469,7 +5469,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (auto qp = g_qmlProps.find(cb.type); qp != g_qmlProps.end() && !cbt.first.empty())
             for (auto &pp : qp->second) kid.boundProps.push_back({pp.first, pp.second});
-        childFields += "    " + childCls + " " + dIdent(cb.field) + ";\n";
+        // A DECLARED object property is a PROPERTY, not just a field. `property CheckBox cb:
+        // CheckBox {}` puts `cb` in the object's meta-object for the engine; a plain D field put it
+        // nowhere, so a read through the meta channel found nothing and the full property dump
+        // showed the engine with `cb <object>` and us with no such key at all. A BASE object
+        // property (`contentItem:`) is already in the C++ meta-object and must not get a second,
+        // shadowing one.
+        bool declaredObjProp = !isBoundObjectProp(cb.field) && !g_baseProps.count(cb.field)
+                            && !isListProp(g_selfQmlType, cb.field);
+        childFields += std::string(declaredObjProp ? "    @Property " : "    ")
+                     + childCls + " " + dIdent(cb.field) + ";\n";
         childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + dIdent(cb.field) + " = "
                    + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"

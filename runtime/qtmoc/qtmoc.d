@@ -192,6 +192,14 @@ struct MocReg {
     void delegate(int, int, void**) nothrow prop;  // property read/write
 }
 __gshared MocReg[void*] _reg;              // key = the D object's pointer
+// ...and the same table the OTHER way round, which the forward one cannot answer: given a QObject*
+// that crossed the meta channel, which D object owns it. A property whose type is a BOUND wrapper
+// is rebuilt from the pointer with `X.wrap`; a D-defined @QObject has no such constructor and there
+// is only ever ONE D object per QtdMocObject, so the answer is a lookup, not a construction.
+// Both entries are made together and dropped together (see __mocGlobalDestroy). Stored as a raw
+// pointer, not an Object: an entry here must not keep the D object alive — `_reg` is not a GC root
+// either, and making this one would silently change every compiled object's lifetime.
+__gshared void*[void*] _byQObj;            // key = the QObject*, value = the D object's pointer
 
 extern (C) void __mocGlobalDispatch(void* dobj, int idx, void** args) nothrow {
     if (auto p = dobj in _reg) p.disp(idx, args);
@@ -206,7 +214,11 @@ extern (C) void __mocGlobalProp(void* dobj, int idx, int write, void** args) not
 // case with `_live`; this callback is reached from the same window and needs the same guard.
 private __gshared bool _regLive = true;
 shared static ~this() { _regLive = false; }
-extern (C) void __mocGlobalDestroy(void* dobj) nothrow { if (_regLive) _reg.remove(dobj); }
+extern (C) void __mocGlobalDestroy(void* dobj) nothrow {
+    if (!_regLive) return;
+    if (auto p = dobj in _reg) _byQObj.remove(p.qobj);
+    _reg.remove(dobj);
+}
 
 /// How many D @QObjects are currently registered. A test can assert this returns to its baseline
 /// after a compiled object tree is destroyed — i.e. that nesting does not leak.
@@ -240,6 +252,15 @@ void* qobjOf(T)(T o) {
         static if (__traits(hasMember, T, "ptr")) return o.ptr();
         else return null;
     }
+}
+
+/// The D object that owns a QObject*, or null. The reverse of [qobjOf], and the only way to give a
+/// class-typed property a D-defined @QObject: `X.wrap(ptr)` exists on a bound wrapper and nowhere
+/// else. Returns it as `Object` so the caller's `cast(X)` does the type check.
+Object dObjectFor(void* qobj) {
+    if (!qobj) return null;
+    if (auto p = qobj in _byQObj) return cast(Object) *p;
+    return null;
 }
 
 /// qt_metacast by name on the underlying QObject. Returns the QObject pointer if `n`
@@ -414,7 +435,15 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
             // (measured — Qt's Fusion Button, reading `control` before anything assigned it).
             auto cur = __traits(getMember, o, m);
             if ((cur is null ? null : qobjOf(cur)) !is pv) {
-                __traits(getMember, o, m) = pv is null ? null : X.wrap(pv);
+                // A BOUND wrapper is rebuilt from the pointer; a D-defined @QObject cannot be —
+                // it has no `wrap`, and there is exactly one D object per QtdMocObject anyway, so
+                // the registry answers it. Without this branch a `property CheckBox cb: CheckBox {}`
+                // could not be a meta-object property at all: the emitter's UDA compiled to
+                // "no property `wrap` for type ...".
+                static if (__traits(hasMember, X, "wrap"))
+                    __traits(getMember, o, m) = pv is null ? null : X.wrap(pv);
+                else
+                    __traits(getMember, o, m) = pv is null ? null : cast(X) dObjectFor(pv);
                 if (notifyIdx >= 0) {
                     void*[2] argv; argv[0] = null; argv[1] = cast(void*) &pv;
                     qtd_moc_activate(qobj, notifyIdx, argv.ptr);
@@ -522,6 +551,7 @@ private void wireQObject(T)(T o, void* qobj) {
         } catch (Exception e) { qtdOnCallbackError(e); }
     };
     _reg[cast(void*) o] = MocReg(qobj, disp, prop);
+    _byQObj[qobj] = cast(void*) o;
     // Post-wire hook: signals are now bound and the meta-object exists, so a generated type can
     // connect its binding dependencies and compute initial values here (it CANNOT in its own
     // ctor, which runs before wiring). qmltc-d emits `__qmltcWire`; a no-op for every hand-written
@@ -823,6 +853,7 @@ mixin template QtdWidget(Base) {
             } catch (Exception e) { qtdOnCallbackError(e); }
         };
         _reg[cast(void*) this] = MocReg(_qobj, __disp, __prp);
+        _byQObj[_qobj] = cast(void*) this;
         // Post-wire hook (same as free wireQObject): a qmltc-d-generated subclass connects its
         // bindings and sets base properties here, after the trampoline + meta-object exist.
         static if (__traits(hasMember, _Self, "__qmltcWire")) this.__qmltcWire();

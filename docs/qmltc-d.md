@@ -3553,3 +3553,33 @@ line to a build error — and the dump line is the honest one.
 
 Reverted whole; both corpora and every fixture unchanged. The `--dumpall` gate still wants this
 first, and now the estimate is right: it is a moc change with a reverse lookup in it, not a UDA.
+
+### DONE: the strong protocol is in the build gate (2026-08-03)
+
+Both halves, and the estimate two entries up was right about which was the work.
+
+**The moc.** `callProp` rebuilt a class-typed property from the incoming pointer with `X.wrap(pv)`,
+which only a BOUND wrapper has. `_reg` maps a D object to its QObject; the reverse question — given
+a QObject*, which D object owns it — had no answer, and there is exactly one D object per
+QtdMocObject, so it is a lookup and not a construction. `_byQObj` is that table, made and dropped
+with `_reg` in the same two places, holding a raw pointer rather than an `Object` so an entry cannot
+change any compiled object's lifetime. `dObjectFor` reads it, and the class-write path picks by
+`__traits(hasMember, X, "wrap")`.
+
+**The emitter.** A declared object property now carries `@Property`, so `property CheckBox cb:
+CheckBox { }` is in the meta-object where the engine has it. A BASE object property (`contentItem:`)
+is excluded — it is already in the C++ meta-object and a second one would shadow it.
+
+**The gate.** A `-all-` phony beside every `--props` one, running `--objpaths` and `--dumpall` on
+both sides. **258 targets**, over 98 fixtures, in `./build`.
+
+Seventeen fixtures are named exclusions, with a `known_gap` entry in `tests/expected-fails.json`
+carrying the list and the cause: a QML member that is not a plain scalar property — an alias, a
+default-property holder, a list property — is still a D field and not a meta-object property, so the
+engine's dump has `inner`, `child` or `kids[0]` and ours has no such key. Measured: controls 23 of
+23, quick 42 of 46, corpus 33 of 46. The object-property half is done; aliases, default-property
+holders and list properties are what is left, and the skip list goes away when they land.
+
+Both corpora unchanged on every axis: Basic 56 of 57 and Fusion 48 of 49 identical, 2 value
+differences each, render 49 and 44 with none differing, click 34 and 34 with one, diagnostics 64
+and 48.
