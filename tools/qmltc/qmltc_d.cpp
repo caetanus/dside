@@ -5214,6 +5214,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // ...and Component-valued properties before BOTH: they are templates the type builds children
     // from, so they have to be in place before any child is appended.
     std::string componentWire;
+    // ...and the children that are written on ANOTHER object — a group's member (`first.handle:`)
+    // or an attached one (`ScrollIndicator.vertical:`). Those are not deferred properties of this
+    // object: the engine builds them with the rest of its body, BEFORE the object is assigned
+    // anywhere. Qt's Menu is where the difference shows — its ListView contentItem carries a
+    // `ScrollIndicator.vertical`, and created after the ListView had already become the Menu's
+    // contentItem, the Menu counted the indicator as a menu ITEM (count 10 against the engine's 9,
+    // and its 1000-pixel height is most of a content height of 1293 against 306).
+    std::string ownBodyWire;
     // A use-site binding OVERRIDES a same-named binding from a merged local definition (QML
     // property-override semantics): keep only the LAST binding per property name (use-site members
     // were spliced on AFTER the local definition's), else we'd emit two `cls_<name>` classes.
@@ -6637,11 +6645,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
         }
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        ownBodyWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (gkt.first.empty() ? "newQObject!" + childCls + "()"
                                                                        : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n";
-        childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
+        ownBodyWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(path);
     }
@@ -6746,11 +6754,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
         }
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        ownBodyWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (akt.first.empty() ? "newQObject!" + childCls + "()"
                                                                        : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n";
-        childWire += "        setPropObj(" + attachedExpr(tn) + ", \"" + mem + "\", " + field + ");\n";
+        ownBodyWire += "        setPropObj(" + attachedExpr(tn) + ", \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(ak.label.empty() ? ak.path : ak.label);
     }
@@ -7482,6 +7490,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Everything from HERE on is "my children and what reads them", and it becomes a separate
         // method the PARENT calls once this object is assigned to its property — see the split
         // below.
+        wire += ownBodyWire;   // ...still the object's OWN body: see the buffer's note
         kidsAt = wire.size();
         // ...and the CHILDREN only after this object's own properties, which is the order the
         // engine uses: `background`, `contentItem` and `indicator` are DEFERRED properties

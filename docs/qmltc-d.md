@@ -3398,3 +3398,38 @@ object, not a class of problems.
 Both remain behind the shut gate, where the corpora are unchanged: Basic 56 of 57 and Fusion 48 of
 49 documents identical in every property, 2 value differences each, render 49 and 44 with none
 differing, click 34 and 34 with one, diagnostics 64 and 48.
+
+### A group or attached child is the object's OWN body, not a deferred one (2026-08-03)
+
+The extra menu item, fixed — and it refines the deferred-children rule rather than contradicting it.
+
+The engine defers `background`, `contentItem`, `indicator` and friends: those are properties OF the
+object, created inside its `componentComplete`, after it has been assigned. A `first.handle:` or a
+`ScrollIndicator.vertical:` is not one of those. It is an assignment on ANOTHER object — a group, or
+an attached one — written in this object's body and executed with the rest of it, BEFORE the object
+is assigned anywhere.
+
+We had moved all of them together. The Menu is where it showed: its ListView contentItem carries
+`ScrollIndicator.vertical: ScrollIndicator { }`, and created after the ListView had already become
+the Menu's contentItem, the Menu counted the indicator as a menu ITEM — `count` 10 against 9, with
+its 1000-pixel height most of a content height of 1293 against 306. Dropping our own `setQtParent`
+for it changed nothing (measured), because it is Qt's attached setter that parents it; what differed
+was WHEN.
+
+Group and attached children now go into their own buffer, emitted at the END of the object's own
+wire — still before the split, so still before the object is assigned.
+
+| Basic, gate open | before | after |
+|---|---|---|
+| documents identical in every property | 50 | **51** |
+| value differences | 127 | **77** |
+| `ContextMenu.menu.count` | 10 | **9**, the engine's |
+
+At the shut gate it is inert: both corpora unchanged on every axis (56 and 48 identical, 2 value
+differences each, render 49 and 44 with none differing, click 34 and 34 with one, diagnostics 64 and
+48). No fixture, and the reason is worth stating: an attached child is refused at the shut gate, so
+nothing built there can observe the difference — the guard is the gate-open measurement above, run
+before and after.
+
+What is left behind the gate is now 293 against 306 — exactly one MenuSeparator's 13 pixels — plus
+one `enabled` and a ScrollIndicator transition. Small enough to name individually next time.
