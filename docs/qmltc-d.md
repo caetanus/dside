@@ -3341,3 +3341,38 @@ one level down: `spliceUseSite` records every use-site member in `g_useSiteMembe
 `g_useSiteShadowed` puts the local type's own DECLARED PROPERTIES out of scope while a use-site
 binding is compiled. The IDS do not consult it. That is the shape of the fix — the id set has to be
 split the way the property set already is — and it is the next thing behind the gate.
+
+### DONE: `id` is not a property and does not override (2026-08-03)
+
+The identifier the last two entries traced, fixed — and the cause was one line in the dedup, not the
+scope machinery.
+
+`spliceUseSite` makes the use site win for any name the definition also binds; that is what QML does
+for a property. It was doing it for `id` too. Qt's style files all write `id: control`, so a spliced
+`Menu` answered only to the use site's `menu`, and `Menu.qml`'s own `model: control.contentModel`
+resolved two frames out to the enclosing TextField — which also writes `id: control` and has no
+`contentModel`. The menu's ListView never got a model, and everything under it stayed unlaid-out.
+
+`id` is now exempt from the override. Which half a binding was WRITTEN in is what decides its scope,
+and that is `g_useSiteMembers`' job, not the dedup's — so the id set is split the same way the
+property set already is: `g_selfIdsDefn` holds the ids the DEFINITION gave, and they are taken out
+of scope for the length of a use-site binding, exactly as the local type's declared properties are.
+
+Both halves now resolve to different objects, which is the point:
+
+    copyProp(__outer, "contentModel", this, "model");    // Menu.qml's `control` -> the Menu
+    setPropObj(this, "editor", __outer);                 // TextField.qml's `control` -> the TextField
+
+Measured with the gate open: **value differences 247 -> 127**, paths the engine has and we do not
+18 -> 14, diagnostics 79 -> 75. At the shut gate it is inert — both corpora unchanged on every axis
+(56 and 48 identical, 2 value differences each, render 49/44, click 34/34, diagnostics 64/48).
+
+`tests/qmltc/controls/CIdScope.qml` + `CIdScopeInner.qml` pin it, verified able to FAIL: with the
+exemption removed, `fromDefn` reads `outer` against the engine's `inner`, and the target fails. The
+fixture reads BOTH halves on purpose — `fromUse` must stay `outer` — because a fix that makes the
+definition's id win everywhere breaks the other direction, and that is the trap this took two
+attempts to see.
+
+What is left behind the gate is now geometry: the menu reports `count` 10 where the engine reports 9
+and a content height of 1293 against 306, so an extra item is appended and the items are about four
+times too tall.

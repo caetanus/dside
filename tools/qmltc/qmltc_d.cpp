@@ -1249,7 +1249,18 @@ static std::set<std::string> g_scope;
 // that instantiates it). They name the SAME object, and taking only the last one made the same
 // document compile standalone and refuse `control.contentModel` when spliced.
 static std::set<std::string> g_selfIds;
-bool isSelfId(const std::string &n) { return !n.empty() && g_selfIds.count(n) > 0; }
+// ...and the subset that came from a spliced local type's DEFINITION rather than from the use site.
+// The two halves of a merged object have two id scopes and the same name can mean different objects
+// in them: Qt's `Menu.qml` binds `model: control.contentModel` (control = the Menu) and the document
+// that uses it writes `ContextMenu.menu: TextEditingContextMenu { editor: control }` (control = the
+// TextField). QML has no conflict there because the two bindings live in two components; merging the
+// bodies into one class merges the scopes, so the DEFINITION's ids are taken out of scope for the
+// length of a use-site binding — exactly as the local type's declared PROPERTIES already are.
+static std::set<std::string> g_selfIdsDefn;
+static bool shadowedByLocalType(const std::string &n);
+bool isSelfId(const std::string &n) {
+    return !n.empty() && g_selfIds.count(n) > 0 && !shadowedByLocalType(n);
+}
 // The property of the ENCLOSING object that holds the object being compiled, when it is a
 // property-bound child. Empty for a default child or a root.
 static std::string g_selfBoundProp;
@@ -3875,7 +3886,14 @@ static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectIni
     std::set<std::string> overridden;
     for (auto *m = use->members; m; m = m->next) {
         std::string n = memberBoundName(m->member);
-        if (!n.empty()) overridden.insert(n);
+        // `id` is NOT a property and does not override: each half of a merged object keeps the id
+        // its own document gave it, and both are names the object answers to. Dropping the
+        // definition's left the spliced object answering only to the use site's — so Qt's
+        // `Menu.qml`, whose `id` is `control`, had its `model: control.contentModel` resolved two
+        // frames out to the enclosing TextField (which also writes `id: control`), and the menu's
+        // ListView never got a model. Which half a binding was WRITTEN in is what decides the
+        // scope, and that is g_useSiteMembers' job, not this dedup's.
+        if (!n.empty() && n != "id") overridden.insert(n);
     }
     // A binding written at the USE SITE is evaluated in the scope of the document that WROTE it —
     // `background: ButtonPanel { control: control }` means Button.qml's `control`, not the
@@ -4215,6 +4233,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::string savedSelfQmlType = g_selfQmlType;
     std::string savedId = g_selfId;
     auto savedIds = g_selfIds;
+    auto savedIdsDefn = g_selfIdsDefn;   // ...and which half each came from
     // Everything still in the globals belongs to the ENCLOSING object: capture it as the outer
     // scope before it is overwritten. Only an enclosing object with an `id` is addressable.
     std::string savedOuterId = g_outerId, savedOuterClass = g_outerClass,
@@ -4252,6 +4271,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     if (!qmlType.empty()) g_selfQmlType = qmlType;
     g_selfId = "";
     g_selfIds.clear();
+    g_selfIdsDefn.clear();
     for (auto *m = init ? init->members : nullptr; m; m = m->next)   // pre-scan this object's id(s)
         if (auto *sb = cast<UiScriptBinding *>(m->member))
             if (qname(sb->qualifiedId) == "id")
@@ -4259,6 +4279,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (auto *idn = cast<IdentifierExpression *>(es->expression)) {
                         g_selfId = qs(idn->name.toString());
                         g_selfIds.insert(g_selfId);
+                        // ...and WHICH half it came from, which is the whole point of keeping two.
+                        if (!g_useSiteMembers.count(m->member)) g_selfIdsDefn.insert(g_selfId);
                     }
 
     // Pre-scan declared property types and no-arg function return types, so a binding compiled in
@@ -5221,7 +5243,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (!declaredObj) continue;
             // ...resolved in the scope the assignment was WRITTEN in, or `control: control` reads
             // the property being assigned and records the declared type over itself.
-            if (ba0.useSite) for (auto &p1 : props) g_useSiteShadowed.insert(p1.name);
+            if (ba0.useSite) {
+                for (auto &p1 : props) g_useSiteShadowed.insert(p1.name);
+                for (auto &i1 : g_selfIdsDefn) g_useSiteShadowed.insert(i1);
+            }
             std::string oeA, oqA;
             bool okA = objPathExpr(ba0.second, oeA, oqA);
             g_useSiteShadowed.clear();
@@ -5890,8 +5915,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // one class merged the scopes; this takes the declarations out for the length of this one
         // binding. Restored right after, because the DEFINITION's own bindings do see them.
         struct UseSiteScope { bool on = false; ~UseSiteScope() { if (on) g_useSiteShadowed.clear(); } } uss;
-        if (ba.useSite && !props.empty()) {
+        if (ba.useSite && (!props.empty() || !g_selfIdsDefn.empty())) {
             for (auto &p : props) g_useSiteShadowed.insert(p.name);
+            for (auto &i : g_selfIdsDefn) g_useSiteShadowed.insert(i);
             uss.on = true;
         }
         // Deep reads belong to the binding being compiled RIGHT NOW. The accumulator is global and
@@ -7958,6 +7984,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
              + attachedHandlerSlots + wire + "}\n";
     g_selfId = savedId;
     g_selfIds = savedIds;
+    g_selfIdsDefn = savedIdsDefn;
     g_selfQmlType = savedSelfQmlType;
     g_outerId = savedOuterId; g_outerClass = savedOuterClass; g_outerQmlType = savedOuterQmlType;
     g_outerPropType = savedOuterPropType; g_outerBaseProps = savedOuterBaseProps;
