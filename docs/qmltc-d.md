@@ -3806,3 +3806,29 @@ One thing to record while it is fresh: **BusyIndicator's CLICK is flaky**. It di
 matched on the next with nothing changed in between — its animation never settles, so the frame after
 the fixed 400 ms depends on where the stopwatch landed. It is the one document in either corpus whose
 click cannot be compared deterministically, and a "1 differ" there is not automatically a regression.
+
+### The list property is smaller than it looked (2026-08-03)
+
+Re-scoped after reading the generated D, which is worth more than the estimate it replaces.
+
+`property list<QtObject> kids` with an array binding already emits
+
+    _al_kids_0 = newQObject!ArrayBinding_kids_0();
+    setQtParent(_al_kids_0, this);
+    listAppend(this, "kids", _al_kids_0);
+
+— the append through the meta-object list property is ALREADY there. It simply does nothing,
+because `kids` is not a property of our object, and the result is discarded. So the missing piece is
+one thing and not two: the PROPERTY. Nothing about how the elements are built has to change.
+
+And the storage need not be on the D side at all. `listAppend` goes through `QQmlListReference`, so
+if our meta-object exposes `kids` as a real `QQmlListProperty<QObject>` whose callbacks read and
+write a side table keyed by (object, property name), the existing append lands there and
+`listAt(o, "kids", 0)` — and the oracle's `QQmlListReference` — both find it. The runtime owns the
+list; the generated class keeps only the fields it already has.
+
+That is the shape: a declared list property becomes a meta-object property typed
+`QQmlListProperty<QObject>`, `callProp`'s read fills one with append/count/at/clear bound to the
+side table, and the emitter marks the property. Contained in `runtime/qtmoc/` plus one line in the
+emitter — smaller than the "new mechanism" the previous entry called it, because the caller already
+exists and only the callee is missing.
