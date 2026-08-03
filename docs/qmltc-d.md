@@ -3482,3 +3482,24 @@ The next four clusters are much smaller and unrelated to each other: `opacity` 5
 `height` on one ComboBox popup child.
 
 Written down so the next session picks the cluster rather than the first message it reads.
+
+### Correction: a GROUP child is not an attached one, and I shipped a regression (2026-08-03)
+
+The entry two above moved group AND attached children into the object's own body together. The
+attached half was right; the group half was not, and it broke the frame after a click on Qt's own
+`SearchField` — 56 pixels, stable across runs. It shipped because after that change I re-ran Basic's
+RENDER and Fusion's render and click, and not Basic's click. Measuring selectively is how this
+project has produced every false green it has recorded, and this time it produced a real one.
+
+Bisected by moving each half back one at a time: the templates ordering is not it, the import-state
+restore is not it, the group children are.
+
+The distinction is in Qt's own headers. An ATTACHED assignment (`ScrollIndicator.vertical:`) is
+never a deferred property — it is a write on an object the registry hands out. A GROUP member CAN
+be: `QQuickIndicatorButton` declares `Q_CLASSINFO("DeferredPropertyNames", "indicator")`, and
+`searchIndicator.indicator:` is exactly that. So the attached children stay in the object's own body
+and the group children go back with the deferred ones.
+
+Both measurements hold at once: Basic's click is back to 34 identical with none differing, and behind
+the open gate the menu still reports `count` 9 and `contentHeight` 306 — the engine's — with the
+same 21 value differences. Everything else unchanged on both corpora.

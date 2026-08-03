@@ -6654,11 +6654,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
         }
         childFields += "    " + childCls + " " + field + ";\n";
-        ownBodyWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        // A GROUP member, unlike an attached one, CAN be a deferred property: Qt's
+        // QQuickIndicatorButton declares `Q_CLASSINFO("DeferredPropertyNames", "indicator")`, which
+        // is what `searchIndicator.indicator:` assigns. So it stays with the deferred children —
+        // moving it into the object's own body changed the frame after a click on Qt's own
+        // SearchField (56 pixels, measured), while the attached case needs the opposite.
+        childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (gkt.first.empty() ? "newQObject!" + childCls + "()"
                                                                        : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n";
-        ownBodyWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
+        childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(path);
     }
