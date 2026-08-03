@@ -4106,6 +4106,11 @@ struct ObjNode {
     // ...and whether it (or a descendant) is a BOUND type, i.e. can implement QQmlFinalizerHook —
     // the third construction phase, which runs after every componentComplete in the tree.
     bool hasFinal = false;
+    // The C++ base this object actually IS. The dump's `__class` needs it for a NESTED child: the
+    // engine names a class after the DOCUMENT wherever the document defines a type — the root, and
+    // a local type — and reports the Qt base everywhere else, while we name every generated class
+    // after the document. The two agreed only when those namings happened to line up.
+    std::string boundBase;
     bool engineInst = false;  // a registered QML type with no exported symbol: the class WRAPS the
                               // instance the engine built (see g_engineChildCls) rather than being it
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
@@ -8000,6 +8005,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (auto &gk : node.groupKids)   if (gk.second.hasFinal) finalKids += "        " + gk.first + ".__qmltcFinal();\n";
     std::string finalSelf = boundBase.empty() ? std::string()
                                               : "        componentFinalized(this);\n";
+    node.boundBase = boundBase;
     node.hasFinal = !finalSelf.empty() || !finalKids.empty();
     if (cls == g_rootClass && (node.hasLate || node.hasFinal)) {
         auto pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
@@ -8136,6 +8142,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 // `vgroup` marks a VALUE-group member: mutating it needs setVgroup (read-modify-write), and
 // setProp(o, "vt.count", v) would silently do nothing — setProperty fails on a dotted name.
 struct DumpLine { std::string label, access, dtype, setObj, setProp; bool vgroup = false; };
+// D access expression -> the class `__class` must report for that object (see collectDump).
+static std::map<std::string, std::string> g_clsHint;
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
                         std::vector<DumpLine> &out) {
     // An ENGINE-CREATED child is not the object the property holds — the instance it wraps is — so
@@ -8144,6 +8152,16 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
     // DialImpl handle with two transforms, and the generated main named `handle.__inst._al_transform_1`.
     std::string self = acc.substr(0, acc.size() - 1);
     if (n.engineInst) self += ".__inst";
+    // What `__class` must report for this object. The ROOT keeps the walk — the engine names its
+    // class after the document there, and so do we. A NESTED child does not: the engine reports the
+    // Qt base and our generated class is named after the document too, so the two agreed only by
+    // coincidence (`QNested_dc0` against `QQuickItem` is where it stopped being one).
+    // ...but NOT for an engine-created instance: that object is one the ENGINE built (a style's
+    // `*Impl`, which exports no symbol to subclass), so it really IS a QQuickBasicBusyIndicator and
+    // the walk already says so. Hinting `QObject` there replaced a right answer with a wrong one on
+    // four documents — which is what the corpora said the moment this was measured.
+    if (acc != "o." && !n.engineInst)
+        g_clsHint[self] = n.boundBase.empty() ? "QObject" : n.boundBase;
     for (auto &s : n.scalars) {
         // A value type has no meaningful default text (a QColor prints its raw struct), so it is
         // dumped the way the engine formats it: QColor as #rrggbb, which is what QVariant gives
@@ -8500,7 +8518,8 @@ int main(int argc, char **argv) {
     }
     // ...but the property enumerator lives in the shared runtime and applies to ANY object, so it
     // is declared for every root, item or not.
-    std::printf("extern(C) void qtd_dump_object(void*, const(char)*);\n");
+    std::printf("extern(C) void qtd_dump_object(void*, const(char)*);\n"
+                "extern(C) void qtd_dump_object_as(void*, const(char)*, const(char)*);\n");
 
     // ...but never a runnable entry point for a root we refused: `new IMonthGrid` would hand back a
     // bare QObject standing in for AbstractMonthGrid, construct real QQuickText children under it,
@@ -8672,11 +8691,19 @@ int main(int argc, char **argv) {
                             expr = "propObj(" + expr + ", \"" + seg + "\")";
                         if (j == path.size()) break;
                     }
-                    std::printf("        qtd_dump_object(%s, \"%s.\");\n", expr.c_str(), path.c_str());
+                    // On an INDEXED path the hint holds only if the list element IS the object we
+                    // generated. Usually it is — a bare child appended to `data` — but not always:
+                    // a Repeater's items are SIBLINGS of the Repeater, so `data[0]` is a delegate
+                    // item on both sides while the field is the Repeater itself. Asked at runtime,
+                    // which is the only place the answer exists.
+                    std::printf("        { auto __o = %s; qtd_dump_object_as(__o, \"%s.\","
+                                " __o is qobjOf(%s) ? \"%s\" : \"\"); }\n",
+                                expr.c_str(), path.c_str(), l.setObj.c_str(),
+                                g_clsHint[l.setObj].c_str());
                     continue;
                 }
-                std::printf("        qtd_dump_object(qobjOf(%s), \"%s.\");\n",
-                            l.setObj.c_str(), path.c_str());
+                std::printf("        qtd_dump_object_as(qobjOf(%s), \"%s.\", \"%s\");\n",
+                            l.setObj.c_str(), path.c_str(), g_clsHint[l.setObj].c_str());
             }
             std::printf("        return;\n    }\n");
         }

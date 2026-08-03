@@ -686,10 +686,9 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // field), the `Connections` pair (a deliberate desugaring — no object is built, and both
             // fixtures say so in their own headers), and four whose `__class` reads our generated
             // class where the engine reads the Qt base, which is a name coincidence in the harness
-            // and not a compiler gap. Measured: controls 23 of 23, quick 42 of 46, corpus 42 of 46.
+            // and not a compiler gap. Measured: controls 23 of 23, quick 46 of 46, corpus 42 of 46.
             static immutable string[] dumpallGap = [
                 "ArrayBinding", "Connect", "CrossCall", "UsesList",
-                "QNested", "QObjProp", "QUsesLocalExt", "QUsesLocal",
             ];
             if (!dumpallGap.canFind(name)) {
             auto objs = genD ~ ".objs", da = genD ~ ".dall", qa = genD ~ ".qall";

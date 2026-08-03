@@ -3775,3 +3775,34 @@ Where the strong protocol stands after this session:
 Four exclusions, each with its own removal condition in `tests/expected-fails.json`: list properties
 (2), the deliberate `Connections` desugaring (2, permanent), and the four `quick` fixtures whose
 `__class` is the harness name coincidence — an emitter decision, not a compiler gap.
+
+### DONE: the `__class` label, decided in the emitter (2026-08-03)
+
+The entry above said no runtime walk could fix this and the label had to be decided at compile time.
+It was, and it took three measurements to get right — each one a wrong answer the corpora or the
+fixtures pointed at:
+
+1. **The hint as the ANSWER** broke `CSepShadow`: ours said `QQuickMenuSeparator` where the engine
+   said `QQuickControl`. The engine applies "skip a class that declares no properties of its own"
+   above whatever it finds, and a MenuSeparator declares none. So the hint is where the walk
+   STARTS, not what it returns.
+2. **The hint on an INDEXED path** broke `CDelegate`: ours said `QQuickRepeater` where the engine
+   said `QQuickText`. The object at `data[0]` is the one the LIST holds, and a Repeater's items are
+   SIBLINGS of the Repeater — the field and the element are different objects. The generated code
+   now asks at runtime (`__o is qobjOf(<field>)`) and hints only when they are the same.
+3. **`QObject` for an unbound child** broke four corpus documents: BusyIndicator, Dial, ProgressBar
+   and Tumbler report a real `QQuickBasic*` class, because those objects are ones the ENGINE built —
+   a style's `*Impl`, which exports no symbol to subclass. `ObjNode::engineInst` already knew, so
+   they pass no hint and the walk answers, correctly.
+
+**quick 42 of 46 to 46 of 46** — the whole set passes the strong protocol — with both corpora
+unchanged (Basic 56 of 57, Fusion 48 of 49, 2 value differences each, render 49 and 44 with none
+differing, diagnostics 64 and 48).
+
+Four exclusions left: list properties (ArrayBinding, UsesList) and the deliberate `Connections`
+desugaring (Connect, CrossCall).
+
+One thing to record while it is fresh: **BusyIndicator's CLICK is flaky**. It differed on one run and
+matched on the next with nothing changed in between — its animation never settles, so the frame after
+the fixed 400 ms depends on where the stopwatch landed. It is the one document in either corpus whose
+click cannot be compared deterministically, and a "1 differ" there is not automatically a regression.

@@ -1360,7 +1360,13 @@ extern "C" void* qtd_color_shade(const char* s, double factor, int lighter) {
 // compiled side and the QQmlComponent oracle call THIS function, so the comparison covers what
 // the objects actually are rather than what the compiler chose to record — and no difference can
 // come from the two sides formatting a value differently, since there is only one formatter.
-extern "C" void qtd_dump_object(void* o, const char* path) {
+// ...and the same dump with the `__class` decided by the CALLER. The walk below cannot tell our
+// generated class from a Qt one — both are just names, and ours is named after the document exactly
+// as the engine names a document-defined type — so for a NESTED child the compiler passes the C++
+// base it built the object on. An empty hint keeps the walk, which is what the root wants.
+extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls);
+extern "C" void qtd_dump_object(void* o, const char* path) { qtd_dump_object_as(o, path, nullptr); }
+extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
     if (!o) return;
     QObject* q = static_cast<QObject*>(o);
     const QMetaObject* mo = q->metaObject();
@@ -1375,7 +1381,14 @@ extern "C" void qtd_dump_object(void* o, const char* path) {
 // ...skipping any class that declares no properties of its own. Qt puts pure enum-holders in the
         // chain (QQuickDialogButtonBox's is DialogButtonBox_QMLTYPE < QPlatformDialogHelper <
         // QQuickDialogButtonBox), and stopping at the first Qt name picked the holder instead of the type.
+        // A hint is where the walk STARTS, not what it answers: the engine applies the same
+        // "skip a class that declares no properties of its own" rule above whatever it found, and a
+        // QQuickMenuSeparator declares none — its answer is QQuickControl. Starting at the hinted
+        // class and then walking gives the engine's answer for the same object.
         const QMetaObject* c = mo;
+        if (cls && *cls)
+            for (const QMetaObject* k = mo; k; k = k->superClass())
+                if (std::strcmp(k->className(), cls) == 0) { c = k; break; }
         while (c && (c->className()[0] != 'Q'
                      || c->propertyCount() <= c->propertyOffset())) c = c->superClass();
         // Qt generates a subclass per QML type (`QQuickRectangle_QML_2`); it IS that type, so the
