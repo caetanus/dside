@@ -5189,6 +5189,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     node.id = g_selfId;   // still this object's id here (the loop doesn't touch g_selfId)
     std::string childFields, childWire, crossConnects;
     std::string dcWire;   // default children, emitted before the property-bound ones (see below)
+    // ...and Component-valued properties before BOTH: they are templates the type builds children
+    // from, so they have to be in place before any child is appended.
+    std::string componentWire;
     // A use-site binding OVERRIDES a same-named binding from a merged local definition (QML
     // property-override semantics): keep only the LAST binding per property name (use-site members
     // were spliced on AFTER the local definition's), else we'd emit two `cls_<name>` classes.
@@ -5314,8 +5317,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         }
                     }
                 }
-                childWire += "        bindComponent!" + childCls + "(this, \"" + cb.field
-                           + "\", \"" + g_docUrl + "\");\n";
+                // Into its OWN buffer, emitted BEFORE the default children. A Component is a
+                // TEMPLATE the type builds children FROM, not a child in its own right: Qt's Menu
+                // wraps an `Action` put in `contentData` into a `MenuItem` made from `delegate`,
+                // and with the delegate still null it appended the Action raw. That is 144
+                // properties per item the engine has and we do not, times seven Actions, on every
+                // document with a context menu — the largest single gap behind the attached-child
+                // gate, and it was an ordering one.
+                componentWire += "        bindComponent!" + childCls + "(this, \"" + cb.field
+                               + "\", \"" + g_docUrl + "\");\n";
                 g_hasComponentBind = true;
                 continue;
             }
@@ -7461,6 +7471,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // number of layouts. Measured by hand on the generated D before it was written here: with
         // the two assignments moved above the children, both the root's and the contentItem's
         // baselineOffset match the engine exactly.
+        wire += componentWire;   // ...the TEMPLATES first: a type builds children FROM them
         wire += dcWire;      // ...default children first, as the engine's `data` has them...
         wire += childWire;   // ...then the property-bound ones
         wire += baseAfterKids;   // ...and the assignments that NAME one

@@ -3251,3 +3251,44 @@ symbol we can subclass.
 No fixture: the value protocol reads `background.gradient` through `propStr`, which is empty for a
 QJSValue either way, so a fixture built on it would pass with the defect in place. The guard is the
 click render on the corpus — which is what found it.
+
+### A Component property is a TEMPLATE, so it comes before the children (2026-08-03)
+
+With the value and frame axes saturated, the diagnostics became the biggest pool — and 41 of the
+112 across both corpora are one category: an attached-property child, i.e. the gate. So the gate was
+measured an **eighth** time, the first time since four ordering and colour fixes landed.
+
+It no longer crashes and it no longer loses paths to the walkers. What was left was one thing, and
+attributed by leaf it was unmistakable: `contentItem.ContextMenu.menu.contentData[i]` — 144
+properties per item that the engine has and we do not, on seven of the nine children, in every
+document with a context menu. **2016 of the 2034.**
+
+Qt's Menu wraps an `Action` put in `contentData` into a `MenuItem` built from its `delegate`. Our
+generated Menu bound the delegate at line 1297 and appended the children at 1236–1292 — the
+`bindComponent` went into the property-bound-children buffer, which the emitter flushes AFTER the
+default children. With the delegate still null, `createItem(action)` returns nothing and the Action
+is appended raw.
+
+A `Component` is not a child; it is a template the type builds children FROM. It now goes into its
+own buffer, emitted before both kinds of child. Measured with the gate open:
+
+| Basic, gate open | before | after |
+|---|---|---|
+| paths the engine has and we do not | 2034 | **18** |
+| paths we have and the engine does not | 56 | **0** |
+| value differences | 167 | 247 |
+
+The value differences go UP because the objects now exist on both sides and are compared; before,
+they were simply absent. What they are is now a single cause too: the Menu's `contentItem` reports
+`count` 0 where the engine reports 9, so nothing under it is laid out (heights 0, `y` 0, `parent`
+null). The items are in `contentData`; they have not reached the ListView's model. That is the next
+thing behind the gate, and it is one statement, not a class of problems.
+
+At the SHUT gate the change is inert — both corpora unchanged on every axis (56 and 48 documents
+identical, 2 value differences each, render 49/44 with zero differing, click 34/34 with one, and
+diagnostics 64 and 48).
+
+`tests/qmltc/controls/CDelegateFirst.qml` pins it, verified able to FAIL: with the `bindComponent`
+moved back after the appends in the generated D, `count` reads 0 against the engine's 2. It is the
+only observable that moves — a closed menu lays nothing out and the Action's own `text` reads the
+same either way, both checked rather than assumed.
