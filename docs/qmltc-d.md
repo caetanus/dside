@@ -2920,3 +2920,54 @@ The whole residue is 37 value differences across four causes, all already named:
 `baselineOffset` layout-order difference (CheckBox, RadioButton, Switch, TextField), DelayButton's
 swapped `contentItem.data[0]`/`[1]`, the two HeaderViews' uninitialised `rows`/`columns`/
 `contentWidth`/`contentHeight`/`model`, and ComboBox/SearchField's `popup.contentItem.model`.
+
+### The THIRD construction phase: QQmlFinalizerHook (2026-08-03)
+
+Two of the four remaining value-difference causes were the HeaderViews, and they turned out to be
+one fact that applies far beyond them. The engine gives a bound type **three** construction phases,
+not two:
+
+1. `QQmlParserStatus::classBegin()` — before its properties are set,
+2. `QQmlParserStatus::componentComplete()` — once the tree is built,
+3. **`QQmlFinalizerHook::componentFinalized()`** — from `QQmlComponent::completeCreate()`, once the
+   whole component is finalized.
+
+We implemented the first two and not the third. A `QQuickTableView` does all of its work in the
+third: measured on Qt's own `HorizontalHeaderView`, after `classBegin` + `componentComplete` the
+object still reports `rows`/`columns`/`contentWidth`/`contentHeight` all `-1` and an unset `model`,
+where the engine reports `1`/`0`/`0`/`0` and `model` as int `0`. Calling `componentComplete()` a
+second time changes nothing; nor does an event-loop turn; one call to `componentFinalized()`
+reproduces the engine's state exactly. That isolation was done against the engine itself
+(`beginCreate` → hand calls → `completeCreate`), so it is the engine's own answer, not a guess.
+
+It is not a per-type mechanism, and nothing about TableView is written down anywhere: the registry
+publishes it (`interfaces: ["QQmlFinalizerHook"]` on `QQuickTableView`, on `QQuickWindow`, and on
+whatever else declares it), `Q_INTERFACES` puts it in the meta-object, and the runtime finds it by
+IID for any type that has one. The interface is *declared* in the runtime rather than included from
+`QtQml/private` — it is a virtual destructor followed by one pure virtual, and the cast resolves it
+by IID string, so a matching declaration is ABI-compatible without depending on a header Qt says
+"may change from version to version without notice". Qt5 has no such phase at all, so doing nothing
+there is the parity.
+
+The generated code gets a `__qmltcFinal()` pass beside `__qmltcLate()`, fired by the root after it.
+Order is the engine's: hooks are registered as objects are CREATED, so an object is finalized before
+its children — the opposite of `componentComplete`, which the engine runs in reverse.
+
+Measured over both corpora:
+
+| | Basic before | Basic after | Fusion before | Fusion after |
+|---|---|---|---|---|
+| documents identical in every property | 48 of 57 | **50** | 43 of 49 | **45** |
+| value differences | 21 | **11** | 16 | **6** |
+| render at rest | 49, 0 differ | 49, 0 differ | 41, 3 differ | 41, 3 differ |
+| frame after a click | 34, 0 differ | 34, 0 differ | 28, 4 differ | 28, 4 differ |
+| diagnostics | 64 | 64 | 48 | 48 |
+
+`tests/qmltc/quick/QFinalize.qml` pins it, and the fixture was verified to be able to FAIL: with the
+`__qmltcFinal()` call stripped from the generated D, five of its nine values diverge (`-1` against
+the engine's computed ones). A differential that cannot fail is the recurring way this project has
+produced false green, so the negative control is part of the work, not an afterthought.
+
+What is left is 17 value differences over both corpora and three causes: the `baselineOffset`
+layout-order difference, DelayButton's swapped `contentItem.data[0]`/`[1]`, and
+ComboBox/SearchField's `popup.contentItem.model`.

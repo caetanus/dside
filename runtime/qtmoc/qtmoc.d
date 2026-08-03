@@ -1181,6 +1181,12 @@ void connectNotify(T, R)(T owner, string prop, R recv, string slot) {
     qtd_connect_notify(qobjOf(owner), prop.toStringz, qobjOf(recv), slot.toStringz);
 }
 void componentComplete(T)(T o) { qtd_parser_status(qobjOf(o), 1); }
+private extern(C) void qtd_component_finalized(void*);
+/// The THIRD phase, after every componentComplete in the tree: QQmlFinalizerHook. A QQuickTableView
+/// computes nothing until it gets this — its rows, columns and content size all stay at -1 — and no
+/// number of componentComplete calls stands in for it. A type that does not implement the hook is
+/// left untouched, and Qt5 has no such phase at all.
+void componentFinalized(T)(T o) { qtd_component_finalized(qobjOf(o)); }
 
 // ---- value-type ("gadget") grouped properties --------------------------------
 // `vt.count` where `vt` is a Q_GADGET-valued property: there is no object to reach, so a read

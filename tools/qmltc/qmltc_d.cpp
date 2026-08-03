@@ -4071,6 +4071,9 @@ struct ObjNode {
     bool usesOuter = false;   // reads its enclosing object -> needs the __outer back-reference
     int outerHops = -1;       // deepest enclosing level it reached (0 = immediate parent)
     bool hasLate = false;     // it (or a descendant) has late-phase work
+    // ...and whether it (or a descendant) is a BOUND type, i.e. can implement QQmlFinalizerHook —
+    // the third construction phase, which runs after every componentComplete in the tree.
+    bool hasFinal = false;
     bool engineInst = false;  // a registered QML type with no exported symbol: the class WRAPS the
                               // instance the engine built (see g_engineChildCls) rather than being it
     std::vector<std::pair<std::string, ObjNode>> kids;          // property-typed children (field, child)
@@ -7731,12 +7734,35 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     node.hasLate = !lateWire.empty() || !lateKids.empty();
     // Only the root fires it: at the end of ITS wire the whole tree exists and every
     // componentComplete has run, which is exactly when a Control has created its indicator.
-    if (node.hasLate && cls == g_rootClass) {
+    // The FINALIZE pass: QQmlFinalizerHook::componentFinalized(), which the engine runs from
+    // QQmlComponent::completeCreate() once the WHOLE component is built — after every
+    // componentComplete, and after the bindings are live. A QQuickTableView does all of its work
+    // there: without it Qt's HorizontalHeaderView reports rows/columns/contentWidth/contentHeight
+    // all -1 and an unset `model` where the engine reports 1/0/0/0 and int 0, and no number of
+    // componentComplete calls (measured: two, plus an event-loop turn) stands in for it.
+    //
+    // Order is the engine's: the hooks are registered as objects are CREATED, so an object is
+    // finalized before its children — the opposite of componentComplete, which runs in reverse.
+    // Only a BOUND object can implement the interface (a fresh @QObject is a QtdMocObject and has
+    // no C++ base to declare one), but a bound descendant of an unbound object still needs the
+    // call, so the recursion is emitted wherever anything below it is bound.
+    std::string finalKids;
+    for (auto &k : node.kids)         if (k.second.hasFinal) finalKids += "        " + dIdent(k.first) + ".__qmltcFinal();\n";
+    for (auto &dk : node.defaultKids) if (dk.second.hasFinal) finalKids += "        " + dk.first + ".__qmltcFinal();\n";
+    for (auto &gk : node.groupKids)   if (gk.second.hasFinal) finalKids += "        " + gk.first + ".__qmltcFinal();\n";
+    std::string finalSelf = boundBase.empty() ? std::string()
+                                              : "        componentFinalized(this);\n";
+    node.hasFinal = !finalSelf.empty() || !finalKids.empty();
+    if (cls == g_rootClass && (node.hasLate || node.hasFinal)) {
         auto pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
-        if (pos != std::string::npos) wire.insert(pos, "        __qmltcLate();\n");
+        if (pos != std::string::npos)
+            wire.insert(pos, std::string(node.hasLate ? "        __qmltcLate();\n" : "")
+                           + (node.hasFinal ? "        __qmltcFinal();\n" : ""));
     }
     std::string lateMethod = node.hasLate
         ? "    void __qmltcLate() {\n" + lateWire + lateKids + "    }\n" : "";
+    if (node.hasFinal)
+        lateMethod += "    void __qmltcFinal() {\n" + finalSelf + finalKids + "    }\n";
     if (delegRewrite) {
         // `__outer.__outer` -> `__o1`, as a WHOLE chain (the next character must not continue it,
         // or the outermost level would be rewritten as the innermost). Longest first, and only the

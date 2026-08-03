@@ -912,6 +912,51 @@ extern "C" void qtd_parser_status(void* o, int complete) {
 #endif
 }
 
+// ---- QQmlFinalizerHook --------------------------------------------------------
+// Qt 6 gives a bound type a THIRD construction phase, after classBegin and componentComplete:
+// QQmlFinalizerHook::componentFinalized(), which QQmlComponent::completeCreate() runs once the
+// WHOLE component is built. Nothing in QQmlParserStatus stands in for it — measured on Qt's own
+// HorizontalHeaderView: after classBegin + componentComplete (twice, and an event-loop turn) the
+// object still reports rows/columns/contentWidth/contentHeight all -1 and `model` unset, where the
+// engine reports 1/0/0/0 and `model` int 0. One call to componentFinalized() reproduces the
+// engine's state exactly.
+//
+// It is not a per-type mechanism: the registry publishes it (`interfaces: ["QQmlFinalizerHook"]`
+// on QQuickTableView and friends) and Q_INTERFACES puts it in the meta-object, so a cast by IID
+// finds it for any type that has one.
+//
+// The interface is DECLARED here rather than included from QtQml/private: it is a virtual
+// destructor followed by one pure virtual, and the cast resolves it by IID string, so a matching
+// declaration is ABI-compatible without making the runtime depend on a private header that "may
+// change from version to version without notice". Qt5 has no such phase at all — its engine never
+// calls one — so doing nothing there IS the parity.
+// `extern "C++"` because this file is compiled inside an `extern "C"` region: a class with virtual
+// members and the template Q_DECLARE_INTERFACE generates are both C++-linkage-only, and the
+// compiler says so rather than silently mis-linking.
+#if defined(QTD_HAVE_QML) && QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
+extern "C++" {
+class QQmlFinalizerHook
+{
+public:
+    virtual ~QQmlFinalizerHook();
+    virtual void componentFinalized() = 0;
+};
+#define QQmlFinalizerHook_iid "org.qt-project.Qt.QQmlFinalizerHook"
+Q_DECLARE_INTERFACE(QQmlFinalizerHook, QQmlFinalizerHook_iid)
+}
+#endif
+extern "C" void qtd_component_finalized(void* o) {
+#if defined(QTD_HAVE_QML) && QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
+    if (!o) return;
+    // qobject_cast, not dynamic_cast: the hook is reached through qt_metacast by IID, which is what
+    // makes the locally-declared interface work at all.
+    if (auto* fh = qobject_cast<QQmlFinalizerHook*>(static_cast<QObject*>(o)))
+        fh->componentFinalized();
+#else
+    (void) o;
+#endif
+}
+
 // ---- value-type ("gadget") grouped properties --------------------------------
 // `Q_PROPERTY(ValueTypeGroup vt ...)` where ValueTypeGroup is a Q_GADGET: `vt.count` in QML does
 // NOT go through an object, because there is no object — the property holds a VALUE. Reading is
