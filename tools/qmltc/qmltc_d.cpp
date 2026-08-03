@@ -4724,7 +4724,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // child)` fails. A Menu's default property is `contentData`, not `data`, and
                     // the registry publishes it (qmlmap's fifth column). Appending through the
                     // type's own default property is the next step, and it is not about the gate.
-                    // FIFTH: adopting the base's DEFAULT PROPERTY onto the local type as well
+                    // SIXTH, and this one NAMES the blocker. With the gate open, a print at the
+                    // default-child label shows the attached Menu compiled with
+                    //   selfQml=TextEditingContextMenu boundBase=[] dpSelf=contentData
+                    // — no BOUND BASE. Qt's TextEditingContextMenu is a `Menu`, and in a style
+                    // document that `Menu` is the STYLE's own Menu.qml, not the Templates type: one
+                    // loadLocalType stops at a root that is ITSELF a local type. The label branch
+                    // requires a bound base, so it never runs, and the append falls through to
+                    // hand-parenting — which is the `parent` write that throws. Following the chain
+                    // was tried and did not resolve it either: `boundTypeFor` depends on the
+                    // import state of the document being parsed, and loadLocalType swaps that out.
+                    // The fix is a local-type resolution that CHAINS and manages the import state
+                    // the way the root path does; that is a refactor, not a branch.
+                    // (fifth) adopting the base's DEFAULT PROPERTY onto the local type as well
                     // (a Menu holds its items in `contentData`) changed nothing — same nine
                     // children, same four throws. The generated Menu emits NO listAppend at all for
                     // its bare MenuSeparator children, only the hand-parenting fallback, so the

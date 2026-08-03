@@ -2784,3 +2784,29 @@ engine's `data[0]` were two different objects under one label. The 23 are real a
 attributed: the unbound `*Impl` ceiling (BusyIndicator, Dial), the documented baselineOffset
 layout-order difference, and one new one worth chasing — DelayButton's `contentItem.data[0]` and
 `data[1]` are SWAPPED relative to the engine.
+
+### The attached-child gate, measured a sixth time — the blocker is finally NAMED (2026-08-02)
+
+Five measurements of this gate had produced numbers and no cause: open it and the corpus gets worse,
+close it and the ContextMenu never compiles. The sixth one asked a different question — not "what
+does the corpus do", but "what does the compiler SEE at the moment it decides". With the gate open,
+a print at the default-child label branch in `compileObject` shows the attached Menu compiled as:
+
+    QTDDBG defkids cls=ITF_ContextMenu_menu selfQml=TextEditingContextMenu boundBase= label=[] dpSelf=[contentData]
+
+**No bound base.** Qt's `TextEditingContextMenu` is a `Menu`, and inside a *style* document that
+`Menu` is the STYLE's own `Menu.qml` — not the Templates type. One `loadLocalType` stops at a root
+that is ITSELF a local type, so the chain to a C++ base is never walked and `boundBase` comes back
+empty. The label branch requires a bound base, so it never runs; the append falls through to
+hand-parenting, and that is the `parent` write that throws at run time. Every earlier measurement
+was watching the consequence.
+
+Following the chain was tried and does not resolve it on its own: `boundTypeFor` depends on the
+import state of the document currently being parsed, and `loadLocalType` swaps that state out
+underneath it. The fix is a local-type resolution that CHAINS and manages the import state the way
+the root path already does — a refactor, not a branch, which is why it is written down here rather
+than attempted as a seventh measurement.
+
+The method note is the one worth keeping: five measurements of the OUTPUT could not name this, and
+one print at the DECISION did. When a number refuses to move, the next measurement belongs inside
+the branch, not around it.
