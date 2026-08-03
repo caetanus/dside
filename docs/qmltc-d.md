@@ -3120,3 +3120,37 @@ measurement immediately before this change.
 `contentItem.data[0]` and `[1]` `baselineOffset`, which are each other's. Its `ItemGroup` sizes the
 two `ClippedText`s itself, so the ordering argument that fixed the rest applies one level below any
 property the compiler assigns.
+
+### The last difference, characterised: which ItemGroup child gets resized (2026-08-03)
+
+One value difference remains, in one document per style: Qt's DelayButton, whose contentItem is an
+`ItemGroup` holding two `ClippedText`s. Ours reads `data[0].baselineOffset` 5.34375 and
+`data[1]` 14.84375; the engine reads them the other way round. Every other property of both objects
+matches — same class, same clip, same colour, same `visible`, same geometry.
+
+Both texts are EMPTY (a bare DelayButton has no text), and an empty Text never re-lays out on a
+width change, so each keeps the baseline from its one and only layout. 14.84375 is that layout with
+the height still implicit; 5.34375 is the same layout after the group has assigned the child a
+height. So the whole difference is WHICH child the group resized.
+
+Probed against the engine, with no compiler in the picture:
+
+| document | result |
+|---|---|
+| Qt's `Basic/DelayButton.qml` | `[0]=14.84375  [1]=5.34375` |
+| `Control { contentItem: ItemGroup { Text Text } }` | `[0]=14.84375  [1]=5.34375` |
+| ...with ONE child | `[0]=5.34375` |
+| ...with THREE | `[0]=14.84375  [1]=14.84375  [2]=5.34375` |
+| a bare ItemGroup, appended one at a time | `[0]=5.34375  [1]=14.84375` |
+
+The engine resizes the **last** child appended; appending one at a time resizes the **first** — the
+group's implicit height goes 0 → 19 on that append, its own height follows, and the resulting
+`geometryChange` sizes the children it has so far. The compiled side appends one at a time, so it
+gets the second pattern; nothing the compiler assigns is involved, and no reordering of OUR
+statements reproduces the engine's, because the trigger is inside `QQuickItemGroup`'s implicit-size
+propagation and fires on a different append.
+
+Left as a difference rather than papered over. It is one read-only property, on one document per
+style, that no binding in either corpus reads, and both the frame at rest and the frame after a
+click are byte-identical for DelayButton on both sides. Recorded here with the probe that
+characterises it so the next attempt starts from the table rather than from the symptom.
