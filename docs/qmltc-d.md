@@ -3319,3 +3319,25 @@ many.
 
 Both are behind the shut gate and neither is measurable from the corpora as they ship. Written down
 with the evidence so the next attempt starts from the identifier.
+
+### ...and why that identifier cannot simply be added (2026-08-03)
+
+The entry above says the spliced Menu's `control` "is not in its `OuterFrame`'s id set", which is
+true and reads as a one-line fix. It is not, and the reason is worth having written down.
+
+The same name means two different objects in the two halves of a spliced object:
+
+- from the DEFINITION (`Basic/Menu.qml`): `model: control.contentModel` — `control` is the Menu.
+- from the USE SITE (`TextField.qml`): `ContextMenu.menu: TextEditingContextMenu { editor: control }`
+  — `control` is the TextField, and that one compiles CORRECTLY today (`setPropObj(this, "editor",
+  __outer)`).
+
+Making `control` a self-id of the merged object fixes the first and breaks the second. QML has no
+such conflict because the two bindings live in two components; our splice merges them into one
+class and merges the scopes with them.
+
+The machinery to tell the halves apart already exists and is already used for exactly this problem
+one level down: `spliceUseSite` records every use-site member in `g_useSiteMembers`, and
+`g_useSiteShadowed` puts the local type's own DECLARED PROPERTIES out of scope while a use-site
+binding is compiled. The IDS do not consult it. That is the shape of the fix — the id set has to be
+split the way the property set already is — and it is the next thing behind the gate.
