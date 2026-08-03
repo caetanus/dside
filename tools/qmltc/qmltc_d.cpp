@@ -4014,6 +4014,49 @@ static bool unboundChildType(const std::string &t, const std::string &bound, con
     return bound.empty() && !t.empty() && t != "QtObject" && !loadLocalType(t, inPath, nullptr);
 }
 
+// A local `.qml` type can derive from ANOTHER local `.qml` type, and following exactly one hop
+// stops at a root that is itself local — leaving the object with NO bound C++ base. It is then
+// built as a plain QObject: none of the type's properties exist, its bare children cannot be
+// appended through a default property, and the hand-parenting fallback writes `parent`, which
+// throws. Qt's own `TextEditingContextMenu` is the case that named this: it is a `Menu`, and
+// inside a style directory that `Menu` is the STYLE's own `Menu.qml`, whose root is `T.Menu` —
+// the bound one, two hops down.
+//
+// Every level's members are spliced in DEFINITION order (base first, use site last), which is
+// what QML's own last-wins override needs. The registry rows are adopted DEEPEST FIRST, because
+// each level inherits from the one below it and adopting shallow-first would copy rows that do
+// not exist yet. Each file visited is recorded so the cycle guard covers the whole chain, not
+// just its first link.
+//
+// The hop limit is a backstop, not a policy: a genuine chain is two or three links, and a cycle
+// is already caught by g_resolving.
+static std::pair<std::string, std::string>
+resolveLocalChain(const std::string &qmlType, const char *inPath,
+                  UiObjectInitializer *&init, std::vector<std::string> &paths,
+                  std::string *finalRoot = nullptr, bool *found = nullptr)
+{
+    std::pair<std::string, std::string> bound;
+    std::vector<std::pair<std::string, std::string>> adopt;   // (level, its root), shallow -> deep
+    std::string cur = qmlType;
+    for (int hop = 0; hop < 8; ++hop) {
+        std::string p;
+        UiObjectDefinition *lt = loadLocalType(cur, inPath, &p);
+        if (!lt) break;
+        if (found) *found = true;
+        if (!p.empty()) paths.push_back(p);
+        std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
+        bound = boundTypeFor(ltRoot);
+        adopt.push_back({cur, ltRoot});
+        init = spliceUseSite(lt->initializer, init);
+        if (finalRoot) *finalRoot = ltRoot;
+        if (!bound.first.empty() || ltRoot.empty() || ltRoot == cur) break;
+        cur = ltRoot;
+    }
+    for (auto it = adopt.rbegin(); it != adopt.rend(); ++it)
+        adoptLocalTypeRows(it->first, it->second);   // the registry knows the BASE, not the file
+    return bound;
+}
+
 struct ObjNode {
     std::string id;                                             // this object's QML `id:` (if any)
     // Value lists (`property list<int>`): name -> D element type. Dumped as one label whose value
@@ -5206,15 +5249,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // document included. Without it the class came out EMPTY (no base, no members) and
                 // the view instantiated an object with nothing on it.
                 UiObjectInitializer *dInit = cb.init;
-                std::string dResolved, dQmlType = cb.type;
+                std::vector<std::string> dResolved;
+                std::string dQmlType = cb.type;
                 QString savedDSrc = g_srcText;
                 auto savedDBare = g_bareImports, savedDQual = g_qualifiedTypes;
                 if (dbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
-                    if (UiObjectDefinition *lt = loadLocalType(cb.type, inPath, &dResolved)) {
-                        std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
-                        dbt = boundTypeFor(ltRoot);
-                        adoptLocalTypeRows(cb.type, ltRoot);   // the registry knows the BASE, not the file
-                        dInit = spliceUseSite(lt->initializer, cb.init);
+                    std::string ltRoot; bool ltFound = false;
+                    auto chained = resolveLocalChain(cb.type, inPath, dInit, dResolved, &ltRoot, &ltFound);
+                    if (ltFound) {
+                        dbt = chained;
                         // The registry knows the type it DERIVES from, not the local name: an
                         // inline component has no rows of its own, so `border.width` on a
                         // `component Handle : Rectangle` was looked up on "Handle" and refused.
@@ -5232,10 +5275,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 auto savedDelegCls = g_delegateCls;
                 g_isDelegate = true;
                 g_delegateCls = childCls;
-                if (!dResolved.empty()) g_resolving.insert(dResolved);
+                for (auto &rp : dResolved) g_resolving.insert(rp);
                 ObjNode dkid = compileObject(dInit, childCls, classes, partial, inPath,
                                              dbt.first, nullptr, dQmlType);
-                if (!dResolved.empty()) g_resolving.erase(dResolved);
+                for (auto &rp : dResolved) g_resolving.erase(rp);
                 g_srcText = savedDSrc; g_bareImports = savedDBare; g_qualifiedTypes = savedDQual;
                 g_isDelegate = savedDeleg;
                 g_delegateCls = savedDelegCls;
@@ -5323,16 +5366,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Dialog.qml names the STYLED file next to it, and building it as a bare object left every
         // padding, size and offset at zero.
         UiObjectInitializer *cbInit = cb.init;
-        std::string cbResolvedPath;
+        std::vector<std::string> cbResolvedPath;
         QString savedCbSrc = g_srcText;
         auto savedBare = g_bareImports, savedQual = g_qualifiedTypes;
         if (cbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
-            if (UiObjectDefinition *lt = loadLocalType(cb.type, inPath, &cbResolvedPath)) {
-                std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
-                cbt = boundTypeFor(ltRoot);
-                adoptLocalTypeRows(cb.type, ltRoot);   // the registry knows the BASE, not the file
-                cbInit = spliceUseSite(lt->initializer, cb.init);
-            }
+            bool cbFound = false;
+            auto chained = resolveLocalChain(cb.type, inPath, cbInit, cbResolvedPath, nullptr, &cbFound);
+            if (cbFound) cbt = chained;
         }
         if (!cbt.first.empty() && !cbt.second.empty()) {
             std::string imp = "import " + cbt.second + ";\n";
@@ -5340,7 +5380,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string vimp = "import " + cbt.second.substr(0, cbt.second.rfind('.')) + ".qtvirt;\n";
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
-        if (!cbResolvedPath.empty()) g_resolving.insert(cbResolvedPath);
+        for (auto &rp : cbResolvedPath) g_resolving.insert(rp);
         g_parentCompletes = true;   // ...after this wire assigns and parents it
         // The PROPERTY this child is bound to, for the length of its compile. A `PropertyChanges`
         // inside it can name itself the long way — `control.contentItem.opacity`, which Qt's
@@ -5350,7 +5390,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         g_selfBoundProp = cb.field;
         ObjNode kid = compileObject(cbInit, childCls, classes, partial, inPath, cbt.first, nullptr, cb.type);
         g_selfBoundProp = savedBoundProp;
-        if (!cbResolvedPath.empty()) g_resolving.erase(cbResolvedPath);
+        for (auto &rp : cbResolvedPath) g_resolving.erase(rp);
         // The imports (and what arrived qualified) belong to the DOCUMENT they were read from.
         g_srcText = savedCbSrc; g_bareImports = savedBare; g_qualifiedTypes = savedQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
@@ -5479,7 +5519,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
         std::string childBaseImport = cbt.second;           // its import module (for g_extraImports)
-        std::string childResolvedPath;                       // local-type file path (for the cycle guard)
+        std::vector<std::string> childResolvedPath;           // local-type files (for the cycle guard)
         // Loading a local type parses ANOTHER file and repoints the text a diagnostic quotes from;
         // without putting it back, this document's own diagnostics quote the child's file.
         QString savedSrc = g_srcText;
@@ -5487,22 +5527,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (cbt.first.empty() && childType != "QtObject") {
             // A local `.qml`-defined type (HelloWorld { }): compile ITS OWN root as this child's
             // class, taking the local definition's base (QtObject -> fresh @QObject, Item -> bound).
-            UiObjectDefinition *lt = loadLocalType(childType, inPath, &childResolvedPath);
-            if (!lt) {
+            // Use-site members (`HelloWorld { property string text: ... }`) EXTEND the local type:
+            // the chain splices each definition's member list in front of the use site's, so the
+            // merged class carries both and the deepest base comes first.
+            bool ltFound = false;
+            auto chained = resolveLocalChain(childType, inPath, childInit, childResolvedPath,
+                                             nullptr, &ltFound);
+            if (!ltFound) {
                 std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
                              inPath, childType.c_str(), cls.c_str());
                 ++partial; continue;
             }
-            std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
-            childBase = boundTypeFor(ltRoot).first;
-            adoptLocalTypeRows(childType, ltRoot);   // the registry knows the BASE, not the file
-            childBaseImport = boundTypeFor(ltRoot).second;
-            childInit = lt->initializer;
-            // Use-site members (`HelloWorld { property string text: ... }`) EXTEND the local type:
-            // append the use-site member list onto the local definition's, so the merged class carries
-            // both. lt is a fresh per-use parse (not shared), so splicing its list in place is safe;
-            // both ASTs are leaked, so the cross-pool `next` link stays valid.
-            childInit = spliceUseSite(childInit, od->initializer);
+            childBase = chained.first;
+            childBaseImport = chained.second;
         }
         // A bound child type (Rectangle/Text) needs ITS module imported too (the root's import
         // alone isn't enough); mirror the root's import + <pkg>.qtvirt, deduped.
@@ -5514,7 +5551,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         std::string field = "_dc" + std::to_string(di);
         std::string childCls = cls + "_dc" + std::to_string(di);
-        if (!childResolvedPath.empty()) g_resolving.insert(childResolvedPath);
+        for (auto &rp : childResolvedPath) g_resolving.insert(rp);
         g_parentCompletes = true;   // ...after this wire appends and parents it
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
@@ -5537,7 +5574,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             g_outerUsed = true;
             if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
         }
-        if (!childResolvedPath.empty()) g_resolving.erase(childResolvedPath);
+        for (auto &rp : childResolvedPath) g_resolving.erase(rp);
         childFields += "    " + childCls + " " + field + ";\n";
         // Into its OWN buffer, flushed BEFORE the property-bound children. The engine's `data`
         // holds the default children first: TextField declares its placeholder before its
@@ -6485,16 +6522,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // three steps the default-child path takes: take the base from the local definition's own
         // root, adopt the registry rows the base publishes, and splice the use site's members onto
         // the definition's.
-        std::string gkResolved;
+        std::vector<std::string> gkResolved;
         if (gkt.first.empty() && gk.type != "QtObject") {
             QString savedSrc2 = g_srcText;
             std::string savedUrl2 = g_docUrl;
-            if (UiObjectDefinition *lt2 = loadLocalType(gk.type, inPath, &gkResolved)) {
-                std::string ltRoot2 = lt2->qualifiedTypeNameId ? typeName(lt2->qualifiedTypeNameId) : "";
-                gkt = boundTypeFor(ltRoot2);
-                adoptLocalTypeRows(gk.type, ltRoot2);
-                gkInit = spliceUseSite(lt2->initializer, gk.init);
-            }
+            bool gkFound = false;
+            auto chained = resolveLocalChain(gk.type, inPath, gkInit, gkResolved, nullptr, &gkFound);
+            if (gkFound) gkt = chained;
             g_srcText = savedSrc2;
             g_docUrl = savedUrl2;
         }
@@ -6504,9 +6538,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string vimp = "import " + gkt.second.substr(0, gkt.second.rfind('.')) + ".qtvirt;\n";
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
-        if (!gkResolved.empty()) g_resolving.insert(gkResolved);
+        for (auto &rp : gkResolved) g_resolving.insert(rp);
         ObjNode kid = compileObject(gkInit, childCls, classes, partial, inPath, gkt.first, nullptr, gk.type);
-        if (!gkResolved.empty()) g_resolving.erase(gkResolved);
+        for (auto &rp : gkResolved) g_resolving.erase(rp);
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -6598,16 +6632,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // name is not the Templates type. Without this the child came out a bare QObject with none
         // of the type's properties, and its first connect threw.
         UiObjectInitializer *akInit = ak.init;
-        std::string akResolvedPath;
+        std::vector<std::string> akResolvedPath;
         QString savedAkSrc = g_srcText;
         auto savedAkBare = g_bareImports, savedAkQual = g_qualifiedTypes;
         if (akt.first.empty() && ak.type != "QtObject" && !ak.type.empty()) {
-            if (UiObjectDefinition *lt = loadLocalType(ak.type, inPath, &akResolvedPath)) {
-                std::string ltRoot = lt->qualifiedTypeNameId ? typeName(lt->qualifiedTypeNameId) : "";
-                akt = boundTypeFor(ltRoot);
-                adoptLocalTypeRows(ak.type, ltRoot);   // the registry knows the BASE, not the file
-                akInit = spliceUseSite(lt->initializer, ak.init);
-            }
+            bool akFound = false;
+            auto chained = resolveLocalChain(ak.type, inPath, akInit, akResolvedPath, nullptr, &akFound);
+            if (akFound) akt = chained;
         }
         if (!akt.first.empty() && !akt.second.empty()) {
             std::string imp = "import " + akt.second + ";\n";
@@ -6615,9 +6646,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string vimp = "import " + akt.second.substr(0, akt.second.rfind('.')) + ".qtvirt;\n";
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
-        if (!akResolvedPath.empty()) g_resolving.insert(akResolvedPath);
+        for (auto &rp : akResolvedPath) g_resolving.insert(rp);
         ObjNode kid = compileObject(akInit, childCls, classes, partial, inPath, akt.first, nullptr, ak.type);
-        if (!akResolvedPath.empty()) g_resolving.erase(akResolvedPath);
+        for (auto &rp : akResolvedPath) g_resolving.erase(rp);
         g_srcText = savedAkSrc; g_bareImports = savedAkBare; g_qualifiedTypes = savedAkQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
@@ -8108,10 +8139,25 @@ int main(int argc, char **argv) {
     // Only the CONVERSION is unnecessary: a colour literal is written through the meta-object and
     // QMetaType turns the string into a QColor, so nothing calls QColor.fromString. Emitted after
     // compiling, since that is when the document is known to mention one.
-    if (classes.find("QColor ") != std::string::npos && !bt.second.empty()) {
-        std::string pkg = bt.second.substr(0, bt.second.rfind('.'));
-        std::string imp = "import " + pkg + ".qcolor;\n";
-        if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+    // ...and the package is not always the ROOT's: a document whose root type is not bound (Qt's
+    // Fusion SpinBox, whose QQuickSpinBox is not in the binding) still has children that declare
+    // one, and taking the package only from `bt.second` left those with a QColor field and no
+    // module — a compile error in the generated D, not a diagnostic. Any bound type the document
+    // already imports names the same package.
+    if (classes.find("QColor ") != std::string::npos) {
+        std::string pkg = bt.second.empty() ? std::string() : bt.second.substr(0, bt.second.rfind('.'));
+        if (pkg.empty()) {
+            size_t p = g_extraImports.find("import qt.");
+            if (p != std::string::npos) {
+                size_t e = g_extraImports.find(';', p);
+                std::string mod = g_extraImports.substr(p + 7, e - p - 7);
+                if (auto d = mod.rfind('.'); d != std::string::npos) pkg = mod.substr(0, d);
+            }
+        }
+        if (!pkg.empty()) {
+            std::string imp = "import " + pkg + ".qcolor;\n";
+            if (g_extraImports.find(imp) == std::string::npos) g_extraImports += imp;
+        }
     }
     if (!rootResolvedPath.empty()) g_resolving.erase(rootResolvedPath);
 

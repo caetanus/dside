@@ -2810,3 +2810,48 @@ than attempted as a seventh measurement.
 The method note is the one worth keeping: five measurements of the OUTPUT could not name this, and
 one print at the DECISION did. When a number refuses to move, the next measurement belongs inside
 the branch, not around it.
+
+### The chain: a local type can derive from another local type (2026-08-02)
+
+The blocker the sixth measurement named, fixed. `resolveLocalChain` replaces the one-hop
+`loadLocalType` at all FIVE places that resolved a local `.qml` type — default child,
+property-bound child, delegate/`Component`, grouped-property child, attached child. It follows the
+derivation until it reaches a bound C++ base, splices every level's members in definition order
+(base first, use site last, so QML's last-wins override still holds), adopts the registry rows
+DEEPEST FIRST (each level inherits from the one below it, so adopting shallow-first would copy rows
+that do not exist yet), and records every file it visits so the cycle guard covers the whole chain
+rather than only its first link.
+
+Qt's `TextEditingContextMenu` is two hops: it is a `Menu`, and inside a style directory that `Menu`
+is the style's own `Menu.qml`, whose root is `T.Menu` — the bound one.
+
+**Measured with the gate OPEN, which is the only place it can show.** Before, four documents in each
+corpus threw at construction on the same line (`setProp failed: no writable property "parent"`);
+after, **zero** — Basic and Fusion both come out with exactly the instantiation profile they have
+with the gate shut. At the SHUT gate the change is inert, and that was verified rather than assumed:
+both corpora's diagnostics are byte-identical to the previous build.
+
+It also exposed one real hole of its own. The `import <pkg>.qcolor` a `property color` needs was
+derived from the ROOT's bound module, and Fusion's `SpinBox` has none (QQuickSpinBox is not in the
+binding) — so once its ContextMenu subtree compiled, two documents came out with a `QColor` field
+and no module, which is a compile error in the generated D rather than a diagnostic. The package now
+falls back to any bound type the document already imports.
+
+### The attached-child gate, measured a SEVENTH time — still shut, and now for a different reason
+
+With the chain in place the four throws are gone, so the gate could finally be judged on its output
+rather than on a crash. It is still net negative, by a wide margin:
+
+| Basic, gate open + compile-whole | shut | open |
+|---|---|---|
+| documents identical in every property | 43 of 57 | 40 |
+| value differences | 21 | 95 |
+| paths the engine has and we do not | 14 | **2651** |
+| paths we have and the engine does not | 155 | 155 |
+| diagnostics | 64 | 79 |
+
+The 2651 is the whole story: the compiled ContextMenu is a Menu with a ListView contentItem, an
+Overlay, seven Actions and their delegates, and the engine has thousands of properties under that
+subtree that we do not emit. Shipping it would trade one honest absence for several thousand silent
+ones. The gate stays shut — but the reason has moved from "it crashes" to "it is incomplete", which
+is a reason that can be measured down rather than only worked around.
