@@ -5586,6 +5586,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // without putting it back, this document's own diagnostics quote the child's file.
         QString savedSrc = g_srcText;
     std::string savedDocUrl = g_docUrl;
+        // ...and its IMPORT STATE, which the other three local-type sites already put back and this
+        // one did not. `g_qualifiedTypes` accumulates every bare name that arrived qualified, and
+        // Qt's `MenuSeparator.qml` is rooted in `T.MenuSeparator` — so loading it for the FIRST
+        // separator made `boundTypeFor("MenuSeparator")` answer the Templates type from then on,
+        // and the SECOND separator in the same menu was compiled as a bare bound object with none
+        // of the style's body. Two identical children, two different classes: the first 13 pixels
+        // tall, the second 0.
+        auto savedDcBare = g_bareImports, savedDcQual = g_qualifiedTypes;
         if (cbt.first.empty() && childType != "QtObject") {
             // A local `.qml`-defined type (HelloWorld { }): compile ITS OWN root as this child's
             // class, taking the local definition's base (QtObject -> fresh @QObject, Item -> bound).
@@ -5618,6 +5626,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
         g_docUrl = savedDocUrl;   // ...and so a class emits ITS document's baseUrl, not ours
+        g_bareImports = savedDcBare; g_qualifiedTypes = savedDcQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();

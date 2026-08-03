@@ -3433,3 +3433,33 @@ before and after.
 
 What is left behind the gate is now 293 against 306 — exactly one MenuSeparator's 13 pixels — plus
 one `enabled` and a ScrollIndicator transition. Small enough to name individually next time.
+
+### Loading a local type contaminated the import state for its SIBLINGS (2026-08-03)
+
+The last of the menu's geometry, and it is a general bug that had nothing to do with menus.
+
+Qt's `TextEditingContextMenu` has two `MenuSeparator {}` children. Compiled, the first came out 13
+pixels tall and the second 0 — same type, same document, two different classes. The generated D says
+it plainly: `ITF_ContextMenu_menu_dc2` is a full `MenuSeparator` with a contentItem and three
+recompute slots, and `dc7` is an empty class with a `classBegin` and nothing else.
+
+`g_qualifiedTypes` accumulates every bare name that arrived through an import alias, and Qt's
+`MenuSeparator.qml` is rooted in `T.MenuSeparator`. Loading it for the first child put
+"MenuSeparator" in that set, so `boundTypeFor("MenuSeparator")` answered the Templates type from then
+on and the second child was compiled as a bare bound object with none of the style's body. The other
+three local-type sites already saved and restored `g_bareImports`/`g_qualifiedTypes` around the
+compile; the DEFAULT-CHILD one did not.
+
+Measured with the gate open: **value differences 77 -> 21**, and `ContextMenu.menu.contentHeight`
+becomes 306 — the engine's, exactly. At the shut gate it is inert, both corpora unchanged.
+
+`tests/qmltc/controls/CSepShadow.qml` + `MenuSeparator.qml` pin it, and the FIRST version of that
+fixture was false green — worth writing down because it is the same trap as always. It read the two
+children's own `implicitHeight`, and with the defect in place the second child produces no labels at
+all, so the oracle is handed the shorter list and the comparison passes. A label the compiler records
+per child disappears WITH the child. The fixture reads the Column's implicit height instead, which
+sums what the children actually are: 26 with the fix, 13 without, against the engine's 26.
+
+Behind the gate what is left is: `popup.contentItem.data[1]` is our ScrollIndicator where the engine
+has a Rectangle (an ordering difference in the ListView's `data`), `contentData[5].enabled` false
+against true, and the menu's own `editor` and `parent` reading null.
