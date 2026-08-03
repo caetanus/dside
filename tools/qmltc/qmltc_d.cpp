@@ -8383,6 +8383,16 @@ int main(int argc, char **argv) {
                         if (br != std::string::npos)
                             expr = "listAt(" + expr + ", \"" + seg.substr(0, br) + "\", "
                                  + seg.substr(br + 1, seg.size() - br - 2) + ")";
+                        // A segment that names an attached TYPE is not a property of the object
+                        // before it — `ContextMenu.menu.contentData[0]` reaches the menu through
+                        // Qt's type registry. The NON-indexed branch below never had this problem
+                        // (it reuses the D expression the compiler already built), so the two
+                        // walkers silently disagreed: `--objpaths` listed those objects and
+                        // `--dumpall` resolved a null for them and printed nothing. Measured on
+                        // TextField with the attached gate open: 664 of the paths reported as
+                        // "the engine has and we do not" were this, not the compiler.
+                        else if (g_qmlAttachedCxx.count(seg) || g_attached.count(seg))
+                            expr = attachedExprOn(expr, seg);
                         else
                             expr = "propObj(" + expr + ", \"" + seg + "\")";
                         if (j == path.size()) break;

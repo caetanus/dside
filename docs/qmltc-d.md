@@ -2850,8 +2850,37 @@ rather than on a crash. It is still net negative, by a wide margin:
 | paths we have and the engine does not | 155 | 155 |
 | diagnostics | 64 | 79 |
 
-The 2651 is the whole story: the compiled ContextMenu is a Menu with a ListView contentItem, an
-Overlay, seven Actions and their delegates, and the engine has thousands of properties under that
-subtree that we do not emit. Shipping it would trade one honest absence for several thousand silent
-ones. The gate stays shut — but the reason has moved from "it crashes" to "it is incomplete", which
-is a reason that can be measured down rather than only worked around.
+The gate stays shut, and the reason has moved from "it crashes" to "it is incomplete". But the 2651
+was NOT all the compiler, and attributing it took one more measurement — see the next two sections.
+
+### The two dump walkers disagreed about an attached path (2026-08-02)
+
+`--objpaths` and `--dumpall` share `collectDump`, so it looked impossible for them to enumerate
+different objects. They do not share how an INDEXED path is RESOLVED. The non-indexed branch reuses
+the D expression the compiler already built (which knows how to reach an attached object); the
+indexed branch rebuilds the path segment by segment out of `propObj` calls, and `ContextMenu` is not
+a property of anything — it is a type name resolved through Qt's registry. So `--objpaths` listed
+`ContextMenu.menu.contentData[0]`, the oracle walked it and dumped 78 properties, and our side
+resolved a null and printed nothing.
+
+Measured on `TextField` with the gate open: **664 of the paths counted as "the engine has and we do
+not" were this**, not the compiler. The indexed walker now emits `attachedObj(...)` for a segment
+the registry knows as an attached type, and TextField's total drops from 664 to 507. At the SHUT
+gate the change is inert — the corpus is identical property for property (43 identical, 21 value
+differences, 155 only-ours, 14 only-engine) and both corpora's diagnostics are byte-identical.
+
+The lesson has a name in this file already: the harness lies as much as the compiler. Two walkers
+built from one tree are still two walkers.
+
+### What is actually left behind the gate: the Menu never wraps an Action
+
+With both of those out of the way, the remaining difference under the attached ContextMenu is a
+single fact. Qt's Menu turns an `Action` child into a `MenuItem`: `contentData_append` sees a
+non-Item and asks `createItem(action)`, which instantiates the Menu's `delegate` component and binds
+the action to it. The engine's `contentData[0]` is a `QQuickMenuItem` with 78 properties; ours is the
+`QQuickAction` itself, with the two the engine's MenuItem does not have.
+
+So the blocker is the DELEGATE: our compiled Menu has no `QQmlComponent` in `delegate`, so Qt cannot
+wrap anything, and every one of those nine children is the wrong class. That is a concrete,
+single-cause target — and it is the same `Component`-as-a-template machinery the delegate path
+already has, pointed at a property the Menu reads rather than at a view.
