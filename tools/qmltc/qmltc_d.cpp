@@ -4208,6 +4208,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Taken at ENTRY and cleared, so a nested compile does not inherit the caller's answer.
     const bool thisParentCompletes = g_parentCompletes;
     g_parentCompletes = false;
+    // Offset in `wire` where this object's CHILDREN begin. Everything before it is what the object
+    // does to ITSELF; everything after is the tree below it, which the engine builds only once the
+    // object is in place. npos while no wire has been emitted.
+    size_t kidsAt = std::string::npos;
     std::string savedSelfQmlType = g_selfQmlType;
     std::string savedId = g_selfId;
     auto savedIds = g_selfIds;
@@ -5443,6 +5447,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         : isBoundObjectProp(cb.field)
                         ? "        setPropObj(this, \"" + cb.field + "\", " + dIdent(cb.field) + ");\n" : "")
                    // ...and NOT classBegin: the child already did it at the top of its own wire.
+                   // The child's OWN children come now, after the assignment above and before it
+                   // is completed — the engine defers them that far and Qt relies on it: a Popup
+                   // assigned to a ComboBox has its ListView contentItem reset by
+                   // QQuickComboBox::setPopup, which cannot happen if the ListView does not exist
+                   // yet (reproduced against the engine alone).
+                   + "        " + dIdent(cb.field) + ".__qmltcKids();\n"
                    // componentComplete IS ours to call, and only now: the child is in the tree.
                    + "        componentComplete(" + dIdent(cb.field) + ");\n";
         if (!kid.id.empty()) {
@@ -5610,8 +5620,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                           + "        setPropObj(" + field + ", \"parent\", this);\n" : "")
                    + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
                         ? "        }\n" : "")
-                   // ...and NOT classBegin (the child did it); componentComplete IS ours, and only
-                   // now that the child is in the tree.
+                   // ...and NOT classBegin (the child did it); its own children come now, once it
+                   // is appended and parented; componentComplete IS ours, and only after that.
+                   + "        " + field + ".__qmltcKids();\n"
                    + "        componentComplete(" + field + ");\n";
         // A BARE child with an id is just as addressable as one bound to a property:
         // `property alias source: dps.source` where dps is a default child is the dominant shape
@@ -7417,6 +7428,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             (mentionsKid(line) ? baseAfterKids : baseBeforeKids) += line;
         }
         wire += baseBeforeKids;   // set base C++ properties, with every BINDING already live
+        // Everything from HERE on is "my children and what reads them", and it becomes a separate
+        // method the PARENT calls once this object is assigned to its property — see the split
+        // below.
+        kidsAt = wire.size();
         // ...and the CHILDREN only after this object's own properties, which is the order the
         // engine uses: `background`, `contentItem` and `indicator` are DEFERRED properties
         // (Q_CLASSINFO("DeferredPropertyNames", ...) on QQuickControl and friends), created inside
@@ -7717,6 +7732,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // an already-completed QQmlDelegateModel, and Qt segfaults in QQuickRepeater::clear().
         if (!thisParentCompletes) wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
+        // THE SPLIT. `__qmltcWire` keeps what the object does to ITSELF; everything from the
+        // children on becomes `__qmltcKids`, which the parent calls once this object is assigned
+        // and parented. Nobody assigns the root (nor a group, attached or value-source child —
+        // the same set that completes itself), so those call it at the end of their own wire.
+        if (kidsAt != std::string::npos && kidsAt < wire.size()) {
+            std::string kidsBody = wire.substr(kidsAt);
+            wire.erase(kidsAt);
+            if (!thisParentCompletes) wire += "        __qmltcKids();\n";
+            wire += "    }\n    void __qmltcKids() {\n" + kidsBody;
+        } else {
+            // Emitted even when empty: the parent's call site cannot know whether a child class
+            // has children of its own, and a method that is missing is a compile error.
+            if (!thisParentCompletes) wire += "        __qmltcKids();\n";
+            wire += "    }\n    void __qmltcKids() {\n";
+        }
         wire += "    }\n";
     }
 

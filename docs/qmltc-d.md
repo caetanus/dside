@@ -3058,3 +3058,36 @@ own properties" and "my children" — the split already exists in the emitter as
 `baseBeforeKids` / `dcWire`+`childWire` / `baseAfterKids` — with the second half exposed as a method
 the PARENT calls between assigning the object and completing it. Written down here with its evidence
 rather than attempted at the end of a session.
+
+### DONE: an object's children are built after it is ASSIGNED (2026-08-03)
+
+The restructuring the previous section named, done. Each generated class's wire splits in two:
+
+- `__qmltcWire()` — what the object does to ITSELF: context, `classBegin`, its bindings' connects,
+  its own property assignments.
+- `__qmltcKids()` — its children, the assignments that name one, its handlers, the initial binding
+  pass, and its completion.
+
+The PARENT calls `__qmltcKids()` between assigning the child to its property and completing it. The
+root calls its own at the end of its wire — as do the group, attached and value-source children,
+which is exactly the set that already completes itself because nobody else can.
+
+The split point was not invented for this: the emitter already computed it for the previous fix
+(`baseBeforeKids` / `dcWire`+`childWire` / `baseAfterKids`), so the change is one offset recorded
+while `wire` is assembled and one `substr` at the end.
+
+Measured: **Fusion's value differences 5 → 4** — `popup.contentItem.highlightRangeMode` now reads
+`ApplyRange` on both sides, which was `QQuickComboBox::setPopup` resetting a ListView that, in the
+engine, does not exist yet when it runs. Basic stays at 4, both corpora keep 0 only-ours and 0
+only-engine, render (49/0 and 42/2) and click (34/0 and 29/4) are unchanged, and so are the
+diagnostics (64 and 48) and the instantiation profile.
+
+`tests/qmltc/controls/CDeferKids.qml` pins it, verified able to FAIL: with the popup's contentItem
+moved back into the popup's constructor, it reads `NoHighlightRange` against the engine's
+`ApplyRange`.
+
+Eight value differences remain over both corpora: DelayButton's two
+`contentItem.data[i].baselineOffset` in each style (its `ItemGroup` sizes its texts itself, so the
+same order argument applies one level further down than any property the compiler assigns) and
+ComboBox/SearchField's `popup.contentItem.model`, where the engine leaves an invalid QVariant and we
+write a null QObject.
