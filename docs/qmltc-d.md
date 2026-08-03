@@ -3023,3 +3023,38 @@ verified able to FAIL: with the two assignments moved back after the children in
 What is left is nine value differences over both corpora and two causes: DelayButton's two
 `contentItem.data[i].baselineOffset` (the same family, inside an `ItemGroup` whose children are
 built by a C++ type rather than by us) and ComboBox/SearchField's `popup.contentItem.model`.
+
+### The last two causes are ONE fact, and the engine confirmed it (2026-08-03)
+
+Nine value differences remain over both corpora. Traced, they are not two problems but one, and it
+is the same mechanism the previous section only half-applied.
+
+**Fusion ComboBox: `popup.contentItem.highlightRangeMode` reads `NoHighlightRange` where the
+document says `ListView.ApplyRange`.** The write is emitted, and it works — writing the key after
+construction gives `ApplyRange`. Bisected with a print at each step of the generated wire, the value
+survives the ListView's own wire, survives `setPropObj(popup, "contentItem", …)`, survives
+`componentComplete(contentItem)` — and is gone one statement later, at
+`setPropObj(this, "popup", popup)`.
+
+That is `QQuickComboBox::setPopup`, and it is not our code. Reproduced against the engine alone: build
+a `T.Popup { contentItem: ListView { highlightRangeMode: ListView.ApplyRange } }`, read
+`ApplyRange`, assign it to a `T.ComboBox`, read `NoHighlightRange`. The engine escapes it only
+because `popup` is a DEFERRED property of the ComboBox **and `contentItem` is a deferred property of
+the Popup**: when `setPopup` runs, the ListView does not exist yet.
+
+So the rule the previous fix applied WITHIN an object has to apply BETWEEN them as well: an object's
+children belong after the object is assigned to its parent's property, not inside its constructor.
+Our order is
+
+    popup = new IComboBox_popup();   // ...which builds its contentItem too
+    setPropObj(this, "popup", popup);
+
+and the engine's is the reverse. DelayButton's two `contentItem.data[i].baselineOffset` are
+consistent with the same fact one level down: its `ItemGroup` and the two `ClippedText`s inside it
+are built before the Control ever sizes the group, so the texts get a resize the engine's never see.
+
+The change that follows is real work rather than a branch: each class's wire has to split into "my
+own properties" and "my children" — the split already exists in the emitter as
+`baseBeforeKids` / `dcWire`+`childWire` / `baseAfterKids` — with the second half exposed as a method
+the PARENT calls between assigning the object and completing it. Written down here with its evidence
+rather than attempted at the end of a session.
