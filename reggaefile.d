@@ -685,13 +685,12 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // list property, and the object-property paths the emitter does not mark — is a D
             // field and not a meta-object property, so the engine's dump has `conn <object>` (or
             // `inner`, `child`, `kids[0]`) and ours has no such key. Measured: controls 23 of 23
-            // pass, quick 42 of 46, corpus 33 of 46. Listing them here rather than dropping the
+            // pass, quick 42 of 46, corpus 35 of 46. Listing them here rather than dropping the
             // gate keeps the 98 that DO hold, and the list is the backlog — see the
             // `qml-declared-members-not-in-metaobject` entry in tests/expected-fails.json.
             static immutable string[] dumpallGap = [
                 "AliasBare", "Aliased", "AliasHolder", "AliasRebind", "ArrayBinding", "ChildAlias",
-                "ChildReactive", "Connect", "CrossCall", "DefaultHolder", "UsesAliasDefault",
-                "UsesDefault", "UsesList",
+                "ChildReactive", "Connect", "CrossCall", "UsesAliasDefault", "UsesList",
                 "QNested", "QObjProp", "QUsesLocalExt", "QUsesLocal",
             ];
             if (!dumpallGap.canFind(name)) {

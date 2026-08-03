@@ -3662,3 +3662,21 @@ Two things had to come with it, both caught by the gate rather than by reading:
 `DefaultHolder` now passes the strong protocol — corpus 33 of 46 to 34. What is left in this family
 is the other half: the bare child has to be ASSIGNED to the declared default property, which is why
 `UsesDefault` still reads `child <null>` where the engine has `<object>`.
+
+### ...and a single-object default property is ASSIGNED, not appended (2026-08-03)
+
+The other half of that family. The label already named the property — that is how the dump reaches
+the child — but nothing ever wrote it, so `default property QtObject child` read `<null>` on our side
+against the engine's `<object>`: the property existed and held nothing.
+
+One line beside the append, taken only when the default property is a SINGLE object (a list keeps
+`listAppend`, which is what a list means). `UsesDefault` passes; corpus 34 of 46 to **35**, and both
+it and `DefaultHolder` come out of the gate's exclusion list.
+
+Nothing else moved: controls 23 of 23 and quick 42 of 46 as before, both corpora identical on every
+axis (Basic 56 of 57, Fusion 48 of 49, 2 value differences each, render 49 and 44 with none
+differing, click 34 and 34 with one, diagnostics 64 and 48).
+
+Of the four real families, one is now down to its ALIAS half (`AliasHolder`, `UsesAliasDefault` —
+`property alias child: inner.something` on a default-property holder), and aliases are the family
+that has to land next anyway.

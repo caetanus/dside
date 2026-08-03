@@ -5703,6 +5703,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         ? "        if (!listAppend(this, \"" + defaultKidLabel + "\", " + field + ")) {\n    "
                         : "")
                    + "        setQtParent(" + field + ", this);\n"
+                   // ...and a SINGLE-OBJECT default property is ASSIGNED, not appended. The label
+                   // already named it (that is how the dump reaches the child), but nothing wrote
+                   // it: `default property QtObject child` read `<null>` on our side against the
+                   // engine's `<object>`, so the property existed and held nothing.
+                   + (!defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
+                        ? "        setPropObj(this, \"" + defaultKidLabel + "\", " + field + ");\n" : "")
                    + (((isItemType(childType) || isItemType(qmlNameOfCxx(childBase)))
                         && isItemType(g_selfQmlType))
                         ? std::string(defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@' ? "    " : "")
