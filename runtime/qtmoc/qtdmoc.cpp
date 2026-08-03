@@ -1398,6 +1398,22 @@ extern "C" void qtd_dump_object(void* o, const char* path) {
             // The ADDRESS differs between the two runs by construction; what is comparable is
             // whether the slot is filled at all.
             out = v.value<QObject*>() ? QStringLiteral("<object>") : QStringLiteral("<null>");
+#ifdef QTD_HAVE_QML
+        } else if (v.canConvert<QJSValue>()) {
+            // A QJSValue-typed property that HOLDS an object is an object slot like any other, and
+            // saying so is the difference between a comparison and a blank. `Rectangle.gradient` is
+            // one, and both sides printed empty for it whether it held a Gradient or null — which is
+            // precisely how `gradient: control.down ? null : buttonGradient` stayed a one-shot with
+            // nothing in the value differential to show for it.
+            QJSValue jv = v.value<QJSValue>();
+            // ONLY when it holds a QObject. A plain JS object has no text form worth comparing —
+            // `[object Object]` says nothing, and Text.fontInfo is one on the engine's side and
+            // nothing on ours, which would have added eleven differences that are a spelling, not
+            // a defect. Skipped, exactly as a list or a gadget is. A slot filled on one side and
+            // empty on the other still shows: the key is present for one and absent for the other.
+            if (!jv.toQObject()) continue;
+            out = QStringLiteral("<object>");
+#endif
         } else if (v.canConvert<QString>()) {
             out = v.toString();
         } else {

@@ -5962,6 +5962,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
         std::string val;
         std::string copyAssign;   // set when the value is a plain property read (a QVariant copy)
+        // ...and set when the value is an OBJECT-or-null ternary, which takes the same binding path
+        // as a scalar rather than being assigned once (see the note where it is filled in).
+        std::string objAssign;
         bool scalar = (ty == "int" || ty == "string" || ty == "double" || ty == "bool");
         // A property we cannot type as a D scalar (QColor, QFont, an enum, a model) is still
         // perfectly reachable when the VALUE is just another property: the QVariant carries the
@@ -6239,10 +6242,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             && objPathExpr(objSide, oeA, oqA)) {
                         std::string yes = isNullLit(cnd9->ok) ? "null" : oeA;
                         std::string no  = isNullLit(cnd9->ok) ? oeA : "null";
-                        baseWire += "        setPropObj(this, \"" + ba.first + "\", "
+                        // Falls through to the BINDING path below instead of assigning once. The
+                        // condition reads `control.down`, and a one-shot left every Fusion panel
+                        // drawing its UNPRESSED gradient forever — the flat pressed colour is what
+                        // shows when the gradient is null. Measured on the frame after a click on
+                        // Fusion's ComboBox: 2714 of 3240 pixels, every row of the panel, with
+                        // every readable property of both sides already equal.
+                        objAssign = "        setPropObj(this, \"" + ba.first + "\", "
                                   + ce9 + " ? " + yes + " : " + no + ");\n";
-                        node.baseProps.push_back({ba.first, ty});
-                        continue;
                     }
                 }
             std::string oe9, oq9;
@@ -6253,7 +6260,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 continue;
             }
         }
-        if (copyAssign.empty() && (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val))) {
+        if (objAssign.empty() && copyAssign.empty()
+                && (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val))) {
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
             // problem as an EXPRESSION we can't compile into a type we do route.
@@ -6272,7 +6280,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // The copy is a BINDING like any other: it goes through the same recompute+connect path
         // below, which also fixes ordering — children are constructed before the parent assigns
         // its own properties, so the first copy reads a default and the notify corrects it.
-        std::string assign = !copyAssign.empty() ? copyAssign
+        std::string assign = !objAssign.empty() ? objAssign
+                           : !copyAssign.empty() ? copyAssign
                            : g_baseIsD ? ("        " + ba.first + " = " + val + ";\n")
                                        : ("        setProp(this, \"" + ba.first + "\", " + val + ");\n");
         baseWire += assign;
@@ -6478,7 +6487,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            + ba.first + "()\");\n";
                     continue;
                 }
-                if (g_valueLists.count(d) || g_singletons.count(d) || g_qmlSingletonUri.count(d)) continue;   // nothing mutates these
+                if (g_valueLists.count(d) || g_singletons.count(d) || g_qmlSingletonUri.count(d)) continue;
+            if (g_childIds.count(d)) continue;   // a child object's id: the field never changes   // nothing mutates these
+                // ...and a bare CHILD ID is a field this class holds: the object it names never
+                // changes, so there is nothing to connect to and nothing missing. Qt's Fusion
+                // panels write `gradient: control.down ? null : buttonGradient`, and reporting
+                // `buttonGradient` as having no notify called a correct translation incomplete.
+                if (g_childIds.count(d)) continue;
                 // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
                 // names, but the per-item context carries an object that publishes it as a property
                 // WITH a notify — so the binding is as live as any other, same channel.

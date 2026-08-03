@@ -3205,3 +3205,49 @@ truncated spelling.
 The two clicks that still differ are BusyIndicator and ComboBox. Everything else in Qt's Fusion
 style that this compiler can build now draws the same frame as the engine, at rest and after being
 pressed.
+
+### `gradient: cond ? null : <object>` is a BINDING (2026-08-03)
+
+The last click difference that was not the BusyIndicator ceiling. Fusion's ComboBox, after being
+pressed, differed in **2714 of 3240 pixels** — every row of the panel — with **every readable
+property of both sides already equal**. Ruled out first, one probe each: the state (696 dotted keys
+read back from the engine's object after the same click: no difference), window activation (the
+engine's window is active too, and forcing it changes nothing), and the harness shape (the engine
+built in a bare `QQuickWindow`, exactly as ours is, gives a frame identical to the `QQuickView` one
+and still differs from ours).
+
+What was left was a pixel map: rows 0, 6, 7 and 26 identical, every other row different across the
+full width, ours `#f9f9f9` where the engine had a flat `#dbdbdb`. A flat colour where we draw a
+gradient — and `ButtonPanel.qml` says why:
+
+    gradient: control.down || control.checked ? null : buttonGradient
+
+The compiler already handled the object-or-null ternary; it emitted it as a one-shot and `continue`d
+past the binding path. So the panel kept the unpressed gradient forever, and the flat pressed colour
+underneath never showed. It now falls through to the same recompute-and-connect the scalar bindings
+take.
+
+Two smaller things had to come with it:
+
+- A bare CHILD ID as a dependency (`buttonGradient`) is a field that never changes, so it is a
+  constant, not an unwired dep. Without that the fix added six diagnostics calling a correct
+  translation incomplete.
+- **A `QJSValue` property that holds a QObject is an object slot**, and both formatters said nothing
+  for it — so `background.gradient` compared as blank on both sides whether it held a Gradient or
+  null, which is why only the pixels could see this. Both now report `<object>`; a QJSValue that is
+  NOT a QObject is still skipped, deliberately: `Text.fontInfo` is a plain JS object on the engine's
+  side and nothing on ours, and spelling it `[object Object]` added eleven differences that are a
+  spelling rather than a defect. (Measured both ways — that is where the eleven came from.)
+
+| | before | after |
+|---|---|---|
+| Fusion frame after a click | 33 identical, 2 differ | **34 identical, 1 differ** |
+| everything else | — | unchanged |
+
+The one remaining click difference in either corpus is BusyIndicator, which is the documented
+unbound-`*Impl` ceiling: its animation lives in a QML type the style plugin exports without a C++
+symbol we can subclass.
+
+No fixture: the value protocol reads `background.gradient` through `propStr`, which is empty for a
+QJSValue either way, so a fixture built on it would pass with the defect in place. The guard is the
+click render on the corpus — which is what found it.

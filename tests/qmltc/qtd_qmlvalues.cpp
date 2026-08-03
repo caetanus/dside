@@ -278,6 +278,17 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
                     outv = k ? QString::fromUtf8(k) : QString::number(v.toInt());
                 } else if (v.canConvert<QObject *>()) {   // Qt5 has no QVariant::metaType()
                     outv = v.value<QObject *>() ? QStringLiteral("<object>") : QStringLiteral("<null>");
+                } else if (v.canConvert<QJSValue>()) {
+                    // ...and a QJSValue that HOLDS an object is an object slot too. Same rule as
+                    // above, reached independently — `Rectangle.gradient` printed empty on both
+                    // sides whether it held a Gradient or null, so a binding that stopped switching
+                    // it had nothing in the differential to show for it.
+                    QJSValue jv = v.value<QJSValue>();
+                    // ...only when it HOLDS a QObject, for the reason written on the other side:
+                    // a plain JS object has no comparable text, and one side having `fontInfo` and
+                    // the other not is a spelling difference, not a defect.
+                    if (!jv.toQObject()) continue;
+                    outv = QStringLiteral("<object>");
                 } else if (v.canConvert<QString>()) {
                     outv = v.toString();
                 } else continue;
