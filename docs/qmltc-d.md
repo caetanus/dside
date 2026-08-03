@@ -3376,3 +3376,25 @@ attempts to see.
 What is left behind the gate is now geometry: the menu reports `count` 10 where the engine reports 9
 and a content height of 1293 against 306, so an extra item is appended and the items are about four
 times too tall.
+
+### The extra menu item is the ScrollIndicator (2026-08-03)
+
+With the id scopes fixed, the menu behind the open gate reports `count` 10 where the engine reports
+9, and a content height of 1293 against 306. Probed by dumping one index past the end:
+
+    PROBE.contentData[9].__class    QQuickScrollIndicator
+    PROBE.contentData[9].height     1000
+
+Qt's `Menu.qml` gives its ListView contentItem a `ScrollIndicator.vertical: ScrollIndicator { }`. On
+our side that indicator becomes a child of the ListView and the Menu counts it as an ITEM — one
+extra entry in `contentModel`, and its 1000-pixel height is almost all of the 987 the content height
+is over. On the engine's side it does not.
+
+Dropping our `setQtParent(<attached child>, this)` was tried and changes nothing — the indicator is
+still there, so it is Qt's own attached setter that parents it into the flickable, and what differs
+is something about WHEN. That is where the next attempt starts; the count and the height are one
+object, not a class of problems.
+
+Both remain behind the shut gate, where the corpora are unchanged: Basic 56 of 57 and Fusion 48 of
+49 documents identical in every property, 2 value differences each, render 49 and 44 with none
+differing, click 34 and 34 with one, diagnostics 64 and 48.
