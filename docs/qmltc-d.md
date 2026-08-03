@@ -3680,3 +3680,29 @@ differing, click 34 and 34 with one, diagnostics 64 and 48).
 Of the four real families, one is now down to its ALIAS half (`AliasHolder`, `UsesAliasDefault` —
 `property alias child: inner.something` on a default-property holder), and aliases are the family
 that has to land next anyway.
+
+### What an alias needs, precisely (2026-08-03)
+
+The last family, scoped rather than started, because it is a moc feature and not an emitter change.
+
+A QML alias is a REFERENCE. `property alias inner: kid.value` is compiled today into no class member
+at all — the dump reads `o.content.value` and a mutation writes `setProp(o.content, "value", …)`.
+That is the right semantics (nothing is stored, so nothing can drift) and it is why the engine's
+meta-object has `inner` and ours has no such key.
+
+qtmoc discovers properties by `hasUDA!(__traits(getMember, T, m), Property)` over the class's FIELDS,
+and `callProp` reads and writes `__traits(getMember, o, m)` directly. Neither fits a forwarding
+property:
+
+- a real field would hold a COPY, which is exactly what an alias is not;
+- a D `alias inner = kid.value;` at class scope loses the UDA — `getMember` yields the aliased
+  symbol, not the declaration.
+
+So the shape is a second UDA — `@PropertyAlias` on a getter/setter pair, with `propMembers` and
+`callProp` extended to route through them. That is a contained change in `runtime/qtmoc/qtmoc.d`
+with a matching one in the emitter, and it closes seven fixtures at once: the five alias ones
+(AliasBare, Aliased, AliasRebind, ChildAlias, ChildReactive) and the two that are the alias half of
+the default-property holder (AliasHolder, UsesAliasDefault).
+
+Written down here rather than begun, because starting a moc feature is not something to do at the
+end of a session — and because the shape above is the part that took the reading.
