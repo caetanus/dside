@@ -2018,6 +2018,24 @@ static bool objPathFromString(const std::string &dotted, std::string &objExpr, s
     return true;
 }
 
+// A role of the per-item model object, by NAME: the same read whether the name is a literal
+// (`model.day`) or computed (`model[control.textRole]`). Empty when the property's declared type is
+// not one this channel can carry, so the caller falls through to the ordinary refusal.
+static std::string modelRoleRead(const QString &dtype, const std::string &keyExpr) {
+    // Through the CONTEXT, not through the context OBJECT. Measured: a Repeater over an int model
+    // publishes `index` on the context itself and carries no context object at all, so a property
+    // read off `contextObject()` answered empty on every path. `contextProperty` asks the context
+    // and its object, in that order, and walks up -- one call that covers both, and the same one
+    // the literal-name reads already use. The only difference here is that the name arrives at run
+    // time.
+    if (dtype == "int") return "contextInt(this, " + keyExpr + ")";
+    if (dtype == "double" || dtype == "float" || dtype == "real")
+        return "contextDouble(this, " + keyExpr + ")";
+    if (dtype == "string") return "contextStr(this, " + keyExpr + ")";
+    if (dtype == "bool") return "(contextInt(this, " + keyExpr + ") != 0)";
+    return "";
+}
+
 static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &out) {
     if (!e) return false;
     if (auto *nested = cast<NestedExpression *>(e)) {
@@ -2082,6 +2100,27 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (!compileExpr(am->expression, QStringLiteral("int"), idx)) return false;
             out = qs(b->name.toString()) + "[" + idx + "]"; return true;
         }
+        // A MODEL ROLE, read by a key computed at run time: `text: model[control.textRole]`, which
+        // is how every Qt Control that shows a model writes its label. The key is a string and the
+        // roles are PROPERTIES of the object the per-item context carries -- so this is the
+        // meta-object channel again, a property read by name, not a new mechanism. `index` is one
+        // of those properties too, which is why `model["index"]` works for exactly the same reason.
+        if (b && !g_delegateCls.empty()) {
+            std::string base = qs(b->name.toString());
+            // A DECLARED `model` DOES disqualify it, and the reason is the engine's, not ours:
+            // declaring required properties turns the context injection OFF. Measured -- a delegate
+            // with `required property int index` answers EMPTY for `model["index"]` in the engine,
+            // where the same delegate without it answers the role. So Qt's ComboBox, which spells
+            // it `required property var model`, is reading the INJECTED property and not the
+            // context; reading the context there would put a plausible value where the engine has
+            // none. It stays refused, which is the honest answer until injection is implemented.
+            if (base == "model" && !g_scope.count(base) && !g_childIds.count(base)
+                    && !g_propType.count(base) && !g_baseProps.count(base)) {
+                std::string key;
+                if (!compileExpr(am->expression, QStringLiteral("string"), key)) return false;
+                if (auto o = modelRoleRead(dtype, key); !o.empty()) { g_ctxUsed = true; out = o; return true; }
+            }
+        }
         return false;
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
@@ -2094,6 +2133,17 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     && qs(fm->name.toString()) == "pluginName") {
                 out = "platformName()"; return true;
             }
+        // The same model role written with a LITERAL name: `model.day` on Qt's MonthGrid. One
+        // mechanism, two spellings -- the key is just known at compile time here.
+        if (auto *bM = cast<IdentifierExpression *>(fm->base);
+                bM && !g_delegateCls.empty() && qs(bM->name.toString()) == "model"
+                && !g_scope.count("model") && !g_childIds.count("model")
+                && !g_propType.count("model") && !g_baseProps.count("model")) {
+            std::string role = qs(fm->name.toString());
+            if (auto o = modelRoleRead(dtype, "\"" + role + "\""); !o.empty()) {
+                g_ctxUsed = true; out = o; return true;
+            }
+        }
         // An ATTACHED object as a TRUTH VALUE: `indicator.Window ? … : …` — Qt's Fusion Switch
         // asks whether it is in a window before dimming its gradient. First, because the ordinary
         // member paths below decline a capitalised member and never reach the object-path test at
@@ -8198,8 +8248,16 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
     // `*Impl`, which exports no symbol to subclass), so it really IS a QQuickBasicBusyIndicator and
     // the walk already says so. Hinting `QObject` there replaced a right answer with a wrong one on
     // four documents — which is what the corpora said the moment this was measured.
+    // The ROOT names ITSELF, explicitly. It used to be left to the walk, which found our generated
+    // class only because the walk's test for "is this a Qt class" was a leading Q -- true of every
+    // fixture in the QtQuick set by naming convention, and of nothing else. Naming it here is also
+    // what makes the engine's OWN rule fall out: the walk skips a class that declares no properties
+    // of its own, and the engine builds a document type only when the document declares members, so
+    // a root that declares nothing reports the Qt base on both sides without a special case.
     if (acc != "o." && !n.engineInst)
         g_clsHint[self] = n.boundBase.empty() ? "QObject" : n.boundBase;
+    else if (acc == "o." && !n.engineInst && !g_className.empty())
+        g_clsHint[self] = g_className;
     for (auto &s : n.scalars) {
         // A value type has no meaningful default text (a QColor prints its raw struct), so it is
         // dumped the way the engine formats it: QColor as #rrggbb, which is what QVariant gives
@@ -8691,7 +8749,21 @@ int main(int argc, char **argv) {
                         "        setProp(o, a[6 .. eq], a[eq + 1 .. $]);\n"
                         "    }\n");
             std::printf("    foreach (a; args) if (a == \"--dumpall\") {\n");
-            std::printf("        qtd_dump_object(qobjOf(o), \"\");\n");
+            // ...named by the DOCUMENT, which is what the engine calls a type a document defines --
+            // not by our generated class, whose name is whatever the caller asked for (the corpus
+            // harness prefixes `Rt`, and the engine has never heard of it). When the two coincide
+            // the walk stops there and reports it; when they do not, nothing in our chain matches
+            // and the walk continues to the Qt base, which is also what the engine reports for a
+            // document that defines no type of its own. And when the document declares no members,
+            // the "skip a class that declares no properties" rule below skips past it on both
+            // sides -- so one hint covers every case, including the two corpus roots (RangeSlider,
+            // Tumbler) that naming our own class got wrong.
+            {
+                std::string stem = g_docUrl;
+                if (auto sl = stem.find_last_of('/'); sl != std::string::npos) stem = stem.substr(sl + 1);
+                if (auto dot = stem.rfind(".qml"); dot != std::string::npos) stem = stem.substr(0, dot);
+                std::printf("        qtd_dump_object_as(qobjOf(o), \"\", \"%s\");\n", stem.c_str());
+            }
             for (auto &l : lines) {
                 if (l.setObj == "o" || l.setObj.empty()) continue;
                 if (l.setObj.find("propObj(") != std::string::npos) continue;   // a group, not a child

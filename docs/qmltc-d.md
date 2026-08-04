@@ -4053,3 +4053,57 @@ Identical, line for line, on every axis — which is the honest result: Qt's own
 a delegate context in any expression this compiler currently accepts, so nothing that was already
 compiling could move. What moved is that the reads which DO compile are now correct, and that a
 whole class of silent wrong answers has a test that would catch it coming back.
+
+### A model role by name, and the boundary the engine draws around it (2026-08-03)
+
+With the delegate context working, the read Qt's Controls actually write becomes reachable:
+`text: model[control.textRole]`. The roles are properties of the per-item model, so this is the
+meta-object channel once more — a property read by name — and it comes out of `contextProperty`,
+which asks the context and its context object and then walks up. Both spellings go through the same
+helper: the computed key (`model[k]`) and the literal one (`model.day`, Qt's MonthGrid).
+
+The first attempt read it off `contextObject()` and answered EMPTY on every path. A Repeater over an
+int model publishes `index` on the context itself and carries **no context object at all** — the
+same probe that found the missing per-item context said so, and it was ignored the first time.
+
+**The engine draws a boundary here, and it had to be measured to be seen.** A delegate that declares
+required properties gets the context injection turned OFF:
+
+| delegate declares | engine's `model["index"]` |
+|---|---|
+| nothing | `0` |
+| `required property int index` | *(empty)* |
+
+So Qt's ComboBox and SearchField — which spell it `required property var model` — are reading the
+INJECTED property, not the context. Relaxing the guard to accept a declared `model` closed their
+`text` refusals (Basic diagnostics 26 → 24, measured), and it was **reverted**: it would have put a
+plausible value where the engine has none. The refusal stays until required-property injection is
+implemented, which is now the named next step.
+
+`QDelegateRole.qml` covers the literal key, `QDelegateRoleReq.qml` the computed one, both with
+string discriminators for the same reason as before.
+
+#### The `__class` rule this exposed, and the regression it repaired
+
+Naming our generated classes in the meta-object (`qtdGenerated`, the previous entry) made the dump
+skip them — right for a delegate item, wrong for the document ROOT, where the engine reports the
+document's own type when the document declares members. That was a regression shipped in the same
+commit and caught here by a fixture whose root declares a property.
+
+The rule that covers every case is one hint: **the root is named after the DOCUMENT**, not after our
+generated class.
+
+| | our class | hint matches? | reported | engine |
+|---|---|---|---|---|
+| fixture root, declares members | `QDelegateRoleReq` | yes | `QDelegateRoleReq` | `QDelegateRoleReq` |
+| fixture root, declares none | `QDelegateRole` | yes, then skipped for declaring no properties | `QQuickItem` | `QQuickItem` |
+| corpus root (`Rt` prefix) | `RtRangeSlider` | no — nothing in our chain is named `RangeSlider` | `QQuickRangeSlider` | `QQuickRangeSlider` |
+| delegate item, no hint | generated | — | Qt base | Qt base |
+
+Naming the root after our own CLASS instead cost two corpus documents (RangeSlider, Tumbler), which
+is how the distinction was found: the harness prefixes its class names and the engine has never
+heard of them.
+
+Measured on both corpora after all of it: values, render and click identical to the pre-change
+baseline, diagnostics 26 and 17 unchanged — the role read closes a shape Qt's own Controls never
+write without required properties.

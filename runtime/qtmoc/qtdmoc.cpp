@@ -1514,16 +1514,17 @@ extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
         // QQuickMenuSeparator declares none — its answer is QQuickControl. Starting at the hinted
         // class and then walking gives the engine's answer for the same object.
         const QMetaObject* c = mo;
+        bool named = false;   // the caller pointed AT this class, so it is not one to skip past
         if (cls && *cls)
             for (const QMetaObject* k = mo; k; k = k->superClass())
-                if (std::strcmp(k->className(), cls) == 0) { c = k; break; }
+                if (std::strcmp(k->className(), cls) == 0) { c = k; named = true; break; }
         auto qtdGenerated = [](const QMetaObject* k) {
             for (int i = k->classInfoOffset(); i < k->classInfoCount(); ++i)
                 if (std::strcmp(k->classInfo(i).name(), "qtdGenerated") == 0) return true;
             return false;
         };
-        while (c && (c->className()[0] != 'Q' || qtdGenerated(c)
-                     || c->propertyCount() <= c->propertyOffset())) c = c->superClass();
+        while (c && ((c->className()[0] != 'Q' && !named) || (qtdGenerated(c) && !named)
+                     || c->propertyCount() <= c->propertyOffset())) { c = c->superClass(); named = false; }
         // Qt generates a subclass per QML type (`QQuickRectangle_QML_2`); it IS that type, so the
         // suffix is normalised away — otherwise every object the document declares would read as a
         // type mismatch and the real ones would be lost in it.
