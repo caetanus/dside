@@ -128,6 +128,7 @@ Build reggaeBuild() {
     if (execute(["pkg-config", "--exists", "Qt6Quick"]).status == 0) {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
+        all ~= registryGateTarget(root, quick, "quick");
         // A bound VALUE TYPE as a @Property (QColor, QSize): needs the Quick binding, since that
         // is where those types live.
         foreach (dc; DCS) {
@@ -158,6 +159,11 @@ Build reggaeBuild() {
         // coverage change) landed without the manifest ever being consulted. A binding nobody holds
         // to a symbol contract is a binding whose fates can rot unnoticed.
         all ~= manifestGateTargets(root, [ctrl], ["controls"], ["controls.manifest.tsv"]);
+        // ...and the registry's own floor: every QML type it can NAME must be TYPEABLE. `Text` was
+        // named and had no property rows for as long as nobody compared the two tables, and the
+        // refusals that caused ("declared type '?'") read like a compiler gap rather than a
+        // registry one. Depends on both bindings' gen so it runs against freshly written tables.
+        all ~= registryGateTarget(root, ctrl, "controls");
     }
     if (haveQt5()) {
         // qmltc-d on Qt5: Qt ships no qmltc there at all, so this combination is ONLY covered by
@@ -314,6 +320,17 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
 // and fails on a disappeared symbol, a fate that worsened (e.g. bound -> unmapped), or a new
 // unmapped/inline-failed drop. Accept intended changes by regenerating the baseline. The gate
 // program is compiler-independent (built once with dmd).
+// Every QML type the registry can NAME must be TYPEABLE: a name in qmlmap.tsv with no rows in
+// qmlprops.tsv is a type the compiler recognises and then cannot compile one binding on. `Text` was
+// exactly that in the Controls binding for as long as nobody compared the two tables, and what it
+// produced -- "declared type '?'" -- reads like a compiler gap rather than a registry one.
+Target[] registryGateTarget(string root, QtdBinding bind, string label) {
+    auto script = buildPath(root, "tests", "qmltc", "registry_gate.sh");
+    return [Target.phony("registry-gate-" ~ label,
+                         "sh " ~ script ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv"),
+                         [Target(script), bind.gen])];
+}
+
 Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels, string[] baselines) {
     auto gateD = buildPath(root, "tests", "manifest_gate.d");
     auto gateBin = buildPath(root, ".build", "manifest-gate-bin");

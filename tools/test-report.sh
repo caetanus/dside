@@ -45,7 +45,7 @@ category() {
     slotoverload-*) echo moc ;;
     qtmoc-probe-*|report-selftest) echo gate ;;
     tr-*|lupdate-check) echo i18n ;;
-    manifest-gate-*|expected-fails-lint) echo gate ;;
+    manifest-gate-*|registry-gate-*|expected-fails-lint) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
     *) echo other ;;
   esac
@@ -59,7 +59,7 @@ qtaxis() {
     # The Qt5 transpiler suite spells its version in the FAMILY, not as a `-qt5` suffix, so 122
     # Qt5 targets were being reported as Qt6 — the one axis the report exists to get right.
     qmltc5-*|qtmoc-probe-qml5) echo qt5 ;;
-    manifest-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*|report-selftest) echo - ;;
+    manifest-gate-*|registry-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*|report-selftest) echo - ;;
     *) echo qt6 ;;
   esac
 }

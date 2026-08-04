@@ -4403,3 +4403,20 @@ undefined name never got out. The name now leaves scope with the property, and t
 Both Tumblers moved from *declared type '?'* to a typed expression refusal, which is the more
 actionable message. Counts unchanged (Basic 24, Fusion 12), 61 and 52 documents construct, all six
 axes identical.
+
+### The registry check became a gate (2026-08-04)
+
+The `Text` bug was found by comparing two tables that had never been compared. Swept for the same
+signature everywhere — a QML name in `qmlmap.tsv` with no rows in `qmlprops.tsv` — across every
+registry: `Text` was the only one. The inverse shape (a class filed under BOTH its QML and its C++
+name) is also empty, and `qmlattached`/`qmlmethods` legitimately cover a subset, so there is no
+signature there.
+
+The check is three lines of shell, and not having it cost every `Text` binding in both corpora. It
+is now `registry-gate-controls` and `registry-gate-quick`, inside `./build`, with its negative
+control run: with `Text`'s rows removed from a copy of the registry it fails and names the type.
+
+Adding it turned the build red once more, and again for a reason only the full build could give:
+`self-test FAIL unclassified target: registry-gate-quick`. Every target must be classified by family
+and Qt axis in `tools/test-report.sh` — a new target that is not is a failure, deliberately. Both
+are `gate`, with no version axis: they check DATA, not something linked against a Qt.
