@@ -4617,3 +4617,21 @@ sides read `false` whether the read compiles or not.
 That is the same ceiling as `Overlay.overlay`: **an attached value is only comparable when the
 attached object exists**, and corpus documents are built with no window and no view. The guard is
 the measurement.
+
+### The snippet picked the file by fit, not by identity (2026-08-04)
+
+Reading the census caught a refusal of Fusion's ComboBox quoting
+`/Controls/Fusion/images/checkmark.` for a `highlighted:` binding. The snippet came from the wrong
+FILE — and that was mine, from the entry that taught `srcOf` to walk the chain of enclosing
+documents: it took the first text the range FIT IN, and fitting is not a test. An offset is valid in
+several files at once, which is precisely the "plausible nonsense" the original single-file guard
+existed to prevent.
+
+`posOf` was right all along because it uses the LINE the parser recorded on the node. `srcOf` now
+uses the same fact as an IDENTITY check: the right file is the one where this offset really is that
+line — and that column. Line alone still collided; one binding quoted `rol.mirrored display: cont`,
+a slice that happened to land on the right line of the wrong file. Both coordinates make it a check.
+
+Result: **zero empty snippets and zero wrong ones**. The whole census is legible — twenty refusals,
+each showing the text it actually refused, of which fourteen are the `model`/required-property
+family.

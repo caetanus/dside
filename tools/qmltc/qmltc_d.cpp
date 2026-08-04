@@ -477,19 +477,29 @@ static std::string srcOf(Node *n) {
     auto a = n->firstSourceLocation(), b = n->lastSourceLocation();
     int from = (int)a.offset, to = (int)(b.offset + b.length);
     if (from < 0 || to <= from) return "";
-    // Only the document currently being compiled. A "try every parsed file" fallback quoted the
-    // WRONG one — the offsets are valid in several files at once, so the snippet came out as
-    // plausible nonsense ("ocale.name"), which is worse than no snippet in a diagnostic that
-    // exists to be read.
-    // The document is the ONE fallback, not "every parsed file": that earlier attempt quoted a
-    // plausible nonsense snippet ("ocale.name") because offsets are valid in several files at once.
-    // The enclosing document is not an arbitrary candidate -- it is where a use-site expression
-    // actually lives.
+    // WHICH text the offsets belong to, decided by IDENTITY rather than by fit. The candidates are
+    // the document being compiled and the chain of documents entered to reach it; "the first one
+    // long enough" is not a test -- an offset is valid in several files at once, which is how
+    // Fusion's ComboBox came to quote an image path for a `highlighted:` binding, and how the
+    // original "try every parsed file" attempt quoted plausible nonsense.
+    // The parser recorded the node's LINE, so the right file is the one where this offset really is
+    // that line. Counting newlines up to `from` costs nothing on a path that only runs to print a
+    // diagnostic, and it turns a guess into a check.
+    auto isTheFile = [&](const QString &t) {
+        if (to > t.size()) return false;
+        if (a.startLine == 0) return true;   // no line recorded: nothing to check against
+        int line = 1, lineStart = 0;
+        for (int i = 0; i < from; ++i) if (t[i] == QLatin1Char('\n')) { ++line; lineStart = i + 1; }
+        // ...and the COLUMN too. A line number alone still collides -- one Fusion binding quoted
+        // `rol.mirrored display: cont`, a slice that happened to sit on the right line of the wrong
+        // file. Both coordinates matching is what makes it an identity check rather than a guess.
+        return line == (int) a.startLine && from - lineStart == (int) a.startColumn - 1;
+    };
     const QString *src = nullptr;
-    if (to <= g_srcText.size()) src = &g_srcText;
+    if (isTheFile(g_srcText)) src = &g_srcText;
     else for (auto it = g_srcStack.rbegin(); it != g_srcStack.rend(); ++it)
-        if (to <= it->size()) { src = &*it; break; }
-    if (!src && to <= g_rootSrcText.size()) src = &g_rootSrcText;
+        if (isTheFile(*it)) { src = &*it; break; }
+    if (!src && isTheFile(g_rootSrcText)) src = &g_rootSrcText;
     if (!src) return "";
     QString t = src->mid(from, to - from).simplified();
     if (t.size() > 90) t = t.left(87) + "...";
