@@ -4537,3 +4537,22 @@ Negative control run — without the fix both lines are missing from our side.
 
 **Basic diagnostics 21 → 16**, Fusion 11, and the ComboBox no longer mentions `highlightedItem`.
 All six axes identical on both corpora.
+
+### Two more value forms of things whose truth-test form compiled (2026-08-04)
+
+`parent: T.Overlay.overlay` — how Qt's Drawer puts itself in the window's overlay. Two pieces:
+
+**Reading an attached property that IS an object, as a value.** `indicator.Window ? … : …` compiled;
+`T.Overlay.overlay` did not. Now resolved in the object walker, import-alias spelling included, and
+retyped by the QML name of the C++ class when the registry knows one so the walk can continue
+through it.
+
+**Assigning to a BASE property that holds an object.** The only object-assignment branch required
+the target to be a DECLARED property; a base one typed `QQuickItem*` had no branch at all, which
+left the object-or-null ternary as the only base-object assignment the compiler could do.
+
+**Basic 16 → 15, Fusion 11 → 10**, all six axes identical.
+
+No fixture, and the reason is the one from the Tumbler entry: `Overlay.overlay` exists only with a
+window, and corpus documents are constructed without one — both sides would read `<null>` and the
+file could not fail. The guard is the measurement.

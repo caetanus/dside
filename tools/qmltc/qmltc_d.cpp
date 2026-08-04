@@ -1677,6 +1677,35 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         }
         return true;
     }
+    // An ATTACHED object read as a VALUE: `parent: T.Overlay.overlay` (Qt's Drawer). The truth-test
+    // form of this compiled -- `indicator.Window ? …` -- and the value form did not, which is the
+    // same asymmetry the bare-name truth test had. The base is a TYPE NAME, possibly reached through
+    // an import alias (`T.Overlay`), and qmlattached.tsv says the member is an object.
+    if (auto *fmA = cast<FieldMemberExpression *>(x)) {
+        std::string tnA;
+        if (auto *bA = cast<IdentifierExpression *>(fmA->base)) tnA = qs(bA->name.toString());
+        else if (auto *fqA = cast<FieldMemberExpression *>(fmA->base))
+            if (auto *rA = cast<IdentifierExpression *>(fqA->base);
+                    rA && g_importAliases.count(qs(rA->name.toString())))
+                tnA = qs(fqA->name.toString());
+        if (!tnA.empty() && std::isupper((unsigned char) tnA[0])
+                && !g_scope.count(tnA) && !g_childIds.count(tnA) && g_qmlTypeUri.count(tnA)) {
+            auto amA = g_qmlAttachedCxx.find(tnA);
+            std::string memA = qs(fmA->name.toString());
+            if (amA != g_qmlAttachedCxx.end()) {
+                auto itA = amA->second.find(memA);
+                if (itA != amA->second.end() && !itA->second.empty() && itA->second.back() == '*') {
+                    oe = "propObj(" + attachedExpr(tnA) + ", \"" + memA + "\")";
+                    // ...and the QML name of what came back, when the registry knows one, so the
+                    // walk can carry on through it.
+                    std::string cxxA = itA->second.substr(0, itA->second.size() - 1);
+                    oq.clear();
+                    for (auto &m : g_qmlMap) if (m.second.first == cxxA) { oq = m.first; break; }
+                    return true;
+                }
+            }
+        }
+    }
     if (auto *id = cast<IdentifierExpression *>(x)) {
         std::string n2 = qs(id->name.toString());
         // A GROUP name is allowed here: the group IS an object property of this object, and the
@@ -6711,7 +6740,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     }
                 }
             std::string oe9, oq9;
-            if (isObjProp(ba.first) && objPathExpr(ba.second, oe9, oq9)) {
+            // ...or a BASE property that holds an object, which the registry types with a name
+            // ending in `*`. Only the DECLARED case was accepted here, so `parent: T.Overlay.overlay`
+            // -- how Qt's Drawer puts itself in the window's overlay -- had no branch at all, and
+            // the ternary just above (object-or-null on a base property) was the only base-object
+            // assignment the compiler could do.
+            if ((isObjProp(ba.first) || (!ty.empty() && ty.back() == '*'))
+                    && objPathExpr(ba.second, oe9, oq9)) {
                 (oe9.rfind("__outer", 0) == 0 ? earlyWire : baseWire)
                     += "        setPropObj(this, \"" + ba.first + "\", " + oe9 + ");\n";
                 node.baseProps.push_back({ba.first, ty});
