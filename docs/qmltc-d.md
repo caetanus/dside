@@ -4577,3 +4577,24 @@ count moves; what moves is that the message stops being false.
 Still open and isolated: `kid.Window.width`, the OBJECT form of the attached read (as opposed to the
 type-name form). The branch is written and does not fire, so something above it claims the
 expression first — measured rather than guessed at next.
+
+### The third kind of child that can hold an id (2026-08-04)
+
+Chasing `kid.Window.width` with a probe rather than a guess: the branch was reached, the attached
+type was known, and **the path head was not** — `objPathExpr(kid)` returned false.
+
+Three kinds of child can carry an `id`: a DEFAULT child, a DECLARED property's, and a BASE
+property's. Only the first two were pre-scanned, so `contentItem: Item { id: kid }` followed by ANY
+read of `kid.<prop>` was refused. The comment above that loop records the same fix being made once
+for default children; this is the third kind, and it is the one Qt's Controls write most.
+
+With it, `kid.width` and `kid.Window.width` both compile — the object form of the attached read,
+written last tick and not firing, was a victim of this rather than a gap of its own.
+
+The fixture took two attempts, and the first is worth recording: it compared `opacity: kid.width /
+100` and read **1 on both sides**, because a Control resizes its contentItem during layout — the
+same value a refusal leaves behind. It compares a NAME now, which layout does not touch. Negative
+control run: without the fix it reads empty against `the-kid`.
+
+Counts unchanged (Basic 15, Fusion 10) — no Qt document reads through such an id in a shape the rest
+of the compiler already accepts — and all six axes identical.

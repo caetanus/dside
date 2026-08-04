@@ -1137,8 +1137,16 @@ static void prescanChildIds(UiObjectInitializer *init) {
         // elsewhere, this just remembers its type for the path resolver.
         if (auto *tob = cast<UiObjectBinding *>(m->member); tob && tob->qualifiedTypeNameId) {
             std::string fn = qname(tob->qualifiedId);
-            if (!fn.empty() && fn.find('.') == std::string::npos)
+            if (!fn.empty() && fn.find('.') == std::string::npos) {
                 g_childDeclType[fn] = typeName(tob->qualifiedTypeNameId);
+                // ...and its BODY, so the `id:` inside it is a path head like any other child's.
+                // Three kinds of child can hold an id -- a default one, a DECLARED property's, and
+                // a BASE property's -- and only the first two were pre-scanned. So
+                // `contentItem: Item { id: kid }` followed by any read of `kid.<prop>` was refused,
+                // with the same "expression not supported" the other two kinds used to give. The
+                // comment above records that fix for default children; this is the third kind.
+                if (tob->initializer) prescanChildBody(tob->initializer, fn, tob->qualifiedTypeNameId);
+            }
         }
         if (!pub || pub->type != UiPublicMember::Property || !pub->binding) continue;
         std::string declTy;
