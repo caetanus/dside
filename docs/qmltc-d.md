@@ -4635,3 +4635,30 @@ a slice that happened to land on the right line of the wrong file. Both coordina
 Result: **zero empty snippets and zero wrong ones**. The whole census is legible — twenty refusals,
 each showing the text it actually refused, of which fourteen are the `model`/required-property
 family.
+
+### `undefined` in a ternary is a RESET (2026-08-04)
+
+Qt's DialogButtonBox writes `alignment: count === 1 ? Qt.AlignRight : undefined`, and Dialog's
+footer the same. `undefined` is not a value in QML — it resets the property to its default. The
+whole-value form has compiled for a long time; inside a ternary it was refused, and the refusal
+named the declared TYPE (`Qt::Alignment`), which sent the census looking at flags support that was
+never the problem.
+
+Two measurements got there:
+
+**Which table knows the property.** `resetCall` consulted `g_baseReset`, which only holds D-defined
+bases. Two guesses at a replacement — `g_baseProps`, then `g_qmlProps` — both answered 0 for a
+property the TSV plainly lists. `g_qmlProps` keeps only the SCALAR-typed rows, and `alignment` is a
+`Qt::Alignment`; the map that knows every property of a bound type is `g_qmlCxxType`.
+
+**And the deeper point: performing a reset needs no table at all.** `QMetaProperty::reset` asks the
+meta-object and answers false when Qt says the property is not resettable. The table stays as the
+fast path; a property the registry knows on this type is handed to the runtime.
+
+**Basic 14 → 12.** `CUndefinedTernary.qml` guards it, comparing `contentItem.alignment` (the enum
+crosses as its KEY in both directions); negative control run — without the fix it reads `0` against
+`AlignRight`.
+
+Found along the way and NOT fixed: `property int x: obj.<enumProperty>` reads **0** where the engine
+reads 2. The write is right (both sides say `AlignRight`); it is the read of an enum into a declared
+`int` that loses it.

@@ -1576,8 +1576,19 @@ static bool isUndefined(ExpressionNode *e) {
     return id && qs(id->name.toString()) == "undefined";
 }
 static bool resetCall(const std::string &obj, const std::string &prop, std::string &out) {
-    auto r = g_baseReset.find(prop);
-    if (r == g_baseReset.end()) return false;
+    // A D-defined base publishes its RESET methods and that table was the only way in. A BOUND Qt
+    // base publishes none -- the registry does not carry resets -- so a reset of one of its
+    // properties was refused for want of an entry, while the thing that performs it needs no entry
+    // at all: QMetaProperty::reset asks the meta-object, and answers false if Qt says the property
+    // is not resettable. The table stays as the fast path; a property the REGISTRY knows on this
+    // type is handed to the runtime.
+    // (g_qmlProps holds only the scalar-typed rows, and `alignment` is a Qt::Alignment: the map
+    // that knows every property of a bound type by its C++ type is g_qmlCxxType. Measured -- the
+    // first two guesses at this predicate both answered 0 for a property the TSV plainly lists.)
+    if (g_baseReset.find(prop) == g_baseReset.end()) {
+        auto qc = g_qmlCxxType.find(g_selfQmlType);
+        if (qc == g_qmlCxxType.end() || !qc->second.count(prop)) return false;
+    }
     out = "        resetProp(" + obj + ", \"" + prop + "\");\n";
     return true;
 }
@@ -6466,6 +6477,39 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ++partial; continue;
             }
             baseWire += call; continue;
+        }
+        // ...and `cond ? <value> : undefined`, which is how Qt's DialogButtonBox writes
+        // `alignment: count === 1 ? Qt.AlignRight : undefined`. `undefined` is not a value in QML:
+        // it RESETS the property to its default. The whole-value form has compiled since the first
+        // `x: undefined`; inside a ternary it was refused, and the refusal named the declared TYPE
+        // (`Qt::Alignment`), which sent the census looking at flags support that was never the
+        // problem.
+        if (auto *cndU = cast<ConditionalExpression *>(ba.second)) {
+            bool okU = isUndefined(cndU->ok), koU = isUndefined(cndU->ko);
+            if (okU != koU) {
+                std::string ceU, valU, callU;
+                std::string tyU = g_baseProps.count(ba.first) ? g_baseProps[ba.first] : std::string();
+                ExpressionNode *valSide = okU ? cndU->ko : cndU->ok;
+                // An enum member crosses as its KEY, which is the channel every other enum
+                // assignment here uses; anything else has to compile as the declared type.
+                std::string enumKeyU;
+                if (auto *fmU = cast<FieldMemberExpression *>(valSide))
+                    if (auto *bU = cast<IdentifierExpression *>(fmU->base);
+                            bU && (qs(bU->name.toString()) == "Qt" || knownTypeName(qs(bU->name.toString()))))
+                        enumKeyU = qs(fmU->name.toString());
+                if (resetCall("this", ba.first, callU) && compileExpr(cndU->expression, "bool", ceU)
+                        && (!enumKeyU.empty()
+                            || (!tyU.empty() && compileExpr(valSide, QString::fromStdString(tyU), valU)))) {
+                    std::string setU = !enumKeyU.empty()
+                        ? "        setProp(this, \"" + ba.first + "\", \"" + enumKeyU + "\");\n"
+                        : "        setProp(this, \"" + ba.first + "\", " + valU + ");\n";
+                    // BOTH branches under the condition: a one-shot of either would leave the
+                    // property wherever the first evaluation put it.
+                    baseWire += "        if (" + (okU ? "!(" + ceU + ")" : ceU) + ") {\n    " + setU
+                              + "        } else {\n    " + callU + "        }\n";
+                    continue;
+                }
+            }
         }
         // The DECLARED type wins over what the literal looks like — `width: 120` on an Item is a
         // qreal, and typing it from the literal made the dump read it with propInt and mutate it
