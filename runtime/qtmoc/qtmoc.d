@@ -77,6 +77,7 @@ void qtd_parser_status(void*, int);
     void* qtd_color_name(uint);                             // a QColor's `#aarrggbb` spelling
     void* qtd_platform_name();                              // Qt.platform.pluginName -> QString*
     int   qtd_enum_value(const(char)*, const(char)*, int);  // enum KEY -> number, via QMetaEnum
+    int   qtd_enum_value_on(void*, const(char)*, const(char)*, int);  // ...asked of the object
     void* qtd_color_alpha(const(char)*, double);            // Qt.alpha -> QString*
     void* qtd_color_alpha_rgba(uint, double);               // ...from a QColor's ARGB word
     void* qtd_tr(const(char)*, const(char)*, const(char)*, int);   // QCoreApplication::translate
@@ -1068,6 +1069,12 @@ private string __shade(C)(C c, double f, int lighter) {
 /// The NUMBER behind an enum key, on the C++ type that declares it. QML spells these as
 /// `StandardKey.Undo` — an uncreatable type exported for its enum alone, with no object to read
 /// from — and the number is what QML assigns. Falls back to `def` when the lookup fails.
+/// ...and asked of an OBJECT first, which is the form that always has an answer: a bound class need
+/// not have a metatype (nothing instantiates a `QQuickAbstractAnimation*`), but the object being
+/// assigned carries the whole chain in its own meta-object.
+int enumValueOn(T)(T o, string cxxType, string key, int def = 0) {
+    return qtd_enum_value_on(qobjOf(o), (cxxType ~ "\0").ptr, (key ~ "\0").ptr, def);
+}
 int enumValue(string cxxType, string key, int def = 0) {
     return qtd_enum_value((cxxType ~ "\0").ptr, (key ~ "\0").ptr, def);
 }

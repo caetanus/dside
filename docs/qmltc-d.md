@@ -4298,3 +4298,28 @@ child's thirty properties.
 
 Fusion diagnostics **15 → 14**, Basic 24 unchanged; values, render and click identical to the
 baseline on both corpora.
+
+### An enum constant where a NUMBER is wanted (2026-08-04)
+
+`loops: Animation.Infinite`. `loops` is a plain `int` on QQuickAbstractAnimation and `Infinite`
+names a constant of a different enum entirely, so the string-key channel a genuinely enum-typed
+property uses cannot carry it — QMetaEnum would have nothing to convert against. The value is what
+the property takes.
+
+Two things were learned by measuring rather than assuming:
+
+**The helper already existed.** A newly written `qtd_enum_value` collided at the C++ level with the
+one the runtime has shipped since `StandardKey.Undo` needed it. Deleted; the existing one is used.
+
+**And it had no answer here.** `QMetaType::fromName("QQuickAbstractAnimation")` finds nothing —
+nothing in the process ever instantiates a `QQuickAbstractAnimation*`, so the class has no metatype,
+and appending the `*` does not help either. The question that always has an answer is asked of the
+OBJECT: it carries the whole chain in its own meta-object, and `Animation.Infinite` is by
+construction an enum of a class in that chain. `enumValueOn(obj, class, key)` asks the object first
+and falls back to the named class for an unrelated enum.
+
+`QEnumAsInt.qml` guards it, negative control run: without the fix `loops` stays at the default 1
+against the engine's -1.
+
+Fusion diagnostics **14 → 12**, Basic 24; values, render and click identical to the baseline on both
+corpora.

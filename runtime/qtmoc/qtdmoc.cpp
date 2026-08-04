@@ -1366,10 +1366,17 @@ bool qtd_invoke0(void* o, const char* member) {
 extern "C" int qtd_enum_value(const char* cxxType, const char* key, int def) {
     if (!cxxType || !key) return def;
     // QMetaType::fromName is Qt6; Qt5 answers the same question through the type id.
+    // ...under the bare name for a GADGET or a namespace (`StandardKey`), and under the POINTER for
+    // a QObject class: `QQuickAbstractAnimation` has no metatype, `QQuickAbstractAnimation*` does.
+    // Only the first spelling was tried, so every enum of an object type answered the fallback --
+    // `loops: Animation.Infinite` came out 0 where the engine has -1.
+    const QByteArray star = QByteArray(cxxType) + "*";
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     const QMetaObject* mo = QMetaType::fromName(cxxType).metaObject();
+    if (!mo) mo = QMetaType::fromName(star).metaObject();
 #else
     const QMetaObject* mo = QMetaType::metaObjectForType(QMetaType::type(cxxType));
+    if (!mo) mo = QMetaType::metaObjectForType(QMetaType::type(star.constData()));
 #endif
     if (!mo) return def;
     for (int i = 0; i < mo->enumeratorCount(); ++i) {
@@ -1378,6 +1385,21 @@ extern "C" int qtd_enum_value(const char* cxxType, const char* key, int def) {
         if (ok) return v;
     }
     return def;
+}
+// ...and the same question asked of an OBJECT, which is the form that always has an answer. A bound
+// class need not have a metatype at all -- nothing in the process ever instantiates a
+// `QQuickAbstractAnimation*` -- but the object being assigned carries the whole chain in its own
+// meta-object, and `Animation.Infinite` is by construction an enum of a class in that chain.
+extern "C" int qtd_enum_value_on(void* o, const char* cxxType, const char* key, int def) {
+    if (o && key) {
+        const QMetaObject* mo = static_cast<QObject*>(o)->metaObject();
+        for (int i = 0; mo && i < mo->enumeratorCount(); ++i) {
+            bool ok = false;
+            int v = mo->enumerator(i).keyToValue(key, &ok);
+            if (ok) return v;
+        }
+    }
+    return qtd_enum_value(cxxType, key, def);   // ...then the named class, for an unrelated enum
 }
 extern "C" void* qtd_platform_name() {
 #ifdef QT_GUI_LIB

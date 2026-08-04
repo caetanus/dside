@@ -2142,6 +2142,23 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         }
         return readName(qs(id->name.toString()), out);
     }
+    // An ENUM CONSTANT where a NUMBER is wanted: `loops: Animation.Infinite`. A real enum-typed
+    // property takes the KEY as text and QMetaEnum converts it, but `loops` is a plain `int` -- the
+    // key names a constant of some other enum -- so the only thing that can travel is the value.
+    // The registry already says which C++ class the QML type is; its meta-object has the key. No
+    // table of enum values anywhere: the channel that knows them is the one Qt already ships.
+    if (dtype == "int" || dtype == "double" || dtype == "real" || dtype == "float")
+        if (auto *fmE = cast<FieldMemberExpression *>(e))
+            if (auto *bE = cast<IdentifierExpression *>(fmE->base)) {
+                std::string tn = qs(bE->name.toString()), mem = qs(fmE->name.toString());
+                auto mm = g_qmlMap.find(tn);
+                if (!mem.empty() && std::isupper((unsigned char) mem[0]) && tn != "Qt"
+                        && !g_scope.count(tn) && !g_childIds.count(tn) && !g_singletons.count(tn)
+                        && mm != g_qmlMap.end() && !mm->second.first.empty()) {
+                    out = "enumValueOn(this, \"" + mm->second.first + "\", \"" + mem + "\")";
+                    return true;
+                }
+            }
     // `[3, 1, 4]` -> a D array literal. Element type comes from the property's declared type, so
     // the elements compile with the same rules as a scalar binding of that type.
     if (auto *arr = cast<ArrayPattern *>(e)) {
