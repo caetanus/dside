@@ -23,6 +23,12 @@ Item {
             property string mine: "r" + model["index"] // a DECLARED property of the delegate root
             // ...and read back out of the CHILD, so the child's own binding is compared too
             property string kidText: kidLabel.text
+            // ...and the LITERAL-name spelling on a DECLARED property, which is a different
+            // dependency consumer from the base-property one above -- there are three, and a rule
+            // that lands in only some of them makes the same read live on one and dead on another.
+            // What is NOT tested here is that liveness: nothing in this document can change a role,
+            // so only the value is compared.
+            property string dotName: "d" + model.index
             Text {
                 id: kidLabel
                 text: "kid-" + model["index"]

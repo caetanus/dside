@@ -3250,6 +3250,14 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
             if (!isObj && !mem.empty() && std::isupper((unsigned char)mem[0])
                     && (bn == "Qt" || g_qmlCxxType.count(bn)))
                 return;
+            // A MODEL ROLE: the dependency is the ROLE, not `model`. Recorded as the bare name, it
+            // lands on the same branch a context name already takes -- connectNotify against the
+            // object the per-item context carries -- so `model.day` is as live as `day` would be.
+            // Spelled `model` instead, it reported "depends on 'model', which has no known notify"
+            // for a read that is perfectly connectable.
+            if (!g_delegateCls.empty() && bn == "model" && !mem.empty() && modelIsReadable()) {
+                ids.push_back(mem); return;
+            }
             // `<declaredObjProp>.<member>` — the dependency is on the MEMBER, not on the property
             // that holds the object: `control` on Qt's Fusion ButtonPanel never changes after the
             // use site assigns it, and what does change is `control.down`. Spelled with the hops so
@@ -7962,6 +7970,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // changing is a real gap, but it is a missing DEPENDENCY (the member is never
                     // recorded), not a missing notify, so it does not belong to this diagnostic.
                     if (g_singletons.count(dEff)) continue;
+                    // A CONTEXT name inside a delegate (`index`, or a model role reached as
+                    // `model.day`): the per-item context carries an object that publishes it with a
+                    // notify. The other two dependency consumers already knew this one; this is the
+                    // third, and a rule that lands in only some of them makes a binding live on a
+                    // BASE property and dead on a DECLARED one -- which is what `property int mi:
+                    // model.index` was, silently.
+                    if (!g_delegateCls.empty() && !g_hasRequiredDecl
+                            && d.find('.') == std::string::npos && !g_propType.count(d)
+                            && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
+                        wire += "        connectNotify(contextObject(this), \"" + d
+                              + "\", this, \"__rc_" + p.name + "()\");\n";
+                        continue;
+                    }
                     // Anything else that can never fire is reported, not silently dropped: the
                     // binding would look live and never update.
                     std::fprintf(stderr, "qmltc-d: %s: binding '%s' depends on '%s', which has no "

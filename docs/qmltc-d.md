@@ -4323,3 +4323,35 @@ against the engine's -1.
 
 Fusion diagnostics **14 → 12**, Basic 24; values, render and click identical to the baseline on both
 corpora.
+
+### The same read, live on one property and dead on another (2026-08-04)
+
+Isolated inside a delegate, three spellings of one thing:
+
+| | |
+|---|---|
+| `opacity: model.index` — a BASE property | compiles |
+| `property int mi: model.index` — a DECLARED one | *"depends on 'model', which has no known notify"* |
+| `opacity: model.index === 1 ? 1 : 0` | refused |
+
+Two separate defects and one still open.
+
+**The dependency was the wrong name.** A role read recorded `model` as what it depends on. `model`
+has no notify — it is not a property of anything — so the binding was reported dead. What it depends
+on is the ROLE, and recorded that way it lands on the branch that already existed for a bare context
+name: `connectNotify(contextObject(this), role, …)`.
+
+**And the rule reached only some of the consumers.** There are THREE places that turn a dependency
+into a connection, and the declared-property one had no context branch at all. So the identical read
+was LIVE on a base property and DEAD on a declared one, silently. This file has recorded that shape
+before ("a new rule almost always has to land in more than one of them"); this is another instance.
+
+`QDelegateRole.qml` gained `property string dotName: "d" + model.index` for that path, and its
+comment says what the fixture does NOT cover: the liveness itself, because nothing in that document
+can change a role.
+
+Still open, and now precisely stated: a comparison whose operand is a role read
+(`model.index === 1 ? …`). The role read is compiled against a declared type, and in a comparison
+there is none to hand — the type has to come from the other operand.
+
+Corpus counts unchanged (Basic 24, Fusion 12); values, render and click identical on both.
