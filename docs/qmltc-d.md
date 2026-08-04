@@ -4464,3 +4464,26 @@ message (which `plugins.qmltypes` is missing from the spec) and its negative con
 
 The spec change is a vocabulary change, so the manifest gate is what judges it: full build green,
 and all six axes on both corpora identical.
+
+### A null object property, and a partial with nothing reported (2026-08-04)
+
+`property Item hi: null` was refused, and the refusal took the DECLARATION with it — so the property
+did not exist at all, which is a structural difference from the engine rather than a value one. It
+is the first half of Qt's Basic ComboBox
+`property Item highlightedItem: parent ? parent.itemAtIndex(control.highlightedIndex) : null`.
+
+`QNullObjProp.qml` guards it. Its negative control shows the shape twice over: without the fix the
+engine has a `hi` line we do not, AND the root's `__class` changes — our class stopped declaring
+properties, so the walk skipped past it, which is the rule from an earlier entry confirming itself
+from the other side.
+
+**And the fixture immediately failed for a different reason, which was mine.** It exited 3 with an
+EMPTY stderr: a "members were skipped and reported" verdict with nothing reported. Two commits ago,
+silencing a false-alarm refusal removed the MESSAGE and left the COUNTER. The corpora tolerate exit
+3 and said nothing for two days; the fixture gate treats 3 as failure, and caught it the first time
+a fixture went through that branch.
+
+Worth naming as a property of the instruments: **the corpus measures quantity, the fixture gate
+measures verdict**, and each sees things the other tolerates by construction.
+
+Corpora unchanged (Basic 21, Fusion 11), all six axes identical.

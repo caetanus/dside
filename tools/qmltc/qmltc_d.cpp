@@ -5201,7 +5201,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string objInit;
             if (!dt[0] && es0 && !pub->binding) {
                 std::string oeI, oqI;
-                if (objPathExpr(es0->expression, oeI, oqI)) objInit = oeI;
+                // `property Item highlightedItem: null` -- a declared object property whose value
+                // is the absence of an object. The property still EXISTS, which is the whole point:
+                // the engine shows it as `<null>` and whoever instantiates the type writes to it.
+                // Refused, the declaration went with the value and the property was missing.
+                if (cast<NullExpression *>(es0->expression)) objInit = "null";
+                else if (objPathExpr(es0->expression, oeI, oqI)) objInit = oeI;
                 else if (auto *fmI = cast<FieldMemberExpression *>(es0->expression))
                     if (auto *bI = cast<IdentifierExpression *>(fmI->base)) {
                         std::string tnI = qs(bI->name.toString()), memI = qs(fmI->name.toString());
@@ -5408,8 +5413,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // a refusal for something that had in fact been emitted -- assignment, reads and
                 // notify connections included. A census that steers the work cannot afford a
                 // diagnostic that is not true.
-                if (!objInit.empty()) { /* emitted above; nothing was refused */ }
-                else
+                // ...and when the OBJECT value was accepted, nothing was refused -- so no message
+                // AND no partial. Silencing only the message left the count behind: the document
+                // still exited 3 with an empty stderr, which is a "members were skipped and
+                // reported" verdict with nothing reported. The fixture gate is what caught it,
+                // because it treats exit 3 as failure; the corpora tolerate 3 and said nothing.
+                if (!objInit.empty()) {
+                    props.push_back({name, dt, "", false, {}});
+                    continue;
+                }
                 std::fprintf(stderr, "qmltc-d: %s: the initial binding of property '%s' (%s) in %s is not "
                              "supported — the property is DECLARED, its initial value is not\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType), cls.c_str());
