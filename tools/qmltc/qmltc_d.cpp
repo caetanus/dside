@@ -1904,6 +1904,17 @@ static bool typeKnownWithoutMember(const std::string &qmlType, const std::string
     return true;
 }
 
+// A declared property whose value is an object LITERAL (`property ColorImage arrow: ColorImage {}`)
+// is still a property, and still a path head. The child is built and the field IS the property, so
+// everything about it worked EXCEPT being able to read through it: the literal path recorded no
+// type, so `Math.max(arrow.implicitWidth, 20)` -- Qt's Fusion TreeViewDelegate -- had no head to
+// resolve and was refused, along with every other read through such a property.
+static void declObjHead(const std::string &name, const std::string &qmlTy) {
+    if (qmlTy.empty()) return;
+    g_propType[name] = "@" + qmlTy;
+    if (!g_selfQmlType.empty()) g_declObjProps[g_selfQmlType][name] = qmlTy;
+}
+
 static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq) {
     // `__outer` is a head like any other: the wiring holds deps spelled with it, and a path through
     // an enclosing object cannot be re-resolved there without this.
@@ -5254,11 +5265,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         }
                         continue;
                     }
-                    childBindings.push_back({name, ob->initializer,
-                                             ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : ""}); continue;
+                    std::string obTy = ob->qualifiedTypeNameId ? typeName(ob->qualifiedTypeNameId) : "";
+                    declObjHead(name, obTy);
+                    childBindings.push_back({name, ob->initializer, obTy}); continue;
                 }
-                if (auto *od = cast<UiObjectDefinition *>(pub->binding)) { childBindings.push_back({name, od->initializer,
-                                        od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : ""}); continue; }
+                if (auto *od = cast<UiObjectDefinition *>(pub->binding)) {
+                    std::string odTy = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
+                    declObjHead(name, odTy);
+                    childBindings.push_back({name, od->initializer, odTy}); continue;
+                }
             }
             if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
             // `property string s` with NO value, and `required property string shortName` (whose

@@ -4276,3 +4276,25 @@ Written and thrown away in the same pass: a branch to accept a BARE name as an o
 initial value (`property Item probe: kid`). Measured against the pre-change compiler first —
 `setPropObj` was already emitted, `objPathExpr` resolves a bare name fine — so it was dead code, and
 it went out before the commit rather than in it.
+
+### An object-literal property was not a path head (2026-08-04)
+
+```qml
+property Item probe: Item { width: 33 }
+property real w: probe.width      // refused
+```
+
+The child was built, parented and held in the field; the property existed and read back as
+`<object>`. Everything worked except reading THROUGH it — the object-literal path recorded no type
+for the property, so it was not a path head and `probe.width` had nothing to resolve against.
+
+Qt's Fusion TreeViewDelegate is the case that names it: `property ColorImage arrow: ColorImage {}`
+and then `implicitWidth: Math.max(arrow.implicitWidth, 20)` on the indicator.
+
+One registration at each of the two literal sites (`UiObjectBinding` and `UiObjectDefinition`), and
+`QObjLiteralProp.qml` as the guard, with the negative control run: without the fix it reads `w 0`
+and `h 0` against the engine's 33 and 20; with it both sides agree on everything, including the
+child's thirty properties.
+
+Fusion diagnostics **15 → 14**, Basic 24 unchanged; values, render and click identical to the
+baseline on both corpora.
