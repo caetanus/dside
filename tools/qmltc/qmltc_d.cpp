@@ -2216,6 +2216,31 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 g_ctxUsed = true; out = o; return true;
             }
         }
+        // An ATTACHED property read for its VALUE: `opacity: Tumbler.displacement`, which is how a
+        // Tumbler's delegate fades with distance in both style corpora. The base is a TYPE NAME and
+        // the member is published by qmlattached.tsv with its C++ type -- so this is the same
+        // channel as any other property read, on an object fetched by
+        // qmlAttachedPropertiesObject instead of by a field. The truth-test branch below already
+        // did the OBJECT-valued half of this; the scalar half had no branch at all.
+        if (auto *bV = cast<IdentifierExpression *>(fm->base)) {
+            std::string tnV = qs(bV->name.toString()), memV = qs(fm->name.toString());
+            auto amV = g_qmlAttachedCxx.find(tnV);
+            if (!tnV.empty() && std::isupper((unsigned char) tnV[0]) && !memV.empty()
+                    && !std::isupper((unsigned char) memV[0])
+                    && !g_scope.count(tnV) && !g_childIds.count(tnV) && g_qmlTypeUri.count(tnV)
+                    && amV != g_qmlAttachedCxx.end()) {
+                auto itV = amV->second.find(memV);
+                if (itV != amV->second.end() && !itV->second.empty() && itV->second.back() != '*') {
+                    std::string rdV = dtype == "int" ? "propInt"
+                        : (dtype == "double" || dtype == "real" || dtype == "float") ? "propDouble"
+                        : dtype == "string" ? "propStr" : dtype == "bool" ? "propBool" : "";
+                    if (!rdV.empty()) {
+                        out = rdV + "(" + attachedExpr(tnV) + ", \"" + memV + "\")";
+                        return true;
+                    }
+                }
+            }
+        }
         // An ATTACHED object as a TRUTH VALUE: `indicator.Window ? … : …` — Qt's Fusion Switch
         // asks whether it is in a window before dimming its gradient. First, because the ordinary
         // member paths below decline a capitalised member and never reach the object-path test at

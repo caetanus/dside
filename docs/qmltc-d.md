@@ -4420,3 +4420,23 @@ Adding it turned the build red once more, and again for a reason only the full b
 `self-test FAIL unclassified target: registry-gate-quick`. Every target must be classified by family
 and Qt axis in `tools/test-report.sh` — a new target that is not is a failure, deliberately. Both
 are `gate`, with no version axis: they check DATA, not something linked against a Qt.
+
+### An attached property read for its VALUE (2026-08-04)
+
+`opacity: Tumbler.displacement` — how both style corpora fade a Tumbler's delegate with distance.
+The OBJECT-valued half of this (`Window.window ? … : …`, a truth test) already had a branch; the
+scalar half had none at all, so every such read was refused.
+
+It is the same channel as any other property read, on an object fetched by
+`qmlAttachedPropertiesObject` instead of from a field, and the member's type is already published by
+`qmlattached.tsv`. The DEPENDENCY side needed nothing — it already emits
+`tryConnectMeta(attachedObj(…), "displacementChanged()", …)`, so the binding is live the moment the
+read compiles.
+
+**Basic 24 → 21, Fusion 12 → 11**, all six axes identical.
+
+A fixture was written and thrown away. `--objpaths` on a Tumbler comes back EMPTY — its items are
+created by the view and have no static path — so the file compared only the root's `opacity` and
+would have passed with the defect present. A fixture that cannot fail is worse than none, because it
+claims coverage it does not have; the guard here is the corpus measurement, as it is for the other
+changes whose observable lives inside a view.
