@@ -4107,3 +4107,87 @@ heard of them.
 Measured on both corpora after all of it: values, render and click identical to the pre-change
 baseline, diagnostics 26 and 17 unchanged — the role read closes a shape Qt's own Controls never
 write without required properties.
+
+### The engine's own rule for when `model` exists (2026-08-03)
+
+The previous entry refused a delegate that declares `model`, on the strength of one measurement:
+a delegate with `required property int index` answers EMPTY for `model["index"]`. That reading was
+too broad. The measurement says something narrower and the engine's rule is a three-way one:
+
+| the delegate declares | the engine's `model` | ours |
+|---|---|---|
+| nothing required | the context's | the context's — same |
+| `required property var model` (ComboBox, SearchField) | the INJECTED property | the context's — same object, different route |
+| required properties, but not `model` | **nothing** — indexing `undefined` throws | must refuse |
+
+Only the third is a refusal, and it is a refusal because a context read there would invent a value
+the engine does not have. The second is readable precisely because we never mark our own properties
+required, so our side keeps the context the engine gave up.
+
+`modelIsReadable()` is those three lines. With it, Qt's ComboBox and SearchField compile their
+`text` again: **Basic diagnostics 26 → 24, Fusion 17 → 15**, values, render and click identical to
+the baseline on both corpora.
+
+`QDelegateReqNoModel.qml` is the third row, in its own file — and the reason it is its own file is
+itself a finding: two Repeaters in one document does not work, because only the FIRST one's items
+land on a path both sides dump, so a second one could never fail. Negative control run: with the
+guard disabled the fixture reads `n0` against the engine's empty, which is exactly the invented
+value the guard exists to prevent.
+
+What is still missing, and is now the named next step: **we do not fill a required property**. A
+`required property int index` is declared by us and never written, so it reads 0 forever — invisible
+at item 0, which is the same trap as before. Marking it required in the meta-object so the view
+injects it is Qt6-only (`QMetaPropertyBuilder::setRequired` does not exist in 5.15), so the portable
+route is to fill it ourselves from the context, which we still hold.
+
+#### Correction: that `__class` rule was reading the harness, not the engine
+
+The table above says the engine "reports the document's own type when the document declares
+members". It does not. Both sides run the SAME walk — first class whose name begins with `Q` and
+declares properties of its own — and the engine's document type is named `<Document>_QML_n`. So
+`QDelegateRoleReq_QML_0` survives that test and `Locals_QML_0` does not, and the answer differs by
+whether the DOCUMENT's name happens to start with a Q.
+
+`tests/qmltc/corpus/Locals.qml` is what said so: it declares three properties, and the oracle still
+answers `QObject`. Exempting our named root class from the leading-Q test made our side answer
+`Locals` — a difference invented entirely by the harness, and the full build caught it.
+
+So the exemption applies to one test only: a class the caller NAMED is not skipped for being ours.
+It is still skipped for not beginning with Q, and still skipped for declaring no properties. That
+lands every case on the engine's answer:
+
+| | our class | reported |
+|---|---|---|
+| `QDelegateRoleReq`, root declares members | `QDelegateRoleReq` | itself — engine: `QDelegateRoleReq_QML_0` → same |
+| `QDelegateRole`, root declares none | `QDelegateRole` | skipped, no own properties → `QQuickItem` |
+| `Locals`, root declares members | `Locals` | skipped, no leading Q → `QObject` |
+| corpus root | `RtRangeSlider` | hint `RangeSlider` matches nothing → `QQuickRangeSlider` |
+| delegate item, no hint | generated | skipped for being ours → `QQuickItem` |
+
+The lesson is the one this file keeps recording in different clothes: **an agreement between the two
+sides can come from a shared artefact rather than from a shared fact**, and the way to tell is a
+document that breaks the artefact. Here it was a name that does not start with Q.
+
+#### Three things only the FULL build could say
+
+Running the targets I had just touched said green three times over while the suite was red. Each
+failure was mine, and each was invisible to a directed measurement:
+
+1. **`Locals.qml`** — the `__class` correction above. A directed run never compiles a document whose
+   name does not begin with Q, and that is the only kind that breaks the artefact.
+2. **The labels axis on all four delegate fixtures.** `--verify-props` is the independent half of
+   the weak protocol: it fails when the engine built a QML-declared member no label mentions. An
+   item a VIEW creates has no static path, so `--labels` drops it by design, and a delegate that
+   declares properties trips a guard that was never able to name them. `labelsGap` in the build file
+   exempts exactly those four, beside the `dumpallGap` that already existed — the strong `-all-`
+   target does compare those items, and is green for all four.
+3. **A root that is a LOCAL TYPE.** `QLocalRoot.qml` is a `LocalBase`, so by the time the root's
+   dump call is emitted `g_docUrl` is *LocalBase.qml* and the hint named the wrong type. The
+   document's own file (`g_rootDocUrl`) is the right one.
+
+And one rule of the suite I did not know and had to be taught by it: the node that generates a
+fixture's D **treats exit 3 (partial) as failure**, on purpose, so no fixture can quietly go
+partial. My directed runs looked green because the `.d` was already cached and the tool never ran.
+`QDelegateKidCtx` lost its one diagnostic (a declared property reading the context, which
+`QDelegateRole` covers without one); `QDelegateReqNoModel` cannot lose its — its refusal IS the
+test — so it is named in `partialOk`, which accepts 0 or 3 and nothing else.

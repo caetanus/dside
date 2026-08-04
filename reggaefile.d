@@ -642,8 +642,17 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             auto qmlmapArg = " --qmlmap " ~ buildPath(bind.genDir, "qmlmap.tsv");
             // 1) qmltc-d --dump <qml> <Name> -> generated D (class + a value-dumping main).
             auto genD = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".d");
-            auto gen = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > $out",
-                [tool, Target(qmlFile), bind.gen]);
+            // Exit 3 is "partial": members were skipped and reported. The fixture suite treats it
+            // as failure ON PURPOSE -- a fixture that quietly went partial is a regression nobody
+            // would see -- except for the files whose REFUSAL is the thing under test. There the
+            // diagnostic is the expected output, and the differential beside it is what proves the
+            // refusal is the right one (both sides read empty). Any other exit code still fails.
+            static immutable string[] partialOk = ["QDelegateReqNoModel"];
+            auto genCmd = partialOk.canFind(name)
+                ? "sh -c '" ~ toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg
+                    ~ " > $out; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 3 ]'"
+                : toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > $out";
+            auto gen = Target(genD, genCmd, [tool, Target(qmlFile), bind.gen]);
             // 2) link the generated D against the binding (same shape as qtdApp).
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
             auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ renderLink ~ " -I" ~ bind.genDir
@@ -668,9 +677,21 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // The diff alone can only prove that what the tool EMITTED matches. --verify-props
             // is the independent half: it fails if the engine built a QML-declared member the
             // label list never mentions, which is the "both sides shrank" false green.
+            // ...except where the label protocol cannot name the objects at all. An item a VIEW
+            // creates has no static path: `--labels` deliberately drops labels whose index a view
+            // decides, so a delegate that declares properties makes --verify-props report engine
+            // members no label mentions -- not "both sides shrank", but a protocol that was never
+            // able to name them. The strong `-all-` target beside this one DOES compare those
+            // items (both sides enumerate the same object), and it is green for all four; this
+            // list exists so the weaker gate does not claim a gap the stronger one covers.
+            static immutable string[] labelsGap = [
+                "QDelegateKidCtx", "QDelegateRole", "QDelegateRoleReq", "QDelegateReqNoModel",
+            ];
+            auto verifyStep = labelsGap.canFind(name) ? ""
+                : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;
             auto cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
-                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
+                ~ verifyStep
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
             // ...and the STRONGER protocol beside it, which until now lived only in the corpus

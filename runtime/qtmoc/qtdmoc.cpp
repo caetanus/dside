@@ -1523,7 +1523,14 @@ extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
                 if (std::strcmp(k->classInfo(i).name(), "qtdGenerated") == 0) return true;
             return false;
         };
-        while (c && ((c->className()[0] != 'Q' && !named) || (qtdGenerated(c) && !named)
+        // The leading-Q test applies to the NAMED class too, and that is not a detail: the oracle
+        // runs this same walk over the ENGINE's chain, where a document type is `<Document>_QML_n`.
+        // `Locals.qml` produces `Locals_QML_0`, which fails the test there and answers QObject --
+        // so our `Locals` has to fail it here for the same reason, or the two sides disagree about
+        // a document whose name simply does not begin with Q. Being NAMED exempts a class only from
+        // being skipped for being ours, which is what an inline component needs and a document root
+        // must not have.
+        while (c && (c->className()[0] != 'Q' || (qtdGenerated(c) && !named)
                      || c->propertyCount() <= c->propertyOffset())) { c = c->superClass(); named = false; }
         // Qt generates a subclass per QML type (`QQuickRectangle_QML_2`); it IS that type, so the
         // suffix is normalised away — otherwise every object the document declares would read as a

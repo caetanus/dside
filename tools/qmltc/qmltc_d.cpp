@@ -418,9 +418,11 @@ static std::string qname(UiQualifiedId *id) {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 static QString paramTypeName(UiParameterList *p) { return p->type->toString(); }
 static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember(); }
+static bool isRequiredMem(UiPublicMember *p) { return p->isRequired(); }
 #else
 static QString paramTypeName(UiParameterList *p) { return QString::fromStdString(qname(p->type)); }
 static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember; }
+static bool isRequiredMem(UiPublicMember *p) { return p->requiredToken.isValid(); }
 #endif
 
 // `import QtQuick.Templates as T` writes the root as `T.Button`. The qualifier names an IMPORT,
@@ -483,6 +485,12 @@ static bool g_outerUsed = false;
 // per-item context AFTER the object is constructed, so a body that reads one has to wait exactly as
 // a body that reads its enclosing object does -- same hook, same signal.
 static bool g_ctxUsed = false;
+// Properties the object declares as REQUIRED, and whether it declares any at all. The engine turns
+// its per-item context injection OFF for a delegate that declares them -- measured: a delegate with
+// `required property int index` answers EMPTY for `model["index"]`, where the same delegate without
+// it answers the role. So what the context can be asked for depends on this.
+static std::set<std::string> g_requiredDecls;
+static bool g_hasRequiredDecl = false;
 // True while compiling an object that is a property VALUE SOURCE (`NumberAnimation on v`).
 static bool g_isValueSource = false;
 // Compiling the body of a `delegate:`/Component property. The class is emitted like any other, but
@@ -2021,6 +2029,21 @@ static bool objPathFromString(const std::string &dotted, std::string &objExpr, s
 // A role of the per-item model object, by NAME: the same read whether the name is a literal
 // (`model.day`) or computed (`model[control.textRole]`). Empty when the property's declared type is
 // not one this channel can carry, so the caller falls through to the ordinary refusal.
+// Whether `model` means the per-item model here, and can therefore be asked of the context.
+//
+// Three cases, and the engine decides all three. A delegate that declares NO required property gets
+// the context, and `model` is one of the names on it. A delegate that declares `model` as required
+// -- which is how Qt's ComboBox and SearchField spell it -- is handed the same object by the view,
+// so the two agree even though they arrive by different routes (we never mark our own properties
+// required, so our side keeps the context). A delegate that declares required properties but NOT
+// `model` has neither: the injection is off and nothing was injected under that name, so the engine
+// answers EMPTY -- measured -- and a context read there would invent a value.
+static bool modelIsReadable() {
+    if (g_requiredDecls.count("model")) return true;
+    if (g_hasRequiredDecl) return false;
+    return !g_scope.count("model") && !g_propType.count("model");
+}
+
 static std::string modelRoleRead(const QString &dtype, const std::string &keyExpr) {
     // Through the CONTEXT, not through the context OBJECT. Measured: a Repeater over an int model
     // publishes `index` on the context itself and carries no context object at all, so a property
@@ -2107,15 +2130,8 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // of those properties too, which is why `model["index"]` works for exactly the same reason.
         if (b && !g_delegateCls.empty()) {
             std::string base = qs(b->name.toString());
-            // A DECLARED `model` DOES disqualify it, and the reason is the engine's, not ours:
-            // declaring required properties turns the context injection OFF. Measured -- a delegate
-            // with `required property int index` answers EMPTY for `model["index"]` in the engine,
-            // where the same delegate without it answers the role. So Qt's ComboBox, which spells
-            // it `required property var model`, is reading the INJECTED property and not the
-            // context; reading the context there would put a plausible value where the engine has
-            // none. It stays refused, which is the honest answer until injection is implemented.
-            if (base == "model" && !g_scope.count(base) && !g_childIds.count(base)
-                    && !g_propType.count(base) && !g_baseProps.count(base)) {
+            if (base == "model" && !g_childIds.count(base) && !g_baseProps.count(base)
+                    && modelIsReadable()) {
                 std::string key;
                 if (!compileExpr(am->expression, QStringLiteral("string"), key)) return false;
                 if (auto o = modelRoleRead(dtype, key); !o.empty()) { g_ctxUsed = true; out = o; return true; }
@@ -2137,8 +2153,8 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // mechanism, two spellings -- the key is just known at compile time here.
         if (auto *bM = cast<IdentifierExpression *>(fm->base);
                 bM && !g_delegateCls.empty() && qs(bM->name.toString()) == "model"
-                && !g_scope.count("model") && !g_childIds.count("model")
-                && !g_propType.count("model") && !g_baseProps.count("model")) {
+                && !g_childIds.count("model") && !g_baseProps.count("model")
+                && modelIsReadable()) {
             std::string role = qs(fm->name.toString());
             if (auto o = modelRoleRead(dtype, "\"" + role + "\""); !o.empty()) {
                 g_ctxUsed = true; out = o; return true;
@@ -4312,6 +4328,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedOuterPropType = g_outerPropType;
     auto savedOuterBaseProps = g_outerBaseProps;
     bool savedOuterUsed = g_outerUsed, savedCtxUsed = g_ctxUsed;
+    auto savedRequired = g_requiredDecls; bool savedHasRequired = g_hasRequiredDecl;
     // Push the enclosing object onto the chain — WITH or WITHOUT an id, because an anonymous
     // level still costs a hop. Its base properties are kept apart from the declared ones:
     // g_propType also carries base names the document assigns (`width: 100`), and those are
@@ -4334,6 +4351,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
     g_outerUsed = false;
     g_ctxUsed = false;
+    g_requiredDecls.clear();
+    g_hasRequiredDecl = false;
     int savedHops = g_outerHopsNeeded;
     g_outerHopsNeeded = -1;
     g_selfClass = cls;
@@ -4501,8 +4520,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // type we can't map — the name still exists in QML), every base Q_PROPERTY we set, every
         // `function`, and every declared signal.
         for (auto *m = init ? init->members : nullptr; m; m = m->next) {
-            if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property)
+            if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
                 g_scope.insert(qs(pub->name.toString()));
+                if (isRequiredMem(pub)) {
+                    g_requiredDecls.insert(qs(pub->name.toString()));
+                    g_hasRequiredDecl = true;
+                }
+            }
             if (auto *se = cast<UiSourceElement *>(m->member))
                 if (auto *fn = se->sourceElement->asFunctionDefinition())
                     g_scope.insert(qs(fn->name.toString()));
@@ -8199,6 +8223,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_childDeclType = savedChildDecl;
     g_outerUsed = savedOuterUsed;
     g_ctxUsed = savedCtxUsed || g_ctxUsed;   // ...a subtree's need is the enclosing object's need
+    g_requiredDecls = savedRequired; g_hasRequiredDecl = savedHasRequired;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
     g_enumMember = savedEnumMember;
@@ -8759,7 +8784,10 @@ int main(int argc, char **argv) {
             // sides -- so one hint covers every case, including the two corpus roots (RangeSlider,
             // Tumbler) that naming our own class got wrong.
             {
-                std::string stem = g_docUrl;
+                // the DOCUMENT's own file, not whatever file the resolution is standing in: with a
+                // local type as the ROOT (`QLocalRoot.qml` is a `LocalBase`), g_docUrl is
+                // LocalBase.qml and the hint named the wrong type.
+                std::string stem = g_rootDocUrl.empty() ? g_docUrl : g_rootDocUrl;
                 if (auto sl = stem.find_last_of('/'); sl != std::string::npos) stem = stem.substr(sl + 1);
                 if (auto dot = stem.rfind(".qml"); dot != std::string::npos) stem = stem.substr(0, dot);
                 std::printf("        qtd_dump_object_as(qobjOf(o), \"\", \"%s\");\n", stem.c_str());

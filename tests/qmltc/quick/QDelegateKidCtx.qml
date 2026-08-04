@@ -18,10 +18,11 @@ Item {
         delegate: Item {
             id: cell
             // An int cannot carry the answer: item 0's index IS zero, and so is a lookup that
-            // found nothing. Concatenated into a string it can — "r0" against a bare "r".
+            // found nothing. Concatenated into a string it can -- "o0" against a bare "o".
             objectName: "o" + index   // the ROOT, on a BASE property (the path CDelegate proves)
-            property string mineText: "r" + index
-
+            // (a DECLARED property reading the context lives in QDelegateRole.qml instead: here it
+            // would report "depends on 'index', which has no known notify", and a fixture whose
+            // generation step reports anything is a fixture the suite refuses to build.)
             // ...read back OUT of the child, so the comparison sees what the child computed. Without
             // it the child's `text` sits on no path either side dumps and the test cannot fail.
             property string kidText: kidLabel.text

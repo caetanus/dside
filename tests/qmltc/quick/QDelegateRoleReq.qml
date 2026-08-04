@@ -2,12 +2,10 @@
 // ComboBox and SearchField write their delegate label. The key is computed here too (`root.key`),
 // read through the enclosing document exactly as those do.
 //
-// What this fixture does NOT carry is the `required property var model` those documents also write,
-// and that is a MEASURED boundary rather than a convenience: declaring required properties turns
-// the engine's context injection OFF. The same delegate with `required property int index` answers
-// EMPTY for `model["index"]` in the engine, where without it it answers the role. So a delegate
-// that declares them is reading the INJECTED property, not the context, and the compiler refuses it
-// -- reading the context there would put a plausible value where the engine has none.
+// The delegate here declares nothing required, which is what makes `model` readable from the
+// context at all. QDelegateReqNoModel.qml is the other side of that boundary, in its own file --
+// two Repeaters in ONE document does not work here, because only the first one's items are on a
+// path both sides dump, so the second could never fail.
 //
 // Strings, again: "q0" against a bare "q".
 import QtQml 2.15
