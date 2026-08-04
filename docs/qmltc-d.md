@@ -4355,3 +4355,24 @@ Still open, and now precisely stated: a comparison whose operand is a role read
 there is none to hand — the type has to come from the other operand.
 
 Corpus counts unchanged (Basic 24, Fusion 12); values, render and click identical on both.
+
+### A comparison gives its operands no type (2026-08-04)
+
+`model.index === 1 ? 0.25 : 0.75` was refused, and the reason is one line of the compiler: a
+comparison compiles both sides with an EMPTY declared type — what two values are compared as is
+their own business. That is exactly what a read which needs a type cannot survive. A model role
+crosses the meta-object, so the D type has to be named at the call site, and the comparison named
+nothing.
+
+The other operand knows: a literal `1` is an int. The typed attempt runs only AFTER the untyped one
+fails, so every comparison that compiles today compiles to the same thing.
+
+`QRoleCompare.qml` guards it, with 0.25 and 0.75 rather than 0 and 1 on purpose: `opacity` defaults
+to 1, so a binding that never compiled leaves it there and the refusal is visible. Negative control
+run — without the fix it reads 1 against the engine's 0.75.
+
+Qt's two cases stay refused, and **for reasons that are not this one**: MonthGrid's root is
+`AbstractMonthGrid`, which is not a bound type (a recorded ceiling), so neither operand of
+`model.month === control.month` can be typed at all; and PageIndicator's `index === control.currentIndex`
+reads a required property we cannot fill, which is the honest refusal from the earlier entry. Corpus
+counts unchanged (Basic 24, Fusion 12), all six axes identical.

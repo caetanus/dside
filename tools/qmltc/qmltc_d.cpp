@@ -3205,7 +3205,20 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 return true;
             };
             if (!side(bin->left, l) || !side(bin->right, r)) return false;
-        } else if (!compileExpr(bin->left, sub, l) || !compileExpr(bin->right, sub, r)) return false;
+        } else if (!compileExpr(bin->left, sub, l) || !compileExpr(bin->right, sub, r)) {
+            // A COMPARISON hands its operands no type -- what two values are compared as is their
+            // own business -- and that is exactly what a read which NEEDS one cannot survive. A
+            // model role is read through the meta-object, so the D type has to be named at the call
+            // site, and `model.index === 1` gave it nothing. The other operand knows: a literal 1
+            // is an int. Tried only AFTER the untyped attempt fails, so every comparison that
+            // compiles today compiles to the same thing.
+            if (!cmp) return false;
+            std::string tyC = inferType(bin->left, g_propType);
+            if (tyC.empty()) tyC = inferType(bin->right, g_propType);
+            if (tyC.empty()) return false;
+            QString qC = QString::fromStdString(tyC);
+            if (!compileExpr(bin->left, qC, l) || !compileExpr(bin->right, qC, r)) return false;
+        }
         out = "(" + l + " " + op + " " + r + ")"; return true;
     }
     return false;
