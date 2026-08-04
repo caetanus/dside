@@ -5205,7 +5205,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // is the absence of an object. The property still EXISTS, which is the whole point:
                 // the engine shows it as `<null>` and whoever instantiates the type writes to it.
                 // Refused, the declaration went with the value and the property was missing.
-                if (cast<NullExpression *>(es0->expression)) objInit = "null";
+                // ...and a METHOD CALL that returns one: `property Item hi: lv.itemAtIndex(0)`,
+                // which is what Qt's Basic ComboBox reads for `highlightedItem`. Text cannot carry
+                // an object, so this goes through the invoke channel's object form. The declared
+                // type is what says the result is an object; a method returning something else
+                // fails the write visibly rather than silently.
+                if (auto *cx = cast<CallExpression *>(es0->expression)) {
+                    if (auto *fmC = cast<FieldMemberExpression *>(cx->base)) {
+                        std::string oeC, oqC;
+                        if (objPathExpr(fmC->base, oeC, oqC)) {
+                            std::string memC = qs(fmC->name.toString());
+                            std::vector<std::string> asC;
+                            bool okC = true;
+                            for (auto *a = cx->arguments; a && okC; a = a->next) {
+                                std::string one;
+                                if (compileExpr(a->expression, "double", one)) asC.push_back(one);
+                                else if (compileExpr(a->expression, "string", one)) asC.push_back(one);
+                                else okC = false;
+                            }
+                            if (okC) {
+                                std::string argsC;
+                                for (auto &a : asC) argsC += ", " + a;
+                                // \x01 marks it for the LATE phase: `childAt(10, 10)` asked
+                                // before the children exist and before the size is set answers
+                                // null, which is what this produced -- the engine evaluates the
+                                // binding once the tree is there.
+                                objInit = "\x01invokeMixedObj(" + oeC + ", \"" + memC + "\"" + argsC + ")";
+                            }
+                        }
+                    }
+                }
+                if (!objInit.empty()) { /* a call, above */ }
+                else if (cast<NullExpression *>(es0->expression)) objInit = "null";
                 else if (objPathExpr(es0->expression, oeI, oqI)) objInit = oeI;
                 else if (auto *fmI = cast<FieldMemberExpression *>(es0->expression))
                     if (auto *bI = cast<IdentifierExpression *>(fmI->base)) {
@@ -6240,12 +6271,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // expressions started compiling). Only the assignments whose value is the ENCLOSING object go
     // here: it exists from the first line of the wire, where a child field does not.
     std::string earlyWire;
-    for (auto &oa : objInitAssigns)
-        baseWire += "        setPropObj(this, \"" + oa.first + "\", " + oa.second + ");\n";
+    std::string objInitLate;
+    for (auto &oa : objInitAssigns) {
+        if (!oa.second.empty() && oa.second[0] == '\x01')
+            objInitLate += "        setPropObj(this, \"" + oa.first + "\", " + oa.second.substr(1) + ");\n";
+        else
+            baseWire += "        setPropObj(this, \"" + oa.first + "\", " + oa.second + ");\n";
+    }
     // Statements that must run only once the WHOLE tree is complete: connects to objects a Control
     // creates during its own completion (indicator/contentItem/background). The root triggers the
     // pass; every level forwards it to its children.
     std::string lateWire;
+    lateWire += objInitLate;   // ...an object-returning CALL, asked once the tree it reads exists
     // Recompute slots that must run AGAIN once the whole tree exists: their expression reads
     // through an object the enclosing wire assigns later. Collected as a set so a binding with
     // several such reads is re-evaluated once.

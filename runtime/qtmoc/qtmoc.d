@@ -1092,6 +1092,7 @@ void* styleHintsObj() { return qtd_style_hints(); }
 void* listAt(T)(T o, string prop, int i) { return qtd_list_at(qobjOf(o), (prop ~ "\0").ptr, i); }
 
 private extern(C) void* qtd_invoke_mixed(void*, const(char)*, int, const(int)*, const(void*)*);
+private extern(C) void* qtd_invoke_mixed_obj(void*, const(char)*, int, const(int)*, const(void*)*);
 /// Call a Q_INVOKABLE by name with mixed arguments — TEXT (QMetaType converts it to the declared
 /// parameter type) and OBJECTS, which no text can stand in for. Qt's Fusion style computes its
 /// colours as `Fusion.buttonColor(control.palette, …)`; the palette has to travel as a pointer.
@@ -1114,6 +1115,23 @@ string invokeMixed(T, A...)(T recv, string method, A args) {
     auto p = qtd_invoke_mixed(qobjOf(recv), (method ~ "\0").ptr, cast(int) A.length,
                               kinds.ptr, vals.ptr);
     auto s = qsToD(p); qtd_qs_free(p); return s;
+}
+
+/// ...and the same call whose RESULT is an OBJECT: `parent.itemAtIndex(i)` on a view. Text cannot
+/// carry one, so this is the only way such a call can be a value at all. Returns the QObject* for a
+/// `cast(X) dObjectFor(...)` or a plain propObj read to work on.
+void* invokeMixedObj(T, A...)(T recv, string method, A args) {
+    int[A.length] kinds; const(void)*[A.length] vals;
+    string[A.length] keep;
+    static foreach (i, a; args) {
+        static if (is(typeof(a) == string)) { keep[i] = a ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr; }
+        else static if (__traits(compiles, a.rgba())) { keep[i] = colorName(a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr; }
+        else static if (is(typeof(a) : long) || is(typeof(a) : double)) {
+            import std.conv : to; keep[i] = a.to!string ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        } else { kinds[i] = 1; vals[i] = qobjOf(a); }
+    }
+    return qtd_invoke_mixed_obj(qobjOf(recv), (method ~ "\0").ptr, cast(int) A.length,
+                                kinds.ptr, vals.ptr);
 }
 
 private extern(C) void* qtd_find_outer(void*, const(char)*);

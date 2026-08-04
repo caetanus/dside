@@ -545,9 +545,13 @@ static QString qtd_var_text(const QVariant& v) {
 #endif
     return v.toString();
 }
-extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int* kinds,
-                                  void* const* vals) {
-    if (!o || !method) return new QString();
+// The call itself, with the RESULT still a QVariant: what the two entry points below disagree about
+// is only how to hand it back. Text carries a scalar (QMetaType converts, which is how a colour
+// travels everywhere here); an OBJECT cannot travel as text at all, and `itemAtIndex` returning one
+// is what Qt's ComboBox reads for `highlightedItem`.
+static bool qtd_invoke_mixed_var(void* o, const char* method, int n, const int* kinds,
+                                 void* const* vals, QVariant &ret) {
+    if (!o || !method) return false;
     QObject* obj = static_cast<QObject*>(o);
     const QMetaObject* mo = obj->metaObject();
     int idx = -1;
@@ -558,7 +562,7 @@ extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int*
     if (idx < 0) {
         std::fprintf(stderr, "qtd: no invokable '%s' with %d argument(s) on %s\n", method, n,
                      mo->className());
-        return new QString();
+        return false;
     }
     QMetaMethod m = mo->method(idx);
     // Qt5 names these differently (int ids, not QMetaType) — the same unit compiles for both.
@@ -570,9 +574,9 @@ extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int*
     auto paramType = [&](int i) { return QMetaType(m.parameterType(i)); };
 #endif
 #if QT_VERSION >= 0x060000
-    QVariant ret(retType);
+    ret = QVariant(retType);
 #else
-    QVariant ret(retType.id(), nullptr);   // Qt5: QVariant has no QMetaType ctor
+    ret = QVariant(retType.id(), nullptr);   // Qt5: QVariant has no QMetaType ctor
 #endif
     std::vector<QVariant> conv(n);
     std::vector<void*> argv(n + 1, nullptr);
@@ -587,13 +591,26 @@ extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int*
 #endif
             std::fprintf(stderr, "qtd: argument %d of '%s' does not convert to %s\n", i, method,
                          QByteArray(paramType(i).name()).constData());
-            return new QString();
+            return false;
         }
         conv[i] = v;
         argv[i + 1] = conv[i].data();
     }
     QMetaObject::metacall(obj, QMetaObject::InvokeMetaMethod, idx, argv.data());
+    return true;
+}
+extern "C" void* qtd_invoke_mixed(void* o, const char* method, int n, const int* kinds,
+                                  void* const* vals) {
+    QVariant ret;
+    if (!qtd_invoke_mixed_var(o, method, n, kinds, vals, ret)) return new QString();
     return new QString(qtd_var_text(ret));
+}
+// ...and the same call whose RESULT is an object.
+extern "C" void* qtd_invoke_mixed_obj(void* o, const char* method, int n, const int* kinds,
+                                      void* const* vals) {
+    QVariant ret;
+    if (!qtd_invoke_mixed_var(o, method, n, kinds, vals, ret)) return nullptr;
+    return ret.value<QObject*>();
 }
 
 // The nearest ENCLOSING object of a given class, found by walking Qt parents. An object the ENGINE

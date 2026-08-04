@@ -4487,3 +4487,29 @@ Worth naming as a property of the instruments: **the corpus measures quantity, t
 measures verdict**, and each sees things the other tolerates by construction.
 
 Corpora unchanged (Basic 21, Fusion 11), all six axes identical.
+
+### A method call whose result is an OBJECT (2026-08-04)
+
+The invoke channel always returned TEXT — QMetaType converts it, which is how a colour travels
+everywhere here — and no string stands for an item. So a call like `parent.itemAtIndex(i)` could not
+be a value at all, and the property reading it was refused, declaration included. The call body is
+now split from its result formatting: one implementation produces a `QVariant`, and the two entry
+points disagree only about how to hand it back.
+
+Two corrections came out of measuring rather than designing:
+
+**The first fixture could not fail.** It read `lv.itemAtIndex(0)`, which is `<null>` on BOTH sides —
+a view has not created its items when the dump runs. `childAt(10, 10)` answers from the object tree
+alone and needs no layout.
+
+**And the call still answered null.** The assignment was emitted before the children existed and
+before the root had a size, so `childAt` had nothing to find. The engine evaluates the binding once
+the tree is there; the call-based init now goes to the LATE phase, which is where every other
+read-through-the-tree in this compiler already lives.
+
+Negative control run: without the fix the engine has an `hi` line we do not, and the root's
+`__class` changes with it. Corpora unchanged (Basic 21, Fusion 11), all six axes identical.
+
+What is left of Qt's `property Item highlightedItem: parent ? parent.itemAtIndex(…) : null` is the
+ternary itself: object-or-null, which the BASE-property path has had since the Fusion gradients
+needed it and the declared-property path does not.
