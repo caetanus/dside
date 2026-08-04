@@ -4191,3 +4191,34 @@ partial. My directed runs looked green because the `.d` was already cached and t
 `QDelegateKidCtx` lost its one diagnostic (a declared property reading the context, which
 `QDelegateRole` covers without one); `QDelegateReqNoModel` cannot lose its — its refusal IS the
 test — so it is named in `partialOk`, which accepts 0 or 3 and nothing else.
+
+### Filling a required property from the context: measured, and it cannot work (2026-08-03)
+
+The named next step was to fill the required properties a delegate declares — the view writes them
+in the engine, and marking a property required in our meta-object is Qt6-only
+(`QMetaPropertyBuilder::setRequired` does not exist in 5.15), so the portable route looked like
+reading them from the context we still hold.
+
+It does not work, and one fixture with a control in it says exactly why:
+
+| | `index` — DECLARED by the delegate | `modelData` — not declared |
+|---|---|---|
+| ours | **not** in our context | in our context (we read `m0`) |
+| engine | injected onto the item (`0`) | nothing — it withheld the context, indexing `undefined` throws |
+
+Mirror images. **Declaring the property is precisely what removes it from our context**, so the
+context can never be the source for it. The fill was written, measured, and reverted; the only route
+left is marking it required in the meta-object, which cannot be done on Qt 5.
+
+What the measurement DID hand over is a live defect in the other direction. In a delegate that
+declares required properties, a bare context name (`modelData`, `index`) gave us a value where the
+engine has none — the same shape as `model[...]`, which already had the three-way guard. Bare names
+now follow the same rule, and `QDelegateReqFill.qml` is the guard: without the refusal it reads
+`m0` against the engine's empty.
+
+Its `index` is an int **on purpose and is not coverage**: the engine injects 0, our unwritten field
+reads 0, and they agree by accident. It is declared only to put the delegate on the required side of
+the boundary. Declared as a string it exposes the unfillable half — engine `"0"`, ours `""` — which
+is the gap above, still open.
+
+Corpora after: Basic 24 diagnostics, Fusion 15, values, render and click identical to the baseline.

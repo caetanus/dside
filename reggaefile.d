@@ -647,7 +647,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // would see -- except for the files whose REFUSAL is the thing under test. There the
             // diagnostic is the expected output, and the differential beside it is what proves the
             // refusal is the right one (both sides read empty). Any other exit code still fails.
-            static immutable string[] partialOk = ["QDelegateReqNoModel"];
+            static immutable string[] partialOk = ["QDelegateReqNoModel", "QDelegateReqFill"];
             auto genCmd = partialOk.canFind(name)
                 ? "sh -c '" ~ toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg
                     ~ " > $out; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 3 ]'"
@@ -686,6 +686,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // list exists so the weaker gate does not claim a gap the stronger one covers.
             static immutable string[] labelsGap = [
                 "QDelegateKidCtx", "QDelegateRole", "QDelegateRoleReq", "QDelegateReqNoModel",
+                "QDelegateReqFill",
             ];
             auto verifyStep = labelsGap.canFind(name) ? ""
                 : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;

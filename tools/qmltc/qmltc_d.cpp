@@ -2088,7 +2088,13 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             // too — which is where Qt's own Controls write them (`text: model[textRole]` sits on
             // a Control's contentItem, not on the delegate root).
             std::string n = qs(id->name.toString());
-            if (!g_delegateCls.empty()
+            // ...and NOT when the delegate declares required properties. Measured, with a
+            // control in the same file: our context keeps a name the type does NOT declare and
+            // loses one it does, while the engine has the opposite -- it withheld the context and
+            // injected the declared ones. So in such a delegate a bare context name is a value the
+            // engine does not have (undeclared: it has nothing) or one we cannot see (declared: it
+            // left our context), and reading it invents an answer either way.
+            if (!g_delegateCls.empty() && !g_hasRequiredDecl
                     && !g_scope.count(n) && !g_childIds.count(n) && !g_propType.count(n)
                     && !g_baseProps.count(n)) {
                 // ...and the object's body waits for the context, but only when one is actually
@@ -6737,7 +6743,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
                 // names, but the per-item context carries an object that publishes it as a property
                 // WITH a notify — so the binding is as live as any other, same channel.
-                if (!g_delegateCls.empty()
+                if (!g_delegateCls.empty() && !g_hasRequiredDecl
                         && d.find('.') == std::string::npos && !g_propType.count(d)
                         && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
                     conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \"__rcb_"
@@ -7213,7 +7219,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
             // names, but the per-item context DOES carry an object that publishes it as a property
             // with a notify — so the binding is as live as any other, through the same channel.
-            if (!g_delegateCls.empty()
+            if (!g_delegateCls.empty() && !g_hasRequiredDecl
                     && d.find('.') == std::string::npos && !g_propType.count(d)
                     && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
                 conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \""
