@@ -523,6 +523,13 @@ static bool g_ctxUsed = false;
 // it answers the role. So what the context can be asked for depends on this.
 static std::set<std::string> g_requiredDecls;
 static bool g_hasRequiredDecl = false;
+// Assignments that FILL the required properties a delegate declares. The view writes them in the
+// engine; ours are never written, because the meta-object flag that asks for it does not exist
+// before Qt 6. The values are the view's own -- they live one context level up, past the shadow the
+// item casts on its own names (see qtd_item_context): measured, item 1 reads index 0 at the item's
+// level and 1 at the delegate model's. An earlier attempt at this was abandoned after reading the
+// SHADOW and concluding the context had nothing.
+static std::string g_requiredFill;
 // True while compiling an object that is a property VALUE SOURCE (`NumberAnimation on v`).
 static bool g_isValueSource = false;
 // Compiling the body of a `delegate:`/Component property. The class is emitted like any other, but
@@ -4546,6 +4553,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedOuterPropType = g_outerPropType;
     auto savedOuterBaseProps = g_outerBaseProps;
     bool savedOuterUsed = g_outerUsed, savedCtxUsed = g_ctxUsed;
+    auto savedRequiredFill = g_requiredFill;
     auto savedRequired = g_requiredDecls; bool savedHasRequired = g_hasRequiredDecl;
     // Push the enclosing object onto the chain — WITH or WITHOUT an id, because an anonymous
     // level still costs a hop. Its base properties are kept apart from the declared ones:
@@ -4571,6 +4579,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_ctxUsed = false;
     g_requiredDecls.clear();
     g_hasRequiredDecl = false;
+    g_requiredFill.clear();
     int savedHops = g_outerHopsNeeded;
     g_outerHopsNeeded = -1;
     g_selfClass = cls;
@@ -5301,6 +5310,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 continue;
             }
             const char *dt = dtypeOf(qmlType);
+            // A REQUIRED property inside a delegate is a value the VIEW hands in. Filled here from
+            // the per-item data, which is where the view reads it from too.
+            if (isRequiredMem(pub) && !g_delegateCls.empty() && dt[0]) {
+                std::string rd = std::string(dt) == "string" ? "fillStr(this, \"" + name + "\")"
+                    : std::string(dt) == "int"    ? "fillInt(this, \"" + name + "\")"
+                    : std::string(dt) == "bool"   ? "(fillInt(this, \"" + name + "\") != 0)"
+                    : (std::string(dt) == "double" || std::string(dt) == "float")
+                                                  ? "fillDouble(this, \"" + name + "\")" : "";
+                if (!rd.empty()) {
+                    g_requiredFill += "        " + dIdent(name) + " = " + rd + ";\n";
+                    g_ctxUsed = true;   // ...and therefore this body waits for the context
+                }
+            }
             // A declared OBJECT property (`property Item control`): no D scalar type, but the type
             // IS bound, so the field is the wrapper class and the meta-object records `X*`. The
             // property has to exist whether or not this document assigns it — whoever instantiates
@@ -8020,6 +8042,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // back-reference is spliced in right after classBegin by a later pass, so it is already
         // set here — which is why only the assignments whose value is the enclosing object can
         // move this far up.
+        wire += g_requiredFill;   // ...the view's values, before anything reads them
         wire += earlyWire;   // ...what every binding below READS THROUGH
         // Connect EVERYTHING before the initial binding pass. Two reasons:
         //  - a bound property's first evaluation IS a change (`property int p: dummy` goes
@@ -8630,6 +8653,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_outerUsed = savedOuterUsed;
     g_ctxUsed = savedCtxUsed || g_ctxUsed;   // ...a subtree's need is the enclosing object's need
     g_requiredDecls = savedRequired; g_hasRequiredDecl = savedHasRequired;
+    g_requiredFill = savedRequiredFill;
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
     g_enumMember = savedEnumMember;

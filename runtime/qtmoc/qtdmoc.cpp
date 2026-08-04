@@ -680,6 +680,68 @@ extern "C" int qtd_qml_write(void* o, const char* path, const char* value, int k
 // The object a per-item QQmlContext carries (QQmlDelegateModelItem for a view's delegate). It is
 // what publishes `index`/`model`, and it publishes them as real properties WITH notify — so a
 // binding on `index` can be as live as any other, through the same meta-object channel.
+// The per-item data, read PAST the object's own shadow -- and used ONLY to FILL a required
+// property, never for an ordinary context read.
+//
+// The engine makes a delegate item the CONTEXT OBJECT of its innermost context, so
+// `contextProperty("index")` finds the ITEM's own property first. That is not a defect: measured in
+// pure QML, a delegate that declares `property int index` (no `required`) reads 0 on every item --
+// the engine shadows it exactly the same way. What differs is that a `required` declaration is
+// FILLED by the view, and ours cannot be, because the meta-object flag that asks for it does not
+// exist before Qt 6.
+//
+// So the value we need is the one the view would have written, and it lives one level up:
+// measured, item 1 of a Repeater has index 0 at the item's own level and 1 at the delegate model's.
+// Reading ordinary context names past the shadow would be WRONG -- it would answer the context
+// where the engine answers the property -- which is why this is a separate door.
+//
+// The engine makes a delegate item the CONTEXT OBJECT of its own innermost context, so
+// `contextProperty("index")` finds a property of the ITEM before it reaches the per-item data. When
+// the document declares `required property int index`, that is our own property -- which nobody
+// writes, because we cannot mark it required for the view to fill -- and the read answered its
+// default. Measured, item 1 of a Repeater: L0 (context object = the item) says 0, L1
+// (QQmlDMListAccessorData) says 1. The value was never missing; it was shadowed.
+//
+// This channel only ever carries names the compiler could NOT resolve locally -- a name the
+// document declares is read from the field, not from here -- so skipping the level whose context
+// object IS the asking object is exactly right for it.
+#ifdef QTD_HAVE_QML
+static QQmlContext* qtd_item_context(QObject* obj) {
+    QQmlContext* c = qmlContext(obj);
+    while (c && c->contextObject() == obj) c = c->parentContext();
+    return c ? c : qmlContext(obj);
+}
+#endif
+extern "C" int qtd_ctx_fill_int(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (o && name)
+        if (QQmlContext* c = qtd_item_context(static_cast<QObject*>(o)))
+            return c->contextProperty(QString::fromUtf8(name)).toInt();
+#else
+    (void) o; (void) name;
+#endif
+    return 0;
+}
+extern "C" double qtd_ctx_fill_double(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (o && name)
+        if (QQmlContext* c = qtd_item_context(static_cast<QObject*>(o)))
+            return c->contextProperty(QString::fromUtf8(name)).toDouble();
+#else
+    (void) o; (void) name;
+#endif
+    return 0;
+}
+extern "C" void* qtd_ctx_fill_qs(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (o && name)
+        if (QQmlContext* c = qtd_item_context(static_cast<QObject*>(o)))
+            return new QString(c->contextProperty(QString::fromUtf8(name)).toString());
+#else
+    (void) o; (void) name;
+#endif
+    return new QString();
+}
 extern "C" void* qtd_context_object(void* o) {
 #ifdef QTD_HAVE_QML
     if (!o) return nullptr;

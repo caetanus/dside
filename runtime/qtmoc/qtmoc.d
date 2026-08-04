@@ -1171,6 +1171,19 @@ private extern(C) void* qtd_context_prop_qs(void*, const(char)*);
 /// per-item QQmlContext, so they belong to no object and are read by name through the context.
 int contextInt(T)(T o, string n) { return qtd_context_prop_int(qobjOf(o), (n ~ "\0").ptr); }
 double contextDouble(T)(T o, string n) { return qtd_context_prop_double(qobjOf(o), (n ~ "\0").ptr); }
+private extern(C) int qtd_ctx_fill_int(void*, const(char)*);
+private extern(C) double qtd_ctx_fill_double(void*, const(char)*);
+private extern(C) void* qtd_ctx_fill_qs(void*, const(char)*);
+/// The value a view WOULD have injected into a required property, read past the object's own
+/// shadow. Only for filling such a property: an ordinary context read must NOT skip the shadow,
+/// because the engine does not skip it either (a plain declared `index` reads 0 on every item there
+/// too). See qtd_item_context.
+int fillInt(T)(T o, string n) { return qtd_ctx_fill_int(qobjOf(o), (n ~ "\0").ptr); }
+double fillDouble(T)(T o, string n) { return qtd_ctx_fill_double(qobjOf(o), (n ~ "\0").ptr); }
+string fillStr(T)(T o, string n) {
+    auto p = qtd_ctx_fill_qs(qobjOf(o), (n ~ "\0").ptr);
+    auto s = qsToD(p); qtd_qs_free(p); return s;
+}
 string contextStr(T)(T o, string n) {
     auto p = qtd_context_prop_qs(qobjOf(o), (n ~ "\0").ptr);
     auto s = qsToD(p); qtd_qs_free(p); return s;

@@ -4751,3 +4751,47 @@ The lever, then, is FRAMES rather than milliseconds: both sides would have to re
 fixed number of them before the comparison grab. Not built — one control on one axis, and this file
 already carries a reverted attempt at the adjacent idea — but the diagnosis is now specific enough
 to act on without re-deriving it.
+
+### The shadow: what a `required` property in a delegate actually is (2026-08-04)
+
+Asked to describe the phenomenon rather than the code, and then to measure the ENGINE in plain QML
+rather than through our own toolchain, two of this file's earlier conclusions turned out to be wrong.
+
+**What the engine does**, measured with a Repeater of two items and nothing of ours involved:
+
+| the delegate declares | item 0 | item 1 |
+|---|---|---|
+| `property int index` (plain) | 0 | **0** |
+| `required property int index` | 0 | **1** |
+
+A declared property SHADOWS the context name — the engine reads its own unwritten property, exactly
+as we do. The only difference is that the view FILLS a `required` one.
+
+**And what our context actually holds**, printed level by level for item 1 of a Repeater:
+
+```
+L0  context object = the item itself        -> index = 0
+L1  context object = QQmlDMListAccessorData -> index = 1     <- the view's value
+```
+
+So the earlier entry that says "declaring the property is precisely what removes it from our
+context" is **wrong**. Nothing was removed. The engine makes the item the context object of its own
+innermost context, so `contextProperty("index")` finds our unwritten property first. I measured the
+shadow and called it an absence, and built a whole either/or decision on top of it.
+
+The fix follows from the two measurements together: **fill the field with the value the view would
+have written**, read one level up, through a door used ONLY for that. Reading ordinary context names
+past the shadow would be wrong — it would answer the context where the engine answers the property,
+which the first table above forbids.
+
+Instrumented end to end: the fill reads 0 and 1 for the two items, and the generated wire assigns it
+before any binding that reads it.
+
+Not observable by any fixture: every compared path stops at `data[0]`, whose index is 0 either way.
+The guards are the corpora (Basic 12, Fusion 9, six axes identical, 61 and 52 documents building)
+and the direct instrumentation above.
+
+Two things the full build caught that no directed run could: the new helper sat outside
+`#ifdef QTD_HAVE_QML`, so every binding without QML stopped compiling (`qtmoc-probe-noqml` exists
+for exactly that isolation); and one red was the recorded relink race on `qmltc-d` — the labels file
+read while the tool was being rebuilt — which passes when run alone.
