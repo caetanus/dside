@@ -4598,3 +4598,22 @@ control run: without the fix it reads empty against `the-kid`.
 
 Counts unchanged (Basic 15, Fusion 10) — no Qt document reads through such an id in a shape the rest
 of the compiler already accepts — and all six axes identical.
+
+### Two spellings of the same read (2026-08-04)
+
+`SplitHandle.pressed` compiled; `T.SplitHandle.pressed` did not. Same property, same channel, one
+spelling accepted and the other refused — and the aliased form is what Qt's Fusion SplitView writes.
+The enum path and the object walker had both learned this shape already; the scalar attached read
+had not, which is the same "a rule reached some of the places that need it" this file keeps
+recording.
+
+**Basic 15 → 14, Fusion 10 → 9**, all six axes identical.
+
+A fixture was written and thrown away AFTER running its negative control, which is the point worth
+keeping: without the fix it read the same. A declared `bool` that is refused is still declared, with
+its default `false`, and with no SplitView above it there is no attached object either — so both
+sides read `false` whether the read compiles or not.
+
+That is the same ceiling as `Overlay.overlay`: **an attached value is only comparable when the
+attached object exists**, and corpus documents are built with no window and no view. The guard is
+the measurement.

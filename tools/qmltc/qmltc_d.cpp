@@ -2289,8 +2289,17 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // channel as any other property read, on an object fetched by
         // qmlAttachedPropertiesObject instead of by a field. The truth-test branch below already
         // did the OBJECT-valued half of this; the scalar half had no branch at all.
-        if (auto *bV = cast<IdentifierExpression *>(fm->base)) {
-            std::string tnV = qs(bV->name.toString()), memV = qs(fm->name.toString());
+        {
+            // ...under either spelling of the type name. `SplitHandle.pressed` compiled and
+            // `T.SplitHandle.pressed` did not, which is the import-alias form Qt's own Fusion
+            // SplitView writes. The enum path and the object walker both learned this alias shape
+            // already; the scalar attached read had not.
+            std::string tnV, memV = qs(fm->name.toString());
+            if (auto *bV = cast<IdentifierExpression *>(fm->base)) tnV = qs(bV->name.toString());
+            else if (auto *fqB = cast<FieldMemberExpression *>(fm->base))
+                if (auto *rB = cast<IdentifierExpression *>(fqB->base);
+                        rB && g_importAliases.count(qs(rB->name.toString())))
+                    tnV = qs(fqB->name.toString());
             auto amV = g_qmlAttachedCxx.find(tnV);
             if (!tnV.empty() && std::isupper((unsigned char) tnV[0]) && !memV.empty()
                     && !std::isupper((unsigned char) memV[0])
