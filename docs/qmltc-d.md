@@ -4684,3 +4684,20 @@ this session an unnecessary runtime fix was written; the rule is to test each ha
 believing both are needed.
 
 `CEnumAsInt.qml` guards it. Corpora unchanged (Basic 12, Fusion 9), all six axes identical.
+
+### The reactivity axis, after twenty-odd commits (2026-08-04)
+
+The census being exhausted apart from one decision, the useful thing left was an axis that had not
+been run in this whole stretch of work: `react_corpus.sh`, which MUTATES a property through the
+meta-object on both sides and re-dumps everything.
+
+Run with `enabled=false` and with `width=57`, on both styles. The documents that differ after the
+mutation are exactly the ones that differ at rest — DelayButton, Drawer, ScrollBar, ScrollIndicator,
+StackView, SwipeDelegate — with the SAME path counts (8/340, 16/177, 11/173, 11/166, 33/170,
+8/168). The only names present in one list and not the other are the four `*Delegate` documents the
+oracle cannot load standalone, which the two scripts report differently.
+
+So the mutation introduces no difference of its own: every disagreement after it is one the at-rest
+comparison already had. That is what "no reactivity defect" means here, and it is worth having
+checked rather than assumed — twenty-odd commits touched dependency consumers, path heads and the
+registry, all of which are exactly the machinery a mutation exercises.
