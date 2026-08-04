@@ -4250,3 +4250,29 @@ control.model[control.headerView.textRole]     control.model.display ?? ""
 highlightedItem ? highlightedItem.y : 0        model.month === control.month ? 1 : 0
 index === control.currentIndex ? 0.95 : pressed ? 0.7 : 0.45
 ```
+
+### A refusal that had already been emitted (2026-08-04)
+
+Chasing the census's biggest group — reading through a declared object property — the isolation was
+seven lines:
+
+```qml
+Item { id: kid; width: 33 }
+property Item probe: kid
+property real w: probe.width
+```
+
+`qmltc-d` reported *the initial binding of property 'probe' (Item) is not supported*. The generated
+D says otherwise: `setPropObj(this, "probe", _dc0)`, the read `propDouble(probe, "width")`, and both
+notify connections are all there. The chain that compiles an initial value only knows SCALARS, so an
+object property whose value WAS accepted fell out of the end of it and was reported as a refusal of
+something already emitted.
+
+The message now fires only when the object value was not accepted. Corpus counts unchanged (Basic
+24, Fusion 15) — no Qt document has this shape, so it never showed there. It matters anyway: the
+census is what picks the next piece of work, and this one was pointing at finished work.
+
+Written and thrown away in the same pass: a branch to accept a BARE name as an object property's
+initial value (`property Item probe: kid`). Measured against the pre-change compiler first —
+`setPropObj` was already emitted, `objPathExpr` resolves a bare name fine — so it was dead code, and
+it went out before the commit rather than in it.

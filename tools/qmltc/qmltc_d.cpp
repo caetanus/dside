@@ -5314,6 +5314,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // control that instantiates it writes that property; dropping the declaration made
                 // those writes throw at construction ("no writable property highlighted"). Declared
                 // with its default, and the binding reported as the refusal it is.
+                // ...unless the value was an OBJECT and it was accepted. The chain above only
+                // knows how to compile a SCALAR initial value, so an object property whose init
+                // resolved (`property Item probe: kid` -> setPropObj) fell out of it and reported
+                // a refusal for something that had in fact been emitted -- assignment, reads and
+                // notify connections included. A census that steers the work cannot afford a
+                // diagnostic that is not true.
+                if (!objInit.empty()) { /* emitted above; nothing was refused */ }
+                else
                 std::fprintf(stderr, "qmltc-d: %s: the initial binding of property '%s' (%s) in %s is not "
                              "supported — the property is DECLARED, its initial value is not\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType), cls.c_str());
