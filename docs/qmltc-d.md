@@ -4726,3 +4726,28 @@ window on demand — and driving the clock makes that difference reproducible ra
 Reverted. What is left is a sharper statement of the problem than the one this file had: the
 BusyIndicator difference is not phase NOISE, it is a phase OFFSET, and the thing to find is what
 consumes animation time on one side before the other has started.
+
+#### ...and what the phase offset actually is (2026-08-04)
+
+Measured, rendering Basic's BusyIndicator at three different waits and comparing each against the
+engine's frame taken with no wait at all:
+
+| ours, after | pixels differing from the engine's t≈0 frame |
+|---|---|
+| 100 ms | 36 |
+| 400 ms | 144 |
+| 1200 ms | 288 |
+
+Our animation advances with elapsed time, cleanly and measurably. And the click axis DOES wait the
+same 400 ms on both sides — the scripts agree, and the oracle's `--clickrender` has the same loop.
+
+So the offset is not the duration: it is how much ANIMATING each side gets done inside it. Qt's
+`QQuickBasicBusyIndicator` paints through `QQuickAnimatedNode`, which is advanced by the RENDER
+loop, not by `QAnimationDriver` — which is why installing a driver changed the phase without
+aligning it. Under `offscreen` + `software` with no vsync, two processes with different work to do
+render different numbers of frames in the same 400 ms.
+
+The lever, then, is FRAMES rather than milliseconds: both sides would have to render an equal,
+fixed number of them before the comparison grab. Not built — one control on one axis, and this file
+already carries a reverted attempt at the adjacent idea — but the diagnosis is now specific enough
+to act on without re-deriving it.
