@@ -2251,6 +2251,30 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 g_ctxUsed = true; out = o; return true;
             }
         }
+        // ...and the same read on an OBJECT rather than on this one: `kid.Window.width`. The
+        // truth-test form of exactly this (`indicator.Window ? … : …`) has compiled since Qt's
+        // Fusion Switch needed it; the value form had no branch, which is the third time that pair
+        // has come apart in this file.
+        if (auto *fqV = cast<FieldMemberExpression *>(fm->base)) {
+            std::string tnQ = qs(fqV->name.toString()), memQ = qs(fm->name.toString());
+            auto amQ = g_qmlAttachedCxx.find(tnQ);
+            std::string tgtQ, tqQ;
+            if (!tnQ.empty() && std::isupper((unsigned char) tnQ[0]) && !memQ.empty()
+                    && !std::isupper((unsigned char) memQ[0])
+                    && amQ != g_qmlAttachedCxx.end() && g_qmlTypeUri.count(tnQ)
+                    && objPathExpr(fqV->base, tgtQ, tqQ)) {
+                auto itQ = amQ->second.find(memQ);
+                if (itQ != amQ->second.end() && !itQ->second.empty() && itQ->second.back() != '*') {
+                    std::string rdQ = dtype == "int" ? "propInt"
+                        : (dtype == "double" || dtype == "real" || dtype == "float") ? "propDouble"
+                        : dtype == "string" ? "propStr" : dtype == "bool" ? "propBool" : "";
+                    if (!rdQ.empty()) {
+                        out = rdQ + "(" + attachedExprOn(tgtQ, tnQ) + ", \"" + memQ + "\")";
+                        return true;
+                    }
+                }
+            }
+        }
         // An ATTACHED property read for its VALUE: `opacity: Tumbler.displacement`, which is how a
         // Tumbler's delegate fades with distance in both style corpora. The base is a TYPE NAME and
         // the member is published by qmlattached.tsv with its C++ type -- so this is the same
@@ -8144,6 +8168,30 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // changing is a real gap, but it is a missing DEPENDENCY (the member is never
                     // recorded), not a missing notify, so it does not belong to this diagnostic.
                     if (g_singletons.count(dEff)) continue;
+                    // An ATTACHED dependency (`@Window.width`). The BASE consumer has resolved
+                    // these since Qt's Menu read `Window.window`; this one had never seen the `@`
+                    // encoding at all, so it printed the raw marker as if it were a property name.
+                    // Fourth time a rule reached some of the consumers and not this one.
+                    if (d.rfind("@", 0) == 0) {
+                        auto dotA = d.find('.');
+                        std::string tnA = d.substr(1, dotA - 1), memA = d.substr(dotA + 1);
+                        std::string sigA;
+                        if (auto anA = g_qmlAttachedNotify.find(tnA); anA != g_qmlAttachedNotify.end()) {
+                            auto ntA = anA->second.find(memA);
+                            if (ntA != anA->second.end()) sigA = ntA->second;
+                        }
+                        if (!sigA.empty()) {
+                            // tryConnectMeta for the reason the base consumer gives: the attached
+                            // object does not exist until the item is in a window.
+                            wire += "        tryConnectMeta(" + attachedExpr(tnA) + ", \"" + sigA
+                                  + "\", this, \"__rc_" + p.name + "()\");\n";
+                            continue;
+                        }
+                        std::fprintf(stderr, "qmltc-d: %s: binding '%s' depends on the attached "
+                                     "'%s.%s', whose notify is unknown — it would not update "
+                                     "(later phase)\n", inPath, p.name.c_str(), tnA.c_str(), memA.c_str());
+                        ++partial; continue;
+                    }
                     // A CONTEXT name inside a delegate (`index`, or a model role reached as
                     // `model.day`): the per-item context carries an object that publishes it with a
                     // notify. The other two dependency consumers already knew this one; this is the

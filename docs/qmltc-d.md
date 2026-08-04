@@ -4556,3 +4556,24 @@ left the object-or-null ternary as the only base-object assignment the compiler 
 No fixture, and the reason is the one from the Tumbler entry: `Overlay.overlay` exists only with a
 window, and corpus documents are constructed without one — both sides would read `<null>` and the
 file could not fail. The guard is the measurement.
+
+### The fourth consumer, and the `@` it had never seen (2026-08-04)
+
+Applying the pattern from the previous entry as a method — for every truth-test branch, look for its
+value form — turned up the same shape one level along:
+
+`property int g: Window.width` compiled the VALUE and then reported *depends on '@Window.width',
+which has no known notify*. The `@` is the internal encoding of an ATTACHED dependency. The
+base-property consumer has resolved it since Qt's Menu read `Window.window`; the declared-property
+one had never seen the encoding at all and printed the marker as if it were a property name.
+
+That is the fourth time a rule reached some of the dependency consumers and not this one. The three
+are now named with their line numbers in the resume note, and this is the first place to look when a
+newly-compiling read complains about notify.
+
+Corpora unchanged (Basic 15, Fusion 10) — Qt does not write this form on a declared property, so no
+count moves; what moves is that the message stops being false.
+
+Still open and isolated: `kid.Window.width`, the OBJECT form of the attached read (as opposed to the
+type-name form). The branch is written and does not fire, so something above it claims the
+expression first — measured rather than guessed at next.
