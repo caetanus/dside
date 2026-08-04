@@ -533,7 +533,14 @@ void main(string[] args) {
                 // element, and `control.first.pressed` could not be typed because the property table
                 // covered exported types only. Record it keyed by the C++ CLASS name — which is exactly
                 // what the compiler holds at that point — before the export filter drops it.
-                if (!nm.empty && ex.empty) qmlOfAll[nm[1]] = nm[1];
+                // ...and it must NOT displace a real QML name the same class already has. The two
+                // spellings are read from different .qmltypes files and the last one won: in the
+                // Controls binding a re-declaration of QQuickText with no export overwrote
+                // `QQuickText -> Text`, so every property of Text was filed under `QQuickText` and
+                // the compiler could not type a single `Text` binding. One type, silently, in a
+                // registry of 10874 rows -- `opacity: Tumbler.displacement` was refused with
+                // "declared type '?'" and the reason was this.
+                if (!nm.empty && ex.empty && nm[1] !in qmlOfAll) qmlOfAll[nm[1]] = nm[1];
                 if (nm.empty || ex.empty) continue;
                 auto cpp = nm[1];
                 // The URI of EVERY exported type, whether or not we bind it: an ATTACHED read

@@ -5313,7 +5313,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     childBindings.push_back({name, od->initializer, odTy}); continue;
                 }
             }
-            if (!dt[0] && !pub->statement) continue;   // bare `property Type kid` declaration -> skip
+            if (!dt[0] && !pub->statement) {
+                // A declared property we do NOT emit must leave scope with it. In scope with no
+                // field behind it, every read of the name compiled to a bare identifier the D
+                // compiler had never heard of -- Fusion's Tumbler declares `required property var
+                // modelData` and writes `text: modelData`, and that is a LINK ERROR, not a refusal.
+                // It only surfaced when `Text.text` became typeable at all; before that the whole
+                // binding was refused for a different reason and the undefined name never got out.
+                g_scope.erase(name);
+                g_propType.erase(name);
+                continue;   // bare `property Type kid` declaration -> skip
+            }
             // `property string s` with NO value, and `required property string shortName` (whose
             // value comes from the view's model), are ordinary declared properties: in QML they
             // exist and hold the type's default. Refusing them left the name in scope with no

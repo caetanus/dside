@@ -4376,3 +4376,30 @@ Qt's two cases stay refused, and **for reasons that are not this one**: MonthGri
 `model.month === control.month` can be typed at all; and PageIndicator's `index === control.currentIndex`
 reads a required property we cannot fill, which is the honest refusal from the earlier entry. Corpus
 counts unchanged (Basic 24, Fusion 12), all six axes identical.
+
+### One type missing from a registry of 10874 rows (2026-08-04)
+
+`opacity: Tumbler.displacement` was refused as *declared type '?'* — but `opacity` on a `Text` is a
+double everybody knows. Comparing the two registries: of every QtQuick type, **exactly one** was
+absent from the Controls binding's — `Text`. Its 78 property rows were filed under `QQuickText`, the
+C++ class name.
+
+The cause is one line of the generator. A `Component` with no exports is recorded under its C++
+class name on purpose — grouped-property helpers like `QQuickRangeSliderNode` are reachable and
+never exported — but that entry OVERWROTE a real QML name the same class already had, read from a
+different `.qmltypes`. Last one wins, and in the Controls binding the unexported re-declaration of
+`QQuickText` came last. The fix is that the fallback only applies when the class has no name yet.
+
+Cost while it lasted: not one `Text` binding in either corpus could be typed, and nobody noticed
+because the refusals came out wearing another shape.
+
+**And fixing it turned the runtime gate red**, which is the second half of this entry:
+`Tumbler DOES NOT BUILD: undefined identifier 'modelData'`. A declared property we do NOT emit
+(`required property var modelData`) stayed in scope anyway, so every read of the name compiled to an
+identifier the D compiler had never heard of. Not a refusal — a link error. It only surfaced now
+because `Text.text` became typeable at all; before that the binding was refused earlier and the
+undefined name never got out. The name now leaves scope with the property, and the read is refused.
+
+Both Tumblers moved from *declared type '?'* to a typed expression refusal, which is the more
+actionable message. Counts unchanged (Basic 24, Fusion 12), 61 and 52 documents construct, all six
+axes identical.
