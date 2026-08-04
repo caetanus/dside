@@ -479,6 +479,10 @@ static std::string srcOf(Node *n) {
 static std::string g_outerId, g_outerClass, g_outerQmlType, g_selfClass;
 static std::map<std::string, std::string> g_outerPropType, g_outerBaseProps;
 static bool g_outerUsed = false;
+// ...and the same for a CONTEXT name (`index`, `modelData`, a model role). The engine installs the
+// per-item context AFTER the object is constructed, so a body that reads one has to wait exactly as
+// a body that reads its enclosing object does -- same hook, same signal.
+static bool g_ctxUsed = false;
 // True while compiling an object that is a property VALUE SOURCE (`NumberAnimation on v`).
 static bool g_isValueSource = false;
 // Compiling the body of a `delegate:`/Component property. The class is emitted like any other, but
@@ -2038,18 +2042,22 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         }
         {   // A CONTEXT name inside a delegate (`index`, `modelData`, a role): the view publishes
             // them on the per-item QQmlContext, so they are properties of no object and cannot be
-            // resolved the way every other name here is. Only inside the delegate class itself —
-            // its own children get the DOCUMENT context, where these names do not exist, so
-            // reading them there would silently produce zero.
+            // resolved the way every other name here is. Anywhere in the delegate SUBTREE: a
+            // child's context nests inside the delegate root's, so the per-item names reach it
+            // too — which is where Qt's own Controls write them (`text: model[textRole]` sits on
+            // a Control's contentItem, not on the delegate root).
             std::string n = qs(id->name.toString());
-            if (!g_delegateCls.empty() && g_className == g_delegateCls
+            if (!g_delegateCls.empty()
                     && !g_scope.count(n) && !g_childIds.count(n) && !g_propType.count(n)
                     && !g_baseProps.count(n)) {
-                if (dtype == "int") { out = "contextInt(this, \"" + n + "\")"; return true; }
+                // ...and the object's body waits for the context, but only when one is actually
+                // read: a type this branch does not handle falls through to the ordinary name
+                // resolution and must not gate the whole body on something it never asks for.
+                if (dtype == "int") { g_ctxUsed = true; out = "contextInt(this, \"" + n + "\")"; return true; }
                 if (dtype == "double" || dtype == "float" || dtype == "real") {
-                    out = "contextDouble(this, \"" + n + "\")"; return true;
+                    g_ctxUsed = true; out = "contextDouble(this, \"" + n + "\")"; return true;
                 }
-                if (dtype == "string") { out = "contextStr(this, \"" + n + "\")"; return true; }
+                if (dtype == "string") { g_ctxUsed = true; out = "contextStr(this, \"" + n + "\")"; return true; }
             }
         }
         return readName(qs(id->name.toString()), out);
@@ -4253,7 +4261,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 savedOuterQmlType = g_outerQmlType, savedSelfClass = g_selfClass;
     auto savedOuterPropType = g_outerPropType;
     auto savedOuterBaseProps = g_outerBaseProps;
-    bool savedOuterUsed = g_outerUsed;
+    bool savedOuterUsed = g_outerUsed, savedCtxUsed = g_ctxUsed;
     // Push the enclosing object onto the chain — WITH or WITHOUT an id, because an anonymous
     // level still costs a hop. Its base properties are kept apart from the declared ones:
     // g_propType also carries base names the document assigns (`width: 100`), and those are
@@ -4275,6 +4283,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         g_outerBaseProps = g_outerChain[0].baseProps;
     }
     g_outerUsed = false;
+    g_ctxUsed = false;
     int savedHops = g_outerHopsNeeded;
     g_outerHopsNeeded = -1;
     g_selfClass = cls;
@@ -5443,7 +5452,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                            && !isListProp(g_selfQmlType, cb.field)
                                            ? "    @Property " : "    ")
                              + childCls + " " + dIdent(cb.field) + ";\n";
-                childWire += std::string(ekid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+                childWire += std::string((ekid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                            + "        " + dIdent(cb.field) + " = newQObject!" + childCls + "();\n"
                            // the INSTANCE is what the property takes and what gets parented; the
                            // generated class is only its wiring.
@@ -5525,7 +5534,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             && !isListProp(g_selfQmlType, cb.field);
         childFields += std::string(declaredObjProp ? "    @Property " : "    ")
                      + childCls + " " + dIdent(cb.field) + ";\n";
-        childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        childWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + dIdent(cb.field) + " = "
                    + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + dIdent(cb.field) + ", this);\n"
@@ -5707,7 +5716,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // background and TextArea after it, and the engine puts the placeholder at data[0] in
         // BOTH — so the order is not the document's, it is default-then-property. Ours was the
         // reverse, which made `data[N]` name a different object on each side.
-        dcWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        dcWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    // Append through the type's DEFAULT PROPERTY, which is how the engine places a
                    // default child and lets each type apply its own rule (a Flickable reparents
@@ -6654,7 +6663,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
                 // names, but the per-item context carries an object that publishes it as a property
                 // WITH a notify — so the binding is as live as any other, same channel.
-                if (!g_delegateCls.empty() && g_className == g_delegateCls
+                if (!g_delegateCls.empty()
                         && d.find('.') == std::string::npos && !g_propType.count(d)
                         && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
                     conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \"__rcb_"
@@ -6763,7 +6772,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // is what `searchIndicator.indicator:` assigns. So it stays with the deferred children —
         // moving it into the object's own body changed the frame after a click on Qt's own
         // SearchField (56 pixels, measured), while the attached case needs the opposite.
-        childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        childWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (gkt.first.empty() ? "newQObject!" + childCls + "()"
                                                                        : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n";
@@ -6808,7 +6817,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
         }
         childFields += "    " + childCls + " " + field + ";\n";
-        childWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        childWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (cbt.first.empty() ? "newQObject!" + childCls + "()"
                                                                      : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n"
@@ -6872,7 +6881,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
         }
         childFields += "    " + childCls + " " + field + ";\n";
-        ownBodyWire += std::string(kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        ownBodyWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (akt.first.empty() ? "newQObject!" + childCls + "()"
                                                                        : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + field + ", this);\n";
@@ -7130,7 +7139,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // A CONTEXT name inside a delegate (`index`): it belongs to no object the document
             // names, but the per-item context DOES carry an object that publishes it as a property
             // with a notify — so the binding is as live as any other, through the same channel.
-            if (!g_delegateCls.empty() && g_className == g_delegateCls
+            if (!g_delegateCls.empty()
                     && d.find('.') == std::string::npos && !g_propType.count(d)
                     && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
                 conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \""
@@ -7174,7 +7183,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // PARENT had published, which between unrelated D classes is null. Qt's Fusion
                    // BusyIndicator and ProgressBar died at construction on the resulting null
                    // endpoint ("no such signal runningChanged() ... or a null endpoint").
-                   + (kid.usesOuter ? "        __qmltcOuter = cast(void*) this;\n" : "")
+                   + ((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = new " + childCls + "();\n"
                    + "        setQtParent(" + field + ", this);\n";
         node.vsKids.push_back({field, kid});
@@ -7548,8 +7557,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // after it, and changing that text silently dropped the splice — leaving __outer null and
         // every connection through it failing at construction. classBegin attaches the root
         // context only when the object has none, so this one wins.
-        wire += "        attachContext(this, \"" + (g_rootDocUrl.empty() ? g_docUrl : g_rootDocUrl)
-              + "\");\n";
+        // The delegate ROOT attaches nothing: the view is about to install the per-item context on
+        // it, and the document context attached here first won and kept it -- so `index`,
+        // `modelData` and every model role inside a delegate had never resolved at all. Item 0 hid
+        // it: its index IS zero, and so is a lookup that found nothing.
+        // Its CHILDREN nest inside it, which is where Qt's own Controls write the model reads
+        // (`text: model[textRole]` sits on a Control's contentItem, not on the delegate root).
+        if (g_isDelegate && g_className == g_delegateCls)
+            wire += "        holdContext(this);\n";
+        else
+            wire += std::string(g_isDelegate
+                        ? "        attachContextIn(this, __qmltcOuter, \"" : "        attachContext(this, \"")
+                  + (g_rootDocUrl.empty() ? g_docUrl : g_rootDocUrl)
+                  + "\");\n";
         wire += "        classBegin(this);\n";
         // Before the CHILDREN, not just before our own bindings: a child's binding can read
         // through this object too (Fusion's ButtonPanel holds a Gradient whose stops compute
@@ -7957,7 +7977,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // which is visible rather than silently wrong.
     std::string delegFields;
     bool delegRewrite = false;
-    if (g_isDelegate && g_outerUsed && !g_outerClass.empty() && !wire.empty()) {
+    if (g_isDelegate && (g_ctxUsed || (g_outerUsed && !g_outerClass.empty())) && !wire.empty()) {
         auto at = wire.find("classBegin(this);\n");
         if (at != std::string::npos) {
             std::string head = wire.substr(0, at + 18), tail = wire.substr(at + 18);
@@ -8054,7 +8074,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto *buf : {&wire, &methods, &recompute, &handlerSlots, &groupHandlerSlots,
                           &attachedHandlerSlots, &lateMethod})
             rewriteHops(*buf);
+        // The BAIL-OUT the early call needs. `__qtdReady()` is called once in the constructor in
+        // case the object is already parented, and it is the resolution failing that sends it back
+        // to wait -- with nothing to resolve there was no such condition, so the body ran in the
+        // constructor exactly as before. For a context read the condition is the context itself.
         std::string resolve;
+        if (g_ctxUsed)
+            resolve += "        if (!hasContext(this)) return;   // the engine has not installed the per-item context yet\n";
         for (int k = 0; k <= maxHop; ++k) {
             if (!used[k]) continue;
             std::string ocls = k < (int) g_outerChain.size() ? g_outerChain[k].cls : g_outerClass;
@@ -8122,6 +8148,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_outerChain = savedOuterChain;
     g_childDeclType = savedChildDecl;
     g_outerUsed = savedOuterUsed;
+    g_ctxUsed = savedCtxUsed || g_ctxUsed;   // ...a subtree's need is the enclosing object's need
     g_funcRet = savedFuncRet;
     g_funcReads = savedFuncReads;
     g_enumMember = savedEnumMember;

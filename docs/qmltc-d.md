@@ -3980,3 +3980,76 @@ So the gate's cost is smaller than "five documents" makes it sound, and it is no
 fix in the compiler. Re-open it when the census learns to say "the engine has an internal object
 here" the way it already says "this path is unmeasurable" — the marker exists, the classification
 does not.
+
+### The delegate had never had its context (2026-08-03)
+
+The task on the list was "a delegate's CHILDREN get the document's context, so `index`/`modelData`/
+roles do not resolve there". Measuring it found something one level below: **the delegate ROOT had
+never had the per-item context either.** Every `index`, every `modelData`, every model role inside
+any delegate had been reading nothing since the feature was written.
+
+It was invisible because of what the acceptance test compares. `CDelegate` binds
+`text: root.tag + "-" + index` and matches the engine's `outer-0`. But `index` there is read as an
+**int**, at **item 0** — and zero is also what a lookup that found nothing returns. The one value
+that could not distinguish the two answers was the only one being compared.
+
+The cause, from a probe printing the context chain at read time:
+
+```
+[ctx] obj=..._delegate name=index ctx=0x...d590 ctxobj=<none> baseUrl=file://...QDelegateKidCtx.qml val=
+        up 0x...d590 obj=<none>
+        up 0x...b5e0 obj=<none>
+```
+
+Two levels, no context object, base URL our document — and the SAME context pointer for both items.
+That is our own per-document cached context, attached by `attachContext(this, docUrl)` at the top of
+the delegate's constructor. The view installs the per-item context right after construction, found
+the slot taken, and never installed anything. There was no per-item level in the chain at all.
+
+Four parts, and they only work together:
+
+- **The delegate root attaches nothing.** `holdContext(this)` marks the object (a dynamic property,
+  so it dies with the object and the dump — which walks the meta-object — cannot see it) and both
+  `attachContext` paths honour the mark. `classBegin()` attaches a context too, which is why the
+  mark has to live on the object rather than be a decision at the call site.
+- **A child nests inside its enclosing object's context**: `attachContextIn(this, __qmltcOuter, url)`
+  creates a QQmlContext whose PARENT is the outer object's, which is how the engine nests them, so
+  `contextProperty` walks up into the per-item names. `__qmltcOuter` carries the D object, not its
+  QObject — passing it straight to C++ is a segfault (gdb, first run) — so it resolves through the
+  same registry every other D-object-to-QObject step uses.
+- **`contextObject()` walks up** the context parents. A nested context has no object of its own, and
+  the notify connection needs the one the view published.
+- **The body waits.** A subtree that reads a context name defers to the existing `__qtdReady()`
+  hook — the same parentChanged mechanism a delegate already used to find its enclosing object —
+  because the engine installs the context AFTER the constructor returns. The early call that hook
+  makes ("already parented? then nothing to wait for") is guarded by the resolution failing; with
+  nothing to resolve there was no guard and the body ran in the constructor exactly as before, so
+  the context case brings its own: `if (!hasContext(this)) return;`.
+
+`tests/qmltc/quick/QDelegateKidCtx.qml` is the fixture, and it is written so it CAN fail: three
+discriminators, one per path — a base property on the delegate root, a declared property on the
+root, and a declared property reading back out of a CHILD one level below it. All three are
+**strings** (`"r" + index`, `"kid" + index`), because that is the trap the old test fell into: as an
+int, item 0's index and a failed lookup are both 0. Before the change all three read `r`/`o`/`kid`
+against the engine's `r0`/`o0`/`kid0`; after, all three agree.
+
+One more thing had to move for the fixture to be comparable at all. The dump answers `__class` by
+walking to the first Qt class, and "is a Qt class" was decided by a leading `Q` — so
+`QDelegateKidCtx_dc0_delegate`, generated from a document whose name starts with Q, passed that
+test and reported itself. The meta-object channel already carries this kind of fact: every runtime
+meta-object we build now declares `Q_CLASSINFO("qtdGenerated", "1")` and the walk skips it.
+
+Measured before and after on the same harness, both corpora, all five axes:
+
+| | Basic before | Basic after | Fusion before | Fusion after |
+|---|---|---|---|---|
+| documents constructed | 61 | 61 | 52 | 52 |
+| value differential | 51 identical | 51 | 44 identical | 44 |
+| render identical | 49 | 49 | 44 | 44 |
+| click identical | 34 | 34 | 34 | 34 |
+| diagnostics | 26 | 26 | 17 | 17 |
+
+Identical, line for line, on every axis — which is the honest result: Qt's own Controls do not read
+a delegate context in any expression this compiler currently accepts, so nothing that was already
+compiling could move. What moved is that the reads which DO compile are now correct, and that a
+whole class of silent wrong answers has a test that would catch it coming back.

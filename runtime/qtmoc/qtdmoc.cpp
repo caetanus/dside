@@ -194,6 +194,12 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
     QMetaObjectBuilder b;
     b.setClassName(cn);
     b.setSuperClass(super);
+    // A class WE built, said in the meta-object itself rather than guessed from its name. The dump
+    // answers `__class` by walking to the first Qt class, and "Qt" was decided by a leading 'Q' —
+    // a compiled document named QDelegateKidCtx.qml produces QDelegateKidCtx_dc0_delegate, which
+    // passes that test and made every delegate item in the QtQuick fixture set report our class
+    // name against the engine's QQuickItem. The channel already carries this kind of fact.
+    b.addClassInfo("qtdGenerated", "1");
     for (int i = 0; i < nsig; ++i)  b.addSignal(sigs[i]);
     for (int i = 0; i < nslot; ++i) b.addSlot(slotSigs[i]);
     for (int i = 0; i < nprop; ++i) {
@@ -660,7 +666,11 @@ extern "C" int qtd_qml_write(void* o, const char* path, const char* value, int k
 extern "C" void* qtd_context_object(void* o) {
 #ifdef QTD_HAVE_QML
     if (!o) return nullptr;
-    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o))) return c->contextObject();
+    // ...found by walking UP, which is what `contextProperty` does implicitly and what a delegate's
+    // CHILD needs: its own context nests inside the delegate root's and carries no object of its
+    // own, so asking only the nearest one would answer null and the notify would never connect.
+    for (QQmlContext* c = qmlContext(static_cast<QObject*>(o)); c; c = c->parentContext())
+        if (QObject* co = c->contextObject()) return co;
     return nullptr;
 #else
     (void) o; return nullptr;
@@ -888,6 +898,29 @@ extern "C" void* qtd_list_at(void* o, const char* prop, int i) {
 #endif
 }
 extern "C" void qtd_attach_context(void* o);
+// An object whose context the ENGINE owns: it is about to be given one and ours must not take the
+// slot first. Measured on a Repeater's delegate: the document context attached in our constructor
+// won, the engine's per-item context was never installed, and every `index`/`modelData`/role read
+// inside a delegate answered nothing. Item 0 hid it — its index IS zero, and so is a lookup that
+// found nothing — which is why the delegate acceptance test had been green throughout.
+// Marked on the object itself rather than in a side table, so it dies with the object; a dynamic
+// property is invisible to the dump, which walks the meta-object.
+// Whether the object HAS a context at all. For an object whose slot we are holding open this is
+// exactly "the engine has installed the per-item context yet", which is what a delegate's body has
+// to wait for before it reads `index`.
+extern "C" int qtd_has_context(void* o) {
+#ifdef QTD_HAVE_QML
+    return o && QQmlEngine::contextForObject(static_cast<QObject*>(o)) != nullptr;
+#else
+    (void) o; return 0;
+#endif
+}
+extern "C" void qtd_hold_context(void* o) {
+    if (o) static_cast<QObject*>(o)->setProperty("__qtdEngineCtx", true);
+}
+static bool qtd_context_held(void* o) {
+    return o && static_cast<QObject*>(o)->property("__qtdEngineCtx").toBool();
+}
 // ...with the DOCUMENT the object was written in. The engine gives each component a context whose
 // baseUrl is its own document; sharing the engine's root context gave every compiled object an
 // empty baseUrl, so a relative `source:`/`font.source` resolved against the process's working
@@ -895,7 +928,7 @@ extern "C" void qtd_attach_context(void* o);
 // long-lived by construction and there is one per file, not per object.
 extern "C" void qtd_attach_context_url(void* o, const char* docUrl) {
 #ifdef QTD_HAVE_QML
-    if (!o) return;
+    if (!o || qtd_context_held(o)) return;
     if (!docUrl || !*docUrl) { qtd_attach_context(o); return; }
     QObject* obj = static_cast<QObject*>(o);
     if (QQmlEngine::contextForObject(obj)) return;
@@ -912,9 +945,28 @@ extern "C" void qtd_attach_context_url(void* o, const char* docUrl) {
     (void) o; (void) docUrl;
 #endif
 }
+// ...and a context whose PARENT is another object's. A delegate's ROOT gets the per-item context
+// the view made — `index`, `modelData` and every model role live there — and its CHILDREN got the
+// document's, where those names do not exist, so a binding one level below the delegate root read
+// nothing. Contexts nest in the engine; this makes them nest here.
+extern "C" void qtd_attach_context_in(void* o, void* parent, const char* docUrl) {
+#ifdef QTD_HAVE_QML
+    if (!o || qtd_context_held(o)) return;
+    QObject* obj = static_cast<QObject*>(o);
+    if (QQmlEngine::contextForObject(obj)) return;
+    if (!QCoreApplication::instance()) return;
+    QQmlContext* up = parent ? QQmlEngine::contextForObject(static_cast<QObject*>(parent)) : nullptr;
+    if (!up) { qtd_attach_context_url(o, docUrl); return; }   // no enclosing context: as before
+    auto* ctx = new QQmlContext(up, obj);   // owned by the object, like the engine's own per-item one
+    if (docUrl && *docUrl) ctx->setBaseUrl(QUrl(QString::fromUtf8(docUrl)));
+    QQmlEngine::setContextForObject(obj, ctx);
+#else
+    (void) o; (void) parent; (void) docUrl;
+#endif
+}
 extern "C" void qtd_attach_context(void* o) {
 #ifdef QTD_HAVE_QML
-    if (!o) return;
+    if (!o || qtd_context_held(o)) return;
     QObject* obj = static_cast<QObject*>(o);
     if (QQmlEngine::contextForObject(obj)) return;   // engine-created objects already have one
     // A QQmlEngine cannot exist before the application object, and it qFatals rather than fail:
@@ -1465,7 +1517,12 @@ extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
         if (cls && *cls)
             for (const QMetaObject* k = mo; k; k = k->superClass())
                 if (std::strcmp(k->className(), cls) == 0) { c = k; break; }
-        while (c && (c->className()[0] != 'Q'
+        auto qtdGenerated = [](const QMetaObject* k) {
+            for (int i = k->classInfoOffset(); i < k->classInfoCount(); ++i)
+                if (std::strcmp(k->classInfo(i).name(), "qtdGenerated") == 0) return true;
+            return false;
+        };
+        while (c && (c->className()[0] != 'Q' || qtdGenerated(c)
                      || c->propertyCount() <= c->propertyOffset())) c = c->superClass();
         // Qt generates a subclass per QML type (`QQuickRectangle_QML_2`); it IS that type, so the
         // suffix is normalised away — otherwise every object the document declares would read as a

@@ -1277,6 +1277,28 @@ void classBegin(T)(T o, string docUrl) { attachContext(o, docUrl); qtd_parser_st
 /// Loader, delegates) reads QQmlContext::engine() in componentComplete() and crashes without one.
 void attachContext(T)(T o) { qtd_attach_context(qobjOf(o)); }
 /// ...with the document the object was written in, so its relative URLs resolve like the engine's.
+private extern(C) void qtd_attach_context_in(void*, void*, const(char)*);
+private extern(C) void qtd_hold_context(void*);
+private extern(C) int qtd_has_context(void*);
+/// True once the object has a QQmlContext. With the slot held for the engine ([holdContext]) this
+/// is the delegate's "the per-item context has arrived" — the condition its body waits on.
+bool hasContext(T)(T o) { return qtd_has_context(qobjOf(o)) != 0; }
+/// Keeps the context slot free for the ENGINE: a delegate is created by the view, which installs a
+/// per-item context on it carrying `index`, `modelData` and the model roles. Attaching the document
+/// context in the constructor took that slot and the per-item one never arrived.
+void holdContext(T)(T o) { qtd_hold_context(qobjOf(o)); }
+/// ...and one nested INSIDE another object's, which is what a delegate's children need: the view
+/// publishes `index`, `modelData` and the model roles on the delegate ROOT's context, and a child
+/// given the document's context cannot see any of them.
+void attachContextIn(T)(T o, void* parent, string docUrl) {
+    // `__qmltcOuter` carries the D object, not its QObject — the handoff exists so the child can
+    // `cast(Class)` it. Passing it straight to C++ as a QObject* is a segfault (measured), so it
+    // goes through the registry like every other D-object-to-QObject step. A parent that is not
+    // there falls back to the document context, which is what every object had before.
+    void* pq = null;
+    if (parent !is null) if (auto e = parent in _reg) pq = e.qobj;
+    qtd_attach_context_in(qobjOf(o), pq, docUrl.length ? (docUrl ~ "\0").ptr : null);
+}
 void attachContext(T)(T o, string docUrl) {
     qtd_attach_context_url(qobjOf(o), docUrl.length ? (docUrl ~ "\0").ptr : null);
 }
