@@ -4662,3 +4662,25 @@ crosses as its KEY in both directions); negative control run — without the fix
 Found along the way and NOT fixed: `property int x: obj.<enumProperty>` reads **0** where the engine
 reads 2. The write is right (both sides say `AlignRight`); it is the read of an enum into a declared
 `int` that loses it.
+
+### An enum member read as a number, and one half that was not needed (2026-08-04)
+
+`property int a: bb.alignment` read **0** where the engine reads 2, and the value axis stayed quiet
+about it: a declared int keeps its 0, and 0 is a plausible alignment. It surfaced only because a
+previous fixture declared such a property purely to OBSERVE an alignment — the observer was the
+broken thing.
+
+A print at the top of the FieldMember chain answered the "who claims it" question at once:
+`compileExpr` IS called with `mem=alignment, dtype=int`, so the claimant was inside the chain — the
+CHILD-ID resolver. It looks the member up in the properties seeded from the registry's SCALAR rows,
+where an enum-typed member simply is not, and bailed there — before the generic member-read block
+could see it. That is why a branch written in that block did nothing at all.
+
+**And the half that was not needed.** Two were written: this one and a runtime fix, on the
+reasoning that `QVariant::toInt` does not convert a QFlags. Tested SEPARATELY: without the compiler
+half the fixture fails; without the runtime half it **passes** — `toInt` already answers 2. The
+runtime change was dead code resting on an assumption and went out before the commit. Second time
+this session an unnecessary runtime fix was written; the rule is to test each half alone before
+believing both are needed.
+
+`CEnumAsInt.qml` guards it. Corpora unchanged (Basic 12, Fusion 9), all six axes identical.

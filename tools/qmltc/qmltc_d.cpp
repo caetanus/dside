@@ -2442,7 +2442,26 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 auto pt = ci->second.propType.find(mem);
                 if (pt != ci->second.propType.end()) { out = ci->second.field + "." + mem; return true; }
                 auto bp = ci->second.baseProps.find(mem);
-                if (bp == ci->second.baseProps.end()) return false;
+                if (bp == ci->second.baseProps.end()) {
+                    // An ENUM or FLAGS member read as a NUMBER (`bb.alignment`, and QML says
+                    // `Qt.AlignRight` IS 2). baseProps is seeded from the SCALAR rows of the
+                    // registry, so an enum-typed member is simply absent and the read bailed here --
+                    // before the generic member-read block further down could ever see it, which is
+                    // why a branch written there did nothing. The registry types it by its C++ name
+                    // (`Qt::Alignment`): qualified, not a pointer, not one of the scalars.
+                    if (dtype == "int" || dtype == "double" || dtype == "real")
+                        if (auto qe = g_qmlCxxType.find(ci->second.qmlType); qe != g_qmlCxxType.end())
+                            if (auto ce = qe->second.find(mem); ce != qe->second.end()) {
+                                const std::string &ct = ce->second;
+                                if (!ct.empty() && ct.back() != '*' && ct.back() != '^'
+                                        && ct.find("::") != std::string::npos) {
+                                    out = std::string(dtype == "int" ? "propInt(" : "propDouble(")
+                                        + ci->second.field + ", \"" + mem + "\")";
+                                    return true;
+                                }
+                            }
+                    return false;
+                }
                 const char *rd = bp->second == "string" ? "propStr(" : bp->second == "double" ? "propDouble("
                                : bp->second == "bool" ? "propBool(" : "propInt(";
                 out = rd + ci->second.field + ", \"" + mem + "\")";
