@@ -4222,3 +4222,31 @@ the boundary. Declared as a string it exposes the unfillable half — engine `"0
 is the gap above, still open.
 
 Corpora after: Basic 24 diagnostics, Fusion 15, values, render and click identical to the baseline.
+
+### The census was reading blind: 12 refusals that did not say what they refused (2026-08-04)
+
+Of the ~39 diagnostics left across both corpora, twelve came out as `expression for 'string' []` —
+an empty snippet in a message whose whole job is to be read. The census picks the next piece of work
+from these, so it was choosing among things it could not see.
+
+The snippet is cut from the source by offset, and `g_srcText` holds ONE document. A spliced local
+type puts its own file there, and the members it splices come from TWO files: the type's and the use
+site's. `text: control.model.display` is written at the use site, so its offsets index the document
+while the text in hand was `Label.qml` — 371 bytes against an offset of 1325 — and the range fell
+outside, which the guard correctly turned into "".
+
+A single fallback to the document is not enough either: a local type can splice a local type (Qt's
+`HorizontalHeaderView` → `HorizontalHeaderViewDelegate` → `Label`), and the expression belongs to
+the middle one. What works is the chain of documents actually ENTERED, innermost first — pushed and
+popped at the same five sites that already save and restore `g_srcText`. That is the distinction the
+earlier "try every parsed file" attempt lacked: offsets are valid in many files at once, so it
+quoted plausible nonsense; the enclosing chain is not a guess.
+
+Empty snippets: **12 → 1** (the last is a node with no source location of its own). Counts unchanged
+— nothing about the compiler moved, only what can be read about it. What the census can now see:
+
+```
+control.model[control.headerView.textRole]     control.model.display ?? ""
+highlightedItem ? highlightedItem.y : 0        model.month === control.month ? 1 : 0
+index === control.currentIndex ? 0.95 : pressed ? 0.7 : 0.45
+```

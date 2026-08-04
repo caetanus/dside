@@ -443,6 +443,19 @@ static std::set<std::string> g_importAliases;
 // cluster of "expression not supported" was guesswork without it: matching a property name back
 // to a line picks the FIRST occurrence, which is the root's, even when the failure is in a child.
 static QString g_srcText;
+// ...and the DOCUMENT's own text, which never changes while it is being compiled. A spliced local
+// type puts its own file in g_srcText, and the members it splices come from TWO files: the type's
+// and the use site's. An expression written at the use site has offsets into the document, so with
+// only the local type's text in hand the range falls outside it and the snippet came out EMPTY --
+// which is how six `text: control.model...` refusals in Qt's own header/table delegates ended up
+// as `expression for 'string' []`, a diagnostic that does not say what it refused.
+static QString g_rootSrcText;
+// ...and every document ENCLOSING the one being spliced, innermost last. A local type can splice a
+// local type (Qt's HorizontalHeaderView -> HorizontalHeaderViewDelegate -> Label), so the file an
+// expression was written in may be neither the current one nor the outermost. This is the chain
+// that was actually entered, not a guess at every file on disk -- which is the distinction that
+// made an earlier "try them all" quote plausible nonsense.
+static std::vector<QString> g_srcStack;
 
 // Every document parsed so far, so a node from a local .qml is quoted from ITS file. One global
 // text was wrong the moment a local type was loaded: the offsets belong to another document, and
@@ -468,8 +481,17 @@ static std::string srcOf(Node *n) {
     // WRONG one — the offsets are valid in several files at once, so the snippet came out as
     // plausible nonsense ("ocale.name"), which is worse than no snippet in a diagnostic that
     // exists to be read.
-    if (to > g_srcText.size()) return "";
-    QString t = g_srcText.mid(from, to - from).simplified();
+    // The document is the ONE fallback, not "every parsed file": that earlier attempt quoted a
+    // plausible nonsense snippet ("ocale.name") because offsets are valid in several files at once.
+    // The enclosing document is not an arbitrary candidate -- it is where a use-site expression
+    // actually lives.
+    const QString *src = nullptr;
+    if (to <= g_srcText.size()) src = &g_srcText;
+    else for (auto it = g_srcStack.rbegin(); it != g_srcStack.rend(); ++it)
+        if (to <= it->size()) { src = &*it; break; }
+    if (!src && to <= g_rootSrcText.size()) src = &g_rootSrcText;
+    if (!src) return "";
+    QString t = src->mid(from, to - from).simplified();
     if (t.size() > 90) t = t.left(87) + "...";
     return qs(t);
 }
@@ -5430,6 +5452,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::vector<std::string> dResolved;
                 std::string dQmlType = cb.type;
                 QString savedDSrc = g_srcText;
+        g_srcStack.push_back(savedDSrc);
                 auto savedDBare = g_bareImports, savedDQual = g_qualifiedTypes;
                 if (dbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
                     std::string ltRoot; bool ltFound = false;
@@ -5457,7 +5480,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ObjNode dkid = compileObject(dInit, childCls, classes, partial, inPath,
                                              dbt.first, nullptr, dQmlType);
                 for (auto &rp : dResolved) g_resolving.erase(rp);
-                g_srcText = savedDSrc; g_bareImports = savedDBare; g_qualifiedTypes = savedDQual;
+                g_srcStack.pop_back(); g_srcText = savedDSrc; g_bareImports = savedDBare; g_qualifiedTypes = savedDQual;
                 g_isDelegate = savedDeleg;
                 g_delegateCls = savedDelegCls;
                 (void) dkid;
@@ -5559,6 +5582,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         UiObjectInitializer *cbInit = cb.init;
         std::vector<std::string> cbResolvedPath;
         QString savedCbSrc = g_srcText;
+        g_srcStack.push_back(savedCbSrc);
         auto savedBare = g_bareImports, savedQual = g_qualifiedTypes;
         if (cbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
             bool cbFound = false;
@@ -5583,7 +5607,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         g_selfBoundProp = savedBoundProp;
         for (auto &rp : cbResolvedPath) g_resolving.erase(rp);
         // The imports (and what arrived qualified) belong to the DOCUMENT they were read from.
-        g_srcText = savedCbSrc; g_bareImports = savedBare; g_qualifiedTypes = savedQual;
+        g_srcStack.pop_back(); g_srcText = savedCbSrc; g_bareImports = savedBare; g_qualifiedTypes = savedQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -5729,6 +5753,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // Loading a local type parses ANOTHER file and repoints the text a diagnostic quotes from;
         // without putting it back, this document's own diagnostics quote the child's file.
         QString savedSrc = g_srcText;
+        g_srcStack.push_back(savedSrc);
     std::string savedDocUrl = g_docUrl;
         // ...and its IMPORT STATE, which the other three local-type sites already put back and this
         // one did not. `g_qualifiedTypes` accumulates every bare name that arrived qualified, and
@@ -5768,7 +5793,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &rp : childResolvedPath) g_resolving.insert(rp);
         g_parentCompletes = true;   // ...after this wire appends and parents it
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
-        g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
+        g_srcStack.pop_back(); g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
         g_docUrl = savedDocUrl;   // ...and so a class emits ITS document's baseUrl, not ours
         g_bareImports = savedDcBare; g_qualifiedTypes = savedDcQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
@@ -6812,11 +6837,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::vector<std::string> gkResolved;
         if (gkt.first.empty() && gk.type != "QtObject") {
             QString savedSrc2 = g_srcText;
+        g_srcStack.push_back(savedSrc2);
             std::string savedUrl2 = g_docUrl;
             bool gkFound = false;
             auto chained = resolveLocalChain(gk.type, inPath, gkInit, gkResolved, nullptr, &gkFound);
             if (gkFound) gkt = chained;
-            g_srcText = savedSrc2;
+            g_srcStack.pop_back(); g_srcText = savedSrc2;
             g_docUrl = savedUrl2;
         }
         if (!gkt.first.empty() && !gkt.second.empty()) {
@@ -6926,6 +6952,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         UiObjectInitializer *akInit = ak.init;
         std::vector<std::string> akResolvedPath;
         QString savedAkSrc = g_srcText;
+        g_srcStack.push_back(savedAkSrc);
         auto savedAkBare = g_bareImports, savedAkQual = g_qualifiedTypes;
         if (akt.first.empty() && ak.type != "QtObject" && !ak.type.empty()) {
             bool akFound = false;
@@ -6941,7 +6968,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &rp : akResolvedPath) g_resolving.insert(rp);
         ObjNode kid = compileObject(akInit, childCls, classes, partial, inPath, akt.first, nullptr, ak.type);
         for (auto &rp : akResolvedPath) g_resolving.erase(rp);
-        g_srcText = savedAkSrc; g_bareImports = savedAkBare; g_qualifiedTypes = savedAkQual;
+        g_srcStack.pop_back(); g_srcText = savedAkSrc; g_bareImports = savedAkBare; g_qualifiedTypes = savedAkQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -8431,6 +8458,7 @@ int main(int argc, char **argv) {
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", pos[0]); return 2; }
     QString code = QString::fromUtf8(f.readAll());
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
+    g_rootSrcText = code;
     const char *inPath = pos[0];
     g_docUrl = "file://" + QFileInfo(inPath).absoluteFilePath().toStdString();
     g_rootDocUrl = g_docUrl;
