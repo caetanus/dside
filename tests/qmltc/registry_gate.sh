@@ -25,5 +25,19 @@ for map in "$@"; do
         fail=1
     fi
 done
-[ "$fail" -eq 0 ] && echo "registry-gate: every named QML type has property rows"
+# ...and the top of the hierarchy has to be there too. `objectName` is the one property EVERY QObject
+# has, so a registry where no type publishes it is one whose prototype chain never reached QObject:
+# the QtQuick binding read only QtQuick's plugins.qmltypes, and QtObject -- where objectName is
+# declared -- lives in the QML module's. 0 rows out of 186 types, while the Controls binding had 310
+# out of 331. A type having SOME rows is not the same as having the right ones.
+for map in "$@"; do
+    props=$(dirname "$map")/qmlprops.tsv
+    [ -f "$props" ] || continue
+    if ! grep -q "	objectName	" "$props"; then
+        echo "registry-gate: $(dirname "$map"): no type publishes objectName -- the prototype chain"
+        echo "  never reached QObject. Is the QML module's plugins.qmltypes in this spec?"
+        fail=1
+    fi
+done
+[ "$fail" -eq 0 ] && echo "registry-gate: every named QML type has property rows, and QObject is in the chain"
 exit "$fail"

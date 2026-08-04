@@ -4440,3 +4440,27 @@ created by the view and have no static path — so the file compared only the ro
 would have passed with the defect present. A fixture that cannot fail is worse than none, because it
 claims coverage it does not have; the guard here is the corpus measurement, as it is for the other
 changes whose observable lives inside a view.
+
+### `objectName` was in no type of one registry (2026-08-04)
+
+Isolating the `highlightedItem` group turned up an asymmetry that has nothing to do with it:
+
+```qml
+property string s: t.text          // compiles
+property string s: t.objectName    // refused
+property double d: t.width         // compiles
+```
+
+`objectName` is the one property EVERY QObject has. Counted: the Controls registry publishes it for
+310 of its 331 types; the QtQuick one for **0 of 186**. The Controls spec reads the QML module's
+`plugins.qmltypes` — where `QtObject` declares `objectName`, from which it descends the whole
+prototype chain — and the QtQuick spec read only QtQuick's. One line in the spec: 194 rows across
+214 types, and the read compiles.
+
+Same family as the `Text` bug: a DATA gap wearing a compiler gap's clothes. And a shape the gate as
+first written could not see — it checked that a type has SOME rows, not that it has the right ones.
+It now also fails when no type in a registry publishes `objectName`, with the diagnosis in the
+message (which `plugins.qmltypes` is missing from the spec) and its negative control run.
+
+The spec change is a vocabulary change, so the manifest gate is what judges it: full build green,
+and all six axes on both corpora identical.
