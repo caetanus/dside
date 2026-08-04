@@ -4513,3 +4513,27 @@ Negative control run: without the fix the engine has an `hi` line we do not, and
 What is left of Qt's `property Item highlightedItem: parent ? parent.itemAtIndex(…) : null` is the
 ternary itself: object-or-null, which the BASE-property path has had since the Fusion gradients
 needed it and the declared-property path does not.
+
+### The highlightedItem group, closed (2026-08-04)
+
+```qml
+property Item highlightedItem: parent ? parent.itemAtIndex(control.highlightedIndex) : null
+```
+
+Two things were still missing after the object-returning call landed.
+
+**The object-or-null ternary on a DECLARED property.** The base-property path has had it since the
+Fusion gradients needed it (`gradient: control.down ? null : buttonGradient`); the declared one did
+not, so the property was refused and its declaration went with it.
+
+**And a question written two ways.** `control.background ? … : …` compiled; `parent ? … : …` did
+not. It is the same question — *do I have one yet?* — and refusing one spelling makes the support
+look arbitrary. A bare name that IS an object here (a child's id, a declared object property,
+`parent`) now answers it.
+
+`QObjTernary.qml` compares BOTH branches on purpose: `present` takes the call branch, `absent` takes
+the null branch, and it is `absent` that proves the condition is evaluated rather than assumed true.
+Negative control run — without the fix both lines are missing from our side.
+
+**Basic diagnostics 21 → 16**, Fusion 11, and the ComboBox no longer mentions `highlightedItem`.
+All six axes identical on both corpora.

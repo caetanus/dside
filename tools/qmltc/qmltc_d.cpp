@@ -2113,6 +2113,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                         return true;
                     }
                 }
+            // ...and a bare name that IS an object here -- a child's id, a declared object property,
+            // `parent`. Written `control.background ? … : …` it compiled; written `parent ? … : …`,
+            // which is how Qt's ComboBox asks whether it has one yet, it did not. Same question,
+            // and refusing one spelling of it makes the support look arbitrary.
+            std::string oeN, oqN;
+            if (objPathHead(n, oeN, oqN) && oeN != "this") { out = "(" + oeN + " !is null)"; return true; }
         }
         {   // A CONTEXT name inside a delegate (`index`, `modelData`, a role): the view publishes
             // them on the per-item QQmlContext, so they are properties of no object and cannot be
@@ -5205,6 +5211,42 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // is the absence of an object. The property still EXISTS, which is the whole point:
                 // the engine shows it as `<null>` and whoever instantiates the type writes to it.
                 // Refused, the declaration went with the value and the property was missing.
+                // The object side of a value, wherever it appears: a path, or a call that returns
+                // one. Shared by the direct form and by the ternary below, which is the shape Qt's
+                // ComboBox actually writes.
+                auto objSideOf = [&](ExpressionNode *x, std::string &outE) {
+                    std::string oeX, oqX;
+                    if (objPathExpr(x, oeX, oqX)) { outE = oeX; return true; }
+                    auto *cxX = cast<CallExpression *>(x);
+                    auto *fmX = cxX ? cast<FieldMemberExpression *>(cxX->base) : nullptr;
+                    if (!fmX) return false;
+                    std::string oeB, oqB;
+                    if (!objPathExpr(fmX->base, oeB, oqB)) return false;
+                    std::vector<std::string> asX;
+                    for (auto *a = cxX->arguments; a; a = a->next) {
+                        std::string one;
+                        if (compileExpr(a->expression, "double", one)
+                                || compileExpr(a->expression, "string", one)) asX.push_back(one);
+                        else return false;
+                    }
+                    std::string argsX;
+                    for (auto &a : asX) argsX += ", " + a;
+                    outE = "invokeMixedObj(" + oeB + ", \"" + qs(fmX->name.toString()) + "\"" + argsX + ")";
+                    return true;
+                };
+                // An object-or-NULL ternary: `parent ? parent.itemAtIndex(i) : null`. The BASE
+                // property path has had this since the Fusion gradients needed it; the declared one
+                // did not, and Qt's ComboBox declares its highlight rectangle exactly this way.
+                if (auto *cnT = cast<ConditionalExpression *>(es0->expression)) {
+                    bool okNull = cast<NullExpression *>(cnT->ok) != nullptr;
+                    bool koNull = cast<NullExpression *>(cnT->ko) != nullptr;
+                    std::string ceT, oeT;
+                    if ((okNull != koNull)
+                            && objSideOf(okNull ? cnT->ko : cnT->ok, oeT)
+                            && compileExpr(cnT->expression, "bool", ceT))
+                        objInit = "\x01(" + ceT + " ? " + (okNull ? "null" : oeT) + " : "
+                                + (okNull ? oeT : "null") + ")";
+                }
                 // ...and a METHOD CALL that returns one: `property Item hi: lv.itemAtIndex(0)`,
                 // which is what Qt's Basic ComboBox reads for `highlightedItem`. Text cannot carry
                 // an object, so this goes through the invoke channel's object form. The declared
