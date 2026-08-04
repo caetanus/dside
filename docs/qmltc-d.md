@@ -4701,3 +4701,28 @@ So the mutation introduces no difference of its own: every disagreement after it
 comparison already had. That is what "no reactivity defect" means here, and it is worth having
 checked rather than assumed — twenty-odd commits touched dependency consumers, path heads and the
 registry, all of which are exactly the machinery a mutation exercises.
+
+### Driving animation time: it removes the FLAKINESS and not the DISAGREEMENT (2026-08-04)
+
+The BusyIndicator has been the click axis's one difference for as long as that axis has existed, and
+the explanation given here was that both sides advance time with the wall clock
+(`while (t.elapsed() < ms) processEvents(...)`), so a control that animates forever is compared at
+two different phases. The fix that follows from that is a `QAnimationDriver`: while one is
+installed, Qt asks IT what time it is, and stepping it in fixed slices on both sides should make the
+phase identical by construction.
+
+Built it, on both sides, and measured. **Half the explanation was right.**
+
+The flakiness went away: the pixel count stopped moving between runs (it had been 1062/1353, then
+1062/1337; it became 539/698 and stayed there). So the wall clock IS what made it flaky.
+
+But the two sides still disagreed — and worse than before: Basic's BusyIndicator, which had been
+SAME, became a stable 539/698. Installing the driver at process startup on both sides, before any
+document is built, did not change that either. So the DISAGREEMENT is not the wall clock: the two
+sides start animating at different points relative to step 0 for some other reason — the oracle
+shows a QQuickView and pumps events while loading, the compiled side builds its object and creates a
+window on demand — and driving the clock makes that difference reproducible rather than removing it.
+
+Reverted. What is left is a sharper statement of the problem than the one this file had: the
+BusyIndicator difference is not phase NOISE, it is a phase OFFSET, and the thing to find is what
+consumes animation time on one side before the other has started.
