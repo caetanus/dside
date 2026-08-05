@@ -1511,6 +1511,34 @@ bool qtd_invoke0(void* o, const char* member) {
 // caller chose rather than a silent zero.
 extern "C" int qtd_enum_value(const char* cxxType, const char* key, int def) {
     if (!cxxType || !key) return def;
+    // The Qt NAMESPACE is not a type: `QMetaType::fromName("Qt")` answers nothing (measured), so
+    // every `Qt.Checked` where a NUMBER is wanted fell through to the default. Its meta-object is
+    // reachable directly, and it carries every Qt:: enum — one branch for the whole namespace,
+    // not one per enum.
+    if (std::strcmp(cxxType, "Qt") == 0) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        for (int i = 0; i < Qt::staticMetaObject.enumeratorCount(); ++i) {
+            bool ok = false;
+            int v = Qt::staticMetaObject.enumerator(i).keyToValue(key, &ok);
+            if (ok) return v;
+        }
+        return def;
+#elif defined(QTD_HAVE_QML)
+        // Qt5 has no `Qt::staticMetaObject` — the namespace only became introspectable in Qt6, and
+        // the Qt5 build stopped compiling the moment this was written, which is what the noqml/qml5
+        // probe targets are for. The value is still reachable there, through the channel that
+        // publishes these names to every .qml in the first place: the engine's own `Qt` object.
+        if (QCoreApplication::instance()) {
+            QQmlExpression e(qtd_qml_engine()->rootContext(), nullptr,
+                             QString::fromUtf8("Qt.") + QString::fromUtf8(key));
+            QVariant v = e.evaluate();
+            if (!e.hasError() && v.isValid()) return v.toInt();
+        }
+        return def;
+#else
+        return def;
+#endif
+    }
     // QMetaType::fromName is Qt6; Qt5 answers the same question through the type id.
     // ...under the bare name for a GADGET or a namespace (`StandardKey`), and under the POINTER for
     // a QObject class: `QQuickAbstractAnimation` has no metatype, `QQuickAbstractAnimation*` does.

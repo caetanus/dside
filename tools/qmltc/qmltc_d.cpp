@@ -2290,9 +2290,18 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (auto *bE = cast<IdentifierExpression *>(fmE->base)) {
                 std::string tn = qs(bE->name.toString()), mem = qs(fmE->name.toString());
                 auto mm = g_qmlMap.find(tn);
-                if (!mem.empty() && std::isupper((unsigned char) mem[0]) && tn != "Qt"
-                        && !g_scope.count(tn) && !g_childIds.count(tn) && !g_singletons.count(tn)
-                        && mm != g_qmlMap.end() && !mm->second.first.empty()) {
+                bool named = !mem.empty() && std::isupper((unsigned char) mem[0])
+                          && !g_scope.count(tn) && !g_childIds.count(tn) && !g_singletons.count(tn);
+                // The Qt NAMESPACE, which was excluded here and had nowhere else to go: a declared
+                // `property int checkState` fed `Qt.Checked` got the KEY as text, and the write
+                // threw (`no writable property "checkState" taking a string`, Qt's Material
+                // MenuItem). It is the same question as any other enum constant — the namespace
+                // just answers it through its own meta-object rather than through a metatype.
+                if (named && tn == "Qt") {
+                    out = "enumValue(\"Qt\", \"" + mem + "\")";
+                    return true;
+                }
+                if (named && mm != g_qmlMap.end() && !mm->second.first.empty()) {
                     out = "enumValueOn(this, \"" + mm->second.first + "\", \"" + mem + "\")";
                     return true;
                 }
