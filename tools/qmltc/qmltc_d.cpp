@@ -4710,6 +4710,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 savedOuterQmlType = g_outerQmlType, savedSelfClass = g_selfClass;
     auto savedOuterPropType = g_outerPropType;
     auto savedOuterBaseProps = g_outerBaseProps;
+    // The document THIS object belongs to, taken at entry. g_docUrl is repointed by every local
+    // type that gets loaded below, and nothing puts it back at this level — measured, the component
+    // bound for Material's ComboBox `delegate` carried `impl/CheckIndicator.qml` as its base url,
+    // the last file a SIBLING happened to open. A component's url is its identity to the engine,
+    // so pointing it at a real, unrelated document is not a cosmetic error.
+    const std::string selfDocUrl = g_docUrl;
     bool savedOuterUsed = g_outerUsed, savedCtxUsed = g_ctxUsed;
     auto savedRequiredFill = g_requiredFill;
     auto savedRequired = g_requiredDecls; bool savedHasRequired = g_hasRequiredDecl;
@@ -5926,6 +5932,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string dQmlType = cb.type;
                 QString savedDSrc = g_srcText;
         g_srcStack.push_back(savedDSrc);
+                std::string savedDUrl = g_docUrl;
                 auto savedDBare = g_bareImports, savedDQual = g_qualifiedTypes;
                 if (dbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
                     std::string ltRoot; bool ltFound = false;
@@ -5953,7 +5960,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 ObjNode dkid = compileObject(dInit, childCls, classes, partial, inPath,
                                              dbt.first, nullptr, dQmlType);
                 for (auto &rp : dResolved) g_resolving.erase(rp);
-                g_srcStack.pop_back(); g_srcText = savedDSrc; g_bareImports = savedDBare; g_qualifiedTypes = savedDQual;
+                g_srcStack.pop_back(); g_srcText = savedDSrc; g_docUrl = savedDUrl; g_bareImports = savedDBare; g_qualifiedTypes = savedDQual;
                 g_isDelegate = savedDeleg;
                 g_delegateCls = savedDelegCls;
                 (void) dkid;
@@ -5983,7 +5990,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // document with a context menu — the largest single gap behind the attached-child
                 // gate, and it was an ordering one.
                 componentWire += "        bindComponent!" + childCls + "(this, \"" + cb.field
-                               + "\", \"" + g_docUrl + "\");\n";
+                               + "\", \"" + selfDocUrl + "\");\n";
                 g_hasComponentBind = true;
                 continue;
             }
@@ -6056,6 +6063,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::vector<std::string> cbResolvedPath;
         QString savedCbSrc = g_srcText;
         g_srcStack.push_back(savedCbSrc);
+        std::string savedCbUrl = g_docUrl;
         auto savedBare = g_bareImports, savedQual = g_qualifiedTypes;
         if (cbt.first.empty() && cb.type != "QtObject" && !cb.type.empty()) {
             bool cbFound = false;
@@ -6080,7 +6088,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         g_selfBoundProp = savedBoundProp;
         for (auto &rp : cbResolvedPath) g_resolving.erase(rp);
         // The imports (and what arrived qualified) belong to the DOCUMENT they were read from.
-        g_srcStack.pop_back(); g_srcText = savedCbSrc; g_bareImports = savedBare; g_qualifiedTypes = savedQual;
+        g_srcStack.pop_back(); g_srcText = savedCbSrc; g_docUrl = savedCbUrl; g_bareImports = savedBare; g_qualifiedTypes = savedQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();
@@ -7453,7 +7461,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // to. Emitted into the component buffer for the same reason the property-bound one is
             // — it has to exist before anything the type builds from it.
             componentWire += "        bindComponent!" + childCls + "(propObj(this, \"" + gname
-                           + "\"), \"" + mem + "\", \"" + g_docUrl + "\");\n";
+                           + "\"), \"" + mem + "\", \"" + selfDocUrl + "\");\n";
             g_hasComponentBind = true;
             continue;
         }
@@ -7533,6 +7541,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::vector<std::string> akResolvedPath;
         QString savedAkSrc = g_srcText;
         g_srcStack.push_back(savedAkSrc);
+        std::string savedAkUrl = g_docUrl;
         auto savedAkBare = g_bareImports, savedAkQual = g_qualifiedTypes;
         if (akt.first.empty() && ak.type != "QtObject" && !ak.type.empty()) {
             bool akFound = false;
@@ -7548,7 +7557,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &rp : akResolvedPath) g_resolving.insert(rp);
         ObjNode kid = compileObject(akInit, childCls, classes, partial, inPath, akt.first, nullptr, ak.type);
         for (auto &rp : akResolvedPath) g_resolving.erase(rp);
-        g_srcStack.pop_back(); g_srcText = savedAkSrc; g_bareImports = savedAkBare; g_qualifiedTypes = savedAkQual;
+        g_srcStack.pop_back(); g_srcText = savedAkSrc; g_docUrl = savedAkUrl; g_bareImports = savedAkBare; g_qualifiedTypes = savedAkQual;
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
             g_outerNeedsNotify.clear();

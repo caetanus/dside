@@ -1235,8 +1235,18 @@ void bindComponent(T, U)(U owner, string prop, string docUrl = "", string uri = 
     // ...with the DOCUMENT's url: the delegate's context inherits the component's, and a relative
     // `source:` inside a delegate resolves against it. A synthetic url made every such path resolve
     // somewhere else, which is what the differential caught on `baseUrl`.
-    if (auto c = makeComponent(uri, T.stringof, docUrl))   // versionless: Qt 6 takes the latest
-        qtd_prop_set_obj(qobjOf(owner), (prop ~ "\0").ptr, c);
+    // LOUD on both failure modes. A null component silently left the property null, and Qt does not
+    // check: QQuickItemLayer::activateEffect() dereferences `effect` the moment `layer.enabled`
+    // becomes true, so the outcome was a SEGV three frames away from the cause (measured on Qt's
+    // Material ComboBox, gdb).
+    auto c = makeComponent(uri, T.stringof, docUrl);   // versionless: Qt 6 takes the latest
+    if (c is null) {
+        throw new Exception("bindComponent: no QQmlComponent could be made for '" ~ T.stringof
+                            ~ "' bound to '" ~ prop ~ "'");
+    }
+    if (!qtd_prop_set_obj(qobjOf(owner), (prop ~ "\0").ptr, c))
+        throw new Exception("bindComponent: property '" ~ prop ~ "' did not take the component for '"
+                            ~ T.stringof ~ "'");
 }
 /// A QML singleton's one instance — the engine's, not one of ours: a singleton has state, and a
 /// second instance would be a different object that happens to share a type.

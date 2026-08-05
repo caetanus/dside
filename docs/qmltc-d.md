@@ -4978,3 +4978,39 @@ resolve to the STYLE's QML type and only the Templates C++ classes are bound. So
 measured on a reproduction of their shape (`QJsDelegated`, `JsDelegated`) and, on Qt's own
 documents, only up to construction. Closing that needs a fixture harness that instantiates a style
 document as a local type with a model attached — not built.
+
+#### `layer.effect` + `layer.enabled`: a crash with no D in it
+
+Qt's Material style puts an elevation effect on almost every background — `layer.enabled:
+control.enabled` next to `layer.effect: RoundedElevationEffect {}`. Compiled, that segfaults:
+
+```
+#0  QQmlComponent::beginCreate(QQmlContext*)
+#1  QQuickItemLayer::activateEffect()
+#2  QQuickItemLayer::activate()
+#3  QQuickItemLayer::setEnabled(bool)
+```
+
+**Reproduced in ~30 lines of C++ with no D anywhere**: register a QQuickItem subclass, build a
+QQmlComponent with `setData` (error=0, ready=1), write it to `layer.effect`, set `layer.enabled` —
+same backtrace. Varied and ruled out, each measured: the component's base URL (a leak fixed below,
+but not the cause); whether the item is in a QQuickWindow; whether the write carries a `QObject*` or
+a properly typed `QQmlComponent*` QVariant (both report success). What DOES make it survive is
+touching the component once first — a `create()` or a `beginCreate()` before handing it over. So
+something in the component is only prepared on first use, and the layer's path does not prepare it.
+
+Recorded rather than worked around: the reproduction is Qt-against-Qt, so a workaround in the
+compiler would be a guess about someone else's invariant. Two of Material's eight remaining
+failures are this (ComboBox, SearchField).
+
+What the hunt did produce, both real defects of ours:
+
+- **`g_docUrl` leaked across siblings.** Four of the five places that load a local type save and
+  restore `g_srcText`, the imports and the qualified types — and not the document url. So a sibling
+  that loaded a local type left the url pointing at ITS file, and the next child took that as its
+  own: the component bound for Material's ComboBox `delegate` carried `impl/CheckIndicator.qml`.
+  A component's url is its identity to the engine. Same shape as the `g_qualifiedTypes` leak
+  (`4aa86b2`), one variable over.
+- **`bindComponent` failed silently.** It was `if (auto c = makeComponent(…)) set(…)` — a null
+  component left the property null and said nothing, and Qt does not check either. It now throws on
+  both failure modes, so the outcome is a named exception rather than a segfault three frames away.
