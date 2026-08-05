@@ -2220,6 +2220,16 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         }
         return readName(qs(id->name.toString()), out);
     }
+    // An ENUM MEMBER where TEXT is wanted. The key is what crosses this channel -- `font.weight`
+    // arrives as "DemiBold" and QMetaEnum converts it on the far side -- so a member IS its key
+    // here. Written in one place rather than per assignment site: with it, `cond ? Font.DemiBold :
+    // Font.Normal` compiles as the ordinary string ternary it is, which is how Qt's ComboBox and
+    // SearchField mark the current item, and so does any concatenation or comparison of one.
+    if (dtype == "string")
+        if (std::string ek = enumMemberKeyLoose(e); !ek.empty()) {
+            out = "\"" + ek + "\"";
+            return true;
+        }
     // An ENUM CONSTANT where a NUMBER is wanted: `loops: Animation.Infinite`. A real enum-typed
     // property takes the KEY as text and QMetaEnum converts it, but `loops` is a plain `int` -- the
     // key names a constant of some other enum -- so the only thing that can travel is the value.
@@ -3415,8 +3425,15 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                         ids.push_back(bn + "." + mem);
                         return;
                     }
+            // ...and the same for a namespace the registry does NOT carry. `Font.DemiBold` and
+            // `Easing.OutCubic` are enums QtQuick registers without a type to hang them on, so
+            // knownTypeName says no and `Font` was recorded as a dependency -- reported as "has no
+            // known notify" for something that cannot change, on a binding whose value was emitted
+            // perfectly well. A capitalised base that is not an object in scope (ids, singletons
+            // and attached types are all handled above) is a TYPE NAME, and a capitalised member of
+            // one is a constant.
             if (!isObj && !mem.empty() && std::isupper((unsigned char)mem[0])
-                    && (bn == "Qt" || g_qmlCxxType.count(bn)))
+                    && (bn == "Qt" || g_qmlCxxType.count(bn) || std::isupper((unsigned char) bn[0])))
                 return;
             // A MODEL ROLE: the dependency is the ROLE, not `model`. Recorded as the bare name, it
             // lands on the same branch a context name already takes -- connectNotify against the

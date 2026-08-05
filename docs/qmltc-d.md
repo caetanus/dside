@@ -4827,3 +4827,39 @@ Two notes on method. This was found by measured ELIMINATION, not by reading the 
 QML files separated it. And a probe misled me twice before that: in zsh, `2>&1 >/dev/null | grep`
 pipes STDOUT as well (MULTIOS), so I was reading the generated D instead of the diagnostics and
 twice concluded "it compiles" about something that did not.
+
+### An enum member IS its key when text is wanted (2026-08-04)
+
+`font.weight: control.currentIndex === index ? Font.DemiBold : Font.Normal` — Qt's ComboBox and
+SearchField, marking the current item. Refused as *value is not a scalar the channel can convert*,
+while the bare `font.weight: Font.DemiBold` compiled.
+
+I started patching the two value-type assignment sites with a "ternary of enum keys" branch. The
+user cut it short with a question: *DemiBold is a string, isn't it?* It is — the key is what crosses
+this channel, `setQmlProp(this, "font.weight", "DemiBold")`, and QMetaEnum converts it on the far
+side. So the conditional form is an ordinary STRING ternary, and what was missing was one rule, not
+two branches: with a text target, an enum member compiles to its key.
+
+One place instead of two, and it also covers every concatenation and comparison of one, which the
+two patches would not have.
+
+### `pressed` in Qt's PageIndicator delegate is not a property of anything there (2026-08-04)
+
+`opacity: index === control.currentIndex ? 0.95 : pressed ? 0.7 : 0.45`. By elimination:
+`index === control.currentIndex ? 0.95 : 0.45` compiles, so neither the nested ternary nor `index`
+is the problem. `pressed ? 0.7 : 0.45` does not, and neither does `control.pressed ? …`.
+
+`pressed` is declared by `QQuickAbstractButton` — and by ScrollBar, IndicatorButton, Slider,
+RangeSlider, SplitView, SwipeDelegate, Dial and ComboBox — but **not** by `QQuickPageIndicator`, nor
+by its base `QQuickControl`, nor anywhere in `PageIndicator.qml` itself: the only occurrence of the
+name in that file is the line above.
+
+So the engine evaluates `undefined ? 0.7 : 0.45`, which throws, and `opacity` keeps its default 1.
+We refuse the binding and also keep 1 — the two sides agree, by accident. It is a latent bug in Qt's
+own Basic style (that delegate never dims on press), not a gap of ours.
+
+What could NOT be observed, after three attempts: the engine's own reaction. In this harness a
+PageIndicator builds no delegate items — `qmlvalues` shows no contentItem children, `qmlrender`
+prints nothing from a `console.log` in the delegate, and Qt's `qml` runtime exits with "Did not load
+any objects" under offscreen. The binding is never evaluated, so the ReferenceError never happens
+where anything can see it.
