@@ -4655,6 +4655,26 @@ static int g_delegated = 0;
 // A name that is none of those resolves, in the interpreted document, through a context object we
 // never set up. Delegating it would fail SILENTLY, so it stays a refusal instead. That test is the
 // whole difference between a fallback and a blindfold.
+// The declared type of a value-GROUP member (`icon.color`), asked of the registry the same way a
+// grouped object's member is: the group's own type first, then that type's member. Empty when
+// nothing knows. Returns the C++ spelling, with the extension marker stripped.
+static std::string vgroupMemberType(const std::string &selfQmlType, const std::string &gname,
+                                    const std::string &mem) {
+    auto qs0 = g_qmlCxxType.find(selfQmlType);
+    if (qs0 == g_qmlCxxType.end()) return "";
+    auto gt = qs0->second.find(gname);
+    if (gt == qs0->second.end()) return "";
+    std::string gcls = gt->second;
+    while (!gcls.empty() && (gcls.back() == '*' || gcls.back() == '^')) gcls.pop_back();
+    auto qg = g_qmlCxxType.find(gcls);
+    if (qg == g_qmlCxxType.end()) return "";
+    auto mt = qg->second.find(mem);
+    if (mt == qg->second.end()) return "";
+    std::string t = mt->second;
+    while (!t.empty() && (t.back() == '*' || t.back() == '^')) t.pop_back();
+    return t;
+}
+
 static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &out) {
     std::string src = srcRaw(e);
     if (src.empty()) return false;
@@ -7946,10 +7966,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         auto dot = ga.first.find('.');
         std::string gname = ga.first.substr(0, dot), mem = ga.first.substr(dot + 1);
         std::string vty = inferType(ga.second, ptype), val;
-        // A value with NO inferred type is not necessarily unusable: an enum member crosses this
-        // channel as an INT (`Easing.InOutCubic` is a property of a real QML singleton, and QML's
-        // own value for it is a number), and anything else that compiles as text crosses as text.
-        // The KEY is the last resort, for a namespace the registry does not export at all.
+        // ...but a member the registry TYPES decides for itself. `icon.color` is a QColor, and a
+        // colour crosses this channel as TEXT — the int branch below would take it first and read
+        // `Material.foreground` with propInt, which is a number where the gadget wants a colour
+        // (measured: `setVgroup failed: no member "color" on value group "icon"`, Qt's Material
+        // MenuBarItem). Only a member with no D scalar is redirected; int/bool/double members keep
+        // the order they had.
+        if (std::string mt = vgroupMemberType(g_selfQmlType, gname, mem);
+                !mt.empty() && mt != "int" && mt != "bool" && mt != "double" && mt != "float"
+                && mt != "qreal" && mt != "string" && mt != "QString"
+                && compileExpr(ga.second, "string", val))
+            vty = "string";
         if (vty.empty() && compileExpr(ga.second, "int", val)) vty = "int";
         else if (vty.empty() && compileExpr(ga.second, "string", val)) vty = "string";
         else if (std::string ek = enumMemberKeyLoose(ga.second); !ek.empty()) {
