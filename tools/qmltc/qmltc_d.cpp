@@ -551,6 +551,10 @@ static std::string g_delegateCls;
 // The class being compiled as an ENGINE-CREATED child: a registered QML type with no exported C++
 // symbol, so it cannot be subclassed. The class holds the instance and writes it by name.
 static std::string g_engineChildCls, g_engineChildType, g_engineChildUri;
+// ...and whether the object being compiled RIGHT NOW is one. g_engineChildCls is set by the PARENT
+// around each child's compile, so by the time a grandchild pushes its frame it already names the
+// GRANDCHILD. This holds the answer for the object that is actually enclosing.
+static bool g_selfIsEngineInst = false;
 // The CALLER will complete this object after it has assigned and parented it, which is the engine's
 // order: create, set properties, put it in the tree, then complete the whole tree. An object that
 // completes itself at the end of its own wire is complete BEFORE it has a parent — and a QQuickPopup
@@ -581,7 +585,12 @@ struct OuterFrame { std::string id, cls, qmlType;
                     // id anywhere in its component, and Qt's Fusion SwitchIndicator reads the
                     // handle next to it (`handle.x + handle.width`) from the groove. Each is a
                     // FIELD of that object, so the hop is the ordinary one. (id -> field, type)
-                    std::map<std::string, std::pair<std::string, std::string>> childIds; };
+                    std::map<std::string, std::pair<std::string, std::string>> childIds;
+                    // The enclosing object is a WRAPPER around an engine-created instance (see
+                    // g_engineChildCls): everything it inherits from its Qt base lives on the
+                    // INSTANCE, not on the wrapper, so a child reaching it has to say so. Last in
+                    // the struct on purpose — every construction of it is a brace list.
+                    bool engineInst = false; };
 static std::vector<OuterFrame> g_outerChain;
 static int g_outerHopsNeeded = -1;   // deepest hop this object used; drained by its parent
 // Out-channel: a child that connects to `__outer.<prop>` needs that property to CARRY a notify,
@@ -4756,11 +4765,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     {
         std::map<std::string, std::pair<std::string, std::string>> sibs;
         for (auto &ci : g_childIds) sibs[ci.first] = {ci.second.field, ci.second.qmlType};
-        if (!g_selfClass.empty())
-            g_outerChain.insert(g_outerChain.begin(),
-                                OuterFrame{savedId, g_selfClass, savedSelfQmlType, savedIds,
-                                           g_propType, g_baseProps, g_childDeclType, sibs});
+        if (!g_selfClass.empty()) {
+            OuterFrame fr{savedId, g_selfClass, savedSelfQmlType, savedIds,
+                          g_propType, g_baseProps, g_childDeclType, sibs};
+            fr.engineInst = g_selfIsEngineInst;   // ...the ENCLOSING object's answer, not ours
+            g_outerChain.insert(g_outerChain.begin(), fr);
+        }
     }
+    bool savedSelfEngine = g_selfIsEngineInst;
+    g_selfIsEngineInst = !g_engineChildCls.empty() && cls == g_engineChildCls;
     if (!g_outerChain.empty()) {
         g_outerId = g_outerChain[0].id;
         g_outerClass = g_outerChain[0].cls;
@@ -8918,6 +8931,30 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (auto rp = wire.find("//__QTD_RESOLVE__\n"); rp != std::string::npos)
             wire.replace(rp, 18, resolve);
     }
+    // ...and the mirror of it, one level up: when the ENCLOSING object is such a wrapper, what a
+    // child reaches through `__outer` is the wrapper — and everything the enclosing object inherits
+    // from its Qt base lives on the INSTANCE. Qt's Imagine Switch puts its handle inside an
+    // indicator that is an engine-created Image: `connectMeta(__outer, "widthChanged()", …)` threw
+    // at construction (a null endpoint), and every `propDouble(__outer, "width")` next to it was
+    // reading the wrapper in silence. The exception is the same as below — a name the DOCUMENT
+    // declares on the wrapper is answered by the wrapper.
+    if (!g_outerChain.empty() && g_outerChain[0].engineInst) {
+        const auto &ofr = g_outerChain[0];
+        auto outerToInst = [&ofr](std::string &buf) {
+            const std::string pat = "(__outer, \"";
+            size_t at = 0;
+            while ((at = buf.find(pat, at)) != std::string::npos) {
+                size_t q = at + pat.size(), e = buf.find('"', q);
+                std::string nm = e == std::string::npos ? "" : buf.substr(q, e - q);
+                if (ofr.propType.count(nm)) { at = e == std::string::npos ? at + pat.size() : e; continue; }
+                buf.replace(at + 1, 7, "__outer.__inst");
+                at += 15;
+            }
+        };
+        for (auto *buf : {&wire, &methods, &recompute, &handlerSlots, &groupHandlerSlots,
+                          &attachedHandlerSlots, &lateMethod})
+            outerToInst(*buf);
+    }
     // An ENGINE-CREATED child: everything this class does to "itself" is done to the instance the
     // engine built, because the type cannot be subclassed. `(this` is the first argument of every
     // self read/write/connect the emitter produces; a RECEIVER is always `, this, "slot"`, so it
@@ -8989,6 +9026,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_selfClass = savedSelfClass;
     node.outerHops = g_outerHopsNeeded;
     g_outerHopsNeeded = savedHops;
+    g_selfIsEngineInst = savedSelfEngine;
     g_outerChain = savedOuterChain;
     g_childDeclType = savedChildDecl;
     g_outerUsed = savedOuterUsed;
