@@ -4795,3 +4795,35 @@ Two things the full build caught that no directed run could: the new helper sat 
 `#ifdef QTD_HAVE_QML`, so every binding without QML stopped compiling (`qtmoc-probe-noqml` exists
 for exactly that isolation); and one red was the recorded relink race on `qmltc-d` — the labels file
 read while the tool was being rebuilt — which passes when run alone.
+
+### Hiding too much: a use-site property shadowed from its own binding (2026-08-04)
+
+Qt's ComboBox delegate declares `required property int index` and reads it two lines below:
+`highlighted: control.highlightedIndex === index`. Refused — and it had nothing to do with
+`required`.
+
+Isolated by elimination, in three lines of QML:
+
+```qml
+delegate: T.ItemDelegate { … }              // compiles
+delegate: LocDlg { … }                      // LocDlg.qml = T.ItemDelegate { id: control }  -> refused
+delegate: LocDlg { … }                      // LocDlg.qml = T.ItemDelegate { }              -> compiles
+```
+
+When a local type is merged with its use site, the local type's declarations are taken out of scope
+for the length of a use-site binding — that part is right, and it is what makes `control: control`
+resolve outward. But it took out **every** declaration of the merged class, including the ones the
+USE SITE itself wrote. `index` was hidden from its own binding.
+
+The ids already had this split (`g_selfIdsDefn` records which half each came from); the properties
+did not. Now they do, and only the definition's own are shadowed.
+
+**Basic 12 → 10, Fusion 9 → 7**, six axes identical, 61 and 52 documents building.
+
+No fixture: the observable is a delegate item's property, and every compared path stops at the
+document's own children. The guard is the corpus, as for the rest of this family.
+
+Two notes on method. This was found by measured ELIMINATION, not by reading the resolver — three
+QML files separated it. And a probe misled me twice before that: in zsh, `2>&1 >/dev/null | grep`
+pipes STDOUT as well (MULTIOS), so I was reading the generated D instead of the diagnostics and
+twice concluded "it compiles" about something that did not.

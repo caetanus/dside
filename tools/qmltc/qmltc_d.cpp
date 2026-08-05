@@ -1316,6 +1316,12 @@ static std::set<std::string> g_selfIds;
 // bodies into one class merges the scopes, so the DEFINITION's ids are taken out of scope for the
 // length of a use-site binding — exactly as the local type's declared PROPERTIES already are.
 static std::set<std::string> g_selfIdsDefn;
+// ...and the same split for declared PROPERTIES. Taking the merged class's declarations out of
+// scope for a use-site binding is right for the ones the LOCAL TYPE declared; doing it to the ones
+// the USE SITE declared hides them from their own bindings. Qt's ComboBox is the case:
+// `required property int index` is written at the use site and read by `highlighted:
+// control.highlightedIndex === index` two lines below, and the read was refused.
+static std::set<std::string> g_propsDefn;
 static bool shadowedByLocalType(const std::string &n);
 bool isSelfId(const std::string &n) {
     return !n.empty() && g_selfIds.count(n) > 0 && !shadowedByLocalType(n);
@@ -1981,6 +1987,7 @@ static void declObjHead(const std::string &name, const std::string &qmlTy) {
 }
 
 static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq) {
+
     // `__outer` is a head like any other: the wiring holds deps spelled with it, and a path through
     // an enclosing object cannot be re-resolved there without this.
     if (n2 == "__outer" && !g_outerChain.empty()) {
@@ -4546,6 +4553,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     std::string savedId = g_selfId;
     auto savedIds = g_selfIds;
     auto savedIdsDefn = g_selfIdsDefn;   // ...and which half each came from
+    auto savedPropsDefn = g_propsDefn;
     // Everything still in the globals belongs to the ENCLOSING object: capture it as the outer
     // scope before it is overwritten. Only an enclosing object with an `id` is addressable.
     std::string savedOuterId = g_outerId, savedOuterClass = g_outerClass,
@@ -4590,6 +4598,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_selfId = "";
     g_selfIds.clear();
     g_selfIdsDefn.clear();
+    g_propsDefn.clear();
     for (auto *m = init ? init->members : nullptr; m; m = m->next)   // pre-scan this object's id(s)
         if (auto *sb = cast<UiScriptBinding *>(m->member))
             if (qname(sb->qualifiedId) == "id")
@@ -5266,6 +5275,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             continue;
         }
         if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
+            if (!g_useSiteMembers.count(m->member)) g_propsDefn.insert(qs(pub->name.toString()));
             QString qmlType = pub->memberType
                     ? QString::fromStdString(typeName(pub->memberType)) : QString("var");
             std::string name = qs(pub->name.toString());
@@ -5716,7 +5726,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // ...resolved in the scope the assignment was WRITTEN in, or `control: control` reads
             // the property being assigned and records the declared type over itself.
             if (ba0.useSite) {
-                for (auto &p1 : props) g_useSiteShadowed.insert(p1.name);
+                for (auto &p1 : props) if (g_propsDefn.count(p1.name)) g_useSiteShadowed.insert(p1.name);
                 for (auto &i1 : g_selfIdsDefn) g_useSiteShadowed.insert(i1);
             }
             std::string oeA, oqA;
@@ -6469,8 +6479,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // one class merged the scopes; this takes the declarations out for the length of this one
         // binding. Restored right after, because the DEFINITION's own bindings do see them.
         struct UseSiteScope { bool on = false; ~UseSiteScope() { if (on) g_useSiteShadowed.clear(); } } uss;
-        if (ba.useSite && (!props.empty() || !g_selfIdsDefn.empty())) {
-            for (auto &p : props) g_useSiteShadowed.insert(p.name);
+        if (ba.useSite && (!g_propsDefn.empty() || !g_selfIdsDefn.empty())) {
+            for (auto &p : props) if (g_propsDefn.count(p.name)) g_useSiteShadowed.insert(p.name);
             for (auto &i : g_selfIdsDefn) g_useSiteShadowed.insert(i);
             uss.on = true;
         }
@@ -8642,6 +8652,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_selfId = savedId;
     g_selfIds = savedIds;
     g_selfIdsDefn = savedIdsDefn;
+    g_propsDefn = savedPropsDefn;
     g_selfQmlType = savedSelfQmlType;
     g_outerId = savedOuterId; g_outerClass = savedOuterClass; g_outerQmlType = savedOuterQmlType;
     g_outerPropType = savedOuterPropType; g_outerBaseProps = savedOuterBaseProps;
