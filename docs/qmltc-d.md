@@ -5044,6 +5044,21 @@ whole of Imagine's value differential: 2 of 49 documents match, and the differin
 implicitWidth (229), implicitHeight (227), width (189), height (171), source (156).
 
 It is also what `Behavior on x` needs, already recorded as "needs a property value interceptor" —
-so the two open items are one item. Installing an interceptor from outside the engine goes through
-`QQmlPropertyPrivate::setInterceptor`, which is private API; the attach is at least LOUD now instead
-of returning zero and saying nothing.
+so the two open items are one item. **Installing one is possible, and probed**: not through `QQmlPropertyPrivate` (no such member) but
+through `QQmlInterceptorMetaObject`, which is `Q_QML_EXPORT`ed in
+`QtQml/private/qqmlvmemetaobject_p.h` — the runtime already uses private QtQml headers, so this is
+work rather than a wall:
+
+```cpp
+auto *imo = QQmlInterceptorMetaObject::get(target);
+if (!imo) { QQmlData::get(target, true);
+            imo = new QQmlInterceptorMetaObject(target, QQmlMetaType::propertyCache(target->metaObject())); }
+imo->registerInterceptor(QQmlPropertyIndex(idx), interceptor);
+```
+
+Measured: it installs, and the next write to the property IS intercepted — the value goes from the
+base path to EMPTY. So the interception happens and the selector's own resolution does not yet
+produce anything; whatever inputs the engine gives it (its `states`, and whatever `setTarget` is
+expected to have captured) are not all there. That is the next question, and it is now about the
+selector rather than about the mechanism. The attach is LOUD in the meantime instead of returning
+zero and saying nothing.
