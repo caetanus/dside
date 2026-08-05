@@ -163,7 +163,10 @@
     "/usr/lib/qt6/qml/QtQuick/Controls/Material/impl/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/Controls/Material/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/Controls/Universal/impl/plugins.qmltypes",
-    "/usr/lib/qt6/qml/QtQuick/Controls/Universal/plugins.qmltypes"
+    "/usr/lib/qt6/qml/QtQuick/Controls/Universal/plugins.qmltypes",
+    "/usr/lib/qt6/qml/QtQuick/Controls/FluentWinUI3/impl/plugins.qmltypes",
+    "/usr/lib/qt6/qml/QtQuick/Controls/FluentWinUI3/plugins.qmltypes",
+    "/usr/lib/qt6/qml/QtQuick/Controls/Imagine/plugins.qmltypes"
   ],
   "subclass": [
     "QQuickAction",
