@@ -1244,6 +1244,33 @@ static void prescanChildIds(UiObjectInitializer *init) {
     }
 }
 
+// The `id` a child object declares, or empty. Reads the one member shape an id can have, the same
+// one the prescan reads.
+static std::string idOfInit(UiObjectInitializer *ci) {
+    for (auto *cm = ci ? ci->members : nullptr; cm; cm = cm->next)
+        if (auto *sb = cast<UiScriptBinding *>(cm->member))
+            if (qname(sb->qualifiedId) == "id")
+                if (auto *es = cast<ExpressionStatement *>(sb->statement))
+                    if (auto *idn = cast<IdentifierExpression *>(es->expression))
+                        return qs(idn->name.toString());
+    return "";
+}
+
+// A child the compiler SKIPPED must take its id out of scope with it. The prescan registers every
+// child's id before any of them is compiled -- it has to, since an id can be read by a sibling that
+// comes first -- and a skipped child leaves that entry pointing at a field nobody ever emits.
+// Measured on Qt's Material style: `RectangularGlow.qml` has two default children, a
+// ShaderEffectSource at index 0 and a ShaderEffect at index 1, and `sourceItem: shaderItem` reads
+// the SECOND from the first. ShaderEffect is not a bound type, so it is skipped with a diagnostic
+// -- and the read still compiled to `__outer._dc1`, a field of a class that only ever declares
+// `_dc0`. EIGHTEEN of the twenty-two Material documents failed to build on exactly that line.
+// Dropping the id makes the read a refusal with a diagnostic, which is the honest outcome: the
+// object it names does not exist on our side. It also closes the silent form of the same defect --
+// had the indices happened to line up, the read would have bound the WRONG object.
+static void dropSkippedChildId(UiObjectInitializer *ci) {
+    if (std::string cid = idOfInit(ci); !cid.empty()) g_childIds.erase(cid);
+}
+
 // `Connections { target: X; function onSig(a) { ... } }` is WIRING, not an object to build, so it
 // is desugared into ordinary handlers and reuses the connect machinery. Returns false when the
 // element uses a shape not handled yet (a target other than the enclosing object, or a member that
@@ -4320,6 +4347,26 @@ static void adoptLocalTypeRows(const std::string &localName, const std::string &
     if (g_qmlListProp.count(baseQmlType)) g_qmlListProp.emplace(localName, g_qmlListProp[baseQmlType]);
 }
 
+// Is there a local `.qml` for this type name? The FILE search of loadLocalType, without the
+// parsing — needed by a pre-pass that has to know whether a child will be skipped BEFORE any of its
+// siblings is compiled, and must not repoint g_srcText or the document url to do it.
+static bool localTypeFileExists(const std::string &typeName, const char *inPath) {
+    if (g_inlineTypes.count(typeName)) return true;
+    QString dir = QFileInfo(QString::fromUtf8(inPath)).absolutePath();
+    QString path = dir + "/" + QString::fromStdString(typeName) + ".qml";
+    if (QFileInfo::exists(path)) return true;
+    for (auto &imp : g_bareImports) {
+        QString rel = QString::fromStdString(imp); rel.replace('.', '/');
+        QString up = dir;
+        for (int i = 0; i < 8 && !up.isEmpty(); ++i) {
+            if (QFileInfo::exists(up + "/" + rel + "/" + QString::fromStdString(typeName) + ".qml"))
+                return true;
+            int slash = up.lastIndexOf('/'); if (slash <= 0) break; up.truncate(slash);
+        }
+    }
+    return false;
+}
+
 static UiObjectDefinition *loadLocalType(const std::string &typeName, const char *inPath,
                                          std::string *outPath = nullptr, bool *isSingleton = nullptr) {
     if (auto ic = g_inlineTypes.find(typeName); ic != g_inlineTypes.end()) {
@@ -6154,6 +6201,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // The loop below has a local `childType` (the child's QML type NAME) that shadows the map of
     // the same name, so the map is reached through this reference.
     auto &childTypeMap = childType;
+    // Ids of children that will be SKIPPED, dropped BEFORE any sibling is compiled. The pre-scan
+    // registers every child's id up front — it has to, since a sibling that comes FIRST can read
+    // one that comes later — and a child the compiler then refuses leaves that entry pointing at a
+    // field nobody emits. Doing this at the moment of the refusal is too late: the sibling that
+    // reads it has already compiled. Measured on Qt's Material style: RectangularGlow.qml has a
+    // ShaderEffectSource at index 0 whose `sourceItem: shaderItem` reads the ShaderEffect at index
+    // 1; ShaderEffect is not a bound type, so it is skipped, and the read still compiled to
+    // `__outer._dc1` on a class that only declares `_dc0`. EIGHTEEN of the twenty-two Material
+    // documents failed to build on exactly that line.
+    // Refusing the read is the honest outcome — the object it names does not exist on our side —
+    // and it also closes the SILENT form: had the indices lined up, it would have bound the wrong
+    // object instead of failing to compile.
+    for (auto *od : defaultKids) {
+        std::string ct = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
+        if (ct.empty() || ct == "QtObject" || isComponentType(ct) || ct == "Connections") continue;
+        if (!boundTypeFor(ct).first.empty()) continue;
+        if (localTypeFileExists(ct, inPath)) continue;
+        dropSkippedChildId(od->initializer);
+    }
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
         std::string childType = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
@@ -6201,6 +6267,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (!ltFound) {
                 std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
                              inPath, childType.c_str(), cls.c_str());
+                dropSkippedChildId(childInit);
                 ++partial; continue;
             }
             childBase = chained.first;
