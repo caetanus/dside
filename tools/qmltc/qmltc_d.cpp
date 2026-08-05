@@ -7485,8 +7485,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // three steps the default-child path takes: take the base from the local definition's own
         // root, adopt the registry rows the base publishes, and splice the use site's members onto
         // the definition's.
+        // ...and a type NO subclass can exist for. Qt's Imagine style writes
+        // `searchIndicator.indicator: NinePatchImage {}`, and NinePatchImage exports no C++ symbol.
+        // The DEFAULT and PROPERTY paths both answer this by letting the ENGINE build the object
+        // and wrapping it; the group path had no such branch, so the child came out a bare QObject
+        // and constructed in SILENCE — until `connectMeta(this, "widthChanged()")` threw, because a
+        // bare QObject has no such signal. Third time a rule existed in some child paths and not
+        // all of them.
+        std::string gkEngineUri;
+        if (gkt.first.empty() && gk.type != "QtObject" && !localTypeFileExists(gk.type, inPath)) {
+            std::string u = uriForType(gk.type);
+            if (!u.empty() && g_qmlCxxType.count(gk.type)) gkEngineUri = u;
+        }
         std::vector<std::string> gkResolved;
-        if (gkt.first.empty() && gk.type != "QtObject") {
+        if (gkt.first.empty() && gk.type != "QtObject" && gkEngineUri.empty()) {
             QString savedSrc2 = g_srcText;
         g_srcStack.push_back(savedSrc2);
             std::string savedUrl2 = g_docUrl;
@@ -7503,7 +7515,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (g_extraImports.find(vimp) == std::string::npos) g_extraImports += vimp;
         }
         for (auto &rp : gkResolved) g_resolving.insert(rp);
+        auto savedGEC = g_engineChildCls, savedGET = g_engineChildType, savedGEU = g_engineChildUri;
+        if (!gkEngineUri.empty()) {
+            g_engineChildCls = childCls; g_engineChildType = gk.type; g_engineChildUri = gkEngineUri;
+        }
         ObjNode kid = compileObject(gkInit, childCls, classes, partial, inPath, gkt.first, nullptr, gk.type);
+        g_engineChildCls = savedGEC; g_engineChildType = savedGET; g_engineChildUri = savedGEU;
         for (auto &rp : gkResolved) g_resolving.erase(rp);
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
@@ -7538,11 +7555,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             continue;
         }
         childFields += "    " + childCls + " " + field + ";\n";
+        // An engine-built child is reached through the instance it wraps, everywhere.
+        std::string gkRef = field + (gkEngineUri.empty() ? "" : ".__inst");
         childWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (gkt.first.empty() ? "newQObject!" + childCls + "()"
                                                                        : "new " + childCls + "()") + ";\n"
-                   + "        setQtParent(" + field + ", this);\n";
-        childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + field + ");\n";
+                   + "        setQtParent(" + gkRef + ", this);\n";
+        childWire += "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem + "\", " + gkRef + ");\n";
         node.groupKids.push_back({field, kid});
         node.groupKidPaths.push_back(path);
     }
