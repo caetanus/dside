@@ -4959,6 +4959,13 @@ application object, so with no application there is no context and the binding d
 That case is now LOUD (`qtd_bind_js: ... has no QQmlContext`) rather than silent, and a document
 that delegates asks the harness for an application the way a visual root already does.
 
+**All six axes are at baseline after enabling the delegations**, measured over both style corpora
+rather than assumed: values Basic 51 MATCH / Fusion 44 (the differing documents are the same ones as
+before and none of them delegates), render **49-0 and 44-0**, frame-after-click **34-0 and 34-1** —
+that one being BusyIndicator, the recorded animation ceiling. A change that turns fourteen refusals
+into live bindings and moves nothing else is what it should look like; the point of writing the
+numbers down is that "should" is not a measurement.
+
 **What still does NOT measure the delegations, and why.** After enabling them the value axis over
 both styles is clean — every document the oracle can load agrees, including all the delegating ones
 it can load (`HorizontalHeaderView`, `VerticalHeaderView`, `Tumbler`, `PageIndicator` all MATCH; the
