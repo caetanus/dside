@@ -5076,3 +5076,14 @@ lands nowhere and `indicator.control.checked ? 1 : 0` reads nothing (opacity 1 a
 0). That is the `var`/QVariant family recorded above, reached from a new direction — here the value
 is plainly an OBJECT, which is a narrower case than the `required property var model` that defeated
 the earlier attempt.
+
+**What `property var` closed, measured over all 437 Controls documents**: the diagnostic
+`property 'X' (var) is an unsupported binding/type` goes **62 -> 0**, and the corpus total
+3062 -> 2958. Per style, refused + delegated: Basic 38+8 -> 34+8, Fusion 77+6 -> 69+6,
+Material 954+66 -> 873+68, Imagine 156+15 -> 51+117, Universal 93+19 -> 116+11.
+
+Imagine's and Universal's numbers move in opposite directions for the same reason and neither is a
+regression: a `var` that now EXISTS makes the expressions around it compilable, so what was one
+wholesale refusal becomes either a compiled binding, a delegation, or a smaller and more specific
+refusal. Counting refusals alone would read Universal's 93 -> 116 as a step backwards; it is the
+census getting finer.
