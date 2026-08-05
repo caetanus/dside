@@ -5894,6 +5894,32 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A child target `<childId>.<prop>` for an alias -> (dtype, D access `<field>.<prop>`, notified?).
     std::map<std::string, std::string> childType, childAccess;
     std::map<std::string, bool> childNotified;
+    // Ids of children that will be SKIPPED, dropped BEFORE any sibling is compiled. The pre-scan
+    // registers every child's id up front — it has to, since a sibling that comes FIRST can read
+    // one that comes later — and a child the compiler then refuses leaves that entry pointing at a
+    // field nobody emits. Doing this at the moment of the refusal is too late: the sibling that
+    // reads it has already compiled. Measured on Qt's Material style: RectangularGlow.qml has a
+    // ShaderEffectSource at index 0 whose `sourceItem: shaderItem` reads the ShaderEffect at index
+    // 1; ShaderEffect is not a bound type, so it is skipped, and the read still compiled to
+    // `__outer._dc1` on a class that only declares `_dc0`. EIGHTEEN of the twenty-two Material
+    // documents failed to build on exactly that line.
+    // Refusing the read is the honest outcome — the object it names does not exist on our side —
+    // and it also closes the SILENT form: had the indices lined up, it would have bound the wrong
+    // object instead of failing to compile.
+    for (auto *od : defaultKids) {
+        std::string ct = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
+        if (ct.empty() || ct == "QtObject") continue;
+        // ...including the two shapes that are skipped for a REASON rather than for a missing type.
+        // An explicit `Component { id: handle }` is a template we do not build, and Qt's Material
+        // SelectionRectangle then writes `topLeftHandle: handle` — which resolved to a field of a
+        // class that declares nothing at all ("undefined identifier `_dc0`"). Connections is
+        // desugared into connects and is no object either.
+        if (!isComponentType(ct) && ct != "Connections") {
+            if (!boundTypeFor(ct).first.empty()) continue;
+            if (localTypeFileExists(ct, inPath)) continue;
+        }
+        dropSkippedChildId(od->initializer);
+    }
     for (auto &cb : childBindings) {
         std::string childCls = cls + "_" + cb.field;
         // Resolve the child's BOUND base, exactly as the default-child path already does, and
@@ -6209,25 +6235,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // The loop below has a local `childType` (the child's QML type NAME) that shadows the map of
     // the same name, so the map is reached through this reference.
     auto &childTypeMap = childType;
-    // Ids of children that will be SKIPPED, dropped BEFORE any sibling is compiled. The pre-scan
-    // registers every child's id up front — it has to, since a sibling that comes FIRST can read
-    // one that comes later — and a child the compiler then refuses leaves that entry pointing at a
-    // field nobody emits. Doing this at the moment of the refusal is too late: the sibling that
-    // reads it has already compiled. Measured on Qt's Material style: RectangularGlow.qml has a
-    // ShaderEffectSource at index 0 whose `sourceItem: shaderItem` reads the ShaderEffect at index
-    // 1; ShaderEffect is not a bound type, so it is skipped, and the read still compiled to
-    // `__outer._dc1` on a class that only declares `_dc0`. EIGHTEEN of the twenty-two Material
-    // documents failed to build on exactly that line.
-    // Refusing the read is the honest outcome — the object it names does not exist on our side —
-    // and it also closes the SILENT form: had the indices lined up, it would have bound the wrong
-    // object instead of failing to compile.
-    for (auto *od : defaultKids) {
-        std::string ct = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
-        if (ct.empty() || ct == "QtObject" || isComponentType(ct) || ct == "Connections") continue;
-        if (!boundTypeFor(ct).first.empty()) continue;
-        if (localTypeFileExists(ct, inPath)) continue;
-        dropSkippedChildId(od->initializer);
-    }
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
         std::string childType = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
