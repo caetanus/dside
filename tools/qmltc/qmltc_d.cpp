@@ -8895,9 +8895,28 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // keeps pointing at this object, which is where the slots live.
     if (!g_engineChildCls.empty() && cls == g_engineChildCls) {
         node.engineInst = true;
-        auto toInst = [](std::string &buf) {
+        // ...except for what the DOCUMENT declares on it. Qt's Material ToolButton writes
+        // `readonly property bool square` on a Ripple — a type with no C++ symbol, so the object is
+        // the engine's and our class is a wrapper. That property and its notify live on the
+        // WRAPPER; rewriting them to the instance made `connectMeta(__inst, "squareChanged()")`,
+        // which threw at construction because the engine's Ripple has no such signal. A name this
+        // class declares is answered by this class.
+        std::set<std::string> ownNames;
+        for (auto &p0 : props) {
+            ownNames.insert(p0.name);
+            ownNames.insert(p0.name + "Changed()");
+        }
+        auto toInst = [&ownNames](std::string &buf) {
             size_t at = 0;
             while ((at = buf.find("(this", at)) != std::string::npos) {
+                // What is being asked OF this object: `f(this, "<name>"…)`. When the name is one we
+                // declare, the wrapper is the right answer and the instance is not.
+                bool own = false;
+                if (buf.compare(at + 5, 3, ", \"") == 0) {
+                    size_t q = at + 8, e = buf.find('"', q);
+                    if (e != std::string::npos) own = ownNames.count(buf.substr(q, e - q)) > 0;
+                }
+                if (own) { at += 5; continue; }
                 buf.replace(at, 5, "(__inst");
                 at += 7;
             }
