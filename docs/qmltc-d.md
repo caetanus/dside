@@ -4883,3 +4883,25 @@ travels as a QVariant, and what is inside depends on the model.
 Reverted. Restricting it to the name `model` would work and is exactly the per-name mechanism this
 project forbids; the honest route is a QVariant-capable declared property, which is a feature of its
 own and not this one.
+
+#### ...and the QVariant route has a prerequisite of its own
+
+The honest route named above — a QVariant-capable declared property — is blocked one level down.
+`QVariant` IS bound (`extern(C++) struct QVariant` in every binding), but as:
+
+```d
+extern (C++) struct QVariant {
+    ubyte[32] d;
+    extern(D) ~this() nothrow { qtd_dtor_QVariant(cast(void*) &this); }
+}
+```
+
+Opaque storage, a destructor, and **no copy constructor or postblit**. A D field of that type is
+copied bytewise on every assignment and both copies then run the destructor — a double free. So a
+`@Property QVariant model` cannot be stored or passed until the generator gives bound value types
+with a non-trivial copy constructor a postblit that calls it.
+
+That is three dead ends on this one family, each with its reason recorded: filling from the context
+(the name is shadowed by the declaration, and the engine shadows it too), declaring the `var` as an
+object (a `var` is not an object — `modelData` over an int model is a number), and QVariant (no copy
+semantics in the binding). Stopping here rather than trying a fourth.
