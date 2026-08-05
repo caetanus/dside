@@ -5268,7 +5268,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string vsType = typeName(ob->qualifiedTypeNameId);
                 std::string vsProp = qname(ob->qualifiedId);
                 auto vst = boundTypeFor(vsType);
-                if (vst.first.empty()) {
+                // ...or a type NO subclass can wrap, built by the ENGINE like any other such child.
+                // `NinePatchImageSelector on source` is how EVERY Imagine control gets its image,
+                // and NinePatchImageSelector exports no C++ symbol — so the whole style compiled
+                // with no source, hence no size: implicitWidth/implicitHeight/width/height differed
+                // on 47 of its 49 documents, all downstream of this one refusal.
+                if (vst.first.empty() && (uriForType(vsType).empty() || !g_qmlCxxType.count(vsType))) {
                     std::fprintf(stderr, "qmltc-d: %s: '%s on %s' value source in %s is not a bound "
                                  "type — skipped (later phase)\n", inPath, vsType.c_str(),
                                  vsProp.c_str(), cls.c_str());
@@ -7972,7 +7977,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_vs" + std::to_string(vi);
         bool savedVS = g_isValueSource;
         g_isValueSource = true;
+        std::string vsEngineUri = vst.first.empty() ? uriForType(vs.type) : std::string();
+        auto savedVEC = g_engineChildCls, savedVET = g_engineChildType, savedVEU = g_engineChildUri;
+        if (!vsEngineUri.empty()) {
+            g_engineChildCls = childCls; g_engineChildType = vs.type; g_engineChildUri = vsEngineUri;
+        }
         ObjNode kid = compileObject(vs.init, childCls, classes, partial, inPath, vst.first, nullptr, vs.type);
+        g_engineChildCls = savedVEC; g_engineChildType = savedVET; g_engineChildUri = savedVEU;
         g_isValueSource = savedVS;
         childFields += "    " + childCls + " " + field + ";\n";
         // qobjOf(this), not cast(void*)this: the handoff carries the C++ QObject, and a void*
@@ -7985,8 +7996,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // BusyIndicator and ProgressBar died at construction on the resulting null
                    // endpoint ("no such signal runningChanged() ... or a null endpoint").
                    + ((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
-                   + "        " + field + " = new " + childCls + "();\n"
-                   + "        setQtParent(" + field + ", this);\n";
+                   + "        " + field + " = " + (vsEngineUri.empty() ? "new " + childCls + "()"
+                                                                            : "newQObject!" + childCls + "()") + ";\n"
+                   + "        setQtParent(" + field + (vsEngineUri.empty() ? "" : ".__inst") + ", this);\n";
+        // A child that reached PAST us needs us to hold our own back-reference — the same drain
+        // every other child path does, and this one did not. It only became visible when value
+        // sources of engine-built types started compiling: a `NinePatchImageSelector` inside a
+        // background reaches the root, spelled `__outer.__outer`, and the background had no
+        // `__outer` at all.
+        if (kid.outerHops >= 1) {
+            g_outerUsed = true;
+            if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
+        }
         node.vsKids.push_back({field, kid});
     }
 
