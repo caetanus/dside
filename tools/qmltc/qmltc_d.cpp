@@ -6762,6 +6762,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // declared type (taken from the property table); inferType is the fallback.
         std::string ty = g_baseProps.count(ba.first) ? g_baseProps[ba.first]
                                                      : inferType(ba.second, ptype);
+        // ...but a name THIS class DECLARES beats every table: when a use site assigns a property
+        // the local type declared (`checkState: control.checked ? Qt.Checked : Qt.Unchecked` on
+        // Qt's Material CheckIndicator, whose definition says `property int checkState`), the
+        // registry knows nothing about the local type and the value fell through to text. The
+        // write then threw at construction — `no writable property "checkState" taking a string`.
+        // The declaration is the most local answer there is, so it is consulted first.
+        for (auto &p0 : props)
+            if (p0.name == ba.first && !p0.dtype.empty()) { ty = p0.dtype; break; }
         // The table is authoritative and must be consulted before inferType's guess is accepted:
         // g_baseProps only holds what the ROOT prescan recorded, so a child object's base
         // property fell through to the literal — and to '?' whenever the value was not a literal.
