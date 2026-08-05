@@ -4958,3 +4958,16 @@ The QtQml-only corpus cannot host a fixture for this: a `QQmlEngine` cannot exis
 application object, so with no application there is no context and the binding does nothing.
 That case is now LOUD (`qtd_bind_js: ... has no QQmlContext`) rather than silent, and a document
 that delegates asks the harness for an application the way a visual root already does.
+
+**What still does NOT measure the delegations, and why.** After enabling them the value axis over
+both styles is clean — every document the oracle can load agrees, including all the delegating ones
+it can load (`HorizontalHeaderView`, `VerticalHeaderView`, `Tumbler`, `PageIndicator` all MATCH; the
+four `*Delegate` files are the recorded "oracle cannot load this standalone" set). But that
+agreement does not touch the delegated bindings themselves: they live on items a VIEW creates, which
+have no static object path, so `--objpaths` names none of them and the property differential
+compares nothing about them. Two attempts to reach them by FRAME instead both stop at the same wall:
+a fixture cannot instantiate `Tumbler` or `HorizontalHeaderView` as a root, because those names
+resolve to the STYLE's QML type and only the Templates C++ classes are bound. So the delegations are
+measured on a reproduction of their shape (`QJsDelegated`, `JsDelegated`) and, on Qt's own
+documents, only up to construction. Closing that needs a fixture harness that instantiates a style
+document as a local type with a model attached — not built.
