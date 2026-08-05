@@ -1279,9 +1279,23 @@ static bool gadgetProp(const QVariant& v, const char* member, QMetaProperty& out
 extern "C" int qtd_attach_value_source(void *src, void *target, const char *prop) {
     if (!src || !target) return 0;
     auto *vs = dynamic_cast<QQmlPropertyValueSource *>(static_cast<QObject *>(src));
-    if (!vs) return 0;
+    // LOUD when it is not one. `X on prop` has TWO mechanisms in QML — a value SOURCE and a value
+    // INTERCEPTOR — and this only implements the first. Probed against Qt alone:
+    // QQuickNinePatchImageSelector, which is how every Imagine control resolves its image, answers
+    // `is value source: 0  is interceptor: 1`. Returning 0 in silence is what made the whole style
+    // compile with the unresolved base path and no suffix.
+    if (!vs) {
+        std::fprintf(stderr, "qtd_attach_value_source: '%s' on %s is not a QQmlPropertyValueSource "
+                             "(an INTERCEPTOR? that mechanism is not implemented)\n",
+                     prop, static_cast<QObject *>(src)->metaObject()->className());
+        return 0;
+    }
     QQmlProperty p(static_cast<QObject *>(target), QString::fromUtf8(prop));
-    if (!p.isValid()) return 0;
+    if (!p.isValid()) {
+        std::fprintf(stderr, "qtd_attach_value_source: no property '%s' on %s\n",
+                     prop, static_cast<QObject *>(target)->metaObject()->className());
+        return 0;
+    }
     vs->setTarget(p);
     return 1;
 }

@@ -5022,3 +5022,28 @@ What the hunt did produce, both real defects of ours:
 - **`bindComponent` failed silently.** It was `if (auto c = makeComponent(…)) set(…)` — a null
   component left the property null and said nothing, and Qt does not check either. It now throws on
   both failure modes, so the outcome is a named exception rather than a segfault three frames away.
+
+#### `X on prop` is TWO mechanisms, and only one of them is implemented
+
+QML's `<Type> on <property>` binds either a **value source** (`QQmlPropertyValueSource::setTarget`)
+or a **value interceptor** (`QQmlPropertyValueInterceptor`, installed on the property so it rewrites
+every write to it). The compiler implements the first and treats the second as if it were the first
+— `dynamic_cast` fails and the attach returned 0 in silence.
+
+Probed against Qt alone, on an engine-created object:
+
+```
+is value source: 0  is interceptor: 1  class=QQuickNinePatchImageSelector
+```
+
+That is how EVERY Imagine control resolves its image: `source: Imagine.url + "button-background"`
+followed by `NinePatchImageSelector on source { states: [...] }`. The interceptor turns the base
+path into `button-background.9.png` (plus the state suffixes) as the write goes past. Without it the
+plain base lands, the image fails to load, and every size downstream of it is zero — which is the
+whole of Imagine's value differential: 2 of 49 documents match, and the differing names are
+implicitWidth (229), implicitHeight (227), width (189), height (171), source (156).
+
+It is also what `Behavior on x` needs, already recorded as "needs a property value interceptor" —
+so the two open items are one item. Installing an interceptor from outside the engine goes through
+`QQmlPropertyPrivate::setInterceptor`, which is private API; the attach is at least LOUD now instead
+of returning zero and saying nothing.
