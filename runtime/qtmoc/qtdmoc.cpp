@@ -1183,6 +1183,41 @@ static QtdListSlot* qtd_list_slot(QObject* o, const char* name) {
 }
 }
 #endif
+// A QML `property var`: the meta-object carries it as a QVariant and the RUNTIME owns the value.
+// The D side holds nothing — which is the whole point. `QVariant` IS bound, but as opaque storage
+// with a destructor and NO copy constructor, so a D field of it is copied bytewise and freed twice;
+// that prerequisite is what blocked this for so long. It disappears once the question is asked the
+// other way round: nobody said the value had to live on the D side. Same shape as the list slot
+// above, and the entry dies with the object through the same destroyed() hook.
+#ifdef QTD_HAVE_QML
+extern "C++" {
+struct QtdVarSlot { QObject* owner; QByteArray prop; QVariant v; };
+static QVector<QtdVarSlot*>& qtd_var_slots() { static QVector<QtdVarSlot*> v; return v; }
+static QtdVarSlot* qtd_var_slot(QObject* o, const char* name) {
+    for (QtdVarSlot* s : qtd_var_slots())
+        if (s->owner == o && s->prop == name) return s;
+    auto* s = new QtdVarSlot{o, QByteArray(name), QVariant()};
+    qtd_var_slots().append(s);
+    QObject::connect(o, &QObject::destroyed, o, [s]() { qtd_var_slots().removeOne(s); delete s; });
+    return s;
+}
+}
+#endif
+extern "C" void qtd_moc_var_read(void* o, const char* name, void* out) {
+#ifdef QTD_HAVE_QML
+    if (o && out) *static_cast<QVariant*>(out) = qtd_var_slot(static_cast<QObject*>(o), name)->v;
+#else
+    (void) o; (void) name; (void) out;
+#endif
+}
+extern "C" void qtd_moc_var_write(void* o, const char* name, void* in_) {
+#ifdef QTD_HAVE_QML
+    if (o && in_) qtd_var_slot(static_cast<QObject*>(o), name)->v = *static_cast<QVariant*>(in_);
+#else
+    (void) o; (void) name; (void) in_;
+#endif
+}
+
 // Fills `*out` with the QQmlListProperty for `<o>.<name>` — the only way one is ever handed out.
 extern "C" void qtd_moc_list_read(void* o, const char* name, void* out) {
 #ifdef QTD_HAVE_QML

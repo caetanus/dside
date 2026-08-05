@@ -1819,6 +1819,11 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         // own copy of the resolution, which is why fixing only the other one changed nothing.)
         if (auto pt0 = g_propType.find(n2); pt0 != g_propType.end() && pt0->second.size() > 1
                 && pt0->second[0] == '@' && !shadowedByLocalType(n2)) {
+            // A declared object property holds its object in the D FIELD — except a `var`, whose
+            // value the RUNTIME owns (see QmlVar): the field is an empty marker, so the read has to
+            // go through the meta-object. Reading the field instead handed `attachedObj` a
+            // zero-size struct and the generated D would not compile at all.
+            if (pt0->second == "@var") { oe = "propObj(this, \"" + n2 + "\")"; oq.clear(); return true; }
             oe = dIdent(n2); oq = pt0->second.substr(1); return true;
         }
     if ((g_scope.count(n2) && !shadowedByLocalType(n2)) || g_vgroups.count(n2)) return false;
@@ -5735,6 +5740,30 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 props.push_back({name, "QmlObjectList", "", false, {}});
                 continue;
             }
+            // ...and a `property var`, whose value the RUNTIME owns for exactly the same reason:
+            // `var` has no D type, and the QVariant that could carry it is bound as opaque storage
+            // with a destructor and no copy constructor, so a D field of it double-frees. That was
+            // recorded as a prerequisite blocking this family for weeks — and it only blocks the
+            // arrangement where the value lives on the D side. It does not have to: the meta-object
+            // declares a QVariant and the runtime holds it, keyed by (object, name), exactly as the
+            // list property already does.
+            // Qt's Universal RadioIndicator declares `property var control` and the use site writes
+            // `control: control`; with no property to land on, `indicator.control.checked ? 1 : 0`
+            // read nothing.
+            // ...but NOT a `required var` inside a delegate. There the view is supposed to INJECT
+            // the value, and we cannot be injected (QMetaPropertyBuilder::setRequired is Qt6-only),
+            // so declaring it would only SHADOW the per-item context name that currently answers.
+            // Measured the moment this was written: QJsDelegatedFrame's `text: "n" + modelData`
+            // went from pixel-identical to 740 of 7200 pixels differing, because the delegated
+            // expression started resolving `modelData` against an empty property of the item
+            // instead of falling through to the context. Same shadow the compiled reads already
+            // obey through ctxNameIsReadable.
+            if (!dt[0] && qmlType == QLatin1String("var") && pub->typeModifier.isEmpty()
+                    && !(isRequiredMem(pub) && !g_delegateCls.empty())) {
+                props.push_back({name, "QmlVar", "", false, {}});
+                g_propType[name] = "@var";
+                continue;
+            }
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
             if (pub->binding) {
                 if (auto *ob = cast<UiObjectBinding *>(pub->binding);
@@ -9148,7 +9177,7 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         // starts with Q like every Qt value type, so without naming it here it took the propStr
         // branch — which pushes the line with an EMPTY dtype — and the empty-print decision below
         // never saw it.
-        if (s.second != "QmlObjectList"
+        if (s.second != "QmlObjectList" && s.second != "QmlVar"
                 && (s.second == "QColor" || (!s.second.empty() && std::isupper((unsigned char) s.second[0])
                                              && s.second.rfind("Q", 0) == 0))) {
             out.push_back({lab + s.first, "propStr(" + self + ", \"" + s.first + "\")",
@@ -9722,7 +9751,7 @@ int main(int argc, char **argv) {
             // a value. (`--dumpall` is where the two are actually distinguished, as <object> and
             // <null>.)
             std::printf(l.dtype == "double" ? "    writefln(\"%s\\t%%.17g\", (%s) + 0.0);\n"
-                      : (l.dtype == "Object" || l.dtype == "QmlObjectList")
+                      : (l.dtype == "Object" || l.dtype == "QmlObjectList" || l.dtype == "QmlVar")
                                             ? "    writefln(\"%s\\t\");%.0s\n"
                                             : "    writefln(\"%s\\t%%s\", %s);\n",
                         l.label.c_str(), l.access.c_str());

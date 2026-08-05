@@ -167,6 +167,10 @@ struct Property { string notify = ""; }
 /// runtime, behind the QQmlListProperty the meta-object hands out — which is also what the
 /// `listAppend` the generated code already emits writes into.
 struct QmlObjectList {}
+/// A QML `property var`: the meta-object carries it as a QVariant and the RUNTIME owns the value
+/// (see qtd_moc_var_read). Nothing is stored on the D side, which is deliberate — QVariant is bound
+/// as opaque storage with a destructor and no copy constructor, so a D field of it double-frees.
+struct QmlVar {}
 /// A property that FORWARDS instead of storing. A QML `property alias inner: kid.value` is a
 /// REFERENCE: nothing is kept, reads go straight to the target and writes land on it — which is
 /// what an alias means and why a field would be wrong (a copy can drift). qtmoc discovers ordinary
@@ -304,6 +308,7 @@ template cppSig(T) {
     // A declared `property list<QtObject>`: the meta-object carries it as a QQmlListProperty and the
     // runtime owns the elements, so the D side needs no storage — only a name the moc can key on.
     else static if (is(T == QmlObjectList)) enum cppSig = "QQmlListProperty<QObject>";
+    else static if (is(T == QmlVar)) enum cppSig = "QVariant";
     else static if (is(T == struct)) enum cppSig = T.stringof;
     // A bound wrapper CLASS is an object: the meta-object records the property as `X*` and Qt
     // resolves it through QMetaType::fromName, exactly as it does for the value types above. This is
@@ -511,6 +516,7 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
         // A list property is never WRITTEN through this channel: QML appends through the
         // QQmlListProperty the read hands out, which is what `listAppend` does.
         static if (is(X == QmlObjectList)) { return; }
+        else static if (is(X == QmlVar)) { qtd_moc_var_write(qobjOf(o), (m ~ "\0").ptr, a[0]); return; }
         else {
         // An OBJECT property carries a POINTER in the slot, and the D side holds a wrapper: unwrap
         // on write, hand the C++ pointer back on read. Comparing wrappers with `!=` would compare
@@ -557,6 +563,7 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
         }
     } else {   // ReadProperty: assign the D value into the QVariant/typed slot at a[0]
         static if (is(X == QmlObjectList)) qtd_moc_list_read(qobjOf(o), (m ~ "\0").ptr, a[0]);
+        else static if (is(X == QmlVar)) qtd_moc_var_read(qobjOf(o), (m ~ "\0").ptr, a[0]);
         else static if (is(X == class)) {
             auto cur = __traits(getMember, o, m);
             *cast(void**) a[0] = cur is null ? null : qobjOf(cur);
@@ -1159,6 +1166,8 @@ void setQmlProp(T, V)(T o, string path, V v) {
 }
 
 private extern(C) void qtd_moc_list_read(void*, const(char)*, void*);
+private extern(C) void qtd_moc_var_read(void*, const(char)*, void*);
+private extern(C) void qtd_moc_var_write(void*, const(char)*, void*);
 private extern(C) void* qtd_context_object(void*);
 /// The object the per-item QQmlContext carries — what publishes `index`/`model` for a delegate,
 /// with notify signals, so a binding on them can be connected like any other.
