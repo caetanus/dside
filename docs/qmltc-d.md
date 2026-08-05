@@ -5087,3 +5087,31 @@ regression: a `var` that now EXISTS makes the expressions around it compilable, 
 wholesale refusal becomes either a compiled binding, a delegation, or a smaller and more specific
 refusal. Counting refusals alone would read Universal's 93 -> 116 as a step backwards; it is the
 census getting finer.
+
+#### A delegated expression cannot name a TYPE, because a hand-made context has no imports
+
+Qt's Material Button paints its background with
+`control.Material.buttonColor(control.Material.theme, …)`, which the compiler delegates. Traced, it
+throws: `TypeError: Cannot read property 'theme' of undefined` — `control` is published and resolves,
+`control.Material` does not. `Material` is a TYPE name, and a type name is resolved through the
+context's import namespace, which a `new QQmlContext(...)` does not have.
+
+Probed against Qt alone, three arrangements:
+
+| context handed to QQmlExpression | `control.Material.theme` |
+|---|---|
+| a child of `engine.rootContext()` | TypeError |
+| a child of a context from a document that imports Material | **TypeError** |
+| the context the ENGINE built for an object of such a document | evaluates |
+
+So the namespace is NOT inherited by a child context — only a context the engine itself made for a
+document carries it. Our compiled objects get theirs from `attachContext(obj, docUrl)`, which is a
+hand-made context with a baseUrl and no imports, so every delegated expression is blind to every
+type name.
+
+That is the largest remaining value difference in the Material style (`color`, 22 of them). The
+shape of a fix is visible — give a compiled document's context the imports by building it from a
+synthetic component (`import <the document's uris>\nQtObject {}`) and using the created object's
+context — but the ids a delegated expression needs are published with `setContextProperty`, and on
+an engine-made component context that did not take (`ReferenceError: control is not defined`). Both
+halves have to work at once, so this is recorded rather than half-built.
