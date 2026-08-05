@@ -4863,3 +4863,23 @@ PageIndicator builds no delegate items — `qmlvalues` shows no contentItem chil
 prints nothing from a `console.log` in the delegate, and Qt's `qml` runtime exits with "Did not load
 any objects" under offscreen. The binding is never evaluated, so the ReferenceError never happens
 where anything can see it.
+
+### A required `var` is not an object (2026-08-04)
+
+The eleven refusals left are all one shape: `control.model[control.textRole]` and
+`control.model.display`, in Qt's header/table/tree delegates. `model` there is
+`required property var model` — and `var` has no D type, so we drop the property entirely and every
+read through it has nothing to resolve against.
+
+Tried: declare a required `var` as an OBJECT property and fill it from the per-item data, on the
+reasoning that what a view hands a delegate for `model` IS an object (the row's data), and an object
+slot is all the channel needs.
+
+**It broke the runtime gate at once**: `rt_Tumbler.d: none of the overloads of setProp are callable
+with (RtTumbler_delegate, string, Object)`. Qt's Tumbler delegate writes `text: modelData`, and for
+a Tumbler over an int model `modelData` is a NUMBER. A `var` does not travel as an object — it
+travels as a QVariant, and what is inside depends on the model.
+
+Reverted. Restricting it to the name `model` would work and is exactly the per-name mechanism this
+project forbids; the honest route is a QVariant-capable declared property, which is a feature of its
+own and not this one.
