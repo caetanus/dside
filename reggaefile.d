@@ -605,7 +605,12 @@ struct Keyed { string name; int key; string prop; }
 // QQuickView + QTest::keyClick, which is how Qt's own tests do it).
 static immutable Keyed[] keyed = [];
 
+// QJsDelegatedFrame is here for a reason no other entry has: its binding is DELEGATED to the
+// engine, on an item a VIEW creates, and a view-created item has no static object path -- so the
+// property differential beside it compares nothing about the very thing under test. The frame is
+// the only axis that can see it.
 static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive", "QObjGroup",
+                                            "QJsDelegatedFrame",
                                             "QText", "QTextEdit", "QTextInput", "QVarCopy",
                                             "QVarTernary"];
 
@@ -703,7 +708,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // list exists so the weaker gate does not claim a gap the stronger one covers.
             static immutable string[] labelsGap = [
                 "QDelegateKidCtx", "QDelegateRole", "QDelegateRoleReq", "QDelegateReqNoModel",
-                "QDelegateReqFill",
+                "QDelegateReqFill", "QJsDelegatedFrame",
             ];
             auto verifyStep = labelsGap.canFind(name) ? ""
                 : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;
@@ -723,8 +728,13 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // difference: the element is desugared into connects and no object is built, while the
             // engine holds one in `conn`. Both fixtures say so in their own headers, and the entry
             // `qml-declared-members-not-in-metaobject` in tests/expected-fails.json carries it. Measured: controls 23 of 23, quick 46 of 46, corpus 44 of 46.
+            // QJsDelegatedFrame is here for a DECLARED gap, not a value one: its delegate declares
+            // `required property var modelData`, and a `var` has no D type, so we emit no property
+            // at all while the engine's dump carries `modelData 0`. That absence is the whole
+            // reason the binding above it is DELEGATED rather than compiled; the axis that judges
+            // this fixture is the FRAME, which is registered for it.
             static immutable string[] dumpallGap = [
-                "Connect", "CrossCall",
+                "Connect", "CrossCall", "QJsDelegatedFrame",
             ];
             if (!dumpallGap.canFind(name)) {
             auto objs = genD ~ ".objs", da = genD ~ ".dall", qa = genD ~ ".qall";
