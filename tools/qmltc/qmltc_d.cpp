@@ -1591,6 +1591,18 @@ static std::string attachedExprOn(const std::string &target, const std::string &
     return "attachedObj(" + target + ", \"" + g_qmlUri + "\", \"" + typeName + "\")";
 }
 
+// `<obj>.<Type>.<member>` where <Type> is an ATTACHED type, on the COPY path. Qt's Material style
+// writes every colour this way (`control.Material.foreground`), and a copy read it as a GROUP: a
+// plain `QObject::property("Material")` on the control, which no control has. The write therefore
+// never landed and the value kept its default — silently, because the group read simply returns
+// false. The DEPENDENCY side already resolved this shape through attachedExprOn; the read did not,
+// so after the notify was connected the same wrong read merely ran more often.
+// Returns the object expression to copy FROM, or empty when the name is an ordinary group.
+static std::string attachedCopySrc(const std::string &obj, const std::string &group) {
+    if (group.empty() || !g_qmlTypeUri.count(group) || !g_qmlAttachedCxx.count(group)) return "";
+    return attachedExprOn(obj, group);
+}
+
 // `x: undefined` in QML RESETS the property — it calls the RESET method, it does not assign a
 // value. Emits that call for `prop` on `obj`, or returns false when the property has no resetter
 // (in which case assigning undefined is not something we can reproduce).
@@ -6765,6 +6777,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
             };
             auto copyStmt = [&](const std::string &o, const std::string &g, const std::string &pr) {
+                if (std::string at = attachedCopySrc(o, g); !at.empty())
+                    return "copyProp(" + at + ", \"" + pr + "\", this, \"" + ba.first + "\");";
                 return g.empty()
                     ? "copyProp(" + o + ", \"" + pr + "\", this, \"" + ba.first + "\");"
                     : "copyGroupProp(" + o + ", \"" + g + "\", \"" + pr + "\", this, \""
@@ -6851,7 +6865,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         if (qc->second.count(n) && !g_scope.count(n)) { srcObj = "this"; srcProp = n; }
                 }
             if (!srcObj.empty()) {
-                copyAssign = srcGroup.empty()
+                std::string atB = attachedCopySrc(srcObj, srcGroup);
+                copyAssign = !atB.empty()
+                    ? "        copyProp(" + atB + ", \"" + srcProp + "\", this, \"" + ba.first + "\");\n"
+                    : srcGroup.empty()
                     ? "        copyProp(" + srcObj + ", \"" + srcProp + "\", this, \"" + ba.first + "\");\n"
                     : "        copyGroupProp(" + srcObj + ", \"" + srcGroup + "\", \"" + srcProp
                       + "\", this, \"" + ba.first + "\");\n";
@@ -7878,6 +7895,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (!so.empty()) {
                 std::string dst = "propObj(this, \"" + gname + "\")";
                 auto one = [&](const std::string &o, const std::string &g, const std::string &pr) {
+                    if (std::string at = attachedCopySrc(o, g); !at.empty())
+                        return "copyProp(" + at + ", \"" + pr + "\", " + dst + ", \"" + mem + "\");";
                     return g.empty()
                         ? "copyProp(" + o + ", \"" + pr + "\", " + dst + ", \"" + mem + "\");"
                         : "copyGroupProp(" + o + ", \"" + g + "\", \"" + pr + "\", " + dst
