@@ -7380,6 +7380,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string gname = path.substr(0, dot), mem = path.substr(dot + 1);
         std::string field = "_g_" + gname + "_" + mem;
         std::string childCls = cls + "_" + gname + "_" + mem;
+        // ...and a group member can take a COMPONENT, exactly as a plain property can:
+        // `layer.effect: RoundedElevationEffect {}` writes QQuickItemLayer::effect, whose declared
+        // type is QQmlComponent*. Constructed as an object it is not merely wrong, it THROWS —
+        // `no writable property "effect" taking a QObject* on QQuickItemLayer` killed eighteen of
+        // Qt's Material documents at construction. The property-bound path already reads this from
+        // the registry; the group path did not, so it is the same rule one level down: ask the
+        // GROUP's own type what its member takes.
+        bool gkIsComponent = false;
+        if (auto qs0 = g_qmlCxxType.find(g_selfQmlType); qs0 != g_qmlCxxType.end())
+            if (auto gt = qs0->second.find(gname); gt != qs0->second.end()) {
+                std::string gcls = gt->second;
+                while (!gcls.empty() && (gcls.back() == '*' || gcls.back() == '^')) gcls.pop_back();
+                if (auto qg = g_qmlCxxType.find(gcls); qg != g_qmlCxxType.end())
+                    if (auto mt = qg->second.find(mem); mt != qg->second.end())
+                        gkIsComponent = mt->second.find("QQmlComponent") != std::string::npos;
+            }
         auto gkt = boundTypeFor(gk.type);          // a bound child type makes this a SUBCLASS
         UiObjectInitializer *gkInit = gk.init;
         // A LOCAL `.qml` type here too — `first.handle: SliderHandle { … }` is how Qt's Fusion
@@ -7427,12 +7443,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             g_outerUsed = true;
             if (kid.outerHops - 1 > g_outerHopsNeeded) g_outerHopsNeeded = kid.outerHops - 1;
         }
-        childFields += "    " + childCls + " " + field + ";\n";
         // A GROUP member, unlike an attached one, CAN be a deferred property: Qt's
         // QQuickIndicatorButton declares `Q_CLASSINFO("DeferredPropertyNames", "indicator")`, which
         // is what `searchIndicator.indicator:` assigns. So it stays with the deferred children —
         // moving it into the object's own body changed the frame after a click on Qt's own
         // SearchField (56 pixels, measured), while the attached case needs the opposite.
+        if (gkIsComponent) {
+            // A TEMPLATE, not an instance: the type builds children FROM it, whenever it decides
+            // to. Emitted into the component buffer for the same reason the property-bound one is
+            // — it has to exist before anything the type builds from it.
+            componentWire += "        bindComponent!" + childCls + "(propObj(this, \"" + gname
+                           + "\"), \"" + mem + "\", \"" + g_docUrl + "\");\n";
+            g_hasComponentBind = true;
+            continue;
+        }
+        childFields += "    " + childCls + " " + field + ";\n";
         childWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (gkt.first.empty() ? "newQObject!" + childCls + "()"
                                                                        : "new " + childCls + "()") + ";\n"
