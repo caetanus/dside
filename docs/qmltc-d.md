@@ -5060,5 +5060,9 @@ Measured: it installs, and the next write to the property IS intercepted — the
 base path to EMPTY. So the interception happens and the selector's own resolution does not yet
 produce anything; whatever inputs the engine gives it (its `states`, and whatever `setTarget` is
 expected to have captured) are not all there. That is the next question, and it is now about the
-selector rather than about the mechanism. The attach is LOUD in the meantime instead of returning
+selector rather than about the mechanism. Ruled out so far, each measured: completing its parser
+status, and giving it a `states` list. The ENGINE resolves the same shape correctly
+(`NinePatchImage { source: Imagine.url + "button-background"; NinePatchImageSelector on source
+{ states: [...] } }` yields `button-background.9.png`, 44x32, Ready), so what differs is something
+QQmlObjectCreator does around the interceptor that these three calls do not reproduce. The attach is LOUD in the meantime instead of returning
 zero and saying nothing.
