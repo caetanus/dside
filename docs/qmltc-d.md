@@ -4997,7 +4997,10 @@ same backtrace. Varied and ruled out, each measured: the component's base URL (a
 but not the cause); whether the item is in a QQuickWindow; whether the write carries a `QObject*` or
 a properly typed `QQmlComponent*` QVariant (both report success). One run appeared to survive after the component
 was touched first, and that did NOT reproduce — a later probe crashed with the same warm-up, with
-and without a `create()`. Treat it as noise: no variation found so far changes the outcome.
+and without a `create()`. Also ruled out: building the component from a real `.qml` file
+(`loadUrl`) rather than from `setData`. Seven variations tried, none changes the outcome, and the
+engine loading the same document does not crash — so the difference is something about how the
+engine's own inline component is bound that no public call reproduces. Not pursued further.
 
 Recorded rather than worked around: the reproduction is Qt-against-Qt, so a workaround in the
 compiler would be a guess about someone else's invariant.
