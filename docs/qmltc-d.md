@@ -5066,3 +5066,13 @@ status, and giving it a `states` list. The ENGINE resolves the same shape correc
 { states: [...] } }` yields `button-background.9.png`, 44x32, Ready), so what differs is something
 QQmlObjectCreator does around the interceptor that these three calls do not reproduce. The attach is LOUD in the meantime instead of returning
 zero and saying nothing.
+
+**Universal's value differential, characterised: no new defect.** 40 of 50 documents match. The ten
+that differ are the two families already on record and nothing else — every difference in StackView
+(67), Drawer (16), ScrollBar and ScrollIndicator is inside `transitions[...]`/`animations[...]`,
+which is the deferred-Transition ceiling, and RadioButton/RadioDelegate differ because
+`RadioIndicator.qml` declares `property var control`: a `var` has no D type, so `control: control`
+lands nowhere and `indicator.control.checked ? 1 : 0` reads nothing (opacity 1 against the engine's
+0). That is the `var`/QVariant family recorded above, reached from a new direction — here the value
+is plainly an OBJECT, which is a narrower case than the `required property var model` that defeated
+the earlier attempt.
