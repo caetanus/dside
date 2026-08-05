@@ -6771,12 +6771,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         && (!enumKeyU.empty()
                             || (!tyU.empty() && compileExpr(valSide, QString::fromStdString(tyU), valU)))) {
                     std::string setU = !enumKeyU.empty()
-                        ? "        setProp(this, \"" + ba.first + "\", \"" + enumKeyU + "\");\n"
-                        : "        setProp(this, \"" + ba.first + "\", " + valU + ");\n";
+                        ? "setProp(this, \"" + ba.first + "\", \"" + enumKeyU + "\");"
+                        : "setProp(this, \"" + ba.first + "\", " + valU + ");";
                     // BOTH branches under the condition: a one-shot of either would leave the
                     // property wherever the first evaluation put it.
-                    baseWire += "        if (" + (okU ? "!(" + ceU + ")" : ceU) + ") {\n    " + setU
-                              + "        } else {\n    " + callU + "        }\n";
+                    // ...and on ONE LINE, because a later pass moves whatever NAMES a child to
+                    // after that child exists — and it moves LINES. Written across four, Qt's
+                    // Imagine Popup had its `if (background) { setProp }` relocated into
+                    // __qmltcKids and its `} else { resetProp }` left behind, four times over: the
+                    // generated D did not parse at all ("declaration expected, not `else`").
+                    std::string resetU = callU;
+                    while (!resetU.empty() && (resetU.back() == '\n' || resetU.back() == ' '))
+                        resetU.pop_back();
+                    size_t nsp = resetU.find_first_not_of(' ');
+                    if (nsp != std::string::npos) resetU = resetU.substr(nsp);
+                    baseWire += "        if (" + (okU ? "!(" + ceU + ")" : ceU) + ") { " + setU
+                              + " } else { " + resetU + " }\n";
                     continue;
                 }
             }
