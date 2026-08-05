@@ -4905,3 +4905,56 @@ That is three dead ends on this one family, each with its reason recorded: filli
 (the name is shadowed by the declaration, and the engine shadows it too), declaring the `var` as an
 object (a `var` is not an object — `modelData` over an int model is a number), and QVariant (no copy
 semantics in the binding). Stopping here rather than trying a fourth.
+
+#### The fourth route: delegate the expression to the engine
+
+The three dead ends above are all attempts to make the VALUE reach D. The route that works gives
+that up: the expression is never translated at all, and the QML engine evaluates it in place.
+
+`qtd_bind_js(obj, prop, source, names, objs, n)` builds a `QQmlExpression` over the object's own
+context with the object as SCOPE, arms `setNotifyOnValueChanged`, and writes each result into the
+property through `QQmlProperty`. Public API on both Qt5 and Qt6; no private headers, no
+`QQmlBinding`. The engine tracks the dependencies itself — which is the point, because the
+dependencies of an expression we could not compile are exactly what we cannot enumerate.
+
+Two things have to be true for the expression to see what it saw in the .qml, and the compiler
+checks BOTH before delegating — this test is the whole difference between a fallback and a
+blindfold:
+
+- **the ids it names.** In the interpreted document an id is a property of the document's root
+  context; in ours it is a D field with no name the engine could look up. So the compiler resolves
+  each free identifier root through the same walker a compiled path uses (`objPathExpr`) and hands
+  the objects over; they are published on a context NESTED INSIDE the object's own, so a per-item
+  `index`/`model`/`modelData` one level up still resolves.
+- **every other free name must be one the engine resolves on its own**: a property of this object
+  (found on the scope object), a capitalised name (a type, a singleton, `Math`, `Qt`), or a
+  per-item context name where our context carries what the engine's does. A name that is none of
+  those resolves, in the interpreted document, through a context object we never set up —
+  delegating it would fail SILENTLY, so it stays a refusal. Basic's `PageIndicator` reads
+  `pressed`, which no PageIndicator declares, and is refused for exactly this reason.
+
+It is emitted ONLY at the point where a base-property binding was about to be refused, and it is
+reported as its own kind of diagnostic (`delegated to the engine: '<source>'`). A delegation is not
+a success and not a refusal; a census that folded it into either would stop saying what the
+compiler can do. The three columns on Qt's own shipped Controls:
+
+| style | refused before | refused now | delegated |
+|-------|---------------:|------------:|----------:|
+| Basic  | 10 | 2 | 8 |
+| Fusion |  7 | 1 | 6 |
+
+**Two defects the differential caught within one build of enabling it**, both of the same kind —
+the delegated expression seeing a different world from the engine's:
+
+- `QDelegateReqFill` went from agreeing with the engine to `"m0"` against its `""`. The delegate
+  declares required properties, so the engine WITHHOLDS the per-item context and injects the
+  declared names instead — `modelData` is undefined there and live in ours. The compiled reads
+  already obeyed that rule (`modelIsReadable`); the delegation had to obey it too, per name.
+- A delegated binding was right once and then frozen forever. The engine's capture needs a NOTIFY
+  on the property it read, and the compiler emitted `<name>Changed` only for properties some
+  COMPILED binding depended on. Every declared property now carries one, as it does in QML.
+
+The QtQml-only corpus cannot host a fixture for this: a `QQmlEngine` cannot exist before the
+application object, so with no application there is no context and the binding does nothing.
+That case is now LOUD (`qtd_bind_js: ... has no QQmlContext`) rather than silent, and a document
+that delegates asks the harness for an application the way a visual root already does.

@@ -1189,6 +1189,28 @@ string contextStr(T)(T o, string n) {
     auto s = qsToD(p); qtd_qs_free(p); return s;
 }
 
+private extern(C) int qtd_bind_js(void*, const(char)*, const(char)*,
+                                  const(char)**, void**, int);
+/// A binding the compiler could NOT translate, left to the QML engine: the original expression
+/// source is evaluated by QQmlExpression and written into `prop`, and re-evaluated whenever the
+/// engine says one of its dependencies changed. `ids` are the names the expression mentions that
+/// exist in our world only as fields — they are published on a context nested inside the object's
+/// own, so a per-item `index`/`model` one level up still resolves.
+///
+/// This is a DELEGATION, not a compilation: it is emitted only where the alternative was a refusal,
+/// and the compiler reports it as its own kind of diagnostic so the census never mistakes one for
+/// the other.
+int bindJs(T, A...)(T o, string prop, string src, string[] ids, A objs) {
+    const(char)*[A.length] ns;
+    void*[A.length] ps;
+    static foreach (i, a; objs) {
+        ns[i] = (ids[i] ~ "\0").ptr;
+        ps[i] = qobjOf(a);
+    }
+    return qtd_bind_js(qobjOf(o), (prop ~ "\0").ptr, (src ~ "\0").ptr,
+                       ns.ptr, ps.ptr, cast(int) A.length);
+}
+
 extern(C) void* qtd_make_component(const(char)*, const(char)*, const(char)*);
 // The QQmlComponent for a compiled delegate class: `uri`/`typeName` are what the generated code
 // registered it as. Returned as an opaque pointer — the caller wraps it in whatever QQmlComponent

@@ -49,6 +49,7 @@
 #  include <QtQml/QJSValue>
 #  include <QtQml/QQmlListProperty>
 #  include <QtQml/QQmlContext>
+#  include <QtQml/QQmlExpression>
 #  include <QtQml/QQmlComponent>
 #  if QT_VERSION >= 0x060000
 #    include <QtQml/private/qqmlmetatype_p.h>
@@ -784,6 +785,72 @@ extern "C" void* qtd_context_prop_qs(void* o, const char* name) {
     (void) o; (void) name;
 #endif
     return new QString();
+}
+
+// ---- an expression the compiler could not translate, left to the engine -------------------------
+// The last resort, and deliberately a NARROW one: the compiler emits this only for a binding it
+// would otherwise have REFUSED, and it counts as a delegation, never as a compiled binding.
+//
+// What makes it work where the D translation cannot is that the value never becomes a D value:
+// `control.model[control.headerView.textRole]` reads a role off a `required property var` by a name
+// only known at run time, and a `var` has no D type to hold it. Inside the engine it is an ordinary
+// JS property read.
+//
+// Two things must be true for the expression to see what it saw in the .qml:
+//   - the ids it names. In the interpreted document an id is a property of the document's root
+//     context; in ours it is a D field with no name the engine knows. So the caller passes the ids
+//     the expression mentions, already resolved to objects, and they are published on a context
+//     that NESTS INSIDE the object's own -- so a per-item `index`/`model`/`modelData` one level up
+//     still resolves, exactly as it does for the interpreted delegate.
+//   - the object itself as SCOPE, which is what makes a bare property name (`pressed`, `font`)
+//     resolve against it before anything else, the same order the engine uses.
+//
+// An error is not swallowed by accident: the engine leaves a property alone when its binding
+// throws, and so do we. Basic's PageIndicator reads `pressed`, which no PageIndicator declares --
+// interpreted, that is a ReferenceError and the opacity keeps its default. Delegated, it is the
+// same ReferenceError and the same default.
+extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
+                           const char** names, void** objs, int n) {
+#ifdef QTD_HAVE_QML
+    if (!o || !prop || !src) return 0;
+    QObject* obj = static_cast<QObject*>(o);
+    QQmlContext* base = qmlContext(obj);
+    // LOUD, not silent. A delegated binding that quietly does nothing is the worst outcome of the
+    // three: the property keeps its default and nothing anywhere says why. Measured exactly once,
+    // and that was enough -- a QtQml-only harness with no application object has no engine, so
+    // there was no context and the value simply stayed empty against the engine's.
+    if (!base) {
+        std::fprintf(stderr, "qtd_bind_js: '%s' on %s has no QQmlContext — binding not installed\n",
+                     prop, obj->metaObject()->className());
+        return 0;
+    }
+    QQmlContext* ctx = base;
+    if (n > 0) {
+        ctx = new QQmlContext(base, obj);   // owned by the object, like the engine's per-item one
+        for (int i = 0; i < n; ++i)
+            if (names[i])
+                ctx->setContextProperty(QString::fromUtf8(names[i]),
+                                        static_cast<QObject*>(objs[i]));
+    }
+    QString p = QString::fromUtf8(prop);
+    auto* e = new QQmlExpression(ctx, obj, QString::fromUtf8(src), obj);
+    // Read ONCE: this runs on every re-evaluation of every delegated binding.
+    static const bool trace = std::getenv("QTD_JS_TRACE") != nullptr;
+    auto eval = [e, obj, p]() {
+        QVariant v = e->evaluate();
+        if (trace)
+            std::fprintf(stderr, "qtd_bind_js: %s = %s%s\n", qPrintable(p), qPrintable(v.toString()),
+                         e->hasError() ? qPrintable(" ERROR: " + e->error().toString()) : "");
+        if (e->hasError()) { e->clearError(); return; }
+        QQmlProperty(obj, p, qmlContext(obj)).write(v);
+    };
+    e->setNotifyOnValueChanged(true);
+    QObject::connect(e, &QQmlExpression::valueChanged, obj, eval);
+    eval();
+    return 1;
+#else
+    (void) o; (void) prop; (void) src; (void) names; (void) objs; (void) n; return 0;
+#endif
 }
 
 // ---- a Component (a delegate) ------------------------------------------------------------------

@@ -472,6 +472,10 @@ static std::string posOf(Node *n) {
     return std::to_string(a.startLine) + ":" + std::to_string(a.startColumn);
 }
 
+// The node's source text, VERBATIM — no simplifying, no ellipsis. What a diagnostic quotes may be
+// abbreviated; what is handed to the JS engine to evaluate may not be.
+static std::string srcRaw(Node *n);
+static QString g_srcSlice;          // the last slice srcOf identified, before it was abbreviated
 static std::string srcOf(Node *n) {
     if (!n) return "";
     auto a = n->firstSourceLocation(), b = n->lastSourceLocation();
@@ -501,9 +505,15 @@ static std::string srcOf(Node *n) {
         if (isTheFile(*it)) { src = &*it; break; }
     if (!src && isTheFile(g_rootSrcText)) src = &g_rootSrcText;
     if (!src) return "";
-    QString t = src->mid(from, to - from).simplified();
+    g_srcSlice = src->mid(from, to - from);
+    QString t = g_srcSlice.simplified();
     if (t.size() > 90) t = t.left(87) + "...";
     return qs(t);
+}
+static std::string srcRaw(Node *n) {
+    g_srcSlice.clear();
+    srcOf(n);                       // ...for the identity check, which is the whole difficulty
+    return qs(g_srcSlice);
 }
 
 // The ENCLOSING object, as seen from inside a child. Qt's own Controls are written almost entirely
@@ -2143,11 +2153,12 @@ static bool objPathFromString(const std::string &dotted, std::string &objExpr, s
 // required, so our side keeps the context). A delegate that declares required properties but NOT
 // `model` has neither: the injection is off and nothing was injected under that name, so the engine
 // answers EMPTY -- measured -- and a context read there would invent a value.
-static bool modelIsReadable() {
-    if (g_requiredDecls.count("model")) return true;
+static bool ctxNameIsReadable(const std::string &n) {
+    if (g_requiredDecls.count(n)) return true;
     if (g_hasRequiredDecl) return false;
-    return !g_scope.count("model") && !g_propType.count("model");
+    return !g_scope.count(n) && !g_propType.count(n);
 }
+static bool modelIsReadable() { return ctxNameIsReadable("model"); }
 
 static std::string modelRoleRead(const QString &dtype, const std::string &keyExpr) {
     // Through the CONTEXT, not through the context OBJECT. Measured: a Repeater over an int model
@@ -4550,6 +4561,69 @@ static bool collectStates(UiObjectMember *binding, std::vector<StateEntry> &out)
     return !out.empty();
 }
 
+// ---- the last resort: leave the expression to the engine ---------------------------------------
+// Every free identifier ROOT of an expression, in source order. A member name is not one: the
+// parser keeps it as a string on the FieldMemberExpression, not as a node, so
+// `control.model[control.headerView.textRole]` yields exactly one root, `control`. That is what
+// makes the set small enough to account for honestly.
+struct FreeIdScan : Visitor {
+    std::vector<IdentifierExpression *> ids;
+    void throwRecursionDepthError() override {}
+    bool visit(IdentifierExpression *e) override { ids.push_back(e); return true; }
+};
+
+// How many bindings this document handed to the engine instead of compiling. Counted apart from
+// `partial` on purpose: a delegation is not a success and not a refusal, and a census that folded
+// it into either would stop saying what the compiler can actually do.
+static int g_delegated = 0;
+
+// A binding the compiler REFUSED, rewritten as a call that lets the QML engine evaluate the
+// original source. Accepted only when every free name in the expression can be accounted for:
+//   - an id, or an unqualified name resolving up the scope chain — handed over as an object, since
+//     in our world it is a D field with no name the engine could look up;
+//   - a property of THIS object — the engine finds it on the scope object, as it would have;
+//   - a per-item context name inside a delegate — the context chain carries it;
+//   - a capitalised name — a type, a singleton, `Math`, `Qt` — which the engine resolves itself.
+// A name that is none of those resolves, in the interpreted document, through a context object we
+// never set up. Delegating it would fail SILENTLY, so it stays a refusal instead. That test is the
+// whole difference between a fallback and a blindfold.
+static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &out) {
+    std::string src = srcRaw(e);
+    if (src.empty()) return false;
+    FreeIdScan sc;
+    e->accept(&sc);
+    std::vector<std::pair<std::string, std::string>> binds;   // name -> the D expression for it
+    std::set<std::string> seen;
+    for (auto *id : sc.ids) {
+        std::string n = qs(id->name.toString());
+        if (n.empty() || !seen.insert(n).second) continue;
+        if (n == "undefined") continue;
+        if (std::isupper((unsigned char) n[0])) continue;
+        if (g_propType.count(n) || g_scope.count(n)) continue;
+        // A per-item context name, and ONLY where our context carries what the engine's does. The
+        // two part company exactly when the delegate declares required properties: the engine then
+        // withholds the context and injects the declared names instead, so an UNdeclared one
+        // (`modelData` in QDelegateReqFill) is undefined there and a live value here -- the same
+        // rule the compiled reads already obey, and the differential caught the delegation
+        // disobeying it within one build ("m0" against the engine's "").
+        if (!g_delegateCls.empty() && (n == "model" || n == "index" || n == "modelData")) {
+            if (!ctxNameIsReadable(n)) return false;
+            continue;
+        }
+        std::string oe, oq;
+        if (!objPathExpr(id, oe, oq)) return false;
+        binds.push_back({n, oe});
+    }
+    std::string names, objs;
+    for (auto &b : binds) {
+        names += (names.empty() ? "" : ", ") + ("\"" + b.first + "\"");
+        objs += ", " + b.second;
+    }
+    out = "        bindJs(this, \"" + prop + "\", " + dstr(QString::fromStdString(src))
+        + ", [" + names + "]" + objs + ");\n";
+    return true;
+}
+
 static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              std::string &classes, int &partial, const char *inPath,
                              const std::string &boundBase = "", const DType *dBase = nullptr,
@@ -6918,6 +6992,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         if (objAssign.empty() && copyAssign.empty()
                 && (!scalar || !compileExpr(ba.second, QString::fromStdString(ty), val))) {
+            // ...unless the engine can evaluate what we could not. Tried HERE, at the point of
+            // refusal, so nothing that already compiles can be diverted into it.
+            if (std::string js; jsDelegate(ba.second, ba.first, js)) {
+                baseWire += js;
+                g_ctxUsed = true;   // ...so a delegate's body waits for the per-item context
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s:%s: base property '%s' in %s (%s) delegated to the engine: '%s'\n",
+                             inPath, posOf(ba.second).c_str(), ba.first.c_str(), cls.c_str(),
+                             g_selfQmlType.empty() ? "?" : g_selfQmlType.c_str(),
+                             srcOf(ba.second).c_str());
+                continue;
+            }
             // Two very different gaps used to share one message, which made the cluster
             // unreadable: a declared TYPE we don't route (color, font, an enum) is not the same
             // problem as an EXPRESSION we can't compile into a type we do route.
@@ -7932,7 +8018,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
 
     for (auto &p : props) {
-        if (p.bound && std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
+        // EVERY declared property carries a notify, not only the bound ones. In QML a declared
+        // property always has its `<name>Changed` signal, and something outside the compiler can
+        // depend on it: a binding handed to the ENGINE (see jsDelegate) is made live by the
+        // engine's own dependency capture, and capture needs a notify on the property it read.
+        // Measured: with `key` declared from a literal and read only by a delegated expression,
+        // the first value was right on both sides and the expression never re-evaluated — adding
+        // any compiled binding on `key` (which is what used to create the signal) made the same
+        // delegated expression live. The signal was the whole difference.
+        if (std::find(needsNotify.begin(), needsNotify.end(), p.name) == needsNotify.end())
             needsNotify.push_back(p.name);
         for (auto &d : p.deps)
             if (isProp(d) && std::find(needsNotify.begin(), needsNotify.end(), d) == needsNotify.end())
@@ -9092,7 +9186,10 @@ int main(int argc, char **argv) {
                     "extern(C++) void qml_register_types_%s();\n", sym.c_str());
     }
     // A bound visual root needs a QGuiApplication before setting a property that lays out text.
-    if (!bt.first.empty()) std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
+    // ...and so does a document that DELEGATES a binding to the engine: a QQmlEngine cannot exist
+    // before the application object, so with none the expression has no context to evaluate in and
+    // the binding silently does nothing (measured: the value stayed empty against the engine's).
+    if (!bt.first.empty() || g_delegated) std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
     // --render draws the object into a PNG; the helper lives in the test harness, so the
     // declaration is only emitted where the mode can actually be used.
     if (isItemType(rootType)) {
@@ -9117,7 +9214,7 @@ int main(int argc, char **argv) {
         std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n    import std.algorithm : map; import std.array : join;\n");
         // A bound-type subclass is constructed with `new` (the mixin ctor builds the trampoline);
         // a fresh @QObject uses newQObject!T.
-        if (!bt.first.empty()) std::printf("    qtd_qmltc_init_gui_app();\n");
+        if (!bt.first.empty() || g_delegated) std::printf("    qtd_qmltc_init_gui_app();\n");
         if (g_needsModuleRegistration) {
             std::string sym = g_qmlUri;
             for (auto &c : sym) if (c == '.') c = '_';
