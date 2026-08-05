@@ -5124,7 +5124,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::string head = dot == std::string::npos ? "" : hid.substr(0, dot);
                 std::string tail = dot == std::string::npos ? "" : hid.substr(dot + 1);
                 // `Type.member: <expr>` / `Type.on<Sig>: body` — the ATTACHED object of `Type`.
-                if (g_attached.count(head)) {
+                // `g_attached` only holds attached types whose class we BIND; the registry knows
+                // more of them than that. Qt's Material style writes `Material.roundedScale:
+                // Material.FullScale` on almost every control, and QQuickMaterialStyle is not a
+                // bound class — so those assignments fell all the way through to "a member is not
+                // yet handled", while every READ of the same object already worked.
+                if (g_attached.count(head) || g_qmlAttachedCxx.count(head)) {
                     if (tail.size() > 2 && tail[0] == 'o' && tail[1] == 'n'
                             && std::isupper((unsigned char)tail[2])) {
                         std::string sig = tail.substr(2);
@@ -7660,16 +7665,30 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (auto &aa : rawAttachedAssigns) {
         auto dot = aa.first.find('.');
         std::string tn = aa.first.substr(0, dot), mem = aa.first.substr(dot + 1);
-        auto mt = g_attached[tn]->propType.find(mem);
+        // The member's D type: from the bound entry when there is one, else from the registry —
+        // which types by C++ NAME, so anything without a D scalar crosses as TEXT, the channel
+        // every colour and every enum key here already uses.
+        std::string dty;
+        if (auto ga = g_attached.find(tn); ga != g_attached.end()) {
+            auto mt0 = ga->second->propType.find(mem);
+            if (mt0 != ga->second->propType.end()) dty = mt0->second;
+        }
+        if (dty.empty())
+            if (auto qa = g_qmlAttachedCxx.find(tn); qa != g_qmlAttachedCxx.end())
+                if (auto mt1 = qa->second.find(mem); mt1 != qa->second.end()) {
+                    std::string c = mt1->second;
+                    while (!c.empty() && (c.back() == '*' || c.back() == '^')) c.pop_back();
+                    dty = (c == "int") ? "int" : (c == "bool") ? "bool"
+                        : (c == "double" || c == "float" || c == "qreal") ? "double" : "string";
+                }
         std::string val;
-        if (mt == g_attached[tn]->propType.end()
-                || !compileExpr(aa.second, QString::fromStdString(mt->second), val)) {
+        if (dty.empty() || !compileExpr(aa.second, QString::fromStdString(dty), val)) {
             std::fprintf(stderr, "qmltc-d: %s: attached property '%s' in %s not yet supported — skipped (later phase)\n",
                          inPath, aa.first.c_str(), cls.c_str());
             ++partial; continue;
         }
         baseWire += "        setProp(" + attachedExpr(tn) + ", \"" + mem + "\", " + val + ");\n";
-        node.attachedProps.push_back({aa.first, mt->second});
+        node.attachedProps.push_back({aa.first, dty});
     }
     for (auto &ah : rawAttachedHandlers) {
         auto dot = ah.first.find('.');

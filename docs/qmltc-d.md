@@ -4995,13 +4995,18 @@ control.enabled` next to `layer.effect: RoundedElevationEffect {}`. Compiled, th
 QQmlComponent with `setData` (error=0, ready=1), write it to `layer.effect`, set `layer.enabled` —
 same backtrace. Varied and ruled out, each measured: the component's base URL (a leak fixed below,
 but not the cause); whether the item is in a QQuickWindow; whether the write carries a `QObject*` or
-a properly typed `QQmlComponent*` QVariant (both report success). What DOES make it survive is
-touching the component once first — a `create()` or a `beginCreate()` before handing it over. So
-something in the component is only prepared on first use, and the layer's path does not prepare it.
+a properly typed `QQmlComponent*` QVariant (both report success). One run appeared to survive after the component
+was touched first, and that did NOT reproduce — a later probe crashed with the same warm-up, with
+and without a `create()`. Treat it as noise: no variation found so far changes the outcome.
 
 Recorded rather than worked around: the reproduction is Qt-against-Qt, so a workaround in the
-compiler would be a guess about someone else's invariant. Two of Material's eight remaining
-failures are this (ComboBox, SearchField).
+compiler would be a guess about someone else's invariant.
+
+**It is the ceiling on the Material style, and applying the document correctly RAISES its count.**
+Once `Material.elevation:` is actually written (see the attached-assignment commit), Dialog, Menu
+and Popup switch their layers on and land in the same crash — Material goes from 2 failures to 5.
+That is the honest direction: they were only surviving because an assignment the document makes was
+being dropped.
 
 What the hunt did produce, both real defects of ours:
 
