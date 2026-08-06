@@ -5164,3 +5164,16 @@ A third arrangement (plain enum -> key, flags -> number) still failed QFinalize,
 one place and measured in another. Material stayed 24 MATCH / 22 differ with it in and out.
 Reverted. The narrow question survives intact: reading an enum-typed property AS TEXT answers empty,
 and that is what makes `Material.roundedScale: Material.dialogRoundedScale` write an empty string.
+
+**Two objects, one path: what an engine-created wrapper cannot show.** Qt's Material ToolButton
+declares `readonly property bool square` on a Ripple, and Universal's SwitchDelegate declares
+`handle` on its indicator. Both are engine-created types (no C++ symbol to subclass), so there are
+TWO QObjects: the engine's instance, which the property `background`/`indicator` actually points at,
+and our wrapper, which carries the meta-object with the document's declarations. `--dumpall` walks
+the object the path leads to — the instance — so the declared property is simply not there, while
+the engine, having one object, prints it.
+
+The labels protocol does emit it (`writefln("background.square", o.background.square)`), so the two
+protocols disagree about the same property, which is the tell. Closing it means the document's
+declarations living ON the instance — a dynamic meta-object over an object we did not create — not
+a formatting change. One difference each in two documents; recorded, not built.
