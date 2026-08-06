@@ -5133,3 +5133,18 @@ cleanly in two.
 So of the twelve `text` delegations reported as closed earlier, four throw HERE for a reason that
 belongs to the corpus rather than to the translation — but that is a measurement, not a defence:
 they remain unjudged, which is what the earlier claim should have said.
+
+**A change tried and REVERTED, with the measurement that killed it.** Qt's Material Dialog writes
+`Material.roundedScale: Material.dialogRoundedScale`, and the attached-write path compiled the
+right-hand read as TEXT (its registry type is an enum, which has no D scalar, so it falls to the
+text channel) — giving an empty string, and the write threw: *no writable property "roundedScale"
+taking a string*. Trying `int` before text fixes that one write and costs a document elsewhere:
+Material's value axis goes 24 MATCH / 22 differ -> 23 / 23, measured with the change in and out.
+Reverted. An enum member crossing as its KEY is the channel this compiler uses everywhere, and
+overriding it wholesale for attached members is too blunt; the narrower question — a read of an
+enum-typed property being asked for as text and answering empty — is the one to take next.
+
+What the same probe settled, and it is worth keeping: the engine's `parent?.parent ===
+Overlay.overlay` in that document is `null === null` and therefore TRUE. Measured directly —
+`parent` not null, `parent.parent` null, `Overlay.overlay` null. So the comparison is right on both
+sides and the Dialog's radius difference is entirely the value of `Material.roundedScale`.
