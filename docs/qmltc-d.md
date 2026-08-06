@@ -5200,3 +5200,14 @@ from 54 built / 5 failed to 38 / 31. Reverted.
 The type is knowable: the local `maxCornerRadius` is a real. Inferring a function's return from its
 LOCALS as well as from the return expression is the prerequisite, and it is a compiler change worth
 making on its own rather than as a side effect of this one.
+
+**And the prerequisite itself, attempted and found inert.** Collecting a function body's `var` locals
+into the type map before inferring the return type changes nothing measurable: probed directly,
+`var half = w / 2; return Math.max(0, half)` still comes out `int`, and the simpler
+`var half = w / 2; return half` is REFUSED outright ("unsupported return type"). So the return-type
+inference does not consult that map for a bare local at all, and `Math.max(0, x)` reads as `int`
+from its literal regardless. Reverted rather than committed — an inert change is worse than none,
+because it reads as a fix.
+
+The cause is now one level lower and stated in terms of what was measured: `inferType` on a return
+expression sees neither the function's locals nor the wider of two `Math.max` arguments.
