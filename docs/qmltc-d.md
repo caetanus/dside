@@ -5211,3 +5211,23 @@ because it reads as a fix.
 
 The cause is now one level lower and stated in terms of what was measured: `inferType` on a return
 expression sees neither the function's locals nor the wider of two `Math.max` arguments.
+
+**The fourth child path, third attempt: the prerequisite landed, a new layer appeared.** With the
+return-type inference fixed (locals + the widest `Math.max` argument, committed on its own), the
+generated D compiles and the documents LINK — and then die on the harness's own linkage assertion:
+
+```
+assert(… propObj(o._dc0.__inst, "parent") is qobjOf(o._dc0) …)
+    -> "data[0].color is not parented to o._dc0 as an ITEM"
+```
+
+An engine-created child is parented as the INSTANCE and the check compares against the WRAPPER, so
+it asserts on a tree that is correct. Making the parent expression follow `.__inst` fixes the direct
+case and not the nested ones (`o.background._dc0`, `o.indicator._dc1`), because the accessor
+bookkeeping in the dump emitter carries `.__inst` at some levels and not others. Material 54 built /
+5 failed -> 54 / 22. Reverted again.
+
+Three layers, each measured, each real: the generated D did not compile (fixed), the linkage check
+does not follow the instance (partly fixed, reverted with the rest), and the dump's accessor chain
+needs to be consistent about which of the two objects each level names — which is the same
+"two objects, one path" the wrapper section above describes, met from a third direction.
