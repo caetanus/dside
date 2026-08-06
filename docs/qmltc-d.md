@@ -5177,3 +5177,26 @@ The labels protocol does emit it (`writefln("background.square", o.background.sq
 protocols disagree about the same property, which is the tell. Closing it means the document's
 declarations living ON the instance — a dynamic meta-object over an object we did not create — not
 a formatting change. One difference each in two documents; recorded, not built.
+
+**The fourth child path, tried and reverted: it needs a return-type fix first.** The DEFAULT-child
+path was the last one without the "let the engine build a type no subclass can wrap" branch — Qt's
+Material TextField puts a `FloatingPlaceholderText` there, the child was dropped with its id, and
+`implicitWidth: … Math.max(contentWidth, placeholder.implicitWidth) …` had nothing to resolve
+(0 against the engine's 120).
+
+Enabling it makes those bodies compile, and one of them does not: Material's RectangularGlow has
+
+```qml
+function clampedCornerRadius() {
+    var maxCornerRadius = Math.min(rootItem.width, rootItem.height) / 2 + rootItem.glowRadius;
+    return Math.max(0, Math.min(rootItem.cornerRadius, maxCornerRadius))
+}
+```
+
+The return type is inferred from the return EXPRESSION, where the only literal is `0`, so it comes
+out `int` while the body computes a double — the generated D does not compile at all. Material fell
+from 54 built / 5 failed to 38 / 31. Reverted.
+
+The type is knowable: the local `maxCornerRadius` is a real. Inferring a function's return from its
+LOCALS as well as from the return expression is the prerequisite, and it is a compiler change worth
+making on its own rather than as a side effect of this one.
