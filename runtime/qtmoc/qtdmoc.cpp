@@ -2,6 +2,7 @@
 // A single QtdMocObject trampoline builds its QMetaObject at runtime
 // via QMetaObjectBuilder from signatures the D side provides (extracted
 // by CTFE). qt_metacall maps: signal indices -> activate; slot indices -> D.
+#include <memory>
 #include <QObject>
 #ifdef QT_QML_LIB
 #include <QtQml/QQmlPropertyValueSource>
@@ -836,12 +837,28 @@ extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
     auto* e = new QQmlExpression(ctx, obj, QString::fromUtf8(src), obj);
     // Read ONCE: this runs on every re-evaluation of every delegated binding.
     static const bool trace = std::getenv("QTD_JS_TRACE") != nullptr;
-    auto eval = [e, obj, p]() {
+    // A delegated binding that THROWS leaves the property at its default and, counted as a
+    // delegation, looked like neither a refusal nor a defect. It is a defect: Qt's Material Button
+    // paints white instead of #d6d7d7 because `control.Material.buttonColor(…)` throws, and the
+    // census said "delegated" with no hint that anything was wrong. Reported ONCE per binding —
+    // the first evaluation is where the cause is, and a binding that recovers later says so by not
+    // repeating.
+    auto reported = std::make_shared<bool>(false);
+    auto eval = [e, obj, p, reported]() {
         QVariant v = e->evaluate();
         if (trace)
             std::fprintf(stderr, "qtd_bind_js: %s = %s%s\n", qPrintable(p), qPrintable(v.toString()),
                          e->hasError() ? qPrintable(" ERROR: " + e->error().toString()) : "");
-        if (e->hasError()) { e->clearError(); return; }
+        if (e->hasError()) {
+            if (!*reported) {
+                *reported = true;
+                std::fprintf(stderr, "qtd_bind_js: delegated binding for '%s' on %s threw: %s\n",
+                             qPrintable(p), obj->metaObject()->className(),
+                             qPrintable(e->error().description()));
+            }
+            e->clearError();
+            return;
+        }
         QQmlProperty(obj, p, qmlContext(obj)).write(v);
     };
     e->setNotifyOnValueChanged(true);
