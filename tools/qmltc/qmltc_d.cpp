@@ -4716,6 +4716,27 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
         if (!objPathExpr(id, oe, oq)) return false;
         binds.push_back({n, oe});
     }
+    // `control.Material.theme` — an ATTACHED read inside a delegated expression. The engine
+    // resolves `Material` as a TYPE NAME, through the context's import namespace, and a context
+    // built by hand has none: measured, the delegated binding throws `Cannot read property 'theme'
+    // of undefined` on Qt's Material Button and the background paints white. The namespace cannot
+    // be given to a hand-made context (a CHILD of a document's context does not inherit it either
+    // — probed), so the expression is made not to need it: the compiler already knows how to reach
+    // an attached object (attachedExprOn), so it hands that object over under a plain name, like
+    // any other id. No type name is left in the source.
+    for (size_t bi = 0, n0 = binds.size(); bi < n0; ++bi) {
+        for (auto &at : g_qmlAttachedCxx) {
+            const std::string &tn = at.first;
+            if (!g_qmlTypeUri.count(tn)) continue;
+            std::string pat = binds[bi].first + "." + tn + ".";
+            if (src.find(pat) == std::string::npos) continue;
+            std::string alias = "__att_" + binds[bi].first + "_" + tn;
+            std::string rep = alias + ".";
+            for (size_t at2 = 0; (at2 = src.find(pat, at2)) != std::string::npos; )
+                { src.replace(at2, pat.size(), rep); at2 += rep.size(); }
+            binds.push_back({alias, attachedExprOn(binds[bi].second, tn)});
+        }
+    }
     std::string names, objs;
     for (auto &b : binds) {
         names += (names.empty() ? "" : ", ") + ("\"" + b.first + "\"");
