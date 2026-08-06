@@ -3783,7 +3783,19 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
         auto *recv = fm ? cast<IdentifierExpression *>(fm->base) : nullptr;
         if (recv && qs(recv->name.toString()) == "Math") {
             std::string fn = qs(fm->name.toString());
-            if ((fn == "max" || fn == "min" || fn == "abs") && call->arguments) return inferType(call->arguments->expression, ptype);
+            // `Math.max(a, b)` is as wide as its WIDEST argument, not as its first. Reading only
+            // the first made `Math.max(0, <a real>)` an int — Qt's Material RectangularGlow
+            // returns exactly that, and the generated D would not compile ("return value of type
+            // double does not match int"). `abs` has one argument and is unchanged by this.
+            if ((fn == "max" || fn == "min" || fn == "abs") && call->arguments) {
+                std::string w;
+                for (auto *a = call->arguments; a; a = a->next) {
+                    std::string t = inferType(a->expression, ptype);
+                    if (t == "double") return "double";
+                    if (w.empty()) w = t;
+                }
+                return w;
+            }
             return "double";
         }
         // Qt.darker/Qt.lighter yield a COLOUR, which travels as text here.
@@ -4999,6 +5011,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
                         auto pt = pt0;
                         for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;   // params in scope
+                        // ...and the body's `var` LOCALS, which type the return just as a parameter
+                        // does. Qt's Material RectangularGlow computes in one
+                        // (`var maxCornerRadius = … / 2 + …`) and returns
+                        // `Math.max(0, Math.min(r, maxCornerRadius))`: with the local untyped the
+                        // only thing the inference could see was the literal `0`, so the function
+                        // came out `int` and the generated D did not compile.
+                        // This is the PRESCAN, and it is where the answer is decided: the emitter
+                        // reads g_funcRet and only falls back to inferring when the prescan has
+                        // nothing. Adding the locals at the emitter changed nothing at all —
+                        // measured, with both binaries, before the cause was found here.
+                        for (auto *st0 = fn->body; st0; st0 = st0->next)
+                            if (auto *vs0 = cast<VariableStatement *>(st0->statement))
+                                for (auto *d0 = vs0->declarations; d0; d0 = d0->next)
+                                    if (auto *pe0 = d0->declaration;
+                                            pe0 && !pe0->bindingIdentifier.isEmpty() && pe0->initializer) {
+                                        std::string lt = inferType(pe0->initializer, pt);
+                                        if (!lt.empty()) pt[qs(pe0->bindingIdentifier.toString())] = lt;
+                                    }
                         g_funcRet[qs(fn->name.toString())] = inferType(rexpr, pt);
                         if (!fn->formals) {   // no-arg: record which properties it reads (for reactive bindings)
                             std::vector<std::string> reads;
@@ -5072,6 +5102,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
                         auto pt = g_propType;
                         for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;
+                        // ...and the locals, same as the first pass. This one RE-DOES the
+                        // inference now that aliases exist and OVERWRITES g_funcRet, so leaving
+                        // them out here silently undid the first pass — which is exactly why
+                        // adding them there alone measured as no change at all.
+                        for (auto *st0 = fn->body; st0; st0 = st0->next)
+                            if (auto *vs0 = cast<VariableStatement *>(st0->statement))
+                                for (auto *d0 = vs0->declarations; d0; d0 = d0->next)
+                                    if (auto *pe0 = d0->declaration;
+                                            pe0 && !pe0->bindingIdentifier.isEmpty() && pe0->initializer) {
+                                        std::string lt = inferType(pe0->initializer, pt);
+                                        if (!lt.empty()) pt[qs(pe0->bindingIdentifier.toString())] = lt;
+                                    }
                         auto ty2 = inferType(rexpr, pt);
                         if (!ty2.empty()) g_funcRet[qs(fn->name.toString())] = ty2;
                     }
