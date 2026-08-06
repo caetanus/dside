@@ -4702,6 +4702,15 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
         if (n == "undefined") continue;
         if (std::isupper((unsigned char) n[0])) continue;
         if (g_propType.count(n) || g_scope.count(n)) continue;
+        // ...and a BASE property of this object, which the scope object answers exactly as it
+        // answers a declared one. Leaving it out is why `Material.buttonLeftPadding(flat, hasIcon
+        // && …)` was refused rather than delegated on every Material button: `flat`, `hasIcon` and
+        // `display` are the C++ base's, so they were in neither table and the accounting failed.
+        if (g_baseProps.count(n)) continue;
+        if (auto qp0 = g_qmlProps.find(g_selfQmlType); qp0 != g_qmlProps.end() && qp0->second.count(n))
+            continue;
+        if (auto qc0 = g_qmlCxxType.find(g_selfQmlType); qc0 != g_qmlCxxType.end() && qc0->second.count(n))
+            continue;
         // A per-item context name, and ONLY where our context carries what the engine's does. The
         // two part company exactly when the delegate declares required properties: the engine then
         // withholds the context and injects the declared names instead, so an UNdeclared one
@@ -4736,6 +4745,27 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
                 { src.replace(at2, pat.size(), rep); at2 += rep.size(); }
             binds.push_back({alias, attachedExprOn(binds[bi].second, tn)});
         }
+    }
+    // ...and a BARE attached type on this object (`Material.buttonLeftPadding(…)`, which is how
+    // every Material control writes its paddings). Same answer as the qualified form above: hand
+    // the object over, leave no type name behind.
+    for (auto &at : g_qmlAttachedCxx) {
+        const std::string &tn = at.first;
+        if (!g_qmlTypeUri.count(tn)) continue;
+        std::string pat = tn + ".";
+        size_t at3 = src.find(pat);
+        // Only when it starts a term — `control.Material.` was already rewritten above.
+        while (at3 != std::string::npos && at3 > 0
+               && (std::isalnum((unsigned char) src[at3 - 1]) || src[at3 - 1] == '_' || src[at3 - 1] == '.'))
+            at3 = src.find(pat, at3 + 1);
+        if (at3 == std::string::npos) continue;
+        std::string alias = "__att_self_" + tn, rep = alias + ".";
+        for (size_t k = 0; (k = src.find(pat, k)) != std::string::npos; ) {
+            if (k > 0 && (std::isalnum((unsigned char) src[k - 1]) || src[k - 1] == '_' || src[k - 1] == '.'))
+                { k += pat.size(); continue; }
+            src.replace(k, pat.size(), rep); k += rep.size();
+        }
+        binds.push_back({alias, attachedExpr(tn)});
     }
     std::string names, objs;
     for (auto &b : binds) {
