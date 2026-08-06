@@ -5148,3 +5148,19 @@ What the same probe settled, and it is worth keeping: the engine's `parent?.pare
 Overlay.overlay` in that document is `null === null` and therefore TRUE. Measured directly —
 `parent` not null, `parent.parent` null, `Overlay.overlay` null. So the comparison is right on both
 sides and the Dialog's radius difference is entirely the value of `Material.roundedScale`.
+
+**A second attempt on the same question, also reverted.** Instead of changing the compiler, make the
+RUNTIME render an enum property read as text by its KEY — which is what the oracle's dump already
+does for the same property, so it looked like an alignment rather than a change. It cost two
+fixtures and gained nothing measurable:
+
+- `CEnumAsInt`: `Qt::AlignRight|Qt::AlignTrailing` came out as `AlignRight`, because a QFlags is
+  `isEnumType()` too and `valueToKey` returns ONE key.
+- `QFinalize`: excluding flags then printed `DoubleTapped|EditKeyPressed` where the engine's dump
+  has `10`.
+
+A third arrangement (plain enum -> key, flags -> number) still failed QFinalize, which says the
+`--dumpall` path does not read through `qtd_prop_get_qs` at all — so the change was being made in
+one place and measured in another. Material stayed 24 MATCH / 22 differ with it in and out.
+Reverted. The narrow question survives intact: reading an enum-typed property AS TEXT answers empty,
+and that is what makes `Material.roundedScale: Material.dialogRoundedScale` write an empty string.
