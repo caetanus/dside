@@ -5115,3 +5115,21 @@ synthetic component (`import <the document's uris>\nQtObject {}`) and using the 
 context — but the ids a delegated expression needs are published with `setContextProperty`, and on
 an engine-made component context that did not take (`ReferenceError: control is not defined`). Both
 halves have to work at once, so this is recorded rather than half-built.
+
+**And what the throwing delegations actually are**, once they say so: Basic 4, Material 8, splitting
+cleanly in two.
+
+- **The type-name problem** (Material's Button, DelayButton, RoundButton, ProgressBar):
+  `Cannot read property 'theme'/'accentColor' of undefined` — `control.Material` is undefined
+  because a hand-made context has no import namespace, recorded above. A real defect, and the
+  largest remaining value difference in that style.
+- **The harness, not the compiler** (both styles' HeaderViewDelegate, TableViewDelegate,
+  TreeViewDelegate): `'textRole' of null`, `'display' of undefined`. Measured: the ENGINE refuses to
+  instantiate those same documents standalone — `qmlvalues` reports *"Required property current was
+  not initialized"* and creates nothing. There is no view, so `control.headerView` is null on any
+  side that gets that far. These are the recorded "oracle cannot load this standalone" set, and this
+  harness cannot judge them either way.
+
+So of the twelve `text` delegations reported as closed earlier, four throw HERE for a reason that
+belongs to the corpus rather than to the translation — but that is a measurement, not a defence:
+they remain unjudged, which is what the earlier claim should have said.
