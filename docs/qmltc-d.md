@@ -5080,6 +5080,22 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+**Where Material stands after the attached-at-depth fix** (34 of 46 identical, 20 value
+differences). What is left, by document:
+
+* **RangeSlider (4)** — the same `SliderHandle` colours that Slider now gets right, and here they
+  are REFUSED rather than delegated: `base property 'color' … expression for 'string' []`, with an
+  EMPTY excerpt. The handle sits under a GROUP (`first.handle`, `second.handle`), so the merge is a
+  different one, and the two spellings of the same document disagree about whether `root` is in
+  scope. The empty excerpt is the second signal: the source text of a spliced local type is not
+  reachable from there either.
+* **Switch (3 + 1)** — `indicator.handle` is a property the engine has and we do not, which is the
+  wrapper-declares-the-property ceiling, plus the two colours downstream of it.
+* **TextField / TextArea (3 each)** — `data[0].baseUrl` is the CursorDelegate's OWN document where
+  the engine reports the one that INSTANTIATED it, and `topPadding`/`baselineOffset` follow from a
+  layout that has not run the same number of times.
+* SelectionRectangle (2), Drawer, ProgressBar, Slider, RadioButton, RadioDelegate: one each.
+
 **A `var` in a TRUTH TEST did not compile — FIXED, and the fix names the site.** Reproduced in five
 lines: `property var holder: kid` used as `holder ? … : …` emitted D that ldc2 refuses — *expression
 `this.holder` of type `QmlVar` does not have a boolean value*. The rule that a `var` read goes
