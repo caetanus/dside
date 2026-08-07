@@ -5080,6 +5080,18 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+**A fourth position for the same fact: a REVISIONED property is invisible to a delegated
+expression.** Qt's Imagine GroupBox is down to `topPadding`, whose remaining free name the runtime
+reports as `ReferenceError: implicitLabelWidth is not defined` — and that property exists, on
+`QQuickGroupBox`, declared `Q_PROPERTY(... FINAL REVISION(2, 5))`. A revisioned property is visible
+in QML only through an import at or above that version, and a context built by hand has no import
+at all. So it is the same root as the three type-name positions, reached from a different side: what
+our context lacks is the import, and everything whose visibility depends on one is out of reach.
+
+Closing it needs the registry to carry the revision (it carries readonly today, not revision), and
+then either a refusal that says so or a plain forwarding property on the generated class. Not built:
+it is 8 values on one document, and the shape is recorded rather than guessed at.
+
 **All five styles through the census, which is the honest count** (2026-08-07). The `differ N/M`
 number the comparison script prints counts LINES, and a line under a path the oracle marked
 `<missing>` is not a defect — so every raw count above overstates the residue. Run through
