@@ -54,11 +54,18 @@
 #  include <QtQml/QQmlComponent>
 #  if QT_VERSION >= 0x060000
 #    include <QtQml/private/qqmlmetatype_p.h>
+// A property value INTERCEPTOR is installed on the property rather than handed it, and the only way
+// in from outside is QQmlInterceptorMetaObject — Q_QML_EXPORTed, PRIVATE header. Qt6 only: Qt5 has
+// no such entry point.
+#    include <QtQml/private/qqmlpropertyvalueinterceptor_p.h>
+#    include <QtQml/private/qqmlvmemetaobject_p.h>
+#    include <QtQml/private/qqmldata_p.h>
 #    include <QtQml/qqml.h>
 #  endif
 #  include <array>
 #  include <utility>
 #endif
+
 
 extern "C" {
 
@@ -1348,16 +1355,65 @@ static bool gadgetProp(const QVariant& v, const char* member, QMetaProperty& out
 extern "C" int qtd_attach_value_source(void *src, void *target, const char *prop) {
     if (!src || !target) return 0;
     auto *vs = dynamic_cast<QQmlPropertyValueSource *>(static_cast<QObject *>(src));
-    // LOUD when it is not one. `X on prop` has TWO mechanisms in QML — a value SOURCE and a value
-    // INTERCEPTOR — and this only implements the first. Probed against Qt alone:
-    // QQuickNinePatchImageSelector, which is how every Imagine control resolves its image, answers
-    // `is value source: 0  is interceptor: 1`. Returning 0 in silence is what made the whole style
-    // compile with the unresolved base path and no suffix.
+    // `X on prop` has TWO mechanisms in QML — a value SOURCE and a value INTERCEPTOR — and the
+    // object itself says which it is. Probed against Qt alone: QQuickNinePatchImageSelector, which
+    // is how every Imagine control resolves its image, answers `is value source: 0  is
+    // interceptor: 1`. Handling only the first is what made the whole style compile with the
+    // unresolved base path and no suffix.
     if (!vs) {
-        std::fprintf(stderr, "qtd_attach_value_source: '%s' on %s is not a QQmlPropertyValueSource "
-                             "(an INTERCEPTOR? that mechanism is not implemented)\n",
-                     prop, static_cast<QObject *>(src)->metaObject()->className());
+        // `X on prop` binds a value SOURCE or a value INTERCEPTOR, and Qt's Imagine style uses the
+        // second for every image it shows (`NinePatchImageSelector on source`) — as does
+        // `Behavior on x`. An interceptor is not given the property, it is INSTALLED on it and
+        // rewrites each write that passes. Probed against Qt alone before building this: it
+        // resolves only when the object was created from the real DOCUMENT, because the path it
+        // computes is relative to it — which is why the same call produced nothing until the
+        // engine-created objects started carrying their document url.
+// QTD_HAVE_QML, not QT_QML_LIB: those two answer different questions. QT_QML_LIB is "does this
+        // binding LINK QtQml" and guards this whole function; QTD_ENABLE_QML is "does it register QML
+        // types", and it is the one that puts the VERSIONED include path of Qt's private headers on
+        // the command line. The webengine binding links QtQml with registration off, so an
+        // interceptor branch keyed on the first found no `qqmlmetatype_p.h` at all. A binding that
+        // does not register types also never compiles a QML document, so it loses nothing here.
+#if defined(QTD_HAVE_QML) && QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        auto *iv = qobject_cast<QQmlPropertyValueInterceptor *>(static_cast<QObject *>(src));
+        if (!iv) {
+            std::fprintf(stderr, "qtd_attach_value_source: '%s' on %s is neither a value source nor "
+                                 "an interceptor\n", prop,
+                         static_cast<QObject *>(src)->metaObject()->className());
+            return 0;
+        }
+        QObject *tgt = static_cast<QObject *>(target);
+        QQmlProperty p(tgt, QString::fromUtf8(prop), qmlContext(tgt));
+        if (!p.isValid()) {
+            std::fprintf(stderr, "qtd_attach_value_source: no property '%s' on %s for an interceptor\n",
+                         prop, tgt->metaObject()->className());
+            return 0;
+        }
+        iv->setTarget(p);
+        int idx = tgt->metaObject()->indexOfProperty(prop);
+        if (idx < 0) return 0;
+        // The property CACHE, not just the meta-object. Qt's interception path reads the type of
+        // the property being written off `QQmlData::get(object)->propertyCache`, and on an object
+        // the engine never built that pointer is null — Qt's Basic Switch segfaulted inside
+        // QQmlInterceptorMetaObject::doIntercept the first time its `Behavior on x` actually fired.
+        // ensurePropertyCache builds one from the object's own meta-object, which is what
+        // QQmlObjectCreator does for the objects it makes.
+        auto cache = QQmlData::ensurePropertyCache(tgt);
+        if (!cache) {
+            std::fprintf(stderr, "qtd_attach_value_source: no property cache for %s — '%s' left "
+                                 "uninterceptable\n", tgt->metaObject()->className(), prop);
+            return 0;
+        }
+        auto *imo = QQmlInterceptorMetaObject::get(tgt);
+        if (!imo) imo = new QQmlInterceptorMetaObject(tgt, cache);
+        imo->registerInterceptor(QQmlPropertyIndex(idx), iv);
+        return 1;
+#else
+        std::fprintf(stderr, "qtd_attach_value_source: '%s' on %s is not a value source (no way in "
+                             "for an interceptor in this build)\n", prop,
+                     static_cast<QObject *>(src)->metaObject()->className());
         return 0;
+#endif
     }
     QQmlProperty p(static_cast<QObject *>(target), QString::fromUtf8(prop));
     if (!p.isValid()) {
