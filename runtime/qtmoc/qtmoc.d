@@ -171,6 +171,14 @@ struct QmlObjectList {}
 /// (see qtd_moc_var_read). Nothing is stored on the D side, which is deliberate — QVariant is bound
 /// as opaque storage with a destructor and no copy constructor, so a D field of it double-frees.
 struct QmlVar {}
+/// The engine-built instance a wrapper holds, or null when the wrapper itself is not there yet.
+/// A binding of the ENCLOSING object can run before its children are constructed — the root's
+/// `implicitWidth` reads `placeholder.implicitWidth` while `_dc0` is still null — and reading the
+/// field off a null reference segfaults where every other read in this compiler answers a default.
+void* instOf(T)(T o) {
+    static if (__traits(hasMember, T, "__inst")) return o is null ? null : o.__inst;
+    else return qobjOf(o);
+}
 /// A property that FORWARDS instead of storing. A QML `property alias inner: kid.value` is a
 /// REFERENCE: nothing is kept, reads go straight to the target and writes land on it — which is
 /// what an alias means and why a field would be wrong (a copy can drift). qtmoc discovers ordinary

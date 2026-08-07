@@ -6091,6 +6091,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (!isComponentType(ct) && ct != "Connections") {
             if (!boundTypeFor(ct).first.empty()) continue;
             if (localTypeFileExists(ct, inPath)) continue;
+            // ...and a type the ENGINE builds is not skipped either. This pre-pass and the compile
+            // loop must agree on exactly what gets dropped: when the engine branch was added below
+            // and not here, `id: placeholder` on Qt's Material TextField was taken out of scope for
+            // a child that IS built, and every `placeholder.<x>` read went on being refused with
+            // the object sitting right there.
+            if (!uriForType(ct).empty() && g_qmlCxxType.count(ct)) continue;
         }
         dropSkippedChildId(od->initializer);
     }
@@ -6491,6 +6497,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         auto savedDEC = g_engineChildCls, savedDET = g_engineChildType, savedDEU = g_engineChildUri;
         if (!dcEngineUri.empty()) {
             g_engineChildCls = childCls; g_engineChildType = childType; g_engineChildUri = dcEngineUri;
+            // From OUTSIDE, the only thing anyone wants of an engine-built child is the instance:
+            // its signals and its properties are the engine object's, and the wrapper has neither.
+            // So the id resolves to the instance from here on — a connect naming the wrapper threw
+            // (`no such signal "implicitWidthChanged()"`, Qt's Material TextField reading
+            // `placeholder.implicitWidth`). Done at compile time, not in the pre-scan, because that
+            // is where it first becomes known that the engine builds this one.
+            // ...through instOf, which answers null when the wrapper is not constructed yet: an
+            // enclosing object's binding can run before its children exist, and reading the field
+            // off a null reference SEGFAULTS where every other read here answers a default
+            // (measured, gdb: Qt's Material TextField root reading `placeholder.implicitWidth`).
+            if (std::string cid0 = idOfInit(childInit); !cid0.empty())
+                if (auto it0 = g_childIds.find(cid0); it0 != g_childIds.end())
+                    it0->second.field = "instOf(" + it0->second.field + ")";
         }
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_engineChildCls = savedDEC; g_engineChildType = savedDET; g_engineChildUri = savedDEU;
