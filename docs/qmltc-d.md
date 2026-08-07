@@ -5080,24 +5080,18 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
-**A `var` in a TRUTH TEST does not compile — latent, and found by the probe rather than by the
-corpus.** Reproduced in five lines:
+**A `var` in a TRUTH TEST did not compile — FIXED, and the fix names the site.** Reproduced in five
+lines: `property var holder: kid` used as `holder ? … : …` emitted D that ldc2 refuses — *expression
+`this.holder` of type `QmlVar` does not have a boolean value*. The rule that a `var` read goes
+through the meta-object and never through the zero-size field is kept by `objPathExpr`; the site the
+generated code actually goes through is `readName`, whose fallthrough emits the bare field name for
+anything in scope. Two other sites were patched first and REVERTED for being inert — the artifact
+kept failing, which is what said they were the wrong ones.
 
-```qml
-property var holder: kid
-Item { id: kid }
-property string truthy: root.holder ? "YES" : "no"
-```
-
-The generated D is `(holder ? "YES" : "no")` and ldc2 refuses it: *expression `this.holder` of type
-`QmlVar` does not have a boolean value*. The rule that a `var` read goes through the META-OBJECT and
-never through the field — the field is a zero-size marker — is kept by `objPathExpr` and not by the
-sites that resolve a read through the self id. Two of those were given the same rule and the shape
-still compiled to the bare field, so there is at least a fourth; the patch was REVERTED rather than
-kept, because it changed nothing measurable and an inert change reads as a correction.
-
-Not reachable from any of the 437 Qt documents (the build is green over all of them), so it is
-latent: recorded with its reproduction, not fixed on a guess.
+The honest answer there is a refusal: a read with no type cannot be compiled, only delegated. And
+the probe beside it settles the larger question — with the fix, the delegated read answers `n:K`,
+the engine's own value, so **a `var` holding an object IS readable through the delegation channel**
+once the value is written and its notify fires.
 
 **A `var` holding an object, read from a delegated expression: narrowed, not closed.** Qt's Material
 SliderHandle is `readonly property var control: parent`, and every colour in the handle comes from a
