@@ -1342,6 +1342,18 @@ static bool gadgetProp(const QVariant& v, const char* member, QMetaProperty& out
     return true;
 }
 
+// `X as SomeType` in a DELEGATED expression. QML's `as` yields the object when it is of that type
+// and null otherwise, and the type name itself cannot survive into a hand-made context (no import
+// namespace). So the compiler hands the object over and asks the question HERE, where it is one
+// generic walk up the meta-object chain — no table of types, and nothing that knows what a
+// NinePatchImage is.
+extern "C" void *qtd_cast_class(void *o, const char *cls) {
+    if (!o || !cls || !*cls) return nullptr;
+    for (const QMetaObject *mo = static_cast<QObject *>(o)->metaObject(); mo; mo = mo->superClass())
+        if (std::strcmp(mo->className(), cls) == 0) return o;
+    return nullptr;
+}
+
 // Attach a PROPERTY VALUE SOURCE (`NumberAnimation on width`, `Behavior on x`) to its target.
 // QQmlPropertyValueSource is one generic interface: the object says "I drive this property", Qt
 // hands it a QQmlProperty and the object takes it from there. So this one entry point covers every

@@ -1328,6 +1328,15 @@ bool propVar(V, T)(T o, string name, ref V outv) {
 void* __qmltcVsTarget;
 string __qmltcVsProp;
 
+private extern(C) void* qtd_cast_class(void*, const(char)*);
+/// `X as SomeType` inside an expression handed to the engine: the object when it is of that type,
+/// null otherwise. The type name cannot travel (a hand-made context has no import namespace), so
+/// the compiler passes the object and the C++ class name and the question is answered by walking
+/// the meta-object chain — one generic call, no per-type knowledge on either side.
+void* castQml(T)(T o, string cxxClass) {
+    return qtd_cast_class(qobjOf(o), (cxxClass ~ "\0").ptr);
+}
+
 private extern(C) int qtd_attach_value_source(void*, void*, const(char)*);
 /// Attaches a property VALUE SOURCE (`NumberAnimation on width`, `Behavior on x`) to its target.
 /// One generic interface covers every animation type and Behavior — the caller never has to know

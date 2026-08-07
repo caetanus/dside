@@ -4707,12 +4707,27 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
     FreeIdScan sc;
     e->accept(&sc);
     std::vector<std::pair<std::string, std::string>> binds;   // name -> the D expression for it
-    std::set<std::string> seen;
+    std::set<std::string> seen, typeNames;   // QML type names the source still spells
     for (auto *id : sc.ids) {
         std::string n = qs(id->name.toString());
         if (n.empty() || !seen.insert(n).second) continue;
         if (n == "undefined") continue;
-        if (std::isupper((unsigned char) n[0])) continue;
+        // A capitalised name is USUALLY one the engine resolves by itself (`Math`, `Qt`, `JSON`).
+        // A QML TYPE is not: types come from the document's import namespace, and a context built
+        // by hand has none. Waving every capitalised name through is how `(background as
+        // NinePatchImage)?.topPadding ?? 0` came to be delegated on Qt's Imagine GroupBox and
+        // answer 0 against the engine's 10 — the loud channel says exactly why, once per binding:
+        // `ReferenceError: NinePatchImage is not defined`. Recorded here and judged at the END,
+        // after the rewrites, because a type name the rewrites REMOVE costs nothing.
+        if (std::isupper((unsigned char) n[0])) {
+            // ...except the implicit module. A name from `QML` needs no import to be in scope —
+            // `Qt` lives there, and `Qt.TopEdge` inside a delegated `states` list is how Qt's
+            // Imagine Drawer picks its image. Refusing it cost 22 values on that one document, so
+            // the question is not "is this a type" but "does reaching it need an import".
+            auto tu = g_qmlTypeUri.find(n);
+            if (tu != g_qmlTypeUri.end() && tu->second != "QML") typeNames.insert(n);
+            continue;
+        }
         if (g_propType.count(n) || g_scope.count(n)) continue;
         // ...and a BASE property of this object, which the scope object answers exactly as it
         // answers a declared one. Leaving it out is why `Material.buttonLeftPadding(flat, hasIcon
@@ -4779,6 +4794,54 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
         }
         binds.push_back({alias, attachedExpr(tn)});
     }
+    // `X as SomeType` — a TYPE NAME in a third position, after the qualified and bare attached
+    // forms above. Same answer as those two: hand an OBJECT over and leave no type name behind.
+    // The cast is not simply dropped, because `as` yields null when the object is NOT of that type
+    // and dropping it would read the property anyway; the test moves to the runtime, where it is
+    // one generic question (does this object's meta-object chain reach that class) and no type is
+    // named on our side.
+    // The left side is not necessarily one of the bound names: `background` is a BASE property, and
+    // those are answered by the scope object rather than handed over, so they never reach `binds`.
+    // Both are the same object seen from different sides, and the cast needs it in D either way.
+    auto castLhs = [&](const std::string &nm) -> std::string {
+        for (auto &b : binds) if (b.first == nm) return b.second;
+        if (g_propType.count(nm) || g_baseProps.count(nm)) return "propObj(this, \"" + nm + "\")";
+        if (auto qp = g_qmlProps.find(g_selfQmlType); qp != g_qmlProps.end() && qp->second.count(nm))
+            return "propObj(this, \"" + nm + "\")";
+        if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end() && qc->second.count(nm))
+            return "propObj(this, \"" + nm + "\")";
+        return std::string();
+    };
+    for (auto &tn : typeNames) {
+        std::string cxx;
+        if (auto ct = g_qmlCxxName.find(tn); ct != g_qmlCxxName.end()) cxx = ct->second;
+        if (cxx.empty()) continue;
+        const std::string tail = " as " + tn;
+        for (size_t k = 0; (k = src.find(tail, k)) != std::string::npos; ) {
+            size_t e = k + tail.size();
+            if (e < src.size() && (std::isalnum((unsigned char) src[e]) || src[e] == '_')) { k = e; continue; }
+            size_t b0 = k;   // the identifier immediately before ` as `
+            while (b0 > 0 && (std::isalnum((unsigned char) src[b0 - 1]) || src[b0 - 1] == '_')) --b0;
+            std::string nm = src.substr(b0, k - b0);
+            std::string lhs = nm.empty() ? std::string() : castLhs(nm);
+            if (lhs.empty()) { k = e; continue; }
+            std::string alias = "__as_" + nm + "_" + tn;
+            src.replace(b0, e - b0, alias);
+            k = b0 + alias.size();
+            bool have = false;
+            for (auto &b : binds) if (b.first == alias) have = true;
+            if (!have) binds.push_back({alias, "castQml(" + lhs + ", \"" + cxx + "\")"});
+        }
+    }
+    // ...and the gate, kept to exactly what is MEASURED to fail: an `as <Type>` still in the source
+    // means the rewrite above could not reach its left side, and that expression throws
+    // `ReferenceError: <Type> is not defined`. A type name in the `<Type>.<Member>` position does
+    // NOT throw — Qt's Material Button reads `display !== AbstractButton.TextOnly` through a
+    // delegated binding and answers correctly — so gating every leftover type name refused four
+    // paddings that were right, which the differential said within one build (leftPadding 24 -> 0).
+    // The runtime is loud about a delegation that throws, so evidence arrives rather than silence.
+    for (auto &tn : typeNames)
+        if (src.find(" as " + tn) != std::string::npos) return false;
     std::string names, objs;
     for (auto &b : binds) {
         names += (names.empty() ? "" : ", ") + ("\"" + b.first + "\"");
