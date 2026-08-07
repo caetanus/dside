@@ -5080,6 +5080,26 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+**All five styles through the census, which is the honest count** (2026-08-07). The `differ N/M`
+number the comparison script prints counts LINES, and a line under a path the oracle marked
+`<missing>` is not a defect — so every raw count above overstates the residue. Run through
+`tools/qmltc-value-census.py`:
+
+| | Basic | Fusion | Universal | Imagine | Material |
+|---|---:|---:|---:|---:|---:|
+| documents | 57 | 49 | 50 | 49 | 46 |
+| identical | **56** | **48** | **46** | **42** | **33** |
+| value differences | 2 | 2 | 6 | 36 | 24 |
+| paths we have, engine does not | 0 | 0 | 0 | 0 | 0 |
+| paths the engine has, we do not | 0 | 0 | 1 | 90 | 9 |
+| unmeasurable (deferred transitions) | 155 | 95 | 237 | 189 | 357 |
+
+Basic and Fusion are down to DelayButton alone (2 differences each, the swapped
+`contentItem.data[0]`/`[1]` already on record). Imagine's 90 "engine has, we do not" are 79 of them
+in DelayButton — the `layer.effect` shape — and the rest the two handle families below. "Paths we
+have and the engine does not" is 0 in every style, which is the direction that would mean we
+invented an object.
+
 **Imagine's value differential, characterised: no new defect either.** 37 of 51 documents match
 (2 before the interceptor). The 12 that differ are three families already on record and nothing
 else: `transitions[…].animations[…]` everywhere (the deferred-Transition ceiling, the same one that
