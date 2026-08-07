@@ -6011,7 +6011,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // before anything reads it. Each child is a recursively-compiled nested @QObject in a plain field.
     ObjNode node;
     node.id = g_selfId;   // still this object's id here (the loop doesn't touch g_selfId)
-    std::string childFields, childWire, crossConnects;
+    // ...and value sources in a buffer of their OWN, because they are not children in the order
+    // sense: `X on prop` has to be in place BEFORE this object writes `prop`, which is where the
+    // engine puts it too. Measured: Qt's Imagine ToolSeparator wrote its base `source` first and
+    // built the NinePatchImageSelector after, so the interceptor never saw the only write to the
+    // property, never captured the base name, and resolved to EMPTY — `toolseparator-separator`
+    // against the engine's `toolseparator-separator-vertical.9.png`.
+    std::string childFields, childWire, vsWire, crossConnects;
     // Forwarding properties for this object's aliases — see where they are filled.
     std::string aliasProps;
     std::string dcWire;   // default children, emitted before the property-bound ones (see below)
@@ -8160,7 +8166,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // qobjOf(this), not cast(void*)this: the handoff carries the C++ QObject, and a void*
         // passes straight through qobjOf — publishing the D reference handed Qt a pointer that is
         // not a QObject at all, which segfaulted inside QQmlProperty.
-        childWire += "        __qmltcVsTarget = qobjOf(this); __qmltcVsProp = \"" + vs.prop + "\";\n"
+        vsWire += "        __qmltcVsTarget = qobjOf(this); __qmltcVsProp = \"" + vs.prop + "\";\n"
                    // ...and the back-reference handoff, which every other child site does and this
                    // one did not: a value source that reads its enclosing object cast whatever the
                    // PARENT had published, which between unrelated D classes is null. Qt's Fusion
@@ -8635,6 +8641,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string line = baseWire.substr(i, j - i + 1);
             (mentionsKid(line) ? baseAfterKids : baseBeforeKids) += line;
         }
+        // VALUE SOURCES before every write, base ones included: `X on prop` must be in place
+        // before `prop` is assigned, which is where the engine puts it. The base `source` of an
+        // Imagine control is written here, so a selector built after it never saw the only write
+        // to the property it intercepts.
+        wire += vsWire;
         wire += baseBeforeKids;   // set base C++ properties, with every BINDING already live
         // Everything from HERE on is "my children and what reads them", and it becomes a separate
         // method the PARENT calls once this object is assigned to its property — see the split
