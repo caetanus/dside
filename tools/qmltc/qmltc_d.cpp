@@ -6427,6 +6427,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             continue;
         }
         auto cbt = boundTypeFor(childType);
+        std::string dcEngineUri;              // non-empty: the ENGINE builds this child
         UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
         std::string childBaseImport = cbt.second;           // its import module (for g_extraImports)
@@ -6453,14 +6454,27 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             bool ltFound = false;
             auto chained = resolveLocalChain(childType, inPath, childInit, childResolvedPath,
                                              nullptr, &ltFound);
+            // ...or a type the ENGINE knows and no subclass can wrap. The property, group and
+            // value-source paths all answer this by letting the engine build it and holding the
+            // result as an opaque pointer; the DEFAULT-child path was the fourth and last one
+            // without the branch. Qt's Material TextField puts a `FloatingPlaceholderText` there —
+            // no C++ symbol, no .qml — so the child was dropped, its id with it, and
+            // `implicitWidth: … Math.max(contentWidth, placeholder.implicitWidth) …` had nothing to
+            // resolve (0 against the engine's 120).
+            if (!ltFound && !uriForType(childType).empty() && g_qmlCxxType.count(childType)) {
+                dcEngineUri = uriForType(childType);
+                ltFound = true;
+            }
             if (!ltFound) {
                 std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
                              inPath, childType.c_str(), cls.c_str());
                 dropSkippedChildId(childInit);
                 ++partial; continue;
             }
-            childBase = chained.first;
-            childBaseImport = chained.second;
+            if (dcEngineUri.empty()) {
+                childBase = chained.first;
+                childBaseImport = chained.second;
+            }
         }
         // A bound child type (Rectangle/Text) needs ITS module imported too (the root's import
         // alone isn't enough); mirror the root's import + <pkg>.qtvirt, deduped.
@@ -6474,7 +6488,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string childCls = cls + "_dc" + std::to_string(di);
         for (auto &rp : childResolvedPath) g_resolving.insert(rp);
         g_parentCompletes = true;   // ...after this wire appends and parents it
+        auto savedDEC = g_engineChildCls, savedDET = g_engineChildType, savedDEU = g_engineChildUri;
+        if (!dcEngineUri.empty()) {
+            g_engineChildCls = childCls; g_engineChildType = childType; g_engineChildUri = dcEngineUri;
+        }
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
+        g_engineChildCls = savedDEC; g_engineChildType = savedDET; g_engineChildUri = savedDEU;
         g_srcStack.pop_back(); g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
         g_docUrl = savedDocUrl;   // ...and so a class emits ITS document's baseUrl, not ours
         g_bareImports = savedDcBare; g_qualifiedTypes = savedDcQual;
@@ -6503,6 +6522,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // background and TextArea after it, and the engine puts the placeholder at data[0] in
         // BOTH — so the order is not the document's, it is default-then-property. Ours was the
         // reverse, which made `data[N]` name a different object on each side.
+        // An engine-built child is reached through the instance it wraps, everywhere below.
+        std::string dcRef = field + (dcEngineUri.empty() ? "" : ".__inst");
         dcWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + field + " = " + (childBase.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    // Append through the type's DEFAULT PROPERTY, which is how the engine places a
@@ -6514,19 +6535,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // Item-derived local type — unparented, which is exactly what the linkage
                    // check caught.
                    + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
-                        ? "        if (!listAppend(this, \"" + defaultKidLabel + "\", " + field + ")) {\n    "
+                        ? "        if (!listAppend(this, \"" + defaultKidLabel + "\", " + field
+                          + (dcEngineUri.empty() ? "" : ".__inst") + ")) {\n    "
                         : "")
-                   + "        setQtParent(" + field + ", this);\n"
+                   + "        setQtParent(" + field + (dcEngineUri.empty() ? "" : ".__inst") + ", this);\n"
                    // ...and a SINGLE-OBJECT default property is ASSIGNED, not appended. The label
                    // already named it (that is how the dump reaches the child), but nothing wrote
                    // it: `default property QtObject child` read `<null>` on our side against the
                    // engine's `<object>`, so the property existed and held nothing.
                    + (!defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
-                        ? "        setPropObj(this, \"" + defaultKidLabel + "\", " + field + ");\n" : "")
+                        ? "        setPropObj(this, \"" + defaultKidLabel + "\", " + dcRef + ");\n" : "")
+                   // ...and the parent goes on the INSTANCE, like every other reach into an
+                   // engine-built child: the wrapper is a holder and has no `parent` of its own
+                   // (measured — `no writable property "parent" … on RtSlider_background_dc0`).
                    + (((isItemType(childType) || isItemType(qmlNameOfCxx(childBase)))
                         && isItemType(g_selfQmlType))
                         ? std::string(defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@' ? "    " : "")
-                          + "        setPropObj(" + field + ", \"parent\", this);\n" : "")
+                          + "        setPropObj(" + dcRef + ", \"parent\", this);\n" : "")
                    + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
                         ? "        }\n" : "")
                    // ...and NOT classBegin (the child did it); its own children come now, once it
@@ -9153,6 +9178,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // are told apart by what follows: a receiver's next argument is a SIGNATURE, ending in
             // `()`. Getting this wrong is silent — the value lands on the wiring object instead of
             // on the instance, and the instance keeps its default.
+            // ...and `this` as the LAST argument, which is the VALUE position: `setQtParent(x,
+            // this)` and `setPropObj(x, "parent", this)` hand over the container itself, and for a
+            // wrapper that has to be the instance — a QObject the engine never built is not an
+            // item and cannot be anyone's parent (measured: `no writable property "parent" …
+            // (empty value)` on Qt's Imagine Slider).
+            at = 0;
+            while ((at = buf.find(", this)", at)) != std::string::npos) {
+                buf.replace(at, 7, ", __inst)");
+                at += 9;
+            }
             at = 0;
             while ((at = buf.find(", this, \"", at)) != std::string::npos) {
                 size_t q = at + 9, e = buf.find('"', q);
@@ -9225,11 +9260,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
 // meta-object (`propObj(o, "group")`). Deriving it from the dotted label alone got that wrong.
 // `vgroup` marks a VALUE-group member: mutating it needs setVgroup (read-modify-write), and
 // setProp(o, "vt.count", v) would silently do nothing — setProperty fails on a dotted name.
-struct DumpLine { std::string label, access, dtype, setObj, setProp; bool vgroup = false; };
+struct DumpLine { std::string label, access, dtype, setObj, setProp; bool vgroup = false;
+                  std::string parentSelf; };   // the CONTAINER's own expression (see collectDump)
 // D access expression -> the class `__class` must report for that object (see collectDump).
 static std::map<std::string, std::string> g_clsHint;
+// `parentSelf` is the expression for the object that CONTAINS this one — the thing a child is
+// parented to. It is not `acc` minus a segment: when the container is an engine-created child, the
+// item lives on the INSTANCE, and the wrapper is only a holder. Passing it down instead of slicing
+// the access string keeps that distinction; slicing lost it and the linkage check then asserted on
+// a tree that was correct.
 static void collectDump(const ObjNode &n, const std::string &acc, const std::string &lab,
-                        std::vector<DumpLine> &out) {
+                        std::vector<DumpLine> &out, const std::string &parentSelf = "") {
+    const size_t __dumpStart = out.size();
+    struct FillParent {   // ...on the way out, so a child's own answer wins over ours
+        std::vector<DumpLine> &o; size_t at; const std::string &p;
+        ~FillParent() { for (size_t i = at; i < o.size(); ++i) if (o[i].parentSelf.empty()) o[i].parentSelf = p; }
+    } __fp{out, __dumpStart, parentSelf};
     // An ENGINE-CREATED child is not the object the property holds — the instance it wraps is — so
     // its OWN reads go through `.__inst`. Its CHILDREN are still fields of the wiring object, and
     // walking into them through `__inst` (a void*) does not even compile: Qt's Fusion Dial has a
@@ -9332,7 +9378,7 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         std::string klab = k.first + (n.listKids.count(k.first) ? "[0]" : "");
         // An ENGINE-CREATED child is not the object the property holds — the instance it wraps is.
         // Dumping (and asserting the linkage on) the wiring object compared the wrong thing.
-        collectDump(k.second, acc + dIdent(k.first) + ".", lab + klab + ".", out);
+        collectDump(k.second, acc + dIdent(k.first) + ".", lab + klab + ".", out, self);
     }
     // Group children: read through the D field, but label with the QML path the oracle walks.
     for (auto &a : n.attachedProps) {
@@ -9345,14 +9391,14 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
     }
     for (size_t i = 0; i < n.groupKids.size(); ++i)
         collectDump(n.groupKids[i].second, acc + n.groupKids[i].first + ".",
-                    lab + n.groupKidPaths[i] + ".", out);
+                    lab + n.groupKidPaths[i] + ".", out, self);
     // Default (unnamed) children: the D field is accessed directly, but the label uses `@<i>` so the
     // oracle resolves it via childItems()[i] (declaration order == child list order).
     for (size_t i = 0; i < n.defaultKids.size(); ++i)
         collectDump(n.defaultKids[i].second, acc + n.defaultKids[i].first + ".",
                     lab + (n.defaultKidLabel.empty() ? "@" + std::to_string(i)
                            : n.defaultKidIsList ? n.defaultKidLabel + "[" + std::to_string(i) + "]"
-                           : n.defaultKidLabel) + ".", out);
+                           : n.defaultKidLabel) + ".", out, self);
 }
 
 int main(int argc, char **argv) {
@@ -9698,7 +9744,10 @@ int main(int argc, char **argv) {
                 if (!done.insert(l.setObj).second) continue;
                 auto dot = l.setObj.rfind('.');
                 if (dot == std::string::npos) continue;
-                std::string parentExpr = l.setObj.substr(0, dot);
+                // The CONTAINER's own expression, carried down by collectDump. Slicing the
+                // access string instead lost the distinction between an engine-created child's
+                // wrapper and the instance the item is actually parented to.
+                std::string parentExpr = l.parentSelf.empty() ? l.setObj.substr(0, dot) : l.parentSelf;
                 // the label segment naming this child (the one before the property)
                 auto lp = l.label.rfind('.');
                 if (lp == std::string::npos) continue;
