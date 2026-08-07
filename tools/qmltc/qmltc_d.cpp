@@ -9230,8 +9230,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // VERSIONLESS: Qt 6 resolves the latest, and a style's impl module does not
             // necessarily register its types at 2.0 — Fusion's DialImpl is not a type at that
             // version, and asking for it failed the whole document at construction.
+            // ...with the DOCUMENT this object is written in: the instance inherits it as its
+            // baseUrl, so a relative path inside it resolves where the engine resolves it. Without
+            // it the object reported the synthetic `file:///qtd_delegate.qml` (measured in the dump
+            // of Qt's Material TextField).
             wire.insert(wp + 16, "        __inst = createQmlObject(\"" + g_engineChildUri + "\", \""
-                                 + g_engineChildType + "\");\n        if (__inst is null) return;\n");
+                                 + g_engineChildType + "\", \"" + selfDocUrl + "\");\n"
+                                 "        if (__inst is null) return;\n");
         outerField += mk;
     }
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + lateMethod + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods

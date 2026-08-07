@@ -900,6 +900,23 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
 // BusyIndicatorImpl, ProgressBarImpl are compiled into their style plugin and cannot be linked
 // against, so no D subclass of them can exist. They can still be BUILT: the engine knows them by
 // name, and everything after that is the meta-object channel like any other object.
+// `docUrl` is the DOCUMENT the object is written in, and it is not cosmetic: the object inherits it
+// as its baseUrl, so every relative path inside it resolves against that document — which is what
+// the engine does. Passing nothing left `file:///qtd_delegate.qml` there (measured on Qt's Material
+// TextField, whose placeholder reports it in the dump).
+extern "C" void* qtd_qml_create_object_in(const char* uri, const char* typeName, const char* docUrl) {
+#ifdef QTD_HAVE_QML
+    void* c = qtd_make_component(uri, typeName, docUrl);
+    if (!c) return nullptr;
+    auto* comp = static_cast<QQmlComponent*>(c);
+    QObject* o = comp->create();
+    if (!o) std::fprintf(stderr, "qtd: creating '%s' from '%s' failed: %s\n", typeName, uri,
+                         qPrintable(comp->errorString()));
+    return o;
+#else
+    (void) uri; (void) typeName; (void) docUrl; return nullptr;
+#endif
+}
 extern "C" void* qtd_qml_create_object(const char* uri, const char* typeName) {
 #ifdef QTD_HAVE_QML
     void* c = qtd_make_component(uri, typeName, nullptr);

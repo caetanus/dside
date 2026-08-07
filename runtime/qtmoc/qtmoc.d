@@ -1237,10 +1237,13 @@ void* makeComponent(string uri, string typeName, string docUrl = "") {
 }
 
 extern(C) void* qtd_qml_create_object(const(char)*, const(char)*);
+private extern(C) void* qtd_qml_create_object_in(const(char)*, const(char)*, const(char)*);
 /// An object of a registered QML type that exports no C++ symbol (Qt's DialImpl and friends live in
 /// a style plugin): it cannot be SUBCLASSED, but the engine builds it by name and everything after
 /// that goes through the meta-object like any other object.
-void* createQmlObject(string uri, string typeName) {
+void* createQmlObject(string uri, string typeName, string docUrl = "") {
+    if (docUrl.length)
+        return qtd_qml_create_object_in((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);
     return qtd_qml_create_object((uri ~ "\0").ptr, (typeName ~ "\0").ptr);
 }
 
