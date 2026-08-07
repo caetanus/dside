@@ -1725,6 +1725,12 @@ static bool readName(const std::string &n, std::string &out) {
         }
         return false;
     }
+    // A `var`'s value is NOT in the field — the field is a zero-size marker and the runtime owns
+    // the value — so there is no scalar read here and emitting the name produced D that does not
+    // compile ("expression `this.<name>` of type `QmlVar` does not have a boolean value"). This is
+    // the fourth place that decides how a `var` is read; objPathExpr already had the rule. A
+    // refusal is the honest answer: a read with no type cannot be compiled, only delegated.
+    if (auto vt = g_propType.find(n); vt != g_propType.end() && vt->second == "@var") return false;
     out = n; return true;
 }
 
