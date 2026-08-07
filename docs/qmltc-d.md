@@ -5080,6 +5080,21 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+**An EMPTY EXCERPT is not a cosmetic defect — it is the refusal's cause.** `jsDelegate` begins by
+taking the expression's source text, and hands the binding to the engine only if it has it; with the
+wrong document current, `srcRaw` returns nothing and the binding is refused instead of delegated.
+That is why fixing WHEN the group path restores the document did not merely improve a message: Qt's
+Material RangeSlider went from two handles painted with the Rectangle and Ripple defaults to
+matching the engine outright.
+
+So `[]` in a diagnostic is now a lead, not noise. **113 of them remain, all in Material and all
+under `layer.effect`** (102 in `BoxShadow`, 11 in `RoundedElevationEffect`) — the chain is
+`Button.qml` → `ElevationEffect.qml` → the BoxShadow children inside it, and the document current
+while those children compile is not the one they were written in. The group path now restores after
+`compileObject` like the default-child path, and these survived it, so the site is a different one
+and is not yet located. Their subtree is the `layer.effect` ceiling, so no value moves either way
+today; the lead is recorded because the mechanism behind it is now understood.
+
 **Where Material stands after the attached-at-depth fix** (34 of 46 identical, 20 value
 differences). What is left, by document:
 
