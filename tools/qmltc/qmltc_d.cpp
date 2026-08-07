@@ -5219,6 +5219,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
 
     std::vector<Prop> props;
+    // A `var` property whose initial value is an OBJECT: collected here and emitted where the late
+    // buffers exist, further down.
+    std::vector<std::pair<std::string, std::string>> varObjInit;
     std::vector<RawHandler> rawHandlers;
     // (field, initializer, QML type). The TYPE used to be dropped here, so a child bound to a
     // property (`property FontMetrics fm: FontMetrics { ... }`) was compiled as a bare @QObject
@@ -5918,6 +5921,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     && !(isRequiredMem(pub) && !g_delegateCls.empty())) {
                 props.push_back({name, "QmlVar", "", false, {}});
                 g_propType[name] = "@var";
+                // ...and its INITIAL VALUE, which was dropped in silence — no write, no refusal.
+                // A `var` holding an OBJECT is the shape Qt's Material SliderHandle is built on
+                // (`readonly property var control: parent`), and every colour inside it is written
+                // by a delegated `root.control ? … : "transparent"`, so an empty `control` painted
+                // Slider, Dial and RangeSlider transparent against the engine's accent. A QVariant
+                // carries a QObject fine; what was missing is anyone writing one. Late phase,
+                // because `parent` is not set until the parent assigns us.
+                if (auto *ves = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
+                    std::string voe, voq;
+                    if (objPathExpr(ves->expression, voe, voq)) varObjInit.push_back({name, voe});
+                }
                 continue;
             }
             // `property Type kid: Type { ... }` — the child object hangs off pub->binding.
@@ -8724,6 +8738,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // before `prop` is assigned, which is where the engine puts it. The base `source` of an
         // Imagine control is written here, so a selector built after it never saw the only write
         // to the property it intercepts.
+        for (auto &vo : varObjInit) {
+            std::string slot = "__rcv_" + vo.first;
+            handlerSlots += "    @Slot void " + slot + "() {\n        setPropObj(this, \""
+                          + vo.first + "\", " + vo.second + ");\n    }\n";
+            lateWire += "        " + slot + "();\n";
+        }
         wire += vsWire;
         wire += baseBeforeKids;   // set base C++ properties, with every BINDING already live
         // Everything from HERE on is "my children and what reads them", and it becomes a separate
