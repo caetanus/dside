@@ -5080,6 +5080,15 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+**Imagine's value differential, characterised: no new defect either.** 37 of 51 documents match
+(2 before the interceptor). The 12 that differ are three families already on record and nothing
+else: `transitions[…].animations[…]` everywhere (the deferred-Transition ceiling, the same one that
+dominates Universal), `effect.data[…]` (the `layer.effect` shape whose Qt-side crash is recorded
+above), and one property of object type reading `<null>` against the engine's `<object>` —
+SplitView's `handle` and SelectionRectangle's two handles are `Component`s, which is the
+template-not-built ceiling, and Switch/SwitchDelegate's `indicator.handle` is the wrapper-declares-
+the-property ceiling ("two objects, one path"). Nothing in the remainder is specific to Imagine.
+
 **Universal's value differential, characterised: no new defect.** 40 of 50 documents match. The ten
 that differ are the two families already on record and nothing else — every difference in StackView
 (67), Drawer (16), ScrollBar and ScrollIndicator is inside `transitions[...]`/`animations[...]`,
