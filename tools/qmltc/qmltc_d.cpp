@@ -4770,13 +4770,44 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
         for (auto &at : g_qmlAttachedCxx) {
             const std::string &tn = at.first;
             if (!g_qmlTypeUri.count(tn)) continue;
-            std::string pat = binds[bi].first + "." + tn + ".";
-            if (src.find(pat) == std::string::npos) continue;
-            std::string alias = "__att_" + binds[bi].first + "_" + tn;
-            std::string rep = alias + ".";
-            for (size_t at2 = 0; (at2 = src.find(pat, at2)) != std::string::npos; )
-                { src.replace(at2, pat.size(), rep); at2 += rep.size(); }
-            binds.push_back({alias, attachedExprOn(binds[bi].second, tn)});
+            // ...at ANY depth under the bound name, not just directly on it. Qt's Material
+            // SliderHandle writes `root.control.Material.accentColor` — the attached object hangs
+            // off a property of the id, one level further down — and matching only
+            // `<name>.<Type>.` left `Material` standing in the source. It does not throw where the
+            // shape is guarded (`root.control ? …`), it throws INSIDE the guard, which is exactly
+            // what the runtime reported: `Cannot read property 'accentColor' of undefined`, and
+            // Slider, Dial and RangeSlider painted their handles transparent.
+            for (size_t at2 = 0;;) {
+                std::string head = binds[bi].first + ".";
+                size_t k = src.find(head, at2);
+                if (k == std::string::npos) break;
+                if (k > 0 && (std::isalnum((unsigned char) src[k - 1]) || src[k - 1] == '_'
+                              || src[k - 1] == '.')) { at2 = k + head.size(); continue; }
+                // walk the dotted chain after the id, looking for the type name in it
+                size_t p0 = k + head.size();
+                std::vector<std::string> segs;
+                while (true) {
+                    size_t e = p0;
+                    while (e < src.size() && (std::isalnum((unsigned char) src[e]) || src[e] == '_')) ++e;
+                    if (e == p0) break;
+                    std::string seg = src.substr(p0, e - p0);
+                    if (seg == tn) break;
+                    segs.push_back(seg);
+                    if (e >= src.size() || src[e] != '.') { segs.clear(); break; }
+                    p0 = e + 1;
+                }
+                size_t tEnd = p0 + tn.size();
+                bool hit = src.compare(p0, tn.size(), tn) == 0 && tEnd < src.size() && src[tEnd] == '.';
+                if (!hit) { at2 = k + head.size(); continue; }
+                std::string owner = binds[bi].second, alias = "__att_" + binds[bi].first;
+                for (auto &sg : segs) { owner = "propObj(" + owner + ", \"" + sg + "\")"; alias += "_" + sg; }
+                alias += "_" + tn;
+                src.replace(k, (tEnd + 1) - k, alias + ".");
+                at2 = k + alias.size() + 1;
+                bool have = false;
+                for (auto &b : binds) if (b.first == alias) have = true;
+                if (!have) binds.push_back({alias, attachedExprOn(owner, tn)});
+            }
         }
     }
     // ...and a BARE attached type on this object (`Material.buttonLeftPadding(…)`, which is how
@@ -7437,7 +7468,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // ...unless the engine can evaluate what we could not. Tried HERE, at the point of
             // refusal, so nothing that already compiles can be diverted into it.
             if (std::string js; jsDelegate(ba.second, ba.first, js)) {
-                baseWire += js;
+                // ...in the LATE phase when one of the objects it hands over is READ FROM A
+                // PROPERTY rather than held in a field. Those are evaluated once, where the call
+                // sits — and a property assigned later is still empty there. Qt's Material
+                // SliderHandle hands over `Material` attached to `root.control`, and `control` is
+                // written in the late phase, so the object published was null and the expression
+                // threw `Cannot read property 'accentColor' of null` for good. Same sink and same
+                // reason as every other read through an object assigned later.
+                if (js.find("propObj(") != std::string::npos) lateWire += js;
+                else baseWire += js;
                 g_ctxUsed = true;   // ...so a delegate's body waits for the per-item context
                 ++g_delegated;
                 std::fprintf(stderr, "qmltc-d: %s:%s: base property '%s' in %s (%s) delegated to the engine: '%s'\n",
