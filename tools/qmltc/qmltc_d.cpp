@@ -8427,6 +8427,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 node.groupProps.push_back({ga.first, "string"});
                 continue;
             }
+            // ...and an OBJECT, which the channel above cannot carry at all: `anchors.fill: parent`
+            // is the commonest line in QML and was refused 49 times across Qt's Material and
+            // Imagine styles, more than any other single shape left. The machinery is already
+            // there — a group member bound to a CHILD object writes exactly this call — so what
+            // was missing is the VALUE form of a shape that only had the child form, which is the
+            // third time that pattern has been the answer. Deferred to the late phase like every
+            // other read through the tree: `parent` is not set until the parent assigns us.
+            if (std::string oe, oq; objPathExpr(ga.second, oe, oq)) {
+                std::string slot = "__rcg_" + gname + "_" + mem;
+                std::string ost = "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem
+                                + "\", " + oe + ");\n";
+                handlerSlots += "    @Slot void " + slot + "() {\n" + ost + "    }\n";
+                wireGroupDeps(ga.second, slot, ost, "object-group member '" + ga.first + "'", false);
+                lateWire += "        " + slot + "();\n";
+                continue;
+            }
             std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s: value is not a scalar "
                          "the channel can convert [%s] — skipped (later phase)\n",
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
