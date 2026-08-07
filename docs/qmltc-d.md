@@ -5080,6 +5080,21 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+**A `var` holding an object, read from a delegated expression: narrowed, not closed.** Qt's Material
+SliderHandle is `readonly property var control: parent`, and every colour in the handle comes from a
+delegated `root.control ? … : "transparent"`. Two silent holes were found and closed on the way —
+the initial value of a `var` property was dropped with no write and no diagnostic, and a `var` write
+stored the value without emitting its NOTIFY, which every other type in `callProp` does — and after
+both, `handle.control` agrees with the engine and the colour is still transparent. The expression
+does not throw, so it evaluates and reads the property as FALSY.
+
+Probed Qt against Qt, no D in it: a **moc** `Q_PROPERTY(QVariant)` holding
+`QVariant::fromValue<QObject*>` reads truthy from a `QQmlExpression` and `control.objectName`
+answers. So neither the variant's metatype nor the expression channel is the problem. What is left
+untested is the same property on a meta-object built by `QMetaObjectBuilder`, which is what our
+`@QObject` classes carry — that is the next question, and it is about our meta-object rather than
+about QML.
+
 **A fourth position for the same fact: a REVISIONED property is invisible to a delegated
 expression.** Qt's Imagine GroupBox is down to `topPadding`, whose remaining free name the runtime
 reports as `ReferenceError: implicitLabelWidth is not defined` — and that property exists, on
