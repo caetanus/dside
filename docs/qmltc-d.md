@@ -238,10 +238,14 @@ through an `id`), which is exactly the guard we want.
   The parameter's `isPointer` matters and cost a debugging round: Qt registers
   `clicked(QQuickMouseEvent*)` and the registry spells the type without the `*`, so the first
   version compiled cleanly and connectMeta failed at RUNTIME — the handler simply never fired.
-- **Property VALUE SOURCES** (`NumberAnimation on v`, `Behavior on x`). Qt models these with ONE
-  generic interface — QQmlPropertyValueSource: the object says "I drive this property", Qt hands it
+- **Property VALUE SOURCES and INTERCEPTORS** (`NumberAnimation on v`; `Behavior on x` and
+  `NinePatchImageSelector on source`). `X on prop` is TWO mechanisms and the object itself says
+  which it is; both go through one runtime entry point. Qt models the first with ONE generic
+  interface — QQmlPropertyValueSource: the object says "I drive this property", Qt hands it
   a QQmlProperty, and the object takes over. So a single runtime entry point covers every animation
-  type and Behavior, and the compiler never learns what a NumberAnimation is. Two ordering details
+  type and Behavior, and the compiler never learns what a NumberAnimation is. An INTERCEPTOR is not
+  handed the property but installed ON it, rewriting each write as it passes — see "`X on prop` is
+  TWO mechanisms" below for the three inputs that has to have. Two ordering details
   are load-bearing: the object must be handed its target BEFORE its own `running: true` is applied
   and before it completes (the same construction-time handoff `__outer` uses — attaching afterwards
   starts an animation with nothing to drive), and the handoff carries `qobjOf(this)`, not the D
@@ -1413,8 +1417,9 @@ constructing with 0 failures, and no file that matches at construction failing a
 - `delegate`/`model` left null: a `Component` is a template the type instantiates itself, which is
   not yet built. Refusing it is honest; faking it with a component whose bindings cannot resolve
   the enclosing document's ids would improve the metric and damage the product.
-- `Behavior on x` (SwitchDelegate): animation is not implemented and is reported as such. Our final
-  value is right; the engine's, read at that instant, is mid-transition.
+- ~~`Behavior on x` (SwitchDelegate): animation is not implemented and is reported as such. Our final
+  value is right; the engine's, read at that instant, is mid-transition.~~ FIXED: `Behavior` is a
+  property value INTERCEPTOR, and installing one made SwitchDelegate and Switch match outright.
 - `baselineOffset` (CheckBox/TextField placeholders): NOT a binding bug. The objects are identical
   on both sides — same font, geometry, elide, colour. Qt computes
   `ascent + (height - contentHeight)/2`; ours is `14.84 + (28-19)/2 = 19.34`, the engine's is
@@ -5023,12 +5028,12 @@ What the hunt did produce, both real defects of ours:
   component left the property null and said nothing, and Qt does not check either. It now throws on
   both failure modes, so the outcome is a named exception rather than a segfault three frames away.
 
-#### `X on prop` is TWO mechanisms, and only one of them is implemented
+#### `X on prop` is TWO mechanisms, and both are implemented
 
 QML's `<Type> on <property>` binds either a **value source** (`QQmlPropertyValueSource::setTarget`)
 or a **value interceptor** (`QQmlPropertyValueInterceptor`, installed on the property so it rewrites
-every write to it). The compiler implements the first and treats the second as if it were the first
-— `dynamic_cast` fails and the attach returned 0 in silence.
+every write to it). The compiler implemented the first and treated the second as if it were the
+first — `dynamic_cast` failed and the attach returned 0 in silence.
 
 Probed against Qt alone, on an engine-created object:
 
@@ -5039,33 +5044,41 @@ is value source: 0  is interceptor: 1  class=QQuickNinePatchImageSelector
 That is how EVERY Imagine control resolves its image: `source: Imagine.url + "button-background"`
 followed by `NinePatchImageSelector on source { states: [...] }`. The interceptor turns the base
 path into `button-background.9.png` (plus the state suffixes) as the write goes past. Without it the
-plain base lands, the image fails to load, and every size downstream of it is zero — which is the
-whole of Imagine's value differential: 2 of 49 documents match, and the differing names are
+plain base lands, the image fails to load, and every size downstream of it is zero — which was the
+whole of Imagine's value differential: 2 of 49 documents matched, and the differing names were
 implicitWidth (229), implicitHeight (227), width (189), height (171), source (156).
 
-It is also what `Behavior on x` needs, already recorded as "needs a property value interceptor" —
-so the two open items are one item. **Installing one is possible, and probed**: not through `QQmlPropertyPrivate` (no such member) but
-through `QQmlInterceptorMetaObject`, which is `Q_QML_EXPORT`ed in
-`QtQml/private/qqmlvmemetaobject_p.h` — the runtime already uses private QtQml headers, so this is
-work rather than a wall:
+`Behavior on x` is the same mechanism, so the two open items were one item. The way in is not
+`QQmlPropertyPrivate` (no such member) but `QQmlInterceptorMetaObject`, `Q_QML_EXPORT`ed in
+`QtQml/private/qqmlvmemetaobject_p.h`. Three things had to be true at once, and each was found by
+measuring rather than by reading:
+
+* **The object must be created from the real DOCUMENT.** The same selector resolves nothing under a
+  synthetic url and resolves `…/images/button-background.9.png` under the Imagine one, because the
+  path it computes is relative to the document. This is why an earlier attempt saw the write
+  intercepted and the value go to EMPTY: the interception was already working, and the input it
+  needed was the document url — the same fact that `data[0].baseUrl` turned on.
+
+* **The target needs a PROPERTY CACHE.** Qt reads the type of the property being written off
+  `QQmlData::get(object)->propertyCache`, and on an object the engine never built that pointer is
+  null: Qt's Basic Switch segfaulted inside `doIntercept` the first time its `Behavior on x` fired.
+  `QQmlData::ensurePropertyCache` is what `QQmlObjectCreator` does for the objects it makes.
+
+* **The private headers are only on the include path where `QTD_ENABLE_QML` is set.** That flag and
+  `QT_QML_LIB` answer different questions — "registers QML types" versus "links QtQml" — and the
+  webengine binding has the second without the first.
 
 ```cpp
-auto *imo = QQmlInterceptorMetaObject::get(target);
-if (!imo) { QQmlData::get(target, true);
-            imo = new QQmlInterceptorMetaObject(target, QQmlMetaType::propertyCache(target->metaObject())); }
-imo->registerInterceptor(QQmlPropertyIndex(idx), interceptor);
+auto cache = QQmlData::ensurePropertyCache(tgt);
+auto *imo = QQmlInterceptorMetaObject::get(tgt);
+if (!imo) imo = new QQmlInterceptorMetaObject(tgt, cache);
+imo->registerInterceptor(QQmlPropertyIndex(idx), iv);
 ```
 
-Measured: it installs, and the next write to the property IS intercepted — the value goes from the
-base path to EMPTY. So the interception happens and the selector's own resolution does not yet
-produce anything; whatever inputs the engine gives it (its `states`, and whatever `setTarget` is
-expected to have captured) are not all there. That is the next question, and it is now about the
-selector rather than about the mechanism. Ruled out so far, each measured: completing its parser
-status, and giving it a `states` list. The ENGINE resolves the same shape correctly
-(`NinePatchImage { source: Imagine.url + "button-background"; NinePatchImageSelector on source
-{ states: [...] } }` yields `button-background.9.png`, 44x32, Ready), so what differs is something
-QQmlObjectCreator does around the interceptor that these three calls do not reproduce. The attach is LOUD in the meantime instead of returning
-zero and saying nothing.
+Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH → 34 MATCH**
+(construction 51/51), Basic 51 MATCH / 6 differ and Fusion 44 MATCH / 5 differ both unchanged. Qt5
+has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
+keeps taking the value-source path alone, and says so.
 
 **Universal's value differential, characterised: no new defect.** 40 of 50 documents match. The ten
 that differ are the two families already on record and nothing else — every difference in StackView
