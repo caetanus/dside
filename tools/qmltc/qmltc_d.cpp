@@ -7816,15 +7816,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (!u.empty() && g_qmlCxxType.count(gk.type)) gkEngineUri = u;
         }
         std::vector<std::string> gkResolved;
+        // The document a local type was loaded from has to stay CURRENT while the child compiles,
+        // not just while it is resolved. The default-child path already restores after
+        // compileObject; this one restored before it, so every diagnostic and every source excerpt
+        // taken inside a group-bound local type was cut from the WRONG file — Qt's Material
+        // RangeSlider reported `expression for 'string' []` with an empty excerpt for the very
+        // colours its own Slider gets right, because `first.handle: SliderHandle {…}` is a group
+        // member and `handle: SliderHandle {…}` is not. Same rule, and it lived in one of the two
+        // places that decide it.
+        QString savedSrc2 = g_srcText;
+        std::string savedUrl2 = g_docUrl;
+        auto savedGkBare = g_bareImports, savedGkQual = g_qualifiedTypes;
+        bool gkPushed = false;
         if (gkt.first.empty() && gk.type != "QtObject" && gkEngineUri.empty()) {
-            QString savedSrc2 = g_srcText;
-        g_srcStack.push_back(savedSrc2);
-            std::string savedUrl2 = g_docUrl;
+            g_srcStack.push_back(savedSrc2);
+            gkPushed = true;
             bool gkFound = false;
             auto chained = resolveLocalChain(gk.type, inPath, gkInit, gkResolved, nullptr, &gkFound);
             if (gkFound) gkt = chained;
-            g_srcStack.pop_back(); g_srcText = savedSrc2;
-            g_docUrl = savedUrl2;
         }
         if (!gkt.first.empty() && !gkt.second.empty()) {
             std::string imp = "import " + gkt.second + ";\n";
@@ -7839,6 +7848,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         ObjNode kid = compileObject(gkInit, childCls, classes, partial, inPath, gkt.first, nullptr, gk.type);
         g_engineChildCls = savedGEC; g_engineChildType = savedGET; g_engineChildUri = savedGEU;
+        if (gkPushed) g_srcStack.pop_back();
+        g_srcText = savedSrc2; g_docUrl = savedUrl2;
+        g_bareImports = savedGkBare; g_qualifiedTypes = savedGkQual;
         for (auto &rp : gkResolved) g_resolving.erase(rp);
         {   // a child connects to <prop>Changed on us, or on someone above us
             auto pending = g_outerNeedsNotify;
