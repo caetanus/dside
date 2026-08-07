@@ -524,7 +524,17 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
         // A list property is never WRITTEN through this channel: QML appends through the
         // QQmlListProperty the read hands out, which is what `listAppend` does.
         static if (is(X == QmlObjectList)) { return; }
-        else static if (is(X == QmlVar)) { qtd_moc_var_write(qobjOf(o), (m ~ "\0").ptr, a[0]); return; }
+        // ...and NOTIFY, which this branch returned without emitting while every other type below
+        // emits. A `var` whose value the runtime owns is still a property, and QML's capture arms
+        // on the notify: Qt's Material SliderHandle writes `readonly property var control: parent`
+        // in the late phase, and the delegated `root.control ? … : "transparent"` had already run
+        // once against an empty slot, so the handle stayed transparent for good.
+        else static if (is(X == QmlVar)) {
+            qtd_moc_var_write(qobjOf(o), (m ~ "\0").ptr, a[0]);
+            if (notifyIdx >= 0) { void*[2] argv; argv[0] = null; argv[1] = a[0];
+                                  qtd_moc_activate(qobj, notifyIdx, argv.ptr); }
+            return;
+        }
         else {
         // An OBJECT property carries a POINTER in the slot, and the D side holds a wrapper: unwrap
         // on write, hand the C++ pointer back on read. Comparing wrappers with `!=` would compare
