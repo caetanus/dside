@@ -5917,7 +5917,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // expression started resolving `modelData` against an empty property of the item
             // instead of falling through to the context. Same shadow the compiled reads already
             // obey through ctxNameIsReadable.
-            if (!dt[0] && qmlType == QLatin1String("var") && pub->typeModifier.isEmpty()
+            // `variant` is the OLD SPELLING of `var` — the same type, and Qt's Imagine OpacityMask
+            // is written entirely in it (`property variant source`, `maskSource`). Spelling it
+            // differently made the same declaration fall out of the var path into "unsupported
+            // binding/type", which also takes the name OUT OF SCOPE, so everything reading it went
+            // with it.
+            if (!dt[0] && (qmlType == QLatin1String("var") || qmlType == QLatin1String("variant"))
+                    && pub->typeModifier.isEmpty()
                     && !(isRequiredMem(pub) && !g_delegateCls.empty())) {
                 props.push_back({name, "QmlVar", "", false, {}});
                 g_propType[name] = "@var";
@@ -5931,6 +5937,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (auto *ves = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
                     std::string voe, voq;
                     if (objPathExpr(ves->expression, voe, voq)) varObjInit.push_back({name, voe});
+                    // ...and LOUD when it is not taken. Taking only the plain object path and
+                    // saying nothing about the rest re-created, inside the var branch, exactly the
+                    // silence this branch was written to remove — Qt's Imagine OpacityMask writes
+                    // `source: control.indeterminate ? … : …`, a ternary, and it went quiet the
+                    // moment `variant` started reaching here.
+                    else {
+                        std::fprintf(stderr, "qmltc-d: %s: the initial value of `var` property '%s' in "
+                                     "%s is not an object path — the property is DECLARED, its value "
+                                     "is not [%s]\n", inPath, name.c_str(), cls.c_str(),
+                                     srcOf(ves->expression).c_str());
+                        ++partial;
+                    }
                 }
                 continue;
             }
