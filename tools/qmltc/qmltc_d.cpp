@@ -7526,7 +7526,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         // evaluated the binding later, when it is there. Re-evaluated in the late
                         // phase, which the root triggers once the whole tree exists; a recompute
                         // only emits on an actual change, so a redundant one costs nothing.
-                        if (oe6.find("propObj(") != std::string::npos)
+                        if (oe6.find("propObj(") != std::string::npos
+                                || oe6.find("instOf(") != std::string::npos)
                             reEval.insert("__rcb_" + ba.first);
                         continue;
                     }
@@ -8079,7 +8080,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     std::string &sink = g_depIsSibling ? sibConns : conns;
                     sink += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"" + slot + "()\");\n";
                     sink += "        tryConnectMeta(" + oe6 + ", \"changed()\", this, \"" + slot + "()\");\n";
-                    if (oe6.find("propObj(") != std::string::npos) reEval.insert(slot);
+                    // ...and an ENGINE-BUILT child, which is null for exactly the same reason: the
+                    // wrapper is constructed with the others and `instOf` answers null until then,
+                    // so the first evaluation settles on a default and the connect finds nothing.
+                    if (oe6.find("propObj(") != std::string::npos
+                            || oe6.find("instOf(") != std::string::npos) reEval.insert(slot);
                     continue;
                 }
                 // ...or the path resolves to an object whose TYPE simply does not declare the
