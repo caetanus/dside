@@ -9791,13 +9791,21 @@ int main(int argc, char **argv) {
     // threshold reads the DOCUMENT, not the outcome — after compiling, three numbers say how much
     // of it we actually understood:
     // The levels name MECHANISMS, and each one is a weaker guarantee than the one before it:
+    //   -O0  no D compilation at all: the DOCUMENT goes to Qt, as bytecode where qmlcachegen can
+    //        produce it and interpreted where it cannot. Nothing of ours runs, so nothing of ours
+    //        can be wrong — this is the floor the whole scale stands on.
     //   -O1  STATICALLY TYPED translation only. `a === b` compiles well precisely because both
     //        sides have a known D type; nothing crosses as a QVariant and no object is reached
     //        through an interface we did not generate.
     //   -O2  ...and QVariant for WEAK TYPING: `property var`, a value type carried through the
     //        meta-object. The value is right, the type is only known at run time.
     //   -O3  ...and COM-style CONTAINMENT plus delegation: objects the ENGINE builds, held behind
-    //        an opaque pointer, and expressions the engine evaluates for us.
+    //        an opaque pointer, and expressions the engine evaluates for us. -O3 is "compile
+    //        everything that RENDERS THE SAME" — what does not render the same does not get in.
+    //        The compiler cannot decide that on its own (it does not render), so the check lives in
+    //        the build: compile, render, compare, and demote the document to -O0 when it differs.
+    //   -Ox  the same code path with the check WAIVED. Experimental: it compiles the most and
+    //        promises the least, and a document that renders wrong here stays wrong.
     // A document that needs a mechanism its level does not allow is not compiled with it — it goes
     // to the engine WHOLE, which is the one thing that always behaves like the engine.
     int optLevel = 3;
@@ -9811,9 +9819,11 @@ int main(int argc, char **argv) {
         // Last resort, and it must be asked for BY NAME: routing here automatically would make
         // every gap disappear into the fallback instead of being a gap anyone can see.
         else if (std::strcmp(argv[i], "--delegate-doc") == 0) delegateDoc = true;
+        else if (std::strcmp(argv[i], "-O0") == 0) optLevel = 0;
         else if (std::strcmp(argv[i], "-O1") == 0) optLevel = 1;
         else if (std::strcmp(argv[i], "-O2") == 0) optLevel = 2;
         else if (std::strcmp(argv[i], "-O3") == 0) optLevel = 3;
+        else if (std::strcmp(argv[i], "-Ox") == 0) optLevel = 9;   // experimental: no check, no demotion
         else if (std::strcmp(argv[i], "--no-fallback") == 0) noFallback = true;
         else if (std::strcmp(argv[i], "--pedantic") == 0) { pedantic = true; noFallback = true; }
         // Where the shadow documents go. Given: a refused expression becomes a shadow compiled by
@@ -10065,7 +10075,8 @@ int main(int argc, char **argv) {
     // that quietly stops being compiled is exactly the false green this project keeps finding.
     if (!noFallback && !delegateDoc) {
         const char *why = nullptr;
-        if (optLevel <= 1 && (g_weakTyped || g_engineKids || g_delegated))
+        if (optLevel == 0) why = "-O0 compiles nothing: Qt runs the document";
+        else if (optLevel <= 1 && (g_weakTyped || g_engineKids || g_delegated))
             why = "-O1 is statically typed translation only";
         else if (optLevel == 2 && (g_engineKids || g_delegated))
             why = "-O2 allows weak typing but not containment or delegation";
@@ -10084,6 +10095,11 @@ int main(int argc, char **argv) {
     // walk. Counted in its own column: a document delegated whole agrees with the engine BY
     // CONSTRUCTION, so counting it beside a compiled one would inflate the score with a tautology.
     if (delegateDoc) {
+        // The ROOT document's url, built from the path we were given. `g_docUrl` is whatever
+        // document was loaded LAST, which for a root that pulls in a local type is that type's
+        // file: Qt's Imagine GroupBox was handed over as `Label.qml` — a different document that
+        // builds and renders, so nothing failed, it was simply the wrong thing.
+        std::string rootUrl = "file://" + QFileInfo(QString::fromUtf8(inPath)).absoluteFilePath().toStdString();
         std::vector<DumpLine> dl;
         collectDump(rootNode, "o.", "", dl);
         std::sort(dl.begin(), dl.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });
@@ -10109,6 +10125,7 @@ int main(int argc, char **argv) {
                     "extern(C) void qtd_dump_object_as(void*, const(char)*, const(char)*);\n");
         if (isItemType(rootType))
             std::printf("extern(C) int qtd_render_item(void*, const(char)*);\n"
+                        "extern(C) int qtd_render_document(const(char)*, const(char)*);\n"
                         "extern(C) int qtd_click_item(void*, int, int);\n"
                         "extern(C) int qtd_key_item(void*, int, int);\n"
                         "extern(C) int qtd_run_ms(void*, int);\n");
@@ -10116,21 +10133,27 @@ int main(int argc, char **argv) {
                     "/// holds a pointer to it, which is the same containment an engine-built child uses.\n"
                     "final class %s {\n    void* __inst;\n"
                     "    this() { __inst = createQmlDocument(\"%s\"); }\n}\n",
-                    inPath, qPrintable(cls), g_docUrl.c_str());
+                    inPath, qPrintable(cls), rootUrl.c_str());
         if (dump) {
             std::printf("\nvoid main(string[] args) {\n"
                         "    qtd_qmltc_init_gui_app();\n"
                         "    auto o = new %s();\n"
                         "    if (o.__inst is null) { writefln(\"delegated document failed to build\"); return; }\n",
                         qPrintable(cls));
+            // ...and --render goes through the DOCUMENT path: at this level the engine builds the
+            // object, so the frame is taken the way Qt's own viewer takes it. Rendering it as a
+            // loose item measures our start-up rather than the document (Qt's Imagine GroupBox:
+            // 1x19 that way, 40x59 the engine's).
+            if (isItemType(rootType))
+                std::printf("    foreach (i, a; args) if (a == \"--render\" && i + 1 < args.length) {\n"
+                            "        auto rc = qtd_render_document(\"%s\", (args[i + 1] ~ \"\\0\").ptr);\n"
+                            "        if (rc != 0) writefln(\"render failed rc=%%s\", rc);\n        return;\n    }\n",
+                            rootUrl.c_str());
             if (isItemType(rootType))
                 std::printf("    foreach (i, a; args) if (a == \"--click\" && i + 2 < args.length)\n"
                             "        qtd_click_item(o.__inst, args[i + 1].to!int, args[i + 2].to!int);\n"
                             "    foreach (i, a; args) if (a == \"--run\" && i + 1 < args.length)\n"
-                            "        qtd_run_ms(o.__inst, args[i + 1].to!int);\n"
-                            "    foreach (i, a; args) if (a == \"--render\" && i + 1 < args.length) {\n"
-                            "        auto rc = qtd_render_item(o.__inst, (args[i + 1] ~ \"\\0\").ptr);\n"
-                            "        if (rc != 0) writefln(\"render failed rc=%%s\", rc);\n        return;\n    }\n");
+                            "        qtd_run_ms(o.__inst, args[i + 1].to!int);\n");
             std::printf("    foreach (a; args[1 .. $]) {\n"
                         "        auto i = a.indexOf('='); if (i < 0 || a.length > 6 && a[0 .. 6] == \"--set:\") continue;\n"
                         "        setProp(o.__inst, a[0 .. i], a[i + 1 .. $]);\n    }\n"
