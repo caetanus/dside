@@ -506,24 +506,25 @@ Target[] qtmocProbeTargets(string root) {
 // differs is demoted to -O0, where Qt builds the document itself. A document counts as a failure
 // only when NO level reproduces the engine's frame.
 //
-// Imagine is the style it runs on: it is the one that exercises every rung — documents that compile
-// clean, documents that only work delegated (Dial, GroupBox, the SpinBox pair), and the value
-// interceptor the whole style is built on. Running all five would cost five times as long for the
-// same shape of answer; the other four are measured by hand and written up in docs/qmltc-d.md.
+// It runs on ALL FIVE styles, and the reason is a hole this gate had on its first day: it watched
+// Imagine alone, Material came out with three documents no level could place, and the build stayed
+// green. A gate over a sample answers a question nobody asked — the promise is about every
+// document, so the gate has to be about every document.
 Target[] o3GateTargets(string root, QtdBinding bind) {
-    auto dir = "/usr/lib/qt6/qml/QtQuick/Controls/Imagine";
-    if (!exists(dir)) return [];
     auto script = buildPath(root, "tests", "qmltc", "o3.sh");
     if (!exists(script)) return [];
     auto tool = qmltcTool(root, bind);
     Target[] ts;
     auto outDir = buildPath(bind.bdir, "o3gate");
-    // One compiler only: the levels are a property of the GENERATED code, not of who compiles it,
-    // and the ldc2/dmd split is already covered everywhere else.
-    auto cmd = "sh -c 'sh " ~ script ~ " " ~ outDir ~ " Imagine | tee /dev/stderr | "
-             ~ "grep -q \"UNPLACED=0\"'";
-    ts ~= Target.phony("qmltc-o3-gate", cmd,
-                       [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
+    foreach (style; ["Basic", "Fusion", "Universal", "Imagine", "Material"]) {
+        if (!exists("/usr/lib/qt6/qml/QtQuick/Controls/" ~ style)) continue;
+        // One compiler only: the levels are a property of the GENERATED code, not of who compiles
+        // it, and the ldc2/dmd split is already covered everywhere else.
+        auto cmd = "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " | tee /dev/stderr | "
+                 ~ "grep -q \"UNPLACED=0\"'";
+        ts ~= Target.phony("qmltc-o3-gate-" ~ style, cmd,
+                           [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
+    }
     return ts;
 }
 

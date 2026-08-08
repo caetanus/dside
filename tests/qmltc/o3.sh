@@ -10,10 +10,18 @@
 # A document is only a failure when NO level renders the same — those are printed as UNPLACED and
 # are the only thing standing between this and feature complete.
 #
-#   o3.sh <scratch> <StyleName>
+# The second argument is a Controls STYLE by name, or any DIRECTORY of .qml files. Qt's own styles
+# are a narrow, disciplined dialect — `T.Something` roots, declared properties, almost no loose JS —
+# and an application's QML is not that. Pointing this at a real app is the only way the promise
+# means anything outside the framework's own documents.
+#
+#   o3.sh <scratch> <StyleName|/path/to/dir>
 set -u
 SP="$1"; ST="$2"
-B=/usr/lib/qt6/qml/QtQuick/Controls/$ST
+case "$ST" in
+  /*) B="$ST"; ST=$(basename "$ST") ;;
+   *) B=/usr/lib/qt6/qml/QtQuick/Controls/$ST ;;
+esac
 L=/home/caetano/lab/qt-dlang-gen/.build/qt-6.11-cxx-controls
 G=/home/caetano/lab/qt-dlang-gen/generated/qt-6.11/cxx-controls
 D="$SP/o3_$ST"; mkdir -p "$D"
@@ -34,7 +42,7 @@ build_at() {  # build_at <levelflag> <tag> <name> <file>  -> $D/<name>_<tag>.png
   return 0
 }
 
-for f in "$B"/*.qml; do
+for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
   n=$(basename "$f" .qml)
   if ! timeout 30 "$L/qmlrender" "$f" "$D/$n.eng.png" >/dev/null 2>&1 </dev/null || [ ! -s "$D/$n.eng.png" ]; then
     echo "$n UNJUDGEABLE (the engine renders no frame for it standalone)" >> "$OUT"; continue

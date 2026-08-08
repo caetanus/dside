@@ -9,6 +9,8 @@
 // window geometry alone, which reads as 20 render defects that are not there.
 #include <QQuickWindow>
 #include <QQuickView>
+#include <QQmlComponent>
+#include <QQmlEngine>
 #include <QQuickItem>
 #include <QImage>
 #include <QMouseEvent>
@@ -33,8 +35,27 @@ static QQuickItem *qtd_as_item(void *o) {
 // completeCreate, while QQmlComponent::create() finishes the object with no window in sight. Qt's
 // Imagine GroupBox comes out 1x19 the second way and 40x59 the first, because its implicit size
 // comes from a label that has to be laid out in a scene.
+static int qtd_render_popup(QObject *o, const char *out);   // defined below; both paths need it
+
 extern "C" int qtd_render_document(const char *url, const char *out) {
     if (!url || !out) return 1;
+    // A POPUP first, for the same reason the oracle checks it first: QQuickView refuses a root that
+    // is not an Item, and Qt's Popup, Menu and Dialog are exactly that. Adding the popup branch to
+    // the item path and not to this one made the -O0 form report `render failed rc=3` on the three
+    // Material documents the popup work had just brought under measurement — a gap in MY symmetry,
+    // not in theirs.
+    {
+        QQmlEngine peng;
+        QQmlComponent pc(&peng, QUrl(QString::fromUtf8(url)));
+        if (!pc.isError()) {
+            QObject *proot = pc.create();
+            if (proot && !qobject_cast<QQuickItem *>(proot)
+                    && proot->metaObject()->indexOfMethod("open()") >= 0
+                    && proot->metaObject()->indexOfProperty("contentItem") >= 0)
+                return qtd_render_popup(proot, out);
+            delete proot;
+        }
+    }
     QQuickView v;
     v.setResizeMode(QQuickView::SizeViewToRootObject);
     v.setSource(QUrl(QString::fromUtf8(url)));

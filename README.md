@@ -79,6 +79,41 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
   (`@QObject`/`Signal`/`@Slot`/`@Property` via `QMetaObjectBuilder`), `qrc`.
 - **Exception translation**: C++/Qt exceptions → D via a Lippincott + per-signature
   guard layer (gated).
+- **`qmltc-d`**: a QML→D compiler with a fallback ladder — see below.
+
+## qmltc-d: QML compiled to D, and a floor under it
+
+`qmltc-d` turns a `.qml` document into a D class. What it cannot turn into D it does not
+drop: an expression goes to the QML engine (as a source string, or as a document
+`qmlcachegen` compiled to bytecode), and a whole document can go to the engine too, held
+behind an opaque pointer the way COM holds an interface. **`-O` is a degree of certainty,
+and it runs the other way from speed:**
+
+| level | what it adds | certainty |
+|---|---|---|
+| `-O0` | nothing of ours runs — Qt builds the document, AOT where `qmlcachegen` can, interpreted where it cannot | by construction |
+| `-O1` | statically typed translation only: `a === b` compiles because both sides have a known D type | nothing crosses untyped |
+| `-O2` | ...and `QVariant` where the type is only known at run time | value right, type late |
+| `-O3` | ...and COM-style containment and delegation — **and only what RENDERS THE SAME**; what differs is demoted | measured, per document |
+| `-Ox` | `-O3` with the render check waived | experimental |
+
+**The measured claim.** Over Qt's own Quick Controls — five styles, 290 documents — every
+document that has a frame renders **byte-identical** to the QML engine: 247 compiled to D,
+37 handed to the engine, 284 judged, **none unplaced**. `./build` re-checks it: `qmltc-o3-gate-<Style>`
+compiles each document, renders it, compares with the engine's frame, demotes what differs,
+and fails on a single document no level can place. It is a gate, not a number someone
+remembered to take.
+
+**The scope, which matters as much as the claim.** That corpus is Qt's own QML: `T.Foo`
+roots, declared properties, little loose JS, imports from Qt. **Application QML is not
+characterised** — models, `Loader`, real JS, app-registered types, documents importing each
+other. The floor (`-O0`) is the engine itself and should hold anywhere; everything above it
+is measured only on the corpus above.
+
+Six documents are outside the frame axis and honestly so: `Action`, `ButtonGroup`,
+`CalendarModel` and the `*Delegate`s have no frame by nature — a delegate needs a view to exist
+and an `Action` is not drawn at all — so they are judged on the value axis instead. They are not
+counted as passes here.
 
 ## Directory status
 
