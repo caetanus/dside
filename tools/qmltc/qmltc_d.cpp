@@ -17,6 +17,7 @@
 #include <QFileInfo>
 #include <QDir>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -443,6 +444,9 @@ static std::set<std::string> g_importAliases;
 // cluster of "expression not supported" was guesswork without it: matching a property name back
 // to a line picks the FIRST occurrence, which is the root's, even when the failure is in a child.
 static QString g_srcText;
+// Every document ever loaded, so a node from the MIDDLE of a local-type chain is still quotable
+// after the chain has moved on. Append-only; the identity check in srcOf is what makes it safe.
+static std::vector<QString> g_srcSeen;
 // ...and the DOCUMENT's own text, which never changes while it is being compiled. A spliced local
 // type puts its own file in g_srcText, and the members it splices come from TWO files: the type's
 // and the use site's. An expression written at the use site has offsets into the document, so with
@@ -504,7 +508,31 @@ static std::string srcOf(Node *n) {
     else for (auto it = g_srcStack.rbegin(); it != g_srcStack.rend(); ++it)
         if (isTheFile(*it)) { src = &*it; break; }
     if (!src && isTheFile(g_rootSrcText)) src = &g_rootSrcText;
-    if (!src) return "";
+    // ...and any document loaded at any point: the middle of a chain is current only briefly.
+    if (!src) for (auto &d : g_srcSeen) if (isTheFile(d)) { src = &d; break; }
+    if (!src) {
+        // An empty excerpt is not cosmetic: `jsDelegate` takes the expression's SOURCE first and
+        // refuses the binding when it has none, so every `[]` in a diagnostic is a binding lost to
+        // a document that was not current. Under QMLTCD_SRC_DEBUG it says which documents WERE in
+        // reach, which is the difference between a lead and a guess.
+        if (std::getenv("QMLTCD_SRC_DEBUG")) {
+            // Identified by SIZE and by the line at the wanted number: every Qt file opens with the
+            // same copyright line, so the first line names nothing.
+            auto say = [&](const char *what, const QString &d) {
+                QString ln;
+                int at = 0, l = 1;
+                while (l < (int) a.startLine && at >= 0) { at = d.indexOf(QLatin1Char('\n'), at); if (at >= 0) { ++at; ++l; } }
+                if (at >= 0) { int e = d.indexOf(QLatin1Char('\n'), at); ln = d.mid(at, (e < 0 ? d.size() : e) - at).simplified(); }
+                std::fprintf(stderr, "qmltc-d: [src-debug]   %-8s %6d chars, line %d = '%s'\n",
+                             what, (int) d.size(), (int) a.startLine, qPrintable(ln.left(60)));
+            };
+            std::fprintf(stderr, "qmltc-d: [src-debug] no document holds %d:%d (%zu stacked)\n",
+                         (int) a.startLine, (int) a.startColumn, g_srcStack.size());
+            say("current", g_srcText);
+            for (auto it = g_srcStack.rbegin(); it != g_srcStack.rend(); ++it) say("stacked", *it);
+        }
+        return "";
+    }
     g_srcSlice = src->mid(from, to - from);
     QString t = g_srcSlice.simplified();
     if (t.size() > 90) t = t.left(87) + "...";
@@ -4456,6 +4484,17 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) return nullptr;
     QString code = QString::fromUtf8(f.readAll());
+    // ...and kept reachable FOREVER, not just while it is current. A local type's chain loads one
+    // file after another — BoxShadow.qml and then its own root RectangularGlow.qml — and each
+    // assignment here overwrote the last, so the middle of a chain sat in no document a diagnostic
+    // could quote. Measured with QMLTCD_SRC_DEBUG on Qt's Material Button: the wanted node was
+    // BoxShadow.qml 43:12 and the five documents in reach were RectangularGlow, ElevationEffect
+    // twice and Button twice. An unquotable expression is a REFUSED one — the delegation takes the
+    // source first and hands the binding over only if it has it.
+    // Safe because the lookup is an identity check on BOTH line and column, which is exactly what
+    // stops a wrong file from answering.
+    if (std::find(g_srcSeen.begin(), g_srcSeen.end(), code) == g_srcSeen.end())
+        g_srcSeen.push_back(code);
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
     g_docUrl = "file://" + QFileInfo(path).absoluteFilePath().toStdString();
     auto *engine = new Engine();
@@ -8655,6 +8694,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
              + "        else setProp(this, \"" + p.name + "\", _v);\n";
     };
     for (auto &p : props) {
+        // A declared `var` whose value is a CHILD OBJECT is held by the child's own field, which is
+        // named after the property and already carries @Property. Emitting the marker as well gave
+        // the class two fields of one name and the generated D would not compile — Qt's Imagine
+        // OpacityMask declares `property variant maskSource` and its use site binds a
+        // `ShaderEffectSource` to it, so ProgressBar and DelayButton stopped linking the moment
+        // `variant` started reaching the var path. The object wins: it is the value.
+        if (p.dtype == "QmlVar") {
+            if (childFields.find(" " + dIdent(p.name) + ";\n") != std::string::npos) continue;
+        }
         node.scalars.push_back({p.name, p.dtype});
         std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
         if (p.bound) {
