@@ -5080,6 +5080,36 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+### The ladder (2026-08-08)
+
+What happens to a unit qmltc-d cannot turn into D, in order. Each rung is tried only when the one
+above it fails, and **which rung a unit landed on is part of the result** — a document that agrees
+with the engine because the engine built it is not the same result as one that agrees because we
+compiled it, and a census that does not say which is reporting a tautology.
+
+| phase | what | state |
+|---|---|---|
+| 1 | compile what compiles; delegate the COMPONENT that does not | done — `--delegate-doc`; Qt's Imagine ProgressBar goes to 465 lines a side, zero differences |
+| 2 | complex SCRIPTS to AOT while the QML still compiles | form proven — see below |
+| 3 | anything the rule cannot compile goes straight to AOT | the routing is built and measured (the frame guard), not wired |
+| 4 | if everything fails, leave it in the INTERPRETER | already there, twice: `QQmlExpression` per expression, and the engine loading the document |
+
+**Phase 2's shape was decided by one fact.** An AOT-compiled FUNCTION loses reactivity: today a
+delegated expression is live because the engine captures the dependencies of a BINDING, and a
+function call captures nothing. So the shadow is not a function — it is an object carrying a real
+binding, with one property per name the expression is handed:
+
+```qml
+import QtQml
+QtObject {
+    property QtObject root
+    readonly property var value: root[root.key]
+}
+```
+
+Measured with the .qml file MOVED AWAY from disk, so nothing could have read it: the bytecode
+answers `A`, and `B` after the source property changes. Compiled at build time and still live.
+
 **An EMPTY EXCERPT is not a cosmetic defect — it is the refusal's cause.** `jsDelegate` begins by
 taking the expression's source text, and hands the binding to the engine only if it has it; with the
 wrong document current, `srcRaw` returns nothing and the binding is refused instead of delegated.
