@@ -817,6 +817,50 @@ extern "C" void* qtd_context_prop_qs(void* o, const char* name) {
 // throws, and so do we. Basic's PageIndicator reads `pressed`, which no PageIndicator declares --
 // interpreted, that is a ReferenceError and the opacity keeps its default. Delegated, it is the
 // same ReferenceError and the same default.
+// PHASE 2: the same delegation, from a SHADOW compiled at build time instead of a source string
+// compiled at run time. The shadow is a real QML document carrying a real BINDING — not a function,
+// because what makes a delegated expression LIVE is the engine capturing a binding's dependencies
+// and a function call captures nothing. Measured with the .qml moved off disk: the bytecode answers
+// and still updates when its source changes.
+//
+// It also writes the result ITSELF, through a QML `Binding` inside it, so there is no signal to
+// connect and no slot to invent here. And because it is a real document it carries the ORIGINAL
+// document's imports, which is the one thing the runtime string path never had.
+extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url,
+                               const char** names, void** objs, int n) {
+#ifdef QTD_HAVE_QML
+    if (!o || !prop || !url) return 0;
+    QObject* obj = static_cast<QObject*>(o);
+    if (!QCoreApplication::instance()) {
+        std::fprintf(stderr, "qtd_bind_shadow: '%s' on %s has no application — not installed\n",
+                     prop, obj->metaObject()->className());
+        return 0;
+    }
+    auto* c = new QQmlComponent(qtd_qml_engine(), QUrl(QString::fromUtf8(url)), obj);
+    if (c->isError()) {
+        std::fprintf(stderr, "qtd_bind_shadow: shadow '%s' failed to load: %s\n", url,
+                     qPrintable(c->errorString()));
+        return 0;
+    }
+    QObject* sh = c->create();
+    if (!sh) {
+        std::fprintf(stderr, "qtd_bind_shadow: shadow '%s' failed to build: %s\n", url,
+                     qPrintable(c->errorString()));
+        return 0;
+    }
+    sh->setParent(obj);   // dies with the object whose property it drives
+    for (int i = 0; i < n; ++i)
+        if (names[i]) sh->setProperty(names[i], QVariant::fromValue(static_cast<QObject*>(objs[i])));
+    // The target LAST: the Binding inside the shadow starts writing the moment it has one, and
+    // writing before the handed-over names are in place would push one wrong value first.
+    sh->setProperty("prop", QString::fromUtf8(prop));
+    sh->setProperty("target", QVariant::fromValue(obj));
+    return 1;
+#else
+    (void) o; (void) prop; (void) url; (void) names; (void) objs; (void) n; return 0;
+#endif
+}
+
 extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
                            const char** names, void** objs, int n) {
 #ifdef QTD_HAVE_QML

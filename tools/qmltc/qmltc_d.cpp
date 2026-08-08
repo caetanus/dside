@@ -443,6 +443,16 @@ static std::set<std::string> g_importAliases;
 // The document's source text, so a diagnostic can quote the expression it refused. Reading a
 // cluster of "expression not supported" was guesswork without it: matching a property name back
 // to a line picks the FIRST occurrence, which is the root's, even when the failure is in a child.
+// PHASE 2 — the SHADOWS. A refused expression handed to the engine is compiled from a source string
+// at run time; a shadow is the same expression compiled at BUILD time, as a real QML document, and
+// still live because what it carries is a BINDING and not a function. Collected here and written
+// out when --shadow-dir is given; without it the runtime string path is emitted exactly as before.
+struct ShadowUnit { std::string file, src; std::vector<std::string> names; };
+static std::vector<ShadowUnit> g_shadows;
+static std::string g_shadowDir, g_shadowCls;
+static std::string g_shadowUrl = "qrc:/qtdshadow/";
+static std::vector<std::string> g_shadowImports;   // the document's imports, as written
+
 static QString g_srcText;
 // Every document ever loaded, so a node from the MIDDLE of a local-type chain is still quotable
 // after the chain has moved on. Append-only; the identity check in srcOf is what makes it safe.
@@ -756,6 +766,16 @@ static void collectImportAliases(UiProgram *program) {
             std::string a = qs(imp->importId.toString());
             if (!a.empty()) g_importAliases.insert(a);
             else if (imp->importUri) g_bareImports.insert(qname(imp->importUri));
+            // ...and the line as WRITTEN, for the shadows. A shadow is a real document, so it can
+            // carry the same imports the expression was written under — which is the one thing the
+            // runtime string path never had, and the reason a type name in a delegated expression
+            // has needed three separate rewrites to work around.
+            if (imp->importUri) {
+                std::string line = "import " + qname(imp->importUri);
+                if (!a.empty()) line += " as " + a;
+                if (std::find(g_shadowImports.begin(), g_shadowImports.end(), line) == g_shadowImports.end())
+                    g_shadowImports.push_back(line);
+            }
         }
 }
 
@@ -4753,6 +4773,7 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
     e->accept(&sc);
     std::vector<std::pair<std::string, std::string>> binds;   // name -> the D expression for it
     std::set<std::string> seen, typeNames;   // QML type names the source still spells
+    std::set<std::string> scopeNames;        // names the SCOPE OBJECT answers (a shadow has none)
     for (auto *id : sc.ids) {
         std::string n = qs(id->name.toString());
         if (n.empty() || !seen.insert(n).second) continue;
@@ -4773,16 +4794,24 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
             if (tu != g_qmlTypeUri.end() && tu->second != "QML") typeNames.insert(n);
             continue;
         }
-        if (g_propType.count(n) || g_scope.count(n)) continue;
+        // A DECLARED property of this object is answered by the scope object too, and needs the
+        // same handing-over as a base one — `hasIcon` on Qt's Material Button is declared, so
+        // prefixing only the base names left it resolving against nothing in the shadow.
+        if (g_propType.count(n) || g_scope.count(n)) { scopeNames.insert(n); continue; }
         // ...and a BASE property of this object, which the scope object answers exactly as it
         // answers a declared one. Leaving it out is why `Material.buttonLeftPadding(flat, hasIcon
         // && …)` was refused rather than delegated on every Material button: `flat`, `hasIcon` and
         // `display` are the C++ base's, so they were in neither table and the accounting failed.
-        if (g_baseProps.count(n)) continue;
+        // ...and REMEMBERED, because a shadow has no scope object. A QQmlExpression is evaluated
+        // AGAINST the object, so a base property resolves by itself; a shadow is a standalone
+        // document and resolves it against nothing. Measured on Qt's Material Button: the shadow
+        // loaded, built, raised no error and answered 0 for `leftPadding` against the engine's 24,
+        // because `flat`, `hasIcon` and `display` were names in the air.
+        if (g_baseProps.count(n)) { scopeNames.insert(n); continue; }
         if (auto qp0 = g_qmlProps.find(g_selfQmlType); qp0 != g_qmlProps.end() && qp0->second.count(n))
-            continue;
+            { scopeNames.insert(n); continue; }
         if (auto qc0 = g_qmlCxxType.find(g_selfQmlType); qc0 != g_qmlCxxType.end() && qc0->second.count(n))
-            continue;
+            { scopeNames.insert(n); continue; }
         // A per-item context name, and ONLY where our context carries what the engine's does. The
         // two part company exactly when the delegate declares required properties: the engine then
         // withholds the context and injects the declared names instead, so an UNdeclared one
@@ -4922,6 +4951,37 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
     for (auto &b : binds) {
         names += (names.empty() ? "" : ", ") + ("\"" + b.first + "\"");
         objs += ", " + b.second;
+    }
+    if (!g_shadowDir.empty()) {
+        // One FILE per expression, not one object with many bindings: each shadow then declares
+        // exactly the names its own expression uses, unsuffixed, and the source needs no rewriting.
+        std::string file = g_shadowCls + "_e" + std::to_string(g_shadows.size()) + ".qml";
+        // Every name the scope object used to answer goes through `self`, handed over like any
+        // other object. Whole tokens only: `flat` must not match inside `isFlat`.
+        std::string ssrc = src;
+        for (auto &nm : scopeNames) {
+            for (size_t k = 0; (k = ssrc.find(nm, k)) != std::string::npos; ) {
+                size_t e = k + nm.size();
+                bool lok = k == 0 || (!std::isalnum((unsigned char) ssrc[k - 1]) && ssrc[k - 1] != '_'
+                                      && ssrc[k - 1] != '.');
+                bool rok = e >= ssrc.size() || (!std::isalnum((unsigned char) ssrc[e]) && ssrc[e] != '_');
+                if (!lok || !rok) { k = e; continue; }
+                ssrc.replace(k, nm.size(), "self." + nm);
+                k += nm.size() + 5;
+            }
+        }
+        ShadowUnit u{file, ssrc, {}};
+        if (!scopeNames.empty()) u.names.push_back("self");
+        for (auto &b : binds) u.names.push_back(b.first);
+        g_shadows.push_back(u);
+        std::string snames = names, sobjs = objs;
+        if (!scopeNames.empty()) {
+            snames = std::string("\"self\"") + (names.empty() ? "" : ", " + names);
+            sobjs = ", this" + objs;
+        }
+        out = "        bindShadow(this, \"" + prop + "\", \"" + g_shadowUrl + file
+            + "\", [" + snames + "]" + sobjs + ");\n";
+        return true;
     }
     out = "        bindJs(this, \"" + prop + "\", " + dstr(QString::fromStdString(src))
         + ", [" + names + "]" + objs + ");\n";
@@ -9678,6 +9738,14 @@ int main(int argc, char **argv) {
         // Last resort, and it must be asked for BY NAME: routing here automatically would make
         // every gap disappear into the fallback instead of being a gap anyone can see.
         else if (std::strcmp(argv[i], "--delegate-doc") == 0) delegateDoc = true;
+        // Where the shadow documents go. Given: a refused expression becomes a shadow compiled by
+        // qmlcachegen. Absent: it is handed to the engine as a source string, as before.
+        else if (std::strcmp(argv[i], "--shadow-dir") == 0 && i + 1 < argc) g_shadowDir = argv[++i];
+        else if (std::strcmp(argv[i], "--shadow-prefix") == 0 && i + 1 < argc) g_shadowCls = argv[++i];
+        // Where the shadows are LOADED from. `qrc:/qtdshadow/` is the shipping form (bytecode via
+        // qmlcachegen); a file:// prefix loads them from disk, which is how the mechanism is proved
+        // before the build wiring exists.
+        else if (std::strcmp(argv[i], "--shadow-url") == 0 && i + 1 < argc) g_shadowUrl = argv[++i];
         else if (std::strcmp(argv[i], "--labels") == 0) labels = true;   // print the dump labels (for the oracle --props)
         else if (std::strcmp(argv[i], "--qmlmap") == 0 && i + 1 < argc) {
             loadQmlMap(argv[i + 1]);                       // QML-name -> class table
@@ -9715,6 +9783,9 @@ int main(int argc, char **argv) {
     g_docUrl = "file://" + QFileInfo(inPath).absoluteFilePath().toStdString();
     g_rootDocUrl = g_docUrl;
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
+    // Shadow file names are prefixed by the root class, so two documents compiled into one build
+    // cannot collide on `_e0.qml`.
+    if (g_shadowCls.empty()) g_shadowCls = qs(cls);
     g_trContext = qs(QFileInfo(inPath).completeBaseName());   // qsTr's context is the file's name
     loadDocModule(inPath);   // the module this document belongs to (its style/theme comes with it)
 
@@ -9970,6 +10041,27 @@ int main(int argc, char **argv) {
             std::printf("    }\n}\n");
         }
         return 0;
+    }
+    // The SHADOWS, written beside the generated D. One document per refused expression, each
+    // declaring only the names its own expression is handed, so the source needs no rewriting; the
+    // write is a QML `Binding`, so the runtime has no signal to wire and the value stays reactive.
+    if (!g_shadowDir.empty() && !g_shadows.empty()) {
+        for (auto &u : g_shadows) {
+            std::string path = g_shadowDir + "/" + u.file;
+            FILE *sf = std::fopen(path.c_str(), "w");
+            if (!sf) { std::fprintf(stderr, "qmltc-d: cannot write shadow %s\n", path.c_str()); continue; }
+            std::fprintf(sf, "// GENERATED by qmltc-d from %s — one refused expression, compiled.\n", inPath);
+            for (auto &imp : g_shadowImports) std::fprintf(sf, "%s\n", imp.c_str());
+            std::fprintf(sf, "import QtQml\nQtObject {\n    id: sh\n");
+            for (auto &nm : u.names) std::fprintf(sf, "    property QtObject %s\n", nm.c_str());
+            std::fprintf(sf, "    property QtObject target\n    property string prop\n"
+                             "    readonly property var value: %s\n"
+                             "    property Binding __write: Binding { target: sh.target; "
+                             "property: sh.prop; value: sh.value }\n}\n", u.src.c_str());
+            std::fclose(sf);
+        }
+        std::fprintf(stderr, "qmltc-d: %s: %zu shadow document(s) written to %s\n",
+                     inPath, g_shadows.size(), g_shadowDir.c_str());
     }
     std::printf("// GENERATED by qmltc-d from %s — do not edit.\n", inPath);
     std::printf("module %s;\n", qPrintable(cls));
