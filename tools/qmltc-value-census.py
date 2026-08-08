@@ -52,12 +52,41 @@ def census(dall, qall):
     return out
 
 
+# WHICH RUNG a document came out on. A document that agrees with the engine because the ENGINE
+# built it is not the same result as one that agrees because we compiled it, and counting them in
+# one column makes the score climb on a tautology. The compiler says which it did, so the census
+# reads it back rather than guessing:
+#   compiled          nothing was handed over
+#   shadow-aot        some expression became a shadow document (phase 2)
+#   delegated-doc     the whole document was handed to the engine (phase 1's last resort)
+# A document can be compiled AND carry shadows; the deeper rung wins, because it is the weaker
+# claim and the honest label is always the weaker one.
+def rung(dall):
+    for cand in (os.path.basename(dall)[: -len(".dall.s")],
+                 "i" + os.path.basename(dall)[: -len(".dall.s")]):
+        diag = os.path.join(os.path.dirname(dall), cand + ".diag")
+        if not os.path.exists(diag):
+            continue
+        try:
+            t = open(diag, errors="replace").read()
+        except OSError:
+            continue
+        if "DOCUMENT DELEGATED" in t:
+            return "delegated-doc"
+        if "shadow document(s) written" in t:
+            return "shadow-aot"
+        return "compiled"
+    return "compiled"
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     d = sys.argv[1]
     by_file = "--by-file" in sys.argv
     total = collections.Counter()
+    rungs = collections.Counter()
+    identical_by_rung = collections.Counter()
     identical = docs = 0
     rows = []
     for dall in sorted(glob.glob(os.path.join(d, "*.dall.s"))):
@@ -67,15 +96,22 @@ def main():
         docs += 1
         c = census(dall, qall)
         total.update(c)
+        r = rung(dall)
+        rungs[r] += 1
         # "identical" means no REAL difference: an unmeasurable path is not one.
         if not (c["value-diff"] or c["only-ours"] or c["only-engine"]):
             identical += 1
+            identical_by_rung[r] += 1
         elif by_file:
             rows.append((os.path.basename(dall)[: -len(".dall.s")], c))
     print("documents\t%d" % docs)
     print("identical\t%d" % identical)
     for k in ("value-diff", "only-ours", "only-engine", "unmeasurable"):
         print("%s\t%d" % (k, total[k]))
+    # ...and the same identical count split by HOW it was reached.
+    for r in ("compiled", "shadow-aot", "delegated-doc"):
+        if rungs[r]:
+            print("%s\t%d of %d identical" % (r, identical_by_rung[r], rungs[r]))
     for name, c in sorted(rows, key=lambda r: -(r[1]["value-diff"] + r[1]["only-ours"] + r[1]["only-engine"])):
         print("  %-28s %s" % (name, dict(c)))
 
