@@ -110,6 +110,14 @@ characterised** — models, `Loader`, real JS, app-registered types, documents i
 other. The floor (`-O0`) is the engine itself and should hold anywhere; everything above it
 is measured only on the corpus above.
 
+Pointed at a real application (a 78-document status bar), the gate reports 3 compiled, 10
+demoted, 4 unplaced and **61 unjudgeable** — and that last number is the finding, not the
+first three. A Controls document is self-contained by construction; an application's is not.
+`Bitcoin.qml` exists inside the bar, with its data and its context, and the engine draws
+nothing for it standalone. So it is not only that the compiler is less proven off this
+corpus: **the per-document criterion itself does not transfer.** Judging an application means
+judging it running, which is a different harness and an open question here.
+
 Six documents are outside the frame axis and honestly so: `Action`, `ButtonGroup`,
 `CalendarModel` and the `*Delegate`s have no frame by nature — a delegate needs a view to exist
 and an `Action` is not drawn at all — so they are judged on the value axis instead. They are not
