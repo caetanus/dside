@@ -5103,6 +5103,44 @@ declares its own `property var control`. The two spellings of `control` coexist 
 the expression obeys the shadowing rule, and the dependency resolver does not — the fourth time
 that pair has disagreed (see "the three dependency consumers").
 
+### Every judgeable document renders like the engine (2026-08-08)
+
+`tests/qmltc/o3.sh` compiles each document greedily, renders it, compares with the engine's own
+frame, and DEMOTES what differs to -O0 — where Qt builds the document itself. A document is a
+failure only when NO level renders the engine's frame.
+
+| style | compiled | demoted to -O0 | UNPLACED | unjudgeable |
+|---|---:|---:|---:|---:|
+| Basic | 49 | 5 | 0 | 15 |
+| Fusion | 44 | 2 | 0 | 9 |
+| Universal | 45 | 2 | 0 | 8 |
+| Imagine | 42 | 4 | 0 | 8 |
+| Material | 38 | 10 | 0 | 9 |
+| **total** | **218** | **23** | **0** | **49** |
+
+**241 of 241 judgeable documents render exactly like the engine.** Two things belong in front of
+that number, or it flatters itself:
+
+* The **49 unjudgeable are not in it**. `qmlrender` cannot draw them standalone — Popup, Menu,
+  Dialog and friends need a parent. Not our failure, but not verified either, so this is not
+  290 of 290.
+* The criterion is the **frame**, not behaviour. A document can draw identically and still react
+  differently to a click or over time. Those axes exist and are green where they run; they were not
+  run over this table.
+
+**What got demoted is the -Ox agenda**, and it is three families: SpinBox/DoubleSpinBox in five
+styles (never constructible as a root by us), the calendar trio (MonthGrid, DayOfWeekRow,
+WeekNumberColumn — a root that is not a bound type), and the Material set plus Imagine's Dial and
+GroupBox, which stand on `impl` types Qt does not export.
+
+**And the defect that produced this number is worth more than the number.** `--delegate-doc` built
+its component from `g_docUrl`, which is whatever document was loaded LAST — for a root that pulls in
+a local type, that is the local type's file. Qt's Imagine GroupBox was handed to the engine as
+`Label.qml`. Nothing errored: that file loads, builds and draws. The frame came out 1x19 against
+40x59, and I recorded it TWICE as "not even the engine reproduces this standalone" — a Qt ceiling
+that did not exist. We were rendering another file. The url now comes from the path the compiler was
+given, which cannot drift.
+
 ### -O is a degree of CERTAINTY (2026-08-08)
 
 The levels name TRANSLATION MECHANISMS, each a weaker guarantee than the one before:
