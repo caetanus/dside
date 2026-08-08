@@ -4741,6 +4741,13 @@ struct FreeIdScan : Visitor {
 // `partial` on purpose: a delegation is not a success and not a refusal, and a census that folded
 // it into either would stop saying what the compiler can actually do.
 static int g_delegated = 0;
+// ...and how many children the ENGINE has to build because no D subclass can wrap their type. With
+// the delegations and the refusals these are the three numbers the -O threshold reads: they are what
+// "how sure are we that this document compiles to the same thing" is made of.
+static int g_engineKids = 0;
+// ...and every property whose value crosses as a QVariant because its type is not known statically
+// (`property var`, `variant`, and the value types). That is what -O2 buys and -O1 refuses.
+static int g_weakTyped = 0;
 
 // A binding the compiler REFUSED, rewritten as a call that lets the QML engine evaluate the
 // original source. Accepted only when every free name in the expression can be accounted for:
@@ -5364,6 +5371,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A `var` property whose initial value is an OBJECT: collected here and emitted where the late
     // buffers exist, further down.
     std::vector<std::pair<std::string, std::string>> varObjInit;
+    // ...and a value-type property whose initial value crosses as TEXT (QMetaType converts on the
+    // way in, which is the channel the colours have always used).
+    std::vector<std::pair<std::string, std::string>> varTextInit;
     std::vector<RawHandler> rawHandlers;
     // (field, initializer, QML type). The TYPE used to be dropped here, so a child bound to a
     // property (`property FontMetrics fm: FontMetrics { ... }`) was compiled as a bare @QObject
@@ -6064,10 +6074,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // differently made the same declaration fall out of the var path into "unsupported
             // binding/type", which also takes the name OUT OF SCOPE, so everything reading it went
             // with it.
+            // A declared VALUE TYPE (`property color targetColor`) goes the same way as a `var`.
+            // It used to be refused outright, and for a measured reason: declared as a D field of
+            // type QColor it changed how every read of it compiled and cost 8 link failures in
+            // Fusion. That reason is gone — a QmlVar has NO field, the runtime owns the value and
+            // every read goes through the meta-object. Refusing it left the property missing
+            // altogether, which the engine has: Qt's Material RadioIndicator stores its colour in
+            // `readonly property color targetColor` and two things read it, so the indicator came
+            // out white against the engine's #89000000.
+            if (!dt[0] && pub->typeModifier.isEmpty() && !isRequiredMem(pub)
+                    && (qmlType == QLatin1String("color") || qmlType == QLatin1String("font")
+                        || qmlType == QLatin1String("rect") || qmlType == QLatin1String("size")
+                        || qmlType == QLatin1String("point") || qmlType == QLatin1String("vector2d")
+                        || qmlType == QLatin1String("vector3d") || qmlType == QLatin1String("date")
+                        || qmlType == QLatin1String("url") || qmlType == QLatin1String("matrix4x4"))) {
+                props.push_back({name, "QmlVar", "", false, {}}); ++g_weakTyped;
+                g_propType[name] = "@var";
+                if (auto *ves2 = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
+                    std::string vv;
+                    if (compileExpr(ves2->expression, "string", vv))
+                        varTextInit.push_back({name, vv});
+                    else
+                        std::fprintf(stderr, "qmltc-d: %s: the initial value of value-type property "
+                                     "'%s' in %s does not compile — the property is DECLARED, its "
+                                     "value is not [%s]\n", inPath, name.c_str(), cls.c_str(),
+                                     srcOf(ves2->expression).c_str()), ++partial;
+                }
+                continue;
+            }
             if (!dt[0] && (qmlType == QLatin1String("var") || qmlType == QLatin1String("variant"))
                     && pub->typeModifier.isEmpty()
                     && !(isRequiredMem(pub) && !g_delegateCls.empty())) {
-                props.push_back({name, "QmlVar", "", false, {}});
+                props.push_back({name, "QmlVar", "", false, {}}); ++g_weakTyped;
                 g_propType[name] = "@var";
                 // ...and its INITIAL VALUE, which was dropped in silence — no write, no refusal.
                 // A `var` holding an OBJECT is the shape Qt's Material SliderHandle is built on
@@ -6460,7 +6498,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string ecUri = uriForType(cb.type);
             if (!ecUri.empty() && g_qmlCxxType.count(cb.type)) {
                 auto savedEC = g_engineChildCls, savedET = g_engineChildType, savedEU = g_engineChildUri;
-                g_engineChildCls = childCls; g_engineChildType = cb.type; g_engineChildUri = ecUri;
+                g_engineChildCls = childCls; ++g_engineKids; g_engineChildType = cb.type; g_engineChildUri = ecUri;
                 ObjNode ekid = compileObject(cb.init, childCls, classes, partial, inPath, "", nullptr, cb.type);
                 g_engineChildCls = savedEC; g_engineChildType = savedET; g_engineChildUri = savedEU;
                 {   // the same notify drain every child does
@@ -6739,7 +6777,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         g_parentCompletes = true;   // ...after this wire appends and parents it
         auto savedDEC = g_engineChildCls, savedDET = g_engineChildType, savedDEU = g_engineChildUri;
         if (!dcEngineUri.empty()) {
-            g_engineChildCls = childCls; g_engineChildType = childType; g_engineChildUri = dcEngineUri;
+            g_engineChildCls = childCls; ++g_engineKids; g_engineChildType = childType; g_engineChildUri = dcEngineUri;
             // From OUTSIDE, the only thing anyone wants of an engine-built child is the instance:
             // its signals and its properties are the engine object's, and the wrapper has neither.
             // So the id resolves to the instance from here on — a connect naming the wrapper threw
@@ -7949,7 +7987,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &rp : gkResolved) g_resolving.insert(rp);
         auto savedGEC = g_engineChildCls, savedGET = g_engineChildType, savedGEU = g_engineChildUri;
         if (!gkEngineUri.empty()) {
-            g_engineChildCls = childCls; g_engineChildType = gk.type; g_engineChildUri = gkEngineUri;
+            g_engineChildCls = childCls; ++g_engineKids; g_engineChildType = gk.type; g_engineChildUri = gkEngineUri;
         }
         ObjNode kid = compileObject(gkInit, childCls, classes, partial, inPath, gkt.first, nullptr, gk.type);
         g_engineChildCls = savedGEC; g_engineChildType = savedGET; g_engineChildUri = savedGEU;
@@ -8414,7 +8452,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string vsEngineUri = vst.first.empty() ? uriForType(vs.type) : std::string();
         auto savedVEC = g_engineChildCls, savedVET = g_engineChildType, savedVEU = g_engineChildUri;
         if (!vsEngineUri.empty()) {
-            g_engineChildCls = childCls; g_engineChildType = vs.type; g_engineChildUri = vsEngineUri;
+            g_engineChildCls = childCls; ++g_engineKids; g_engineChildType = vs.type; g_engineChildUri = vsEngineUri;
         }
         ObjNode kid = compileObject(vs.init, childCls, classes, partial, inPath, vst.first, nullptr, vs.type);
         g_engineChildCls = savedVEC; g_engineChildType = savedVET; g_engineChildUri = savedVEU;
@@ -8927,6 +8965,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // before `prop` is assigned, which is where the engine puts it. The base `source` of an
         // Imagine control is written here, so a selector built after it never saw the only write
         // to the property it intercepts.
+        for (auto &vt : varTextInit) {
+            std::string slot = "__rcv_" + vt.first;
+            handlerSlots += "    @Slot void " + slot + "() {\n        setProp(this, \""
+                          + vt.first + "\", " + vt.second + ");\n    }\n";
+            lateWire += "        " + slot + "();\n";
+        }
         for (auto &vo : varObjInit) {
             std::string slot = "__rcv_" + vo.first;
             handlerSlots += "    @Slot void " + slot + "() {\n        setPropObj(this, \""
@@ -9742,6 +9786,21 @@ int main(int argc, char **argv) {
     //                  static coverage gets worked on, because a gap that routes to the engine is a
     //                  gap nobody sees. Exits non-zero while any expression is still handed over.
     bool noFallback = false, pedantic = false;
+    // -O IS A DEGREE OF CERTAINTY, and it runs the other way from speed: the higher the level the
+    // more we compile and the less sure we are that what we compiled behaves like the engine. The
+    // threshold reads the DOCUMENT, not the outcome — after compiling, three numbers say how much
+    // of it we actually understood:
+    // The levels name MECHANISMS, and each one is a weaker guarantee than the one before it:
+    //   -O1  STATICALLY TYPED translation only. `a === b` compiles well precisely because both
+    //        sides have a known D type; nothing crosses as a QVariant and no object is reached
+    //        through an interface we did not generate.
+    //   -O2  ...and QVariant for WEAK TYPING: `property var`, a value type carried through the
+    //        meta-object. The value is right, the type is only known at run time.
+    //   -O3  ...and COM-style CONTAINMENT plus delegation: objects the ENGINE builds, held behind
+    //        an opaque pointer, and expressions the engine evaluates for us.
+    // A document that needs a mechanism its level does not allow is not compiled with it — it goes
+    // to the engine WHOLE, which is the one thing that always behaves like the engine.
+    int optLevel = 3;
     std::vector<char *> pos;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump") == 0) dump = true;
@@ -9752,6 +9811,9 @@ int main(int argc, char **argv) {
         // Last resort, and it must be asked for BY NAME: routing here automatically would make
         // every gap disappear into the fallback instead of being a gap anyone can see.
         else if (std::strcmp(argv[i], "--delegate-doc") == 0) delegateDoc = true;
+        else if (std::strcmp(argv[i], "-O1") == 0) optLevel = 1;
+        else if (std::strcmp(argv[i], "-O2") == 0) optLevel = 2;
+        else if (std::strcmp(argv[i], "-O3") == 0) optLevel = 3;
         else if (std::strcmp(argv[i], "--no-fallback") == 0) noFallback = true;
         else if (std::strcmp(argv[i], "--pedantic") == 0) { pedantic = true; noFallback = true; }
         // Where the shadow documents go. Given: a refused expression becomes a shadow compiled by
@@ -9996,6 +10058,25 @@ int main(int argc, char **argv) {
         return partial ? 3 : 0;
     }
 
+    // THE -O THRESHOLD. Everything above has been compiled, so the three numbers that say how much
+    // of this document we actually understood now exist. Below the bar the compiled form is thrown
+    // away and the document goes to the engine whole — which is not a failure, it is the level
+    // asking for certainty rather than speed. Said out loud, with the numbers, because a document
+    // that quietly stops being compiled is exactly the false green this project keeps finding.
+    if (!noFallback && !delegateDoc) {
+        const char *why = nullptr;
+        if (optLevel <= 1 && (g_weakTyped || g_engineKids || g_delegated))
+            why = "-O1 is statically typed translation only";
+        else if (optLevel == 2 && (g_engineKids || g_delegated))
+            why = "-O2 allows weak typing but not containment or delegation";
+        if (why) {
+            std::fprintf(stderr, "qmltc-d: %s: %s — %d weakly typed, %d engine-built child(ren), "
+                         "%d delegated: handing the DOCUMENT to the engine\n",
+                         inPath, why, g_weakTyped, g_engineKids, g_delegated);
+            delegateDoc = true;
+            partial = 0;   // the document is not partial any more; it is delegated, which is a rung
+        }
+    }
     // A DELEGATED DOCUMENT: everything above was compiled only to learn the shape of the tree, and
     // none of it is emitted. What comes out is a holder — the object is built by the engine from the
     // document itself, and every read goes through its interface. The dump walks the SAME paths
