@@ -129,6 +129,7 @@ Build reggaeBuild() {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
         all ~= registryGateTarget(root, quick, "quick");
+        all ~= shadowAotTargets(root, quick);   // phase 2: a refused expression as BYTECODE
         // A bound VALUE TYPE as a @Property (QColor, QSize): needs the Quick binding, since that
         // is where those types live.
         foreach (dc; DCS) {
@@ -860,6 +861,33 @@ Target[] qmlAotTargets(string root, QtdBinding qml) {
             ~ " -L--end-group " ~ pkgLibs(qml.mods);
         auto bin = Target("qmlaot-" ~ dc ~ "-bin", link, [Target(aotMain), unitOT, loaderOT, lib, qml.shims]);
         ts ~= Target.phony("qmlaot-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+    }
+    return ts;
+}
+
+// PHASE 2 of the ladder: an expression qmltc-d cannot turn into D is handed to the engine, and
+// with --shadow-dir it is handed over as a document compiled to BYTECODE rather than a source
+// string compiled at run time. The script does the whole pipeline and judges it the ordinary way —
+// the value dump must equal the engine's — after MOVING the shadow .qml files away, so a run that
+// would also pass by reading the source cannot pass here.
+// QJsDelegated is the fixture because it exists to delegate: its expression reads a member by a
+// name known only at run time, which has no D translation at all.
+Target[] shadowAotTargets(string root, QtdBinding quick) {
+    auto gen = qmlcachegenPath();
+    if (!gen.length) return [];   // no qmlcachegen here -> the AOT path is not testable
+    auto script = buildPath(root, "tests", "qmltc", "shadow_aot.sh");
+    if (!exists(script)) return [];
+    auto qmlFile = buildPath(root, "tests", "qmltc", "quick", "QJsDelegated.qml");
+    auto qmlmap = buildPath(quick.genDir, "qmlmap.tsv");
+    auto tool = buildPath(quick.bdir, "qmltc-d");
+    auto cflags = pkgCflags(quick.mods);
+    Target[] ts;
+    foreach (dc; DCS) {
+        auto outDir = buildPath(quick.bdir, "shadowaot-" ~ dc);
+        auto cmd = "sh " ~ script ~ " " ~ tool ~ " " ~ qmlmap ~ " " ~ qmlFile ~ " QJsDelegated "
+                 ~ outDir ~ " " ~ quick.bdir ~ " " ~ quick.genDir ~ " " ~ dc ~ " " ~ gen ~ " " ~ cflags;
+        ts ~= Target.phony("shadowaot-" ~ dc, cmd,
+                           [Target(script), Target(qmlFile), qtdBindLib(quick, dc), quick.shims]);
     }
     return ts;
 }

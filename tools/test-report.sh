@@ -40,7 +40,7 @@ category() {
     # right and the artifact told a wrong story about it. Kept ahead of the qml rule, since
     # `qmltc*` would otherwise have to out-specific it.
     qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*) echo qmltc ;;
-    qml-*|qmlreg-*|qmlaot-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
+    qml-*|qmlreg-*|qmlaot-*|shadowaot-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
     reglife-*|valuetypeprop-*|subclasscast-*) echo qml ;;
     slotoverload-*) echo moc ;;
     qtmoc-probe-*|report-selftest) echo gate ;;
@@ -50,7 +50,8 @@ category() {
     *) echo other ;;
   esac
 }
-optional() { case "$1" in qmlaot-*|qmltypes-*|lupdate-check|tr-*) echo yes ;; *) echo no ;; esac ; }
+# shadowaot needs qmlcachegen, exactly as qmlaot does — absent, the target is not generated at all.
+optional() { case "$1" in qmlaot-*|shadowaot-*|qmltypes-*|lupdate-check|tr-*) echo yes ;; *) echo no ;; esac ; }
 compiler() { case "$1" in *-ldc2*) echo ldc2 ;; *-dmd*) echo dmd ;; *) echo - ;; esac ; }
 # qt axis: -qt5 => qt5; version-agnostic targets => -; everything else Qt-linked => qt6.
 qtaxis() {
