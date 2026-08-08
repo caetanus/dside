@@ -2135,8 +2135,14 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     }
     // A DECLARED object property of THIS object (`property Item control`): the field is the wrapper
     // and its QML type is what the document declared, which is how a path through it gets typed.
+    // ...and it obeys the SHADOW rule, which the copy above already did and this one did not. When a
+    // local type is merged with its use site, the type's own declarations are out of scope for a
+    // use-site binding — Qt's Universal RadioIndicator declares `property var control` and the use
+    // site writes `x: control.leftPadding + …` meaning the ENCLOSING object. Caught here first, the
+    // name resolved to the local `var`, which has no type, so the leaf's notify could not be found
+    // and the binding ran once at 0 and never again (indicator.x -4 against the engine's 10).
     if (auto pt2 = g_propType.find(n2); pt2 != g_propType.end() && pt2->second.size() > 1
-            && pt2->second[0] == '@') {
+            && pt2->second[0] == '@' && !shadowedByLocalType(n2)) {
         oe = dIdent(n2); oq = pt2->second.substr(1); return true;
     }
     std::string pre2; const OuterFrame *fr2 = nullptr;
