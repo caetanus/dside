@@ -903,6 +903,32 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
 #endif
 }
 
+// A WHOLE DOCUMENT handed to the engine, rather than an object of a named type. This is the same
+// containment the engine-built child already uses — the object is the engine's and our class only
+// holds a pointer to it — applied at the ROOT: a document we cannot compile is not abandoned, it is
+// instantiated by the engine and reached through its interface like any other opaque object.
+// From the FILE, not from `import <uri>; <Type> {}`: a style's document is not a registered type of
+// its own (Qt's Imagine ProgressBar is the implementation of QtQuick.Controls.ProgressBar, not a
+// type anyone can name), and the file is what the engine itself loads.
+extern "C" void* qtd_qml_create_document(const char* docUrl) {
+#ifdef QTD_HAVE_QML
+    if (!docUrl || !*docUrl || !QCoreApplication::instance()) return nullptr;
+    QQmlEngine* e = qtd_qml_engine();
+    QQmlComponent* c = new QQmlComponent(e, QUrl(QString::fromUtf8(docUrl)), e);
+    if (c->isError()) {
+        std::fprintf(stderr, "qtd: delegated DOCUMENT '%s' failed to load: %s\n", docUrl,
+                     qPrintable(c->errorString()));
+        return nullptr;
+    }
+    QObject* o = c->create();
+    if (!o) std::fprintf(stderr, "qtd: delegated DOCUMENT '%s' failed to build: %s\n", docUrl,
+                         qPrintable(c->errorString()));
+    return o;
+#else
+    (void) docUrl; return nullptr;
+#endif
+}
+
 // An object of a registered QML TYPE that exports no C++ symbol — Qt's own DialImpl,
 // BusyIndicatorImpl, ProgressBarImpl are compiled into their style plugin and cannot be linked
 // against, so no D subclass of them can exist. They can still be BUILT: the engine knows them by
@@ -1841,6 +1867,36 @@ extern "C" void* qtd_color_shade(const char* s, double factor, int lighter) {
 // base it built the object on. An empty hint keeps the walk, which is what the root wants.
 extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls);
 extern "C" void qtd_dump_object(void* o, const char* path) { qtd_dump_object_as(o, path, nullptr); }
+
+// Dump ONE object named by a PATH from a root — `contentItem.effect.data[1]`, resolved segment by
+// segment through the meta-object. A document handed to the engine wholesale has no D fields to
+// walk, so the dump cannot be a chain of field accesses the way a compiled one is; the paths are
+// the same ones `--objpaths` already hands the oracle, so both sides walk the same tree by the same
+// names. LOUD when a segment does not resolve: a path silently skipped would read as agreement.
+extern "C" void qtd_dump_path(void* root, const char* path) {
+    if (!root || !path || !*path) return;
+    QByteArray p(path);
+    QObject* cur = static_cast<QObject*>(root);
+    int at = 0;
+    while (at < p.size() && cur) {
+        int dot = p.indexOf('.', at);
+        QByteArray seg = p.mid(at, dot < 0 ? -1 : dot - at);
+        at = dot < 0 ? p.size() : dot + 1;
+        int br = seg.indexOf('[');
+        if (br < 0) {
+            cur = static_cast<QObject*>(qtd_prop_get_obj(cur, seg.constData()));
+        } else {
+            QByteArray nm = seg.left(br);
+            int idx = seg.mid(br + 1, seg.size() - br - 2).toInt();
+            cur = static_cast<QObject*>(qtd_list_at(cur, nm.constData(), idx));
+        }
+    }
+    if (!cur) {
+        std::fprintf(stderr, "qtd_dump_path: '%s' resolves to nothing\n", path);
+        return;
+    }
+    qtd_dump_object_as(cur, (p + ".").constData(), "");
+}
 extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
     if (!o) return;
     QObject* q = static_cast<QObject*>(o);

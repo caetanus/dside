@@ -1251,6 +1251,19 @@ private extern(C) void* qtd_qml_create_object_in(const(char)*, const(char)*, con
 /// An object of a registered QML type that exports no C++ symbol (Qt's DialImpl and friends live in
 /// a style plugin): it cannot be SUBCLASSED, but the engine builds it by name and everything after
 /// that goes through the meta-object like any other object.
+private extern(C) void qtd_dump_path(void*, const(char)*);
+/// Dump one object named by a PATH from a root. A document handed to the engine wholesale has no D
+/// fields to walk, so its dump is driven by the same path list `--objpaths` hands the oracle.
+void dumpPath(void* root, string path) { qtd_dump_path(root, (path ~ "\0").ptr); }
+
+private extern(C) void* qtd_qml_create_document(const(char)*);
+/// A WHOLE DOCUMENT built by the engine. The compiler emits this for a document it cannot compile:
+/// the object is the engine's and the generated class is a holder, exactly as it already is for a
+/// child whose type no subclass can wrap. Returns null (loudly) if the document will not load.
+void* createQmlDocument(string docUrl) {
+    return qtd_qml_create_document((docUrl ~ "\0").ptr);
+}
+
 void* createQmlObject(string uri, string typeName, string docUrl = "") {
     if (docUrl.length)
         return qtd_qml_create_object_in((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);
