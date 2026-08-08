@@ -5103,6 +5103,42 @@ declares its own `property var control`. The two spellings of `control` coexist 
 the expression obeys the shadowing rule, and the dependency resolver does not — the fourth time
 that pair has disagreed (see "the three dependency consumers").
 
+### -O is a degree of CERTAINTY (2026-08-08)
+
+The levels name TRANSLATION MECHANISMS, each a weaker guarantee than the one before:
+
+| level | mechanism it adds | what it costs |
+|---|---|---|
+| `-O1` | statically typed translation only | most certain; `a === b` compiles because both sides have a known D type |
+| `-O2` | ...and QVariant where the type is only known at run time | the value is right, the type is not static |
+| `-O3` | ...and COM-style containment, and expressions the engine evaluates | most compiled, least proven |
+
+So the level does not ask "is this JS?" — it asks "can we give it a type?". A document needing a
+mechanism its level disallows is handed to the ENGINE whole, which is not a failure: it is the level
+choosing certainty, and that form is the one thing guaranteed to behave like the engine.
+
+`tests/qmltc/optlevels.sh` is what makes the scale mean anything: one document at all three levels,
+same dump required from each and from the engine. **A higher level disagreeing with a lower one is a
+false positive by definition.** It compares through `--objpaths`/`--dumpall` and not the label
+protocol — a document handed to the engine has no labels of ours to list, so a label comparison
+would have compared nothing and passed. That was caught on the first run.
+
+**Measured on Qt's own styles, and one number is a warning:**
+
+| style | documents | compiled at -O1 | at -O2 | at -O3 |
+|---|---:|---:|---:|---:|
+| Basic | 69 | 53 | 53 | 69 |
+| Material | 57 | 10 | 10 | 57 |
+
+`-O1` and `-O2` are the SAME on this corpus. The weak-typing counter is not dead — Qt's Material
+Slider reports 1 — but no document is held back by weak typing ALONE; every one that has it also has
+containment or delegation. So the middle rung buys nothing measurable today. Recorded rather than
+presented as a three-rung scale that earns its keep.
+
+Material falling to 10 of 57 is not the JS translator being weak: almost the whole style is built on
+`impl` types Qt does not export (Ripple, BoxShadow, ElevationEffect), which no D subclass can wrap.
+That is containment, and containment is -O3 by definition.
+
 ### The ladder (2026-08-08)
 
 What happens to a unit qmltc-d cannot turn into D, in order. Each rung is tried only when the one
