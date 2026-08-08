@@ -155,6 +155,7 @@ Build reggaeBuild() {
         // generated, linked and CONSTRUCTED. Six defects lived where compile-clean cannot see —
         // they all build and then die (or silently build the wrong object) at construction.
         all ~= qmltcControlsRuntimeTargets(root, ctrl);
+        all ~= o3GateTargets(root, ctrl);   // every judgeable document renders like the engine
         // ...and this binding gets a manifest gate like the other two. It had none, so changing its
         // spec tripped nothing — which is how binding the QtQuick animations (a real and intended
         // coverage change) landed without the manifest ever being consulted. A binding nobody holds
@@ -497,6 +498,32 @@ Target[] qtmocProbeTargets(string root) {
     mk("noqml", ["Qt6Core"], false, "");
     mk("qml6", ["Qt6Qml", "Qt6Core"], true, "Qt6Qml");
     mk("qml5", ["Qt5Qml", "Qt5Core"], true, "Qt5Qml");
+    return ts;
+}
+
+// THE PROMISE, as a gate rather than a photograph: every judgeable document in a style renders
+// exactly like the engine, at SOME level. Each is compiled greedily, rendered and compared; what
+// differs is demoted to -O0, where Qt builds the document itself. A document counts as a failure
+// only when NO level reproduces the engine's frame.
+//
+// Imagine is the style it runs on: it is the one that exercises every rung — documents that compile
+// clean, documents that only work delegated (Dial, GroupBox, the SpinBox pair), and the value
+// interceptor the whole style is built on. Running all five would cost five times as long for the
+// same shape of answer; the other four are measured by hand and written up in docs/qmltc-d.md.
+Target[] o3GateTargets(string root, QtdBinding bind) {
+    auto dir = "/usr/lib/qt6/qml/QtQuick/Controls/Imagine";
+    if (!exists(dir)) return [];
+    auto script = buildPath(root, "tests", "qmltc", "o3.sh");
+    if (!exists(script)) return [];
+    auto tool = qmltcTool(root, bind);
+    Target[] ts;
+    auto outDir = buildPath(bind.bdir, "o3gate");
+    // One compiler only: the levels are a property of the GENERATED code, not of who compiles it,
+    // and the ldc2/dmd split is already covered everywhere else.
+    auto cmd = "sh -c 'sh " ~ script ~ " " ~ outDir ~ " Imagine | tee /dev/stderr | "
+             ~ "grep -q \"UNPLACED=0\"'";
+    ts ~= Target.phony("qmltc-o3-gate", cmd,
+                       [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
     return ts;
 }
 

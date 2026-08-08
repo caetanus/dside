@@ -40,7 +40,7 @@ category() {
     # right and the artifact told a wrong story about it. Kept ahead of the qml rule, since
     # `qmltc*` would otherwise have to out-specific it.
     qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*) echo qmltc ;;
-    qml-*|qmlreg-*|qmlaot-*|shadowaot-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
+    qml-*|qmlreg-*|qmlaot-*|shadowaot-*|qmltc-o3-gate|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
     reglife-*|valuetypeprop-*|subclasscast-*) echo qml ;;
     slotoverload-*) echo moc ;;
     qtmoc-probe-*|report-selftest) echo gate ;;
