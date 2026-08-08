@@ -5080,6 +5080,29 @@ Measured, Qt 6.11, values via `--dumpall` against the engine: **Imagine 2 MATCH 
 has no way in from outside — `QQmlInterceptorMetaObject` is Qt6 private API — so `X on prop` there
 keeps taking the value-source path alone, and says so.
 
+**The Radio family, diagnosed: the expression resolves the id and the DEPENDENCY does not.** Four of
+the seven documents whose FRAME differs are RadioButton/RadioDelegate in Material and Universal, and
+Universal's differ on two values only — `indicator.x` and `indicator.y`, ours -4/-4 against the
+engine's 10/6.
+
+The binding itself is right. `x: control.text ? … : control.leftPadding + (control.availableWidth -
+width) / 2` compiles to reads through `__outer`, which is the RadioButton. What is missing is every
+CONNECTION to it: the compiler reports `depends on 'control.text', which has no known notify`, so
+the binding runs once — while `leftPadding` and `availableWidth` are still 0, giving -4 — and never
+again.
+
+And the notify is known: `qmlprops.tsv` carries `RadioButton text textChanged()` and
+`RadioButton width widthChanged()`. What fails is the LOOKUP. The dependency is recorded as
+`control.text`, with the id unresolved, while the expression compiler already rewrote the same
+`control` to `__outer`. The consumer handles a dep already spelled `__outer.…` and an attached or
+group head, and falls through to a plain name for this one.
+
+Basic's RadioButton is identical to the engine and has the same binding, which locates it further:
+there the indicator is inline, while Universal's is a local type (`RadioIndicator.qml`) that
+declares its own `property var control`. The two spellings of `control` coexist in the merged class,
+the expression obeys the shadowing rule, and the dependency resolver does not — the fourth time
+that pair has disagreed (see "the three dependency consumers").
+
 ### The ladder (2026-08-08)
 
 What happens to a unit qmltc-d cannot turn into D, in order. Each rung is tried only when the one
