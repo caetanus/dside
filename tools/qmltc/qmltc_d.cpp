@@ -9728,6 +9728,14 @@ int main(int argc, char **argv) {
     // prints each scalar property (dotted path for children) as `name\tvalue` sorted — the
     // corpus-check-style differential vs the QQmlComponent oracle.
     bool dump = false, labels = false, objPaths = false, delegateDoc = false;
+    // THE POLICY SWITCHES for the ladder.
+    //   --no-fallback  never hand anything over: a unit that does not compile stays refused, which
+    //                  is what the compiler does today. It WINS over an explicit --delegate-doc or
+    //                  --shadow-dir passed beside it, so one flag turns the whole ladder off.
+    //   --pedantic     that, and every DELEGATION is a failure. Not a production mode — it is how
+    //                  static coverage gets worked on, because a gap that routes to the engine is a
+    //                  gap nobody sees. Exits non-zero while any expression is still handed over.
+    bool noFallback = false, pedantic = false;
     std::vector<char *> pos;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump") == 0) dump = true;
@@ -9738,6 +9746,8 @@ int main(int argc, char **argv) {
         // Last resort, and it must be asked for BY NAME: routing here automatically would make
         // every gap disappear into the fallback instead of being a gap anyone can see.
         else if (std::strcmp(argv[i], "--delegate-doc") == 0) delegateDoc = true;
+        else if (std::strcmp(argv[i], "--no-fallback") == 0) noFallback = true;
+        else if (std::strcmp(argv[i], "--pedantic") == 0) { pedantic = true; noFallback = true; }
         // Where the shadow documents go. Given: a refused expression becomes a shadow compiled by
         // qmlcachegen. Absent: it is handed to the engine as a source string, as before.
         else if (std::strcmp(argv[i], "--shadow-dir") == 0 && i + 1 < argc) g_shadowDir = argv[++i];
@@ -9782,6 +9792,12 @@ int main(int argc, char **argv) {
     const char *inPath = pos[0];
     g_docUrl = "file://" + QFileInfo(inPath).absoluteFilePath().toStdString();
     g_rootDocUrl = g_docUrl;
+    if (noFallback && (delegateDoc || !g_shadowDir.empty())) {
+        std::fprintf(stderr, "qmltc-d: --no-fallback overrides %s\n",
+                     delegateDoc ? "--delegate-doc" : "--shadow-dir");
+        delegateDoc = false;
+        g_shadowDir.clear();
+    }
     QString cls = pos.size() >= 2 ? QString::fromUtf8(pos[1]) : QFileInfo(inPath).completeBaseName();
     // Shadow file names are prefixed by the root class, so two documents compiled into one build
     // cannot collide on `_e0.qml`.
@@ -10326,6 +10342,14 @@ int main(int argc, char **argv) {
                                             : "    writefln(\"%s\\t%%s\", %s);\n",
                         l.label.c_str(), l.access.c_str());
         std::printf("}\n");
+    }
+    // --pedantic: a DELEGATION is a failure too. A refusal already exits 3 and is therefore
+    // visible; a delegation exits 0 today, which is right for shipping (the value is correct) and
+    // wrong for coverage work, where a gap that routes to the engine is a gap nobody sees.
+    if (pedantic && g_delegated) {
+        std::fprintf(stderr, "qmltc-d: %s: --pedantic: %d expression(s) delegated to the engine — "
+                             "not compiled\n", inPath, g_delegated);
+        return 4;
     }
     return partial ? 3 : 0;
 }
