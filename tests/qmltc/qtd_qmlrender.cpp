@@ -190,6 +190,35 @@ int main(int argc, char **argv) {
         return img.save(QString::fromUtf8(argv[5])) ? 0 : 5;
     }
     if (argc != 3) { std::fprintf(stderr, "usage: qmlrender <qml> <out.png> | --compare <a> <b>\n"); return 64; }
+    // A POPUP has a frame, it just has nowhere to be: QQuickView refuses a root that is not an
+    // Item, and 25 of Qt's documents (Popup, Menu, Dialog, Drawer, ToolTip in five styles) are
+    // exactly that. They were counted as "the engine draws nothing for this", which is not the same
+    // as "this cannot be drawn" — it is the harness having no place to put it.
+    //
+    // Detected through the META-OBJECT, not by naming a type: something that is not an Item and
+    // has both `open()` and a `contentItem` is a popup as far as this is concerned, and Qt's own
+    // machinery does the rest.
+    {
+        QQmlEngine peng;
+        QQmlComponent pc(&peng, QUrl::fromLocalFile(QString::fromUtf8(argv[1])));
+        if (!pc.isError()) {
+            QObject *proot = pc.create();
+            if (proot && !qobject_cast<QQuickItem *>(proot)
+                    && proot->metaObject()->indexOfMethod("open()") >= 0
+                    && proot->metaObject()->indexOfProperty("contentItem") >= 0) {
+                QQuickWindow win;
+                win.setWidth(400); win.setHeight(400);
+                win.show();
+                proot->setProperty("parent", QVariant::fromValue(win.contentItem()));
+                QMetaObject::invokeMethod(proot, "open");
+                QCoreApplication::processEvents();
+                const QImage img = win.grabWindow();
+                if (img.isNull()) { std::fprintf(stderr, "qmlrender: null popup frame\n"); return 4; }
+                return img.save(QString::fromUtf8(argv[2])) ? 0 : 5;
+            }
+            delete proot;
+        }
+    }
     QQuickView v;
     v.setResizeMode(QQuickView::SizeViewToRootObject);
     v.setSource(QUrl::fromLocalFile(QString::fromUtf8(argv[1])));

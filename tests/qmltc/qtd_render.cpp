@@ -45,10 +45,29 @@ extern "C" int qtd_render_document(const char *url, const char *out) {
     return img.save(QString::fromUtf8(out)) ? 0 : 3;
 }
 
+// A POPUP: not an Item, so it cannot be parented into a window — but it HAS a frame once it is
+// opened inside one. Same detection as the oracle's, through the meta-object rather than by naming
+// a type: not an Item, has `open()`, has a `contentItem`. Both halves must build the scene the same
+// way or the comparison measures the harness.
+static int qtd_render_popup(QObject *o, const char *out) {
+    static QQuickWindow *win = nullptr;
+    if (!win) { win = new QQuickWindow(); win->setWidth(400); win->setHeight(400); win->show(); }
+    o->setProperty("parent", QVariant::fromValue(win->contentItem()));
+    QMetaObject::invokeMethod(o, "open");
+    QCoreApplication::processEvents();
+    const QImage img = win->grabWindow();
+    if (img.isNull()) return 2;
+    return img.save(QString::fromUtf8(out)) ? 0 : 3;
+}
+
 extern "C" int qtd_render_item(void *item, const char *out) {
     if (!item) return 1;
+    auto *o = reinterpret_cast<QObject *>(item);
     auto *it = qtd_as_item(item);
-    if (!it) return 4;   // not an Item (a Popup and friends): nothing to put in a window
+    if (!it && o->metaObject()->indexOfMethod("open()") >= 0
+            && o->metaObject()->indexOfProperty("contentItem") >= 0)
+        return qtd_render_popup(o, out);
+    if (!it) return 4;   // not an Item and not a popup: there is genuinely nothing to draw
     // SizeViewToRootObject sizes the root from its IMPLICIT size when it has no explicit one, and
     // then sets the item to that size. A Control's whole geometry comes from there — reading
     // width() alone gave 1x1 for a Pane the engine draws at 24x24, which reads as a render defect
