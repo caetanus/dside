@@ -175,12 +175,31 @@ Imagine's 2-of-54 and Material's 10-of-57 are the same story from mechanism 3, n
 translator: Imagine resolves every image through a `NinePatchImageSelector` and Material is
 built on unexported `impl` types, and both are containment by definition.
 
-**The measured claim.** Over Qt's own Quick Controls — five styles, 290 documents — every
-document that has a frame renders **byte-identical** to the QML engine: 247 compiled to D,
-37 handed to the engine, 284 judged, **none unplaced**. `./build` re-checks it: `qmltc-o3-gate-<Style>`
-compiles each document, renders it, compares with the engine's frame, demotes what differs,
-and fails on a single document no level can place. It is a gate, not a number someone
-remembered to take.
+**The measured claim, on two axes.** Over Qt's own Quick Controls — five styles, 290
+documents — every document that has a frame renders **byte-identical** to the QML engine:
+247 compiled to D, 37 handed to the engine, 284 judged, **none unplaced**. And of the 247
+compiled, **226 also agree on every property of every named object**, which is the stronger
+axis: a frame is offscreen software rendering at the implicit size, and a control that draws
+small hides a lot.
+
+| style | compiled | of those, values differ | handed to the engine | unplaced |
+|---|---:|---:|---:|---:|
+| Basic | 54 | 1 | 5 | 0 |
+| Fusion | 51 | 2 | 6 | 0 |
+| Universal | 51 | 2 | 4 | 0 |
+| Imagine | 48 | 7 | 4 | 0 |
+| Material | 43 | 9 | 18 | 0 |
+| **total** | **247** | **21** | **37** | **0** |
+
+The 21 are counted with the census, not a raw diff: a path the oracle marks `<missing>` is
+one it cannot walk, not a disagreement — Qt defers a Transition's animations, so at rest it
+has none and we have ours. Counting those reported six Fusion documents as wrong when two
+are. Most of the 21 differ in one to four properties; Imagine's DelayButton (82) is the
+`layer.effect` shape, which crashes inside Qt itself and is documented as a ceiling.
+
+`./build` re-checks all of it: `qmltc-o3-gate-<Style>` compiles each document, renders it,
+compares the frame AND every property, demotes what the frame says differs, and fails on a
+single document no level can place. It is a gate, not a number someone remembered to take.
 
 **The scope, which matters as much as the claim.** That corpus is Qt's own QML: `T.Foo`
 roots, declared properties, little loose JS, imports from Qt. **Application QML is not

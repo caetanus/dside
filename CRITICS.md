@@ -1,5 +1,242 @@
 # CRITICS.md
 
+## Rodada 11: o gerador e seu consumidor mais valioso precisam de uma fronteira
+
+### Enquadramento corrigido
+
+O produto-base deste repositório é o **gerador de bindings Qt para D**. O `qmltc-d` é
+uma ferramenta construída sobre esses bindings, é o stress-test mais exigente do
+gerador e, ao mesmo tempo, é hoje o artefato individual com maior valor para publicação.
+Esses papéis não se contradizem. Pelo contrário: o `qmltc-d` já encontrou defeitos de
+ABI, lifetime, meta-object, resolução de tipos, virtual dispatch e reatividade que uma
+suíte pequena do gerador não encontraria.
+
+A crítica, portanto, não é que o `qmltc-d` "desvia" o projeto, nem que deva ser
+rebaixado a exemplo. O ponto é mais preciso: **um consumidor de alto valor extrapola
+seu papel de stress-test quando passa a impedir que o produto-base seja compreendido,
+testado e liberado de forma independente**. É essa fronteira que ainda falta.
+
+### Verificação desta rodada
+
+- A árvore já tinha uma alteração local em `tests/qmltc/o3.sh`; ela foi preservada e
+  faz parte da análise abaixo.
+- `./build --list` oferece **1100 targets default**. **895** pertencem às famílias
+  `qmltc*` e relacionadas: aproximadamente **81% do grafo obrigatório**. A contagem
+  não mede valor de produto nem linhas de código, mas mede claramente quem governa o
+  custo e o resultado do build default.
+- `report-selftest` passou: **1100 classificados, 0 unclassified**.
+- `expected-fails-lint` passou: **11 entradas válidas**, 3 riscos e 10 probe targets
+  existentes. Como documentado, isso valida o inventário; não executa um protocolo de
+  expected-fail nem detecta unexpected pass.
+- `git diff --check` passou.
+- Não executei os 1100 targets nesta rodada. Logo, esta crítica não afirma que o build
+  default atual está verde.
+- `dub test` em `generator-d/` não oferece hoje uma suíte unitária autônoma do gerador:
+  o dub tenta gerar um test runner para a configuração executable, avisa que faltam
+  `mainSourceFile`/import paths e, nesta execução, parou também no cache dub global
+  read-only. A matriz reggae continua sendo a validação de fato.
+
+### O que o projeto faz excepcionalmente bem
+
+1. **O desenho central continua forte.** Gerar módulos D que manglam diretamente para
+   símbolos Qt com `extern(C++)`, mantendo trampolines apenas onde a ABI exige, é uma
+   proposta técnica distinta e valiosa. O output à la carte e não commitado é uma boa
+   disciplina para um binding de superfície tão grande.
+
+2. **O `qmltc-d` é um ótimo stress-test do binding.** Ele força simultaneamente
+   subclassing, meta-object dinâmico, propriedades, sinais, ownership, tipos de valor,
+   containers, Qt private API e comportamento do engine. Várias correções registradas
+   nas rodadas anteriores nasceram exatamente dessa pressão. Publicá-lo como produto
+   não enfraquece esse papel; dá a ele um consumidor real.
+
+3. **Os oracles diferenciais são o maior ativo de qualidade do repositório.** Comparar
+   contra QUiLoader e contra o próprio QML engine encontra divergência sem exigir que o
+   teste reimplemente a especificação do Qt. Os manifests por símbolo também são muito
+   superiores a uma porcentagem agregada de cobertura.
+
+4. **A documentação costuma distinguir recusa, delegação e prova.** O README atual é
+   especialmente honesto sobre o corpus de Controls, sobre documentos unjudgeable e
+   sobre a impossibilidade de transferir automaticamente um critério por documento para
+   uma aplicação inteira.
+
+### Achados críticos
+
+#### 1. A tabela de deep bindings ainda colide owners e perde reatividade silenciosamente
+
+`qtd_bind_leaf(owner, prop, sig, recv, slot)` guarda a conexão em `g_leafConn`, mas
+`qtd_leaf_key` usa apenas:
+
+```text
+recv | slot | prop | sig
+```
+
+O `owner`, embora determine qual property e qual leaf estão sendo observados, não entra
+na identidade. Duas dependências com a mesma forma e owners diferentes compartilham a
+chave; a segunda desconecta a primeira em `runtime/qtmoc/qtdmoc.cpp:1022-1038`. A API
+retorna sucesso para ambas e não produz PARTIAL nem diagnóstico. Esta é uma divergência
+silenciosa da semântica reativa do QML e permanece aberta desde a rodada 10.
+
+`g_leafConn` também não demonstra limpeza quando owner ou receiver morrem. O Qt invalida
+a connection, mas a entrada da side-table permanece até uma reutilização daquela chave.
+Com delegates e árvores dinâmicas, isto deixa de ser detalhe de teste e vira lifetime
+do produto publicável.
+
+**Critério de resolução:**
+
+- incluir `owner` na identidade;
+- remover a entrada quando owner ou receiver forem destruídos;
+- adicionar um diferencial com dois paths homônimos, mutando cada leaf separadamente;
+- adicionar um probe que exija a side-table de volta ao baseline após destruir a árvore.
+
+#### 2. O novo eixo de valores do O3 observa uma falha, mas o gate ainda a aprova
+
+A alteração local em `tests/qmltc/o3.sh` acrescenta a comparação `--dumpall` e distingue:
+
+```text
+COMPILED values-differ
+COMPILED values-unmeasured
+```
+
+Isso melhora muito o diagnóstico: frames idênticos não provam estado nem reatividade
+idênticos. Porém os dois casos dão `continue`, e `o3GateTargets()` continua aprovando a
+execução apenas com:
+
+```sh
+grep -q "UNPLACED=0"
+```
+
+Assim, o relatório pode declarar divergência de valores e o gate permanecer verde. O
+stress-test encontrou um eixo melhor, mas ainda não o transformou em contrato.
+
+**Critério de resolução:** `values-differ` deve demover o documento para `-O0` ou falhar;
+`values-unmeasured` deve ser uma categoria explicitamente aceita por inventário, ou
+falhar. O gate deve exigir zero para ambas enquanto a promessa usar a palavra "same".
+
+#### 3. O gate O3 está preso à workstation e não sustenta a publicação do qmltc-d
+
+`tests/qmltc/o3.sh` fixa:
+
+```text
+/home/caetano/lab/qt-dlang-gen/.build/qt-6.11-cxx-controls
+/home/caetano/lab/qt-dlang-gen/generated/qt-6.11/cxx-controls
+```
+
+E `o3GateTargets()` só cria targets quando encontra estilos em
+`/usr/lib/qt6/qml/QtQuick/Controls/<Style>`. Outra distribuição pode instalá-los sob
+um diretório multiarch, e um checkout de CI certamente não vive em `/home/caetano`.
+Logo o gate pode falhar por path ou, pior, desaparecer do grafo.
+
+A CI admite ser um scaffold nunca comprovado verde num runner real. Isso é honestidade,
+mas não basta para publicar o `qmltc-d` nem para afirmar portabilidade do gerador. Um
+canário deve exigir que os cinco gates O3 existam; os paths devem vir do `root`, do
+`QtdBinding` e da descoberta Qt (`QLibraryInfo`/`qtpaths`), nunca de uma home específica.
+
+### Onde o qmltc-d extrapolou o papel de consumidor/stress-test
+
+#### 4. O build default do gerador é, operacionalmente, o build do qmltc-d
+
+Ter 895 de 1100 targets relacionados a `qmltc` não é defeito por si só; é consequência
+de um corpus grande e de vários eixos diferenciais. A extrapolação está em todos eles
+serem parte do mesmo default indivisível. Hoje não há uma resposta simples e executável
+para perguntas diferentes:
+
+1. o gerador de bindings está saudável?;
+2. o runtime base está saudável?;
+3. o `qmltc-d` está saudável em seu corpus completo?;
+4. o pacote publicável inteiro está pronto para release?
+
+O grafo sabe construir alvos individuais, mas não expõe contratos de topo claros para
+essas quatro respostas. Uma regressão ou custo no corpus de Controls governa o resultado
+e o tempo do produto-base, mesmo quando o gerador, manifests, wrapper, moc, uic e qrc
+continuam corretos.
+
+**Recomendação:** manter um `./build` completo para release, mas criar agregados explícitos
+e obrigatórios, por exemplo `binding-core`, `runtime`, `qmltc-smoke`, `qmltc-corpus` e
+`release`. Isto separa diagnóstico e ownership sem enfraquecer o stress-test.
+
+#### 5. Estado específico do compilador QML vazou para o runtime compartilhado
+
+`runtime/qtmoc/qtdmoc.cpp` já passa de duas mil linhas e reúne o meta-object geral com
+helpers de contexto, engine, propriedades `var`, bindings profundas, engine-created
+children e delegação necessários ao `qmltc-d`. O guard `QTD_HAVE_QML` provou que um
+binding sem QtQml ainda compila, o que resolve o vazamento de link observado antes, mas
+não cria uma fronteira de manutenção.
+
+O risco é o produto-base não conseguir evoluir ou provar seu runtime moc sem carregar
+estado e lifecycle de um compilador QML. A separação recomendada não é remover esses
+helpers: é movê-los para uma unidade `qmltc_runtime` ligada apenas pelos bindings que os
+usam, mantendo em `qtmoc` o contrato geral de meta-object.
+
+#### 6. O compilador cresceu sem um contexto explícito porque o stress-test premiou avanço local
+
+`tools/qmltc/qmltc_d.cpp` tem aproximadamente **10.465 linhas** e dezenas de globais
+mutáveis: documento atual, source stacks, outer chain, registry, funções, dependencies,
+shadows, aliases, tipos e flags de emissão. Muitos comentários dizem que um campo é
+"saved/restored around compileObject". Isso é um `DocumentContext` implícito distribuído
+pelo arquivo.
+
+Como stress-test interno, correções locais rápidas foram produtivas: cada nova fixture
+pressionou o binding e aumentou a cobertura. Como produto publicável, o mesmo padrão
+vira risco de regressão não local, falta de reentrância e dificuldade de testar resolver,
+inferência e emissão isoladamente. Os bugs históricos de documento errado, source slice,
+outer scope e resolução duplicada são sintomas dessa ausência de fronteira, não acidentes
+independentes.
+
+Não é necessário parar features para uma reescrita. O caminho seguro é introduzir um
+`CompilationContext` incremental e migrar um cluster por vez, começando por source/document
+identity e dependency tracking, os dois clusters com falhas silenciosas já observadas.
+
+### Achados altos de governança
+
+#### 7. As fontes públicas ainda descrevem o binding anterior ao wrapper flip
+
+Os specs principais (`qtwidgets`, `qml`, `quick`, `controls`, `webengine`) estão com
+`"wrapper": true`, e o gerador registra que `X_new` foi removido. Mesmo assim:
+
+- `README.md:56-62` diz que raw ainda é default e mostra `X_new` como API corrente;
+- `README.md:233-238` ainda coloca o wrapper flip no roadmap;
+- `docs/FEATURES.md:9-25` chama raw de default e wrapper de gated;
+- `docs/test-suite.md:67-77` ainda fala em baselines raw e em aproximadamente 162
+  targets, contra 1100 atuais.
+
+Para o gerador, isso é um defeito de produto: um novo usuário aprende uma API inexistente
+e não sabe qual modo é suportado. O README principal deve ser corrigido antes da publicação
+do `qmltc-d`, porque ele é também a apresentação da plataforma sobre a qual a ferramenta
+foi construída.
+
+#### 8. O inventário de expected-fails ainda é estado validado, não comportamento executado
+
+O linter atual é bom: schema estrito, IDs únicos, kinds conhecidos e probe targets reais.
+Mas `known_gap.remove_when` continua sendo prosa que nada avalia. Um gap pode ser resolvido
+e permanecer listado; um risco pode ter target existente sem que o linter execute esse
+target. O documento reconhece corretamente essa limitação.
+
+O próximo passo deve ser um runner que associe cada entrada executável a resultado e
+diagnóstico esperado, rejeite unexpected pass e permita expiração. Isto importa mais agora
+que `qmltc-d` será publicado: sua fronteira de suporte precisa ser consultável por máquina,
+não apenas por leitores atentos.
+
+### Prioridade brutal da rodada 11
+
+1. Corrigir identidade e lifetime de `g_leafConn`, com diferencial e probe de limpeza.
+2. Fazer o eixo de valores participar realmente do gate O3.
+3. Remover paths absolutos e provar os gates num runner CI real.
+4. Corrigir README, FEATURES e test-suite para wrapper-only e 1100 targets atuais.
+5. Criar agregados `binding-core` / `qmltc-smoke` / `qmltc-corpus` / `release`, mantendo
+   o corpus completo obrigatório no release sem fazer dele a única resposta do build.
+6. Extrair `qmltc_runtime` do runtime moc compartilhado.
+7. Introduzir `CompilationContext` incremental no `qmltc-d`.
+8. Transformar o expected-fails linter em runner de comportamento.
+
+### Síntese
+
+O `qmltc-d` não é uma distração: ele é a demonstração mais forte do valor do gerador e
+provavelmente seu melhor vetor de adoção. O problema atual é justamente ele ser valioso
+demais para continuar dependendo de paths locais, estado global implícito e um build cuja
+única granularidade conceitual é "tudo". Dar fronteiras próprias ao gerador e ao `qmltc-d`
+fortalece os dois produtos: o primeiro ganha um contrato reutilizável; o segundo ganha um
+release reproduzível e uma promessa que seus gates realmente fazem cumprir.
+
 ## Rodada 10: o binding virou wrapper; agora o estado declarado ficou para trás
 
 Esta rodada mantém a régua corrigida da rodada 9. O objeto é o projeto inteiro, e o

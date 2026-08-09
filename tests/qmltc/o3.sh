@@ -25,6 +25,7 @@ esac
 L=/home/caetano/lab/qt-dlang-gen/.build/qt-6.11-cxx-controls
 G=/home/caetano/lab/qt-dlang-gen/generated/qt-6.11/cxx-controls
 D="$SP/o3_$ST"; mkdir -p "$D"
+ROOT=/home/caetano/lab/qt-dlang-gen
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software
 OUT="$SP/o3_$ST.txt"; : > "$OUT"
 
@@ -48,7 +49,28 @@ for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
     echo "$n UNJUDGEABLE (the engine renders no frame for it standalone)" >> "$OUT"; continue
   fi
   if build_at -Ox ox "$n" "$f" && cmp -s "$D/${n}_ox.png" "$D/$n.eng.png"; then
-    echo "$n COMPILED" >> "$OUT"; continue
+    # ...and the VALUE axis beside the frame. Two frames can match while a property does not: the
+    # frame is offscreen software rendering at the implicit size, and a control that draws small
+    # hides a lot. Every property of every named object is compared here, which is the axis that
+    # found the deferred transitions, the gradients and every ordering defect on record.
+    "$L/qmltc-d" --objpaths "$f" "I$n" --qmlmap "$G/qmlmap.tsv" -I "$B" > "$D/$n.objs" 2>/dev/null
+    if timeout 30 "$D/${n}_ox.bin" --dumpall 2>/dev/null | sort > "$D/$n.dall" \
+       && timeout 30 "$L/qmlvalues" "$f" --dumpall "$D/$n.objs" 2>/dev/null | sort > "$D/$n.qall" \
+       && [ -s "$D/$n.qall" ]; then
+      # Through the CENSUS, not a raw diff: a path the oracle marks `<missing>` is not a
+      # disagreement, it is a path it cannot walk — Qt defers a Transition's animations, so at rest
+      # the engine has none and we have ours. Counting those would report six Fusion documents as
+      # wrong when this project's own tooling says they are not.
+      cp "$D/$n.dall" "$D/$n.dall.s"; cp "$D/$n.qall" "$D/$n.qall.s"
+      real=$(python3 "$ROOT/tools/qmltc-value-census.py" "$D" 2>/dev/null | awk '
+        $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
+      rm -f "$D/$n.dall.s" "$D/$n.qall.s"
+      if [ "${real:-0}" -eq 0 ]; then echo "$n COMPILED" >> "$OUT"
+      else echo "$n COMPILED values-differ ($real)" >> "$OUT"; fi
+    else
+      echo "$n COMPILED values-unmeasured" >> "$OUT"
+    fi
+    continue
   fi
   # ...it did not render the same, so it does not get into -O3. Down to the floor.
   if build_at -O0 o0 "$n" "$f" && cmp -s "$D/${n}_o0.png" "$D/$n.eng.png"; then
@@ -57,6 +79,7 @@ for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
   echo "$n UNPLACED (no level renders the engine's frame)" >> "$OUT"
 done
 echo DONE >> "$OUT"
-printf '%-10s compiled=%s demoted=%s UNPLACED=%s unjudgeable=%s\n' "$ST" \
+printf '%-10s compiled=%s demoted=%s UNPLACED=%s unjudgeable=%s values-differ=%s\n' "$ST" \
   "$(grep -c ' COMPILED' "$OUT")" "$(grep -c ' DEMOTED' "$OUT")" \
-  "$(grep -c ' UNPLACED' "$OUT")" "$(grep -c ' UNJUDGEABLE' "$OUT")"
+  "$(grep -c ' UNPLACED' "$OUT")" "$(grep -c ' UNJUDGEABLE' "$OUT")" \
+  "$(grep -c ' COMPILED values-differ' "$OUT")"
