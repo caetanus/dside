@@ -103,7 +103,9 @@ if [ "$selftest" = yes ]; then
   ck tr-ldc2                         i18n      qt6 ldc2
   ck qrc-ldc2                        misc      qt6 ldc2
   # ...and no target the build actually offers may be unclassified.
-  if list=$(./build --list 2>/dev/null | sed 's/^- //' | grep -v '^List'); then
+  # The ` (optional)` suffix is part of the LISTING, not of the name. Glob-matched families never
+  # noticed; `binding-core` is matched exactly and came back unclassified the day it became optional.
+  if list=$(./build --list 2>/dev/null | sed -e 's/^- //' -e 's/ (optional)$//' | grep -v '^List'); then
     n_other=0
     while read -r t; do [ -n "$t" ] && [ "$(category "$t")" = other ] && {
       printf 'self-test FAIL unclassified target: %s\n' "$t"; n_other=$((n_other+1)); }

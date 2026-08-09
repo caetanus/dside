@@ -182,6 +182,7 @@ Build reggaeBuild() {
         // they all build and then die (or silently build the wrong object) at construction.
         all ~= qmltcControlsRuntimeTargets(root, ctrl);
         all ~= o3GateTargets(root, ctrl);   // every judgeable document renders like the engine
+        all ~= optLevelTargets(root, ctrl); // ...and the levels agree with it and with each other
         // ...and the LEAF TABLE's identity and lifetime, which no document can observe: the count
         // of live leaf connections is not a value the differential can dump. Two owners must be
         // two entries, and destroying the tree must empty the table.
@@ -579,14 +580,24 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
     auto tool = qmltcTool(root, bind);
     Target[] ts;
     auto outDir = buildPath(bind.bdir, "o3gate");
+    // THE APPLICATION-SHAPED CORPUS, first, because it is the one that answers the question the
+    // styles cannot. Qt's own QML is a narrow dialect written for a style engine; these are list
+    // models, Loaders, real JS, states, inline components, signals crossing documents and one
+    // document instantiating another from its own directory. Judged by exactly the same two axes.
+    auto appDir = buildPath(root, "tests", "qmltc", "app");
+    if (exists(appDir))
+        ts ~= Target.phony("qmltc-o3-gate-app",
+            "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ appDir ~ " " ~ bind.bdir ~ " "
+            ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'",
+            [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
     auto ctlDir = buildPath(qtInstallQml(), "QtQuick", "Controls");
     // A MISSING STYLE IS A RED GATE, not a missing one. Controls absent altogether is a genuine
     // capability skip and says so out loud; Controls present with a style missing is the shape
     // that would quietly delete four fifths of this check on another machine.
     if (!exists(ctlDir))
-        return [Target.phony("qmltc-o3-gate-skipped",
-                             "echo 'qmltc-o3-gate: skipped — no QtQuick.Controls under "
-                             ~ qtInstallQml() ~ "'", [])];
+        return ts ~ Target.phony("qmltc-o3-gate-skipped",
+                                 "echo 'qmltc-o3-gate: skipped — no QtQuick.Controls under "
+                                 ~ qtInstallQml() ~ "'", []);
     foreach (style; ["Basic", "Fusion", "Universal", "Imagine", "Material"]) {
         auto styleDir = buildPath(ctlDir, style);
         if (!exists(styleDir)) {
@@ -601,6 +612,34 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
                  ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'";
         ts ~= Target.phony("qmltc-o3-gate-" ~ style, cmd,
                            [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
+    }
+    return ts;
+}
+
+// THE LEVELS MUST AGREE — with the engine and with each other. `-O` is a degree of CERTAINTY, so a
+// HIGHER level that disagrees with a lower one is a false positive by definition, and a level that
+// hands the document over must still produce the engine's values. The script existed and nothing
+// ran it: a check nobody executes is a comment.
+//
+// Over the APPLICATION corpus rather than the styles, because that is where the levels actually
+// diverge — at -O1 and -O2 twelve of those fourteen documents go to the engine whole, which is the
+// behaviour under test.
+Target[] optLevelTargets(string root, QtdBinding bind) {
+    auto script = buildPath(root, "tests", "qmltc", "optlevels.sh");
+    auto dir = buildPath(root, "tests", "qmltc", "app");
+    if (!exists(script) || !exists(dir)) return [];
+    auto tool = qmltcTool(root, bind);
+    auto toolBin = buildPath(bind.bdir, "qmltc-d");
+    Target[] ts;
+    foreach (e; dirEntries(dir, "*.qml", SpanMode.shallow).map!(x => x.name).array.sort) {
+        auto name = baseName(e).stripExtension;
+        auto outDir = buildPath(bind.bdir, "optlevels", name);
+        auto cmd = "sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
+                 ~ " " ~ e ~ " I" ~ name ~ " " ~ outDir ~ " " ~ bind.bdir ~ " " ~ bind.genDir
+                 ~ " ldc2 " ~ pkgLibs(bind.mods);
+        ts ~= Target.phony("qmltc-optlevels-" ~ name, cmd,
+                           [tool, Target(script), Target(e), bind.gen,
+                            qtdBindLib(bind, "ldc2"), bind.shims]);
     }
     return ts;
 }

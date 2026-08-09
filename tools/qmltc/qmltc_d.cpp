@@ -10080,10 +10080,23 @@ int main(int argc, char **argv) {
             why = "-O1 is statically typed translation only";
         else if (optLevel == 2 && (g_engineKids || g_delegated))
             why = "-O2 allows weak typing but not containment or delegation";
+        // ...and a SKIPPED MEMBER, which is worse than any of the three above. Weak typing and
+        // containment still produce the member; a skip produces a document that is missing
+        // behaviour, and nothing downstream of the compiler can tell the difference by reading the
+        // D. The certainty levels must not emit one.
+        //
+        // -O3 may, and the distinction is not a compromise: -O3 is not the compiler's verdict but
+        // a PIPELINE that renders the result and compares every property against the engine, so a
+        // partial document that survives it has been proven rather than assumed. Off that pipeline
+        // (a plain `qmltc-d -O3` in someone's build) the exit code is still 3 and the skips are
+        // still printed — but at -O1 and -O2 the answer is a document that behaves, not a
+        // diagnostic the caller has to remember to read.
+        else if (optLevel <= 2 && partial)
+            why = "-O1 and -O2 do not emit a document with SKIPPED members";
         if (why) {
             std::fprintf(stderr, "qmltc-d: %s: %s — %d weakly typed, %d engine-built child(ren), "
-                         "%d delegated: handing the DOCUMENT to the engine\n",
-                         inPath, why, g_weakTyped, g_engineKids, g_delegated);
+                         "%d delegated, %d skipped: handing the DOCUMENT to the engine\n",
+                         inPath, why, g_weakTyped, g_engineKids, g_delegated, partial);
             delegateDoc = true;
             partial = 0;   // the document is not partial any more; it is delegated, which is a rung
         }
