@@ -148,60 +148,71 @@ level does not allow is not compiled with it — it goes to the engine whole.
 | `-O0` | none of ours: Qt builds the document, as `qmlcachegen` bytecode where it can, interpreted where it cannot | by construction — it is the engine |
 | `-O1` | static translation only | nothing crosses untyped |
 | `-O2` | ...and QVariant | value right, type late |
-| `-O3` | ...and containment and delegation, **and only what RENDERS THE SAME** — what differs is demoted to `-O0` | measured, per document |
-| `-Ox` | `-O3` with the render check waived | experimental |
+| `-O3` | ...and containment and delegation, **and only what BEHAVES THE SAME** — what differs on either axis is demoted to `-O0` | measured, per document |
+| `-Ox` | `-O3` with the check waived | experimental |
 
-`-O3` is not a compiler flag but a pipeline: the compiler cannot tell whether something renders
-the same, so the build compiles, renders, compares with the engine's frame, and demotes what
-differs. Two more switches exist for working on coverage rather than shipping: `--no-fallback`
-turns the whole ladder off, and `--pedantic` also makes a delegation a failure (its own exit
-code, 4 — "we could not compile this" and "we handed this over" are different jobs).
+`-O3` is not a compiler flag but a pipeline: the compiler cannot tell whether something behaves
+the same — it does not render and it does not run — so the build compiles the document, renders
+it, compares the frame with the engine's, compares every property of every named object, and
+demotes what differs on either. Two more switches exist for working on coverage rather than
+shipping: `--no-fallback` turns the whole ladder off, and `--pedantic` also makes a delegation a
+failure (its own exit code, 4 — "we could not compile this" and "we handed this over" are
+different jobs).
 
 **What each level actually compiles**, over Qt's five Controls styles (a document not compiled
 at a level is handed to the engine there, and still renders correctly):
 
 | style | documents | `-O1` | `-O2` | `-O3` |
 |---|---:|---:|---:|---:|
-| Basic | 69 | 53 | 53 | 69 |
-| Fusion | 55 | 42 | 42 | 55 |
-| Universal | 55 | 40 | 42 | 55 |
-| Imagine | 54 | 2 | 2 | 54 |
-| Material | 57 | 10 | 10 | 57 |
-| **total** | **290** | **147** | **149** | **290** |
+| Basic | 70 | 54 | 54 | 70 |
+| Fusion | 70 | 56 | 56 | 70 |
+| Universal | 66 | 49 | 51 | 66 |
+| Imagine | 56 | 2 | 2 | 56 |
+| Material | 67 | 10 | 10 | 67 |
+| **total** | **329** | **171** | **173** | **329** |
 
 The middle rung is nearly flat: QVariant alone unlocks **two** documents, both in Universal.
 Everything else that needs weak typing also needs containment or delegation, so it lands at
 `-O3` regardless — the scale has three rungs and two of them nearly coincide.
 
-Imagine's 2-of-54 and Material's 10-of-57 are the same story from mechanism 3, not a weak JS
+Imagine's 2-of-56 and Material's 10-of-67 are the same story from mechanism 3, not a weak JS
 translator: Imagine resolves every image through a `NinePatchImageSelector` and Material is
 built on unexported `impl` types, and both are containment by definition.
 
-**The measured claim, on two axes.** Over Qt's own Quick Controls — five styles, 290
-documents — every document that has a frame renders **byte-identical** to the QML engine:
-247 compiled to D, 37 handed to the engine, 284 judged, **none unplaced**. And of the 247
-compiled, **226 also agree on every property of every named object**, which is the stronger
-axis: a frame is offscreen software rendering at the implicit size, and a control that draws
-small hides a lot.
+**The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every
+document the engine can draw standalone behaves **identically** to it: same frame, byte for
+byte, and the same value for every property of every named object. 226 of them reach that as
+compiled D; 58 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
+**none is unplaced**.
 
-| style | compiled | of those, values differ | handed to the engine | unplaced |
-|---|---:|---:|---:|---:|
-| Basic | 54 | 1 | 5 | 0 |
-| Fusion | 51 | 2 | 6 | 0 |
-| Universal | 51 | 2 | 4 | 0 |
-| Imagine | 48 | 7 | 4 | 0 |
-| Material | 43 | 9 | 18 | 0 |
-| **total** | **247** | **21** | **37** | **0** |
+| style | documents | compiled | at `-O0` | unjudgeable | unplaced |
+|---|---:|---:|---:|---:|---:|
+| Basic | 70 | 53 | 6 | 11 | 0 |
+| Fusion | 70 | 49 | 8 | 13 | 0 |
+| Universal | 66 | 49 | 6 | 11 | 0 |
+| Imagine | 56 | 41 | 11 | 4 | 0 |
+| Material | 67 | 34 | 27 | 6 | 0 |
+| **total** | **329** | **226** | **58** | **45** | **0** |
 
-The 21 are counted with the census, not a raw diff: a path the oracle marks `<missing>` is
-one it cannot walk, not a disagreement — Qt defers a Transition's animations, so at rest it
-has none and we have ours. Counting those reported six Fusion documents as wrong when two
-are. Most of the 21 differ in one to four properties; Imagine's DelayButton (82) is the
-`layer.effect` shape, which crashes inside Qt itself and is documented as a ceiling.
+Both axes are required, and demoting on either is what makes the number mean something. The
+frame alone placed 247 documents; 21 of those disagreed on a property while the frame matched,
+which is what a control that draws small at its implicit size will do. Those 21 are the
+difference between the two columns — they are at `-O0` now, still identical to the engine,
+just not by our compilation.
+
+The comparison is filtered twice, and both filters exist because the harness was wrong before
+the compiler was. A path the oracle marks `<missing>` is one it cannot walk rather than a
+disagreement — Qt defers a `Transition`'s animations, so at rest it has none and we have ours;
+counting those called six Fusion documents wrong when two were. And a path the ENGINE cannot
+reproduce cannot be a verdict about us: Material's SpinBox background carries
+`placeholderTextHAlign`, which Qt reads out of uninitialised memory and which answered
+1154029312, 1895307008 and -1856497920 on three consecutive engine runs. Judged against one
+engine dump, three Material documents were unplaceable at every level, `-O0` included. The
+engine is asked twice and every path where it contradicts itself is dropped from both sides.
 
 `./build` re-checks all of it: `qmltc-o3-gate-<Style>` compiles each document, renders it,
-compares the frame AND every property, demotes what the frame says differs, and fails on a
-single document no level can place. It is a gate, not a number someone remembered to take.
+compares the frame AND every property, demotes what differs on either, and fails on a single
+document no level can place. It is a gate, not a number someone remembered to take.
 
 **The scope, which matters as much as the claim.** That corpus is Qt's own QML: `T.Foo`
 roots, declared properties, little loose JS, imports from Qt. **Application QML is not
@@ -217,10 +228,11 @@ nothing for it standalone. So it is not only that the compiler is less proven of
 corpus: **the per-document criterion itself does not transfer.** Judging an application means
 judging it running, which is a different harness and an open question here.
 
-Six documents are outside the frame axis and honestly so: `Action`, `ButtonGroup`,
-`CalendarModel` and the `*Delegate`s have no frame by nature — a delegate needs a view to exist
-and an `Action` is not drawn at all — so they are judged on the value axis instead. They are not
-counted as passes here.
+The 45 unjudgeable are outside the frame axis and honestly so: `Action`, `ButtonGroup`,
+`CalendarModel`, the `*Delegate`s and the styles' `impl/` helpers have no frame by nature — a
+delegate needs a view to exist and an `Action` is not drawn at all. The engine renders nothing
+for them standalone, so there is nothing to compare a frame against; they are **not** counted as
+passes above.
 
 ## Directory status
 
