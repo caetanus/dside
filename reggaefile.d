@@ -19,6 +19,32 @@ import std.string : strip;
 
 enum DCS = ["ldc2", "dmd"];
 
+// WHERE Qt actually put its QML modules. `/usr/lib/qt6/qml` is this distribution's layout, not
+// Qt's API: on a multiarch or prefix install the directory is somewhere else entirely, and every
+// gate keyed on the literal path emits no targets there — a gate that DISAPPEARS rather than one
+// that fails. Ask Qt, and keep the literal only as the last resort.
+private __gshared string _qtQmlDir;
+private __gshared bool _qtQmlAsked;
+string qtInstallQml() {
+    if (_qtQmlAsked) return _qtQmlDir;
+    _qtQmlAsked = true;
+    foreach (probe; [["qtpaths6", "--query"], ["qtpaths", "--query"], ["qmake6", "-query"],
+                     ["qmake", "-query"]]) {
+        // ...and a probe that is not INSTALLED must not abort the build graph: `execute` throws
+        // rather than returning non-zero when the executable is missing, which is how the first
+        // version of this helper turned "qtpaths6 is not on this machine" into no build at all.
+        try {
+            auto r = execute(probe ~ ["QT_INSTALL_QML"]);
+            if (r.status == 0) {
+                auto p = r.output.strip;
+                if (p.length && exists(p)) { _qtQmlDir = p; return p; }
+            }
+        } catch (Exception) { }
+    }
+    _qtQmlDir = "/usr/lib/qt6/qml";
+    return _qtQmlDir;
+}
+
 Build reggaeBuild() {
     immutable root = getcwd();
     Target[] all;
@@ -156,6 +182,12 @@ Build reggaeBuild() {
         // they all build and then die (or silently build the wrong object) at construction.
         all ~= qmltcControlsRuntimeTargets(root, ctrl);
         all ~= o3GateTargets(root, ctrl);   // every judgeable document renders like the engine
+        // ...and the LEAF TABLE's identity and lifetime, which no document can observe: the count
+        // of live leaf connections is not a value the differential can dump. Two owners must be
+        // two entries, and destroying the tree must empty the table.
+        foreach (dc; DCS)
+            all ~= qtdTest("leaf-lifetime-" ~ dc,
+                           buildPath(root, "tests", "qmltc", "leaf_lifetime.d"), ctrl, dc);
         // ...and this binding gets a manifest gate like the other two. It had none, so changing its
         // spec tripped nothing — which is how binding the QtQuick animations (a real and intended
         // coverage change) landed without the manifest ever being consulted. A binding nobody holds
@@ -516,12 +548,26 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
     auto tool = qmltcTool(root, bind);
     Target[] ts;
     auto outDir = buildPath(bind.bdir, "o3gate");
+    auto ctlDir = buildPath(qtInstallQml(), "QtQuick", "Controls");
+    // A MISSING STYLE IS A RED GATE, not a missing one. Controls absent altogether is a genuine
+    // capability skip and says so out loud; Controls present with a style missing is the shape
+    // that would quietly delete four fifths of this check on another machine.
+    if (!exists(ctlDir))
+        return [Target.phony("qmltc-o3-gate-skipped",
+                             "echo 'qmltc-o3-gate: skipped — no QtQuick.Controls under "
+                             ~ qtInstallQml() ~ "'", [])];
     foreach (style; ["Basic", "Fusion", "Universal", "Imagine", "Material"]) {
-        if (!exists("/usr/lib/qt6/qml/QtQuick/Controls/" ~ style)) continue;
+        auto styleDir = buildPath(ctlDir, style);
+        if (!exists(styleDir)) {
+            ts ~= Target.phony("qmltc-o3-gate-" ~ style,
+                               "sh -c 'echo \"qmltc-o3-gate: " ~ styleDir
+                               ~ " is missing while Controls is installed\" >&2; exit 1'", []);
+            continue;
+        }
         // One compiler only: the levels are a property of the GENERATED code, not of who compiles
         // it, and the ldc2/dmd split is already covered everywhere else.
-        auto cmd = "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " | tee /dev/stderr | "
-                 ~ "grep -q \"UNPLACED=0\"'";
+        auto cmd = "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " " ~ bind.bdir ~ " "
+                 ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'";
         ts ~= Target.phony("qmltc-o3-gate-" ~ style, cmd,
                            [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
     }
@@ -529,7 +575,7 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
 }
 
 Target[] qmltcControlsRuntimeTargets(string root, QtdBinding bind) {
-    auto dir = "/usr/lib/qt6/qml/QtQuick/Controls/Basic";
+    auto dir = buildPath(qtInstallQml(), "QtQuick", "Controls", "Basic");
     if (!exists(dir)) return [];
     auto here = buildPath(root, "tests", "qmltc");
     auto script = buildPath(here, "qtd_controls_runtime.sh");

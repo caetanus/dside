@@ -1459,11 +1459,15 @@ void ensureModule(string uri) {
 }
 
 /// Subscribe `recv.slot` to `sig` of the object currently held by `owner.prop`, replacing whatever
-/// this (recv, slot, prop, sig) was subscribed to before. Called from the binding's own slot, so a
-/// property that changes object re-subscribes instead of staying on the old one.
-void bindLeaf(T, R)(T owner, string prop, string sig, R recv, string slot) {
+/// this (owner, recv, slot, prop, sig) was subscribed to before. Called from the binding's own
+/// slot, so a property that changes object re-subscribes instead of staying on the old one.
+///
+/// The OWNER is part of that identity, and it has to be: the receiving slot is emitted once per
+/// binding, so `mid.indicator.width + outer.indicator.width` produced two subscriptions that were
+/// identical in every other component. Returns non-zero when the connection was made.
+int bindLeaf(T, R)(T owner, string prop, string sig, R recv, string slot) {
     import std.string : toStringz;
-    qtd_bind_leaf(qobjOf(owner), prop.toStringz, sig.toStringz, qobjOf(recv), slot.toStringz);
+    return qtd_bind_leaf(qobjOf(owner), prop.toStringz, sig.toStringz, qobjOf(recv), slot.toStringz);
 }
 
 /// Connect `owner.prop`'s NOTIFY to `recv.slot`, so a binding that reads through an object property

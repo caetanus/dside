@@ -1,31 +1,45 @@
 #!/bin/sh
-# -O3 IS A PIPELINE, not a compiler flag: "compile everything that RENDERS THE SAME".
+# -O3 IS A PIPELINE, not a compiler flag: "compile everything that BEHAVES THE SAME".
 #
-# The compiler cannot decide that alone — it does not render — so the check is here. Each document
-# is compiled greedily, rendered, and compared with the engine's own frame. What matches stays
-# compiled. What does not is DEMOTED to -O0, where Qt runs the document itself and the frame is the
-# engine's by construction.
+# The compiler cannot decide that alone — it does not render and it does not run — so the check is
+# here. Each document is compiled greedily, then judged on TWO axes: the rendered frame must equal
+# the engine's, and every property of every named object must equal the engine's. A document that
+# fails EITHER axis is DEMOTED to -O0, where Qt runs the document itself and both axes hold by
+# construction.
 #
-# That is the whole promise: not that everything compiles, but that everything renders the same.
-# A document is only a failure when NO level renders the same — those are printed as UNPLACED and
-# are the only thing standing between this and feature complete.
+# The two axes are not redundant. The frame is offscreen software rendering at the implicit size,
+# and a control that draws small hides a great deal; the value axis is what found the deferred
+# transitions, the gradients and every ordering defect on record. Judging on the frame alone let 21
+# documents into -O3 while a property disagreed — a false positive of exactly the kind this scale
+# exists to prevent, so the value axis now DEMOTES rather than annotates.
+#
+# That is the whole promise: not that everything compiles, but that everything behaves the same.
+# A document is only a failure when NO level does — those are printed as UNPLACED and are the only
+# thing standing between this and feature complete.
 #
 # The second argument is a Controls STYLE by name, or any DIRECTORY of .qml files. Qt's own styles
 # are a narrow, disciplined dialect — `T.Something` roots, declared properties, almost no loose JS —
 # and an application's QML is not that. Pointing this at a real app is the only way the promise
 # means anything outside the framework's own documents.
 #
-#   o3.sh <scratch> <StyleName|/path/to/dir>
+#   o3.sh <scratch> <StyleName|/path/to/dir> [builddir] [gendir]
 set -u
 SP="$1"; ST="$2"
+
+# ...from the SCRIPT's own location and from Qt itself, never from an absolute path. A gate wired to
+# one workstation does not fail elsewhere — `o3GateTargets` emits nothing when the style directory
+# is missing, so the strongest check in the repo would silently vanish from another machine's graph
+# instead of going red.
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+L=${3:-${QTD_BUILD:-$ROOT/.build/qt-6.11-cxx-controls}}
+G=${4:-${QTD_GEN:-$ROOT/generated/qt-6.11/cxx-controls}}
+QMLDIR=${QTD_QML_DIR:-$(qtpaths6 --query QT_INSTALL_QML 2>/dev/null \
+                     || qtpaths --query QT_INSTALL_QML 2>/dev/null || echo /usr/lib/qt6/qml)}
 case "$ST" in
   /*) B="$ST"; ST=$(basename "$ST") ;;
-   *) B=/usr/lib/qt6/qml/QtQuick/Controls/$ST ;;
+   *) B=$QMLDIR/QtQuick/Controls/$ST ;;
 esac
-L=/home/caetano/lab/qt-dlang-gen/.build/qt-6.11-cxx-controls
-G=/home/caetano/lab/qt-dlang-gen/generated/qt-6.11/cxx-controls
 D="$SP/o3_$ST"; mkdir -p "$D"
-ROOT=/home/caetano/lab/qt-dlang-gen
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software
 OUT="$SP/o3_$ST.txt"; : > "$OUT"
 
@@ -43,43 +57,70 @@ build_at() {  # build_at <levelflag> <tag> <name> <file>  -> $D/<name>_<tag>.png
   return 0
 }
 
+# judge <tag> <name> <file> -> 0 both axes agree | 1 frame differs | 2 values unmeasurable | N>2 values differ
+# `values unmeasurable` is NOT an accepted outcome: a level that cannot be measured has not been
+# proven, and the level below it can be. It demotes like a disagreement.
+judge() {
+  cmp -s "$D/${2}_$1.png" "$D/$2.eng.png" || return 1
+  "$L/qmltc-d" --objpaths "$3" "I$2" --qmlmap "$G/qmlmap.tsv" -I "$B" > "$D/$2.objs" 2>/dev/null
+  rm -rf "$D/cen"; mkdir -p "$D/cen"
+  timeout 30 "$D/${2}_$1.bin" --dumpall 2>/dev/null | sort > "$D/cen/$2.dall.s" || return 2
+  timeout 30 "$L/qmlvalues" "$3" --dumpall "$D/$2.objs" 2>/dev/null | sort > "$D/cen/$2.qall.s" || return 2
+  [ -s "$D/cen/$2.qall.s" ] || return 2
+  # ...AND THE ENGINE AGAINST ITSELF. A path the engine cannot reproduce cannot be a verdict about
+  # us: Material's SpinBox background carries `placeholderTextHAlign`, a private property Qt reads
+  # out of uninitialised memory, and three consecutive engine runs answered 1154029312, 1895307008
+  # and -1856497920. Judged against a single engine dump, that document was unplaceable at EVERY
+  # level — the harness reporting a defect the compiler does not have. So the engine is asked
+  # twice and every path where it contradicts itself is dropped from both sides.
+  timeout 30 "$L/qmlvalues" "$3" --dumpall "$D/$2.objs" 2>/dev/null | sort > "$D/$2.qall2" || return 2
+  awk -F'\t' 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' \
+      "$D/cen/$2.qall.s" "$D/$2.qall2" | sort -u > "$D/$2.flaky"
+  flaky=$(wc -l < "$D/$2.flaky")
+  if [ "$flaky" -gt 0 ]; then
+    for side in "$D/cen/$2.qall.s" "$D/cen/$2.dall.s"; do
+      awk -F'\t' 'NR==FNR{f[$1];next} !($1 in f)' "$D/$2.flaky" "$side" > "$side.f" && mv "$side.f" "$side"
+    done
+  fi
+  # Through the CENSUS, not a raw diff: a path the oracle marks `<missing>` is not a disagreement,
+  # it is a path it cannot walk — Qt defers a Transition's animations, so at rest the engine has
+  # none and we have ours. Counting those would report six Fusion documents as wrong when this
+  # project's own tooling says they are not.
+  real=$(python3 "$ROOT/tools/qmltc-value-census.py" "$D/cen" 2>/dev/null | awk '
+    $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
+  [ "${real:-0}" -eq 0 ] && return 0
+  return $(( real > 250 ? 250 : real + 2 ))
+}
+
 for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
   n=$(basename "$f" .qml)
   if ! timeout 30 "$L/qmlrender" "$f" "$D/$n.eng.png" >/dev/null 2>&1 </dev/null || [ ! -s "$D/$n.eng.png" ]; then
     echo "$n UNJUDGEABLE (the engine renders no frame for it standalone)" >> "$OUT"; continue
   fi
-  if build_at -Ox ox "$n" "$f" && cmp -s "$D/${n}_ox.png" "$D/$n.eng.png"; then
-    # ...and the VALUE axis beside the frame. Two frames can match while a property does not: the
-    # frame is offscreen software rendering at the implicit size, and a control that draws small
-    # hides a lot. Every property of every named object is compared here, which is the axis that
-    # found the deferred transitions, the gradients and every ordering defect on record.
-    "$L/qmltc-d" --objpaths "$f" "I$n" --qmlmap "$G/qmlmap.tsv" -I "$B" > "$D/$n.objs" 2>/dev/null
-    if timeout 30 "$D/${n}_ox.bin" --dumpall 2>/dev/null | sort > "$D/$n.dall" \
-       && timeout 30 "$L/qmlvalues" "$f" --dumpall "$D/$n.objs" 2>/dev/null | sort > "$D/$n.qall" \
-       && [ -s "$D/$n.qall" ]; then
-      # Through the CENSUS, not a raw diff: a path the oracle marks `<missing>` is not a
-      # disagreement, it is a path it cannot walk — Qt defers a Transition's animations, so at rest
-      # the engine has none and we have ours. Counting those would report six Fusion documents as
-      # wrong when this project's own tooling says they are not.
-      cp "$D/$n.dall" "$D/$n.dall.s"; cp "$D/$n.qall" "$D/$n.qall.s"
-      real=$(python3 "$ROOT/tools/qmltc-value-census.py" "$D" 2>/dev/null | awk '
-        $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
-      rm -f "$D/$n.dall.s" "$D/$n.qall.s"
-      if [ "${real:-0}" -eq 0 ]; then echo "$n COMPILED" >> "$OUT"
-      else echo "$n COMPILED values-differ ($real)" >> "$OUT"; fi
-    else
-      echo "$n COMPILED values-unmeasured" >> "$OUT"
-    fi
-    continue
+  why=frame
+  if build_at -Ox ox "$n" "$f"; then
+    judge ox "$n" "$f"; r=$?
+    case $r in
+      0) if [ "${flaky:-0}" -gt 0 ]; then
+           echo "$n COMPILED ($flaky path(s) the engine does not reproduce, dropped)" >> "$OUT"
+         else echo "$n COMPILED" >> "$OUT"; fi
+         continue ;;
+      1) why="the frame differs" ;;
+      2) why="the values cannot be measured" ;;
+      *) why="$(( r - 2 )) value(s) differ" ;;
+    esac
+  else
+    why="it does not build or run"
   fi
-  # ...it did not render the same, so it does not get into -O3. Down to the floor.
-  if build_at -O0 o0 "$n" "$f" && cmp -s "$D/${n}_o0.png" "$D/$n.eng.png"; then
-    echo "$n DEMOTED to -O0" >> "$OUT"; continue
+  # ...it did not behave the same, so it does not get into -O3. Down to the floor, judged the same
+  # way — Qt builds the document there, so both axes are the engine's by construction, and a
+  # disagreement at -O0 means the HARNESS is wrong rather than the compiler.
+  if build_at -O0 o0 "$n" "$f" && judge o0 "$n" "$f"; then
+    echo "$n DEMOTED to -O0 ($why at -Ox)" >> "$OUT"; continue
   fi
-  echo "$n UNPLACED (no level renders the engine's frame)" >> "$OUT"
+  echo "$n UNPLACED (no level matches the engine; at -Ox $why)" >> "$OUT"
 done
 echo DONE >> "$OUT"
-printf '%-10s compiled=%s demoted=%s UNPLACED=%s unjudgeable=%s values-differ=%s\n' "$ST" \
+printf '%-10s compiled=%s demoted=%s UNPLACED=%s unjudgeable=%s\n' "$ST" \
   "$(grep -c ' COMPILED' "$OUT")" "$(grep -c ' DEMOTED' "$OUT")" \
-  "$(grep -c ' UNPLACED' "$OUT")" "$(grep -c ' UNJUDGEABLE' "$OUT")" \
-  "$(grep -c ' COMPILED values-differ' "$OUT")"
+  "$(grep -c ' UNPLACED' "$OUT")" "$(grep -c ' UNJUDGEABLE' "$OUT")"
