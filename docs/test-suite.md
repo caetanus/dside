@@ -64,17 +64,21 @@ value-type/wrapper/ctor paths are per-symbol — the `coverage.txt` "not per-sym
 The `manifest-gate-*` targets diff the fresh manifest against `tests/coverage/*.manifest.tsv` and
 fail on a disappeared/regressed/new-drop symbol or a duplicate-USR collision; each is built
 `-unittest` and run `--DRT-testmode=run-main`, so it runs its own regression-detection tests before
-vouching. **Gate coverage is still partial: only Qt6 raw-QtWidgets + Qt6-QML have baselines** (Qt5,
-wrapper, webengine don't) — that's the open follow-up.
+vouching. **Gate coverage is still partial: Qt6 QtWidgets, QML and Controls have baselines** (Qt5
+and WebEngine do not) — that's the open follow-up. All three are wrapper-mode bindings; the flip
+happened after these baselines were first written, and `qtwidgets.manifest.tsv` was regenerated
+against the wrapper spec rather than the raw one it is still occasionally described as.
 
 ## Tracked follow-ups (to make this a real contract)
 
 - Per-category **counters + regression history** in CI (pass/expected-fail per category),
-  not just a green/red matrix, and a structured test report (JSON/TSV) over the ~162 targets.
+  not just a green/red matrix, and a structured test report (JSON/TSV) over the ~1100 targets
+  (`./build --list | wc -l`; 893 of them belong to the `qmltc*` families, which is why the default
+  build's cost and duration are governed by the QML compiler's corpus).
 - An expected-fail RUNNER on top of the existing strict linter (execute probes, evaluate
   `remove_when`/expiration, detect unexpected pass/fail) — the linter validates structure only.
-- Extend the manifest gates to Qt5, wrapper mode and webengine (only Qt6 raw-QtWidgets + Qt6-QML
-  have baselines today).
+- Extend the manifest gates to Qt5 and WebEngine (Qt6 QtWidgets, QML and Controls have baselines
+  today).
 - Ownership-invariant tests for `holder` beyond `wraptest` (C++ destroy before the D
   wrapper, `deleteLater` at shutdown, app singleton, varied reparenting, non-QObject).
 - Treat the QML/tooling private APIs (`QQmlPrivate`, `QQmlJSTypeDescriptionReader`,

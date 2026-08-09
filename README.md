@@ -53,13 +53,15 @@ reggae is the build of record, not dub.)
 
 ## Construction
 
-Two modes. In **GC-wrapper mode** object types construct with idiomatic `new`
-(`new QWidget(parent)`); value types use a plain ctor or `make!T`. In **raw
-(non-wrapper) mode** — still the default for several bindings (QtWidgets raw, QML,
-the uic harness) — object construction is the generated `X_new(...)` factory
-(e.g. `QQmlApplicationEngine_new`, `QWidget_new`), which the tests and generated
-uic use today. Making wrapper mode the default so `new` is the ONLY spelling is a
-roadmap item, not the current state.
+**`new` is the only spelling.** Object types construct with `new QWidget(parent)`;
+value types use a plain ctor or `make!T`. There is no `X_new(...)` factory anywhere in
+the generated output — the flip to GC-wrapper mode is done, and the specs the build
+uses (QtWidgets on Qt5 and Qt6, QML, Quick, Controls, and the uic/qrc harnesses that
+sit on the widgets binding) all carry `"wrapper": true`.
+
+Two specs still generate without the wrapper: the WebEngine link smoke test and the
+`corpustypes` fixture. Neither emits an `X_new` either — raw mode means no GC holder,
+not a different way to construct.
 
 ```d
 auto w   = new QWidget(parent);      // GC wrapper owns a C++-heap object; Qt deletes it
@@ -251,7 +253,9 @@ counted as passes here.
 
 ## Roadmap
 
-- Make GC-wrapper mode the **default** so raw-path objects also construct with `new`.
 - Introduce a generator IR (drop the remaining dead C-ABI helper functions in `gen.d`).
-- Expand manifest gates beyond Qt6 raw-QtWidgets + Qt6-QML (Qt5, wrapper, webengine);
+- Expand manifest gates beyond Qt6 QtWidgets, QML and Controls (Qt5, WebEngine);
   ownership-invariant tests for `holder`.
+- Turn `tests/expected-fails.json` from a linted inventory into a RUNNER: today it
+  validates that each entry is well-formed and that named probe targets exist, but
+  nothing executes `remove_when`, so a gap that has been closed stays listed.
