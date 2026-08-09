@@ -39,7 +39,11 @@ category() {
     # hyphen after `qml`), so the report called the MAJORITY of what it ran `other` — the run was
     # right and the artifact told a wrong story about it. Kept ahead of the qml rule, since
     # `qmltc*` would otherwise have to out-specific it.
-    qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*) echo qmltc ;;
+    qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*|leaf-lifetime-*) echo qmltc ;;
+    # The AGGREGATES answer a question ("is the generator healthy?", "is the compiler healthy?")
+    # rather than testing a unit. They run their members, so counting them as tests would count
+    # every member twice — they are their own category on purpose.
+    binding-core|qmltc-smoke|qmltc-corpus) echo aggregate ;;
     qml-*|qmlreg-*|qmlaot-*|shadowaot-*|qmltc-o3-gate-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
     reglife-*|valuetypeprop-*|subclasscast-*) echo qml ;;
     slotoverload-*) echo moc ;;

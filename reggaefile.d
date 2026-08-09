@@ -258,6 +258,30 @@ Build reggaeBuild() {
     // --- shiboken libsample corner cases (skipped if the pyside-setup clone is absent) ---
     all ~= libsampleTargets(root, buildNormalizedPath(root, "..", "pyside-setup"));
 
+    // --- ANSWERS, not just targets. 893 of the 1101 default targets belong to the qmltc families,
+    //     so "./build" is operationally the QML compiler's corpus and there was no shorter way to
+    //     ask whether the GENERATOR is healthy. These name the four questions people actually have.
+    //     Every aggregate is a subset of `all`, so the full build is unchanged: this adds names,
+    //     not work.
+    {
+        bool isQmltc(string n) {
+            return n.startsWith("qmltc") || n.startsWith("shadowaot-") || n.startsWith("leaf-lifetime");
+        }
+        Target[] pick(bool delegate(string) want) {
+            return all.filter!(t => want(t.rawOutputs.length ? t.rawOutputs[0] : "")).array;
+        }
+        auto core   = pick(n => !isQmltc(n) && !n.startsWith("sample_"));
+        auto qmlAll = pick(n => isQmltc(n));
+        auto smoke  = pick(n => n.startsWith("qmltc-") && !n.canFind("-o3-gate-")
+                             && !n.startsWith("qmltc-controls-runtime"));
+        if (core.length)   all ~= Target.phony("binding-core",
+            "echo 'binding-core OK: generator, runtime, uic, qrc, moc, webengine and their gates'", core);
+        if (smoke.length)  all ~= Target.phony("qmltc-smoke",
+            "echo 'qmltc-smoke OK: the compiler over its own corpora, without Qt Controls'", smoke);
+        if (qmlAll.length) all ~= Target.phony("qmltc-corpus",
+            "echo 'qmltc-corpus OK: every qmltc target, Qt Controls included'", qmlAll);
+    }
+
     // On the Qt the baselines were recorded against, the gates run with everything else; on any
     // other minor they stay reachable by name but out of defaultTargets(), so the full matrix
     // never fails on SDK drift.
