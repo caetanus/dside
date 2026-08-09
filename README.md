@@ -83,19 +83,97 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 
 ## qmltc-d: QML compiled to D, and a floor under it
 
-`qmltc-d` turns a `.qml` document into a D class. What it cannot turn into D it does not
-drop: an expression goes to the QML engine (as a source string, or as a document
-`qmlcachegen` compiled to bytecode), and a whole document can go to the engine too, held
-behind an opaque pointer the way COM holds an interface. **`-O` is a degree of certainty,
-and it runs the other way from speed:**
+`qmltc-d` turns a `.qml` document into a D class. A binding stops being a JavaScript
+expression the engine re-evaluates and becomes a D method plus a signal connection — Qt's
+own Basic Button,
 
-| level | what it adds | certainty |
+```qml
+implicitWidth: Math.max(implicitBackgroundWidth + leftInset + rightInset,
+                        implicitContentWidth + leftPadding + rightPadding)
+```
+
+comes out as a slot the meta-object calls when any operand changes:
+
+```d
+@Slot void __rcb_implicitWidth() {
+    setProp(this, "implicitWidth", __qmltcMax(
+        propDouble(this, "implicitBackgroundWidth") + propDouble(this, "leftInset") + …,
+        propDouble(this, "implicitContentWidth")   + propDouble(this, "leftPadding") + …));
+}
+```
+
+No JS engine is involved in that binding again.
+
+### The four mechanisms
+
+Everything qmltc-d does is one of four, and they are not equally trustworthy. That ordering
+IS the `-O` scale.
+
+**1 — Static translation.** Every name has a known D type, so the expression becomes D. This
+is where `a === b`, arithmetic, string concatenation, ternaries, enum keys and property reads
+live. Trivial JS is not a problem; *untypable* JS is. The limit is the type registry, not the
+language.
+
+**2 — QVariant, for what is typed only at run time.** `property var control`, `property color
+targetColor`: the meta-object declares the property, the value lives in a runtime slot, and
+reads go through the meta channel. The value is right; the type is late. (No D field is
+generated for these — a `QColor` field changed how every read of it compiled, and cost eight
+link failures before it was done this way.)
+
+**3 — Containment, COM-style.** Qt's Material style is built on `impl` types it does not
+export — `Ripple`, `BoxShadow`, `ElevationEffect`. No D subclass can wrap a type with no
+linkable symbol, so the **engine** builds the object and the generated class holds an opaque
+pointer to it; every member is asked of whichever object owns it. This is why Material
+compiles far less than Basic: not weak JS translation, unexported types.
+
+**4 — Delegation, to the engine.** `control.model[control.headerView.textRole]` reads a member
+by a name known only at run time: there is no property to name and no type to hold the result.
+The expression is handed to the engine, which also tracks its dependencies — the point being
+that the dependencies of an expression we cannot compile are exactly the ones we cannot
+enumerate. With `--shadow-dir` the same expression is compiled at build time instead: it
+becomes a generated QML document carrying a real `Binding`, which `qmlcachegen` turns into
+bytecode. It has to be a binding and not a function — what makes a delegated expression live
+is the engine capturing a *binding's* dependencies, and a function call captures nothing.
+
+### `-O` is a degree of certainty
+
+The scale is the four mechanisms, in order, and it runs the other way from speed: the higher
+the level the more compiles and the less is proven. A document that needs a mechanism its
+level does not allow is not compiled with it — it goes to the engine whole.
+
+| level | mechanisms | certainty |
 |---|---|---|
-| `-O0` | nothing of ours runs — Qt builds the document, AOT where `qmlcachegen` can, interpreted where it cannot | by construction |
-| `-O1` | statically typed translation only: `a === b` compiles because both sides have a known D type | nothing crosses untyped |
-| `-O2` | ...and `QVariant` where the type is only known at run time | value right, type late |
-| `-O3` | ...and COM-style containment and delegation — **and only what RENDERS THE SAME**; what differs is demoted | measured, per document |
+| `-O0` | none of ours: Qt builds the document, as `qmlcachegen` bytecode where it can, interpreted where it cannot | by construction — it is the engine |
+| `-O1` | static translation only | nothing crosses untyped |
+| `-O2` | ...and QVariant | value right, type late |
+| `-O3` | ...and containment and delegation, **and only what RENDERS THE SAME** — what differs is demoted to `-O0` | measured, per document |
 | `-Ox` | `-O3` with the render check waived | experimental |
+
+`-O3` is not a compiler flag but a pipeline: the compiler cannot tell whether something renders
+the same, so the build compiles, renders, compares with the engine's frame, and demotes what
+differs. Two more switches exist for working on coverage rather than shipping: `--no-fallback`
+turns the whole ladder off, and `--pedantic` also makes a delegation a failure (its own exit
+code, 4 — "we could not compile this" and "we handed this over" are different jobs).
+
+**What each level actually compiles**, over Qt's five Controls styles (a document not compiled
+at a level is handed to the engine there, and still renders correctly):
+
+| style | documents | `-O1` | `-O2` | `-O3` |
+|---|---:|---:|---:|---:|
+| Basic | 69 | 53 | 53 | 69 |
+| Fusion | 55 | 42 | 42 | 55 |
+| Universal | 55 | 40 | 42 | 55 |
+| Imagine | 54 | 2 | 2 | 54 |
+| Material | 57 | 10 | 10 | 57 |
+| **total** | **290** | **147** | **149** | **290** |
+
+The middle rung is nearly flat: QVariant alone unlocks **two** documents, both in Universal.
+Everything else that needs weak typing also needs containment or delegation, so it lands at
+`-O3` regardless — the scale has three rungs and two of them nearly coincide.
+
+Imagine's 2-of-54 and Material's 10-of-57 are the same story from mechanism 3, not a weak JS
+translator: Imagine resolves every image through a `NinePatchImageSelector` and Material is
+built on unexported `impl` types, and both are containment by definition.
 
 **The measured claim.** Over Qt's own Quick Controls — five styles, 290 documents — every
 document that has a frame renders **byte-identical** to the QML engine: 247 compiled to D,
