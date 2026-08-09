@@ -1479,6 +1479,23 @@ static void resolveReadSrc(ExpressionNode *e, std::string &obj, std::string &grp
         if (outerHop(bn, pre, &fr)) return pre.substr(0, pre.size() - 1);
         if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) return ci->second.field;
         if (isSelfId(bn)) return "this";
+        // ...and a SIBLING's id — a child of an enclosing object, which QML resolves anywhere in
+        // its component. The read path has walked the chain for these since the Fusion groove read
+        // the handle beside it; this resolver stopped at the enclosing objects themselves, so
+        // `box.width = 12` from inside a neighbouring child had no object to write to while
+        // `box.width + 1` right beside it read fine. Last, like the read path, so nothing that
+        // already resolves changes.
+        {
+            std::string preS;
+            for (size_t k = 0; k < g_outerChain.size(); ++k) {
+                preS += "__outer.";
+                auto sc = g_outerChain[k].childIds.find(bn);
+                if (sc == g_outerChain[k].childIds.end() || sc->second.second.empty()) continue;
+                g_outerUsed = true;
+                if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                return preS + sc->second.first;
+            }
+        }
         return "";
     };
     auto *fmv = cast<FieldMemberExpression *>(e);
@@ -4002,12 +4019,27 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         return true;
     }
     // `return <expr>` -> D return, formatted for the enclosing function's return type.
-    if (auto *ret = cast<ReturnStatement *>(st)) {
+    //
+    // ...unless there is no return type, which is a HANDLER. A concise arrow body is a `return`:
+    // `onPicked: (which) => root.last = which` parses as a function whose body is
+    // `return root.last = which;`, and the same handler written with braces parses as a plain
+    // assignment. Compiled against an empty target type the assignment was refused, so one
+    // spelling worked and the other did not — for a shape ordinary application QML is written in
+    // (and Qt's own styles never use, which is why the corpus never showed it).
+    //
+    // In a void context the value is discarded and the expression is evaluated for its EFFECT,
+    // which is precisely an expression statement. So it falls through to that path below rather
+    // than getting a branch of its own: every assignment form, call form and binding-removal rule
+    // there applies to it unchanged.
+    if (auto *ret = cast<ReturnStatement *>(st); ret && !g_returnType.empty()) {
         if (!ret->expression) { body += "        return;\n"; return true; }
         std::string r;
         if (!compileExpr(ret->expression, QString::fromStdString(g_returnType), r)) return false;
         body += "        return " + r + ";\n";
         return true;
+    }
+    if (auto *ret = cast<ReturnStatement *>(st); ret && !ret->expression) {
+        body += "        return;\n"; return true;
     }
     // `if (cond) <then> [else <else>]` -> D if/else (braces around each branch).
     if (auto *iff = cast<IfStatement *>(st)) {
@@ -4022,8 +4054,14 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         body += "\n";
         return true;
     }
-    auto *es = cast<ExpressionStatement *>(st);
-    if (!es) return false;
+    // The statement's EXPRESSION, from either spelling: an expression statement, or the `return`
+    // a concise arrow body compiles to in a void context (see the ReturnStatement note above).
+    ExpressionNode *stExpr = nullptr;
+    if (auto *es0 = cast<ExpressionStatement *>(st)) stExpr = es0->expression;
+    else if (auto *r0 = cast<ReturnStatement *>(st)) stExpr = r0->expression;
+    if (!stExpr) return false;
+    struct { ExpressionNode *expression; } es0_ = { stExpr };
+    auto *es = &es0_;
     // `p = <value>` on a property that carries a binding REMOVES that binding in QML. The
     // selector records it so the declarative recompute stops driving the property.
     if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign)
@@ -4124,6 +4162,22 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                     if (auto it = mi->second.find(mem); it != mi->second.end())
                         for (auto &ov : it->second) if (ov.second.size() == nargs) ptypes = &ov.second;
                 bool known = ptypes != nullptr;
+                // ...or a SIGNAL the object declares. Calling a signal in QML EMITS it, and the
+                // meta-object channel emits one exactly as it invokes a method — but the registry
+                // lists methods, not signals, so `second.picked(4)` was refused for a signal the
+                // compiler had already emitted a `Signal!(int)` field for. A document declaring a
+                // signal and another document raising it is how an application talks to itself,
+                // and none of Qt's styles does it.
+                std::vector<std::string> sigTypes;
+                if (!known)
+                    if (auto *bId = cast<IdentifierExpression *>(fm->base))
+                        if (auto ci = g_childIds.find(qs(bId->name.toString())); ci != g_childIds.end())
+                            if (auto sp = ci->second.signalParams.find(mem);
+                                    sp != ci->second.signalParams.end() && sp->second.size() == nargs) {
+                                for (auto &p : sp->second) sigTypes.push_back(p.second);
+                                ptypes = &sigTypes;
+                                known = true;
+                            }
                 std::vector<std::string> as;
                 bool ok = true;
                 size_t pi = 0;
@@ -4277,6 +4331,44 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         if (auto *fm = cast<FieldMemberExpression *>(call->base))
             if (auto *recv = cast<IdentifierExpression *>(fm->base))
                 if (qs(recv->name.toString()) == "console") return true;
+    // `<otherObject>.prop = <expr>` — an ENCLOSING document's property, or a sibling's, written
+    // from a handler. The READ side has resolved these all along (`resolveReadSrc` walks the outer
+    // chain, the child-id table and self), and only the write had no branch: `onPicked: root.last
+    // = which` and `onClicked: box.width = 12` were both refused, with the handler reported as
+    // "not yet supported" rather than the assignment.
+    //
+    // That is the ordinary shape of an application handler — a child telling the document
+    // something happened — and Qt's own styles never write it, which is why 329 documents of
+    // corpus never asked for it. Through the META-OBJECT rather than a D field: the target may be
+    // a bound C++ property, a wrapper's, or one the engine created, and setProp is the one channel
+    // that is right for all three.
+    if (auto *bin = cast<BinaryExpression *>(es->expression); bin && bin->op == QSOperator::Assign) {
+        std::string oexp, grp, prp;
+        resolveReadSrc(bin->left, oexp, grp, prp);
+        if (!oexp.empty() && oexp != "this" && grp.empty() && !prp.empty()) {
+            // The declared type when the tables know it, so the value is coerced the way QML
+            // coerces it; otherwise the expression's own type and let the meta-object convert.
+            std::string ty;
+            if (auto *fm = cast<FieldMemberExpression *>(bin->left))
+                if (auto *b0 = cast<IdentifierExpression *>(fm->base)) {
+                    std::string bn = qs(b0->name.toString()), pre;
+                    const OuterFrame *fr = nullptr;
+                    if (outerHop(bn, pre, &fr) && fr) {
+                        if (auto t = fr->propType.find(prp); t != fr->propType.end()) ty = t->second;
+                        else if (auto t2 = fr->baseProps.find(prp); t2 != fr->baseProps.end()) ty = t2->second;
+                    } else if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) {
+                        if (auto t = ci->second.propType.find(prp); t != ci->second.propType.end()) ty = t->second;
+                        else if (auto t2 = ci->second.baseProps.find(prp); t2 != ci->second.baseProps.end()) ty = t2->second;
+                    }
+                }
+            std::string val;
+            if (compileExpr(bin->right, QString::fromStdString(ty), val)) {
+                body += "        setProp(" + oexp + ", \"" + prp + "\", "
+                      + (ty.empty() ? val : coerceTo(ty, val)) + ");\n";
+                return true;
+            }
+        }
+    }
     // Assignment `prop = <expr>` and compound assignment `prop += <expr>` (etc.).
     if (auto *bin = cast<BinaryExpression *>(es->expression)) {
         const char *aop = nullptr;
