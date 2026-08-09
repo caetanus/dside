@@ -164,20 +164,32 @@ at a level is handed to the engine there, and still renders correctly):
 
 | style | documents | `-O1` | `-O2` | `-O3` |
 |---|---:|---:|---:|---:|
-| Basic | 70 | 54 | 54 | 70 |
-| Fusion | 70 | 56 | 56 | 70 |
-| Universal | 66 | 49 | 51 | 66 |
-| Imagine | 56 | 2 | 2 | 56 |
-| Material | 67 | 10 | 10 | 67 |
-| **total** | **329** | **171** | **173** | **329** |
+| Basic | 70 | 39 | 39 | 70 |
+| Fusion | 70 | 38 | 38 | 70 |
+| Universal | 66 | 27 | 27 | 66 |
+| Imagine | 56 | 0 | 0 | 56 |
+| Material | 67 | 7 | 7 | 67 |
+| **total** | **329** | **111** | **111** | **329** |
 
-The middle rung is nearly flat: QVariant alone unlocks **two** documents, both in Universal.
-Everything else that needs weak typing also needs containment or delegation, so it lands at
-`-O3` regardless — the scale has three rungs and two of them nearly coincide.
+The middle rung currently buys **nothing**: `-O1` and `-O2` compile the same 111 documents.
+Everything that needs weak typing in this corpus also needs containment, delegation or has a
+member the compiler skips, so it lands at `-O3` regardless. The scale has three rungs and two of
+them coincide — stated because it is a real property of the corpus, not a defect to hide.
 
-Imagine's 2-of-56 and Material's 10-of-67 are the same story from mechanism 3, not a weak JS
-translator: Imagine resolves every image through a `NinePatchImageSelector` and Material is
-built on unexported `impl` types, and both are containment by definition.
+The certainty levels are stricter than the mechanism list suggests, on purpose: they also refuse a
+document with any SKIPPED member. A skip is worse than weak typing — weak typing still produces
+the member, a skip produces a document missing behaviour — and no caller can tell by reading the
+generated D. That refusal costs `-O1` sixty documents against a version that emitted them, and it
+is what makes "`-O1` agrees with the engine" true without a render step to check it.
+
+Imagine's 0-of-56 and Material's 7-of-67 are mechanism 3, not a weak JS translator: Imagine
+resolves every image through a `NinePatchImageSelector` and Material is built on unexported
+`impl` types, and both are containment by definition.
+
+`qmltc-optlevels-*` holds the levels to that promise: each document is built at `-O1` and `-O2`
+and both must produce the engine's value for every property of every named object, and the same
+value as each other. `-O3` is deliberately outside it — `-O3` is a pipeline, and disagreeing
+before the demotion step is its normal intermediate state, which is what the gate below measures.
 
 **The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every
 document the engine can draw standalone behaves **identically** to it: same frame, byte for
@@ -214,19 +226,31 @@ engine is asked twice and every path where it contradicts itself is dropped from
 compares the frame AND every property, demotes what differs on either, and fails on a single
 document no level can place. It is a gate, not a number someone remembered to take.
 
-**The scope, which matters as much as the claim.** That corpus is Qt's own QML: `T.Foo`
-roots, declared properties, little loose JS, imports from Qt. **Application QML is not
-characterised** — models, `Loader`, real JS, app-registered types, documents importing each
-other. The floor (`-O0`) is the engine itself and should hold anywhere; everything above it
-is measured only on the corpus above.
+**The scope, which matters as much as the claim.** That corpus is Qt's own QML: `T.Foo` roots,
+declared properties, little loose JS, imports from Qt. Application QML is a different dialect, so
+there is a second corpus for it (`tests/qmltc/app/`, gate `qmltc-o3-gate-app`) — list models and
+delegates, `ListView`, `Loader`, real JS with loops and arrays and objects, states and
+transitions, inline components, `Connections`, signals crossing documents, one document
+instantiating another from its own directory, anchors, a `Timer`, and an application *consuming*
+Controls rather than defining them.
 
-Pointed at a real application (a 78-document status bar), the gate reports 3 compiled, 10
-demoted, 4 unplaced and **61 unjudgeable** — and that last number is the finding, not the
-first three. A Controls document is self-contained by construction; an application's is not.
-`Bitcoin.qml` exists inside the bar, with its data and its context, and the engine draws
-nothing for it standalone. So it is not only that the compiler is less proven off this
-corpus: **the per-document criterion itself does not transfer.** Judging an application means
-judging it running, which is a different harness and an open question here.
+| corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
+|---|---:|---:|---:|---:|---:|
+| Qt's Controls | 329 | 226 | 58 | 45 | 0 |
+| application-shaped | 14 | 2 | 12 | 0 | **0** |
+
+**Two of fourteen** is the honest number, and it is the point rather than an embarrassment: this
+dialect is where the compiler is weak today and the ladder is what makes it correct anyway. Every
+one of the fourteen behaves identically to the engine, and at `-O1`/`-O2` none of them is emitted
+partial — twelve are handed over whole, which `qmltc-optlevels-*` checks property by property.
+
+What the second corpus still does not cover is an application's **context**: a document that needs
+the app's C++ context properties, its models and its data. Pointed at a real one (a 78-document
+status bar) the gate reports 3 compiled, 10 demoted, 4 unplaced and **61 unjudgeable** — and that
+last number is the finding, not the first three. `Bitcoin.qml` exists inside the bar, and the
+engine draws nothing for it standalone either, so there is no oracle to compare against. The
+documents above are self-contained on purpose, which is what makes them judgeable and also what
+they do not prove. Judging a whole running application is a different harness and remains open.
 
 The 45 unjudgeable are outside the frame axis and honestly so: `Action`, `ButtonGroup`,
 `CalendarModel`, the `*Delegate`s and the styles' `impl/` helpers have no frame by nature — a
