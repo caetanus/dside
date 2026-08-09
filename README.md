@@ -219,8 +219,14 @@ counting those called six Fusion documents wrong when two were. And a path the E
 reproduce cannot be a verdict about us: Material's SpinBox background carries
 `placeholderTextHAlign`, which Qt reads out of uninitialised memory and which answered
 1154029312, 1895307008 and -1856497920 on three consecutive engine runs. Judged against one
-engine dump, three Material documents were unplaceable at every level, `-O0` included. The
-engine is asked twice and every path where it contradicts itself is dropped from both sides.
+engine dump, three Material documents were unplaceable at every level, `-O0` included.
+
+Every accusation is therefore re-verified against a **fresh** engine run, and only a difference the
+engine reproduces counts. Sampling it twice up front was the first attempt and was not enough: two
+samples of a random value can agree by chance, after which the path counts as measurable, differs
+from ours for real, and Material's `SearchField` comes out unplaced in one run and placed in the
+next. A probabilistic filter under a gate whose whole purpose is "no false positives" is the same
+defect one level up. The gate now gives the same verdict on three consecutive runs.
 
 `./build` re-checks all of it: `qmltc-o3-gate-<Style>` compiles each document, renders it,
 compares the frame AND every property, demotes what differs on either, and fails on a single

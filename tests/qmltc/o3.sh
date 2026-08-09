@@ -43,6 +43,13 @@ D="$SP/o3_$ST"; mkdir -p "$D"
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software
 OUT="$SP/o3_$ST.txt"; : > "$OUT"
 
+# A DOCUMENT NEVER TAKES THIS LONG; a loaded machine does. At 30s the gate reported Material's
+# SearchField as UNPLACED during a full build and placed it in every run before and after — the
+# -O0 render simply expired while the rest of the matrix compiled beside it. Standalone that same
+# document builds, renders and matches the engine byte for byte. A gate whose verdict depends on
+# machine load is not a gate, and a false red on the strongest check here costs more than the wait.
+TMO=${QTD_GATE_TIMEOUT:-180}
+
 build_at() {  # build_at <levelflag> <tag> <name> <file>  -> $D/<name>_<tag>.png
               # The TAG is separate from the flag because a D module name cannot carry `.-Ox.`:
               # ldc2 refuses "non-identifier characters in filename", which is how the first run of
@@ -52,7 +59,7 @@ build_at() {  # build_at <levelflag> <tag> <name> <file>  -> $D/<name>_<tag>.png
     -L--start-group -L="$L/libbinding_ldc2.a" -L="$L/libshims.a" -L--end-group \
     -L-lQt6QuickControls2Impl -L-lQt6QuickTemplates2 -L-lQt6Quick -L-lQt6OpenGL -L-lQt6QmlModels \
     -L-lQt6Qml -L-lQt6Network -L-lQt6Gui -L-lQt6Core -L-lstdc++ > "$D/${3}_$2.link" 2>&1 </dev/null || return 1
-  timeout 30 "$D/${3}_$2.bin" --render "$D/${3}_$2.png" >/dev/null 2>&1 </dev/null || return 1
+  timeout "$TMO" "$D/${3}_$2.bin" --render "$D/${3}_$2.png" >/dev/null 2>&1 </dev/null || return 1
   [ -s "$D/${3}_$2.png" ] || return 1
   return 0
 }
@@ -64,37 +71,53 @@ judge() {
   cmp -s "$D/${2}_$1.png" "$D/$2.eng.png" || return 1
   "$L/qmltc-d" --objpaths "$3" "I$2" --qmlmap "$G/qmlmap.tsv" -I "$B" > "$D/$2.objs" 2>/dev/null
   rm -rf "$D/cen"; mkdir -p "$D/cen"
-  timeout 30 "$D/${2}_$1.bin" --dumpall 2>/dev/null | sort > "$D/cen/$2.dall.s" || return 2
-  timeout 30 "$L/qmlvalues" "$3" --dumpall "$D/$2.objs" 2>/dev/null | sort > "$D/cen/$2.qall.s" || return 2
+  timeout "$TMO" "$D/${2}_$1.bin" --dumpall 2>/dev/null | sort > "$D/cen/$2.dall.s" || return 2
+  timeout "$TMO" "$L/qmlvalues" "$3" --dumpall "$D/$2.objs" 2>/dev/null | sort > "$D/cen/$2.qall.s" || return 2
   [ -s "$D/cen/$2.qall.s" ] || return 2
-  # ...AND THE ENGINE AGAINST ITSELF. A path the engine cannot reproduce cannot be a verdict about
-  # us: Material's SpinBox background carries `placeholderTextHAlign`, a private property Qt reads
-  # out of uninitialised memory, and three consecutive engine runs answered 1154029312, 1895307008
-  # and -1856497920. Judged against a single engine dump, that document was unplaceable at EVERY
-  # level — the harness reporting a defect the compiler does not have. So the engine is asked
-  # twice and every path where it contradicts itself is dropped from both sides.
-  timeout 30 "$L/qmlvalues" "$3" --dumpall "$D/$2.objs" 2>/dev/null | sort > "$D/$2.qall2" || return 2
-  awk -F'\t' 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' \
-      "$D/cen/$2.qall.s" "$D/$2.qall2" | sort -u > "$D/$2.flaky"
-  flaky=$(wc -l < "$D/$2.flaky")
-  if [ "$flaky" -gt 0 ]; then
+  # ...AND EVERY ACCUSATION IS RE-VERIFIED AGAINST A FRESH ENGINE RUN. A path the engine cannot
+  # reproduce cannot be a verdict about us: Material's SpinBox background carries
+  # `placeholderTextHAlign`, a private property Qt reads out of uninitialised memory, and three
+  # consecutive engine runs answered 1154029312, 1895307008 and -1856497920.
+  #
+  # Sampling the engine twice UP FRONT is not enough, and the way that failed is worth keeping: two
+  # samples of a random value can AGREE by chance, the path then counts as measurable, it
+  # legitimately differs from ours, and Material's SearchField comes out UNPLACED in one run and
+  # placed in the next. A probabilistic filter under a gate that must not produce false positives
+  # is the same defect one level up.
+  #
+  # So the loop verifies rather than pre-screens: census, and while it accuses anything, ask the
+  # engine again and drop every path where it now contradicts its own earlier answer. A document
+  # that really differs costs one extra engine run and still reports; a document accused by
+  # uninitialised memory converges to zero. Bounded, because a genuine difference never clears.
+  flaky=0
+  : > "$D/$2.flaky"
+  round=0
+  while : ; do
+    real=$(python3 "$ROOT/tools/qmltc-value-census.py" "$D/cen" 2>/dev/null | awk '
+      $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
+    [ "${real:-0}" -eq 0 ] && return 0
+    round=$((round + 1))
+    [ "$round" -gt 4 ] && break
+    timeout "$TMO" "$L/qmlvalues" "$3" --dumpall "$D/$2.objs" 2>/dev/null | sort > "$D/$2.qall$round" || return 2
+    awk -F'\t' 'NR==FNR{a[$1]=$2;next} ($1 in a) && a[$1]!=$2 {print $1}' \
+        "$D/cen/$2.qall.s" "$D/$2.qall$round" | sort -u >> "$D/$2.flaky"
+    sort -u "$D/$2.flaky" -o "$D/$2.flaky"
+    # NOT `n`: that is the document name in the loop below, and sh has no locals. Naming the
+    # counter `n` inside this function renamed the document being judged to a line count, and the
+    # gate reported a document called "0".
+    nflaky=$(wc -l < "$D/$2.flaky")
+    [ "$nflaky" -eq "$flaky" ] && break   # the fresh run agrees with itself: the difference is ours
+    flaky=$nflaky
     for side in "$D/cen/$2.qall.s" "$D/cen/$2.dall.s"; do
       awk -F'\t' 'NR==FNR{f[$1];next} !($1 in f)' "$D/$2.flaky" "$side" > "$side.f" && mv "$side.f" "$side"
     done
-  fi
-  # Through the CENSUS, not a raw diff: a path the oracle marks `<missing>` is not a disagreement,
-  # it is a path it cannot walk — Qt defers a Transition's animations, so at rest the engine has
-  # none and we have ours. Counting those would report six Fusion documents as wrong when this
-  # project's own tooling says they are not.
-  real=$(python3 "$ROOT/tools/qmltc-value-census.py" "$D/cen" 2>/dev/null | awk '
-    $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
-  [ "${real:-0}" -eq 0 ] && return 0
+  done
   return $(( real > 250 ? 250 : real + 2 ))
 }
 
 for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
   n=$(basename "$f" .qml)
-  if ! timeout 30 "$L/qmlrender" "$f" "$D/$n.eng.png" >/dev/null 2>&1 </dev/null || [ ! -s "$D/$n.eng.png" ]; then
+  if ! timeout "$TMO" "$L/qmlrender" "$f" "$D/$n.eng.png" >/dev/null 2>&1 </dev/null || [ ! -s "$D/$n.eng.png" ]; then
     echo "$n UNJUDGEABLE (the engine renders no frame for it standalone)" >> "$OUT"; continue
   fi
   why=frame
