@@ -260,9 +260,10 @@ Build reggaeBuild() {
 
     // --- ANSWERS, not just targets. 893 of the 1101 default targets belong to the qmltc families,
     //     so "./build" is operationally the QML compiler's corpus and there was no shorter way to
-    //     ask whether the GENERATOR is healthy. These name the four questions people actually have.
-    //     Every aggregate is a subset of `all`, so the full build is unchanged: this adds names,
-    //     not work.
+    //     ask whether the GENERATOR is healthy. These name the questions people actually have.
+    //     Every aggregate is a subset of `all` and none of them is a default target, so the full
+    //     build is unchanged: this adds names, not work.
+    Target[] aggregates;
     {
         bool isQmltc(string n) {
             return n.startsWith("qmltc") || n.startsWith("shadowaot-") || n.startsWith("leaf-lifetime");
@@ -274,11 +275,15 @@ Build reggaeBuild() {
         auto qmlAll = pick(n => isQmltc(n));
         auto smoke  = pick(n => n.startsWith("qmltc-") && !n.canFind("-o3-gate-")
                              && !n.startsWith("qmltc-controls-runtime"));
-        if (core.length)   all ~= Target.phony("binding-core",
+        // ...and OPTIONAL, not part of the default build. A node reached by two top-level targets
+        // is executed once per reaching target in this backend, so adding these to `all` made the
+        // full build run every member TWICE (visible as .reggae/objs/binding-core.objs/…). They are
+        // entry points for asking a narrower question, which is the opposite of extra work.
+        if (core.length)   aggregates ~= Target.phony("binding-core",
             "echo 'binding-core OK: generator, runtime, uic, qrc, moc, webengine and their gates'", core);
-        if (smoke.length)  all ~= Target.phony("qmltc-smoke",
+        if (smoke.length)  aggregates ~= Target.phony("qmltc-smoke",
             "echo 'qmltc-smoke OK: the compiler over its own corpora, without Qt Controls'", smoke);
-        if (qmlAll.length) all ~= Target.phony("qmltc-corpus",
+        if (qmlAll.length) aggregates ~= Target.phony("qmltc-corpus",
             "echo 'qmltc-corpus OK: every qmltc target, Qt Controls included'", qmlAll);
     }
 
@@ -288,9 +293,11 @@ Build reggaeBuild() {
     import std.range : chain;
     if (gatesEnforceable)
         return Build(chain(all.map!(t => createTopLevelTarget(t)),
-                           manifestGates.map!(t => createTopLevelTarget(t))));
+                           manifestGates.map!(t => createTopLevelTarget(t)),
+                           aggregates.map!(t => optional(t))));
     return Build(chain(all.map!(t => createTopLevelTarget(t)),
-                       manifestGates.map!(t => optional(t))));
+                       manifestGates.map!(t => optional(t)),
+                       aggregates.map!(t => optional(t))));
 }
 
 // Differential oracle harness: our uic (uiForm) must build a tree identical to
