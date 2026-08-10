@@ -81,7 +81,8 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
   (`@QObject`/`Signal`/`@Slot`/`@Property` via `QMetaObjectBuilder`), `qrc`.
 - **Exception translation**: C++/Qt exceptions → D via a Lippincott + per-signature
   guard layer (gated).
-- **`qmltc-d`**: a QML→D compiler with a fallback ladder — see below.
+- **`qmltc-d`**: a QML→D compiler with a fallback ladder — see below, and
+  `docs/qmltc-d.md` (reference) / `docs/qmltc-d-vs-qmltc.md` (vs Qt's own `qmltc`).
 
 ## qmltc-d: QML compiled to D, and a floor under it
 
@@ -278,7 +279,7 @@ passes above.
 | `reggae/`, `reggaefile.d` | **supported** | the build of record (POSIX/Linux) |
 | `generated/` | **generated** | gitignored, on-demand output |
 | `tests/`, `examples/`, `apps/` | **tests only** | ldc2×dmd × Qt5×Qt6 matrix |
-| `docs/` | **supported** | `FEATURES.md`, `test-suite.md`, `uic-spec.md`, `windows-roadmap.md` |
+| `docs/` | **supported** | `FEATURES.md`, `test-suite.md`, `uic-spec.md`, `qmltc-d.md`, `qmltc-d-vs-qmltc.md`, `windows-roadmap.md` |
 | `generator/` (specs) | **supported** | `spec_cxx_*.json` |
 
 ## Known risks / honest gaps

@@ -9912,6 +9912,7 @@ int main(int argc, char **argv) {
     // for -O3 without running that check (tests/qmltc/o3.sh, or `./build qmltc-o3-gate-*`) gets
     // -Ox behaviour under a name that promises more, so the usage line below says so out loud.
     int optLevel = 3;
+    bool noMain = false;
     std::vector<char *> pos;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump") == 0) dump = true;
@@ -9927,6 +9928,11 @@ int main(int argc, char **argv) {
         else if (std::strcmp(argv[i], "-O2") == 0) optLevel = 2;
         else if (std::strcmp(argv[i], "-O3") == 0) optLevel = 3;
         else if (std::strcmp(argv[i], "-Ox") == 0) optLevel = 9;   // experimental: no check, no demotion
+        // A MODULE, not a program. `--dump` emits a `main` so the differential harness can run the
+        // document; anyone USING the compiler wants the class and nothing else, and a second `main`
+        // in the link is an error rather than an inconvenience. The harness keeps its driver by
+        // default so every existing target is unchanged; a consumer asks for the module.
+        else if (std::strcmp(argv[i], "--no-main") == 0) noMain = true;
         else if (std::strcmp(argv[i], "--no-fallback") == 0) noFallback = true;
         else if (std::strcmp(argv[i], "--pedantic") == 0) { pedantic = true; noFallback = true; }
         // Where the shadow documents go. Given: a refused expression becomes a shadow compiled by
@@ -9984,6 +9990,9 @@ int main(int argc, char **argv) {
             "  frame AND every property with the engine's, and demotes what differs to -O0.\n"
             "  Compiling at -O3 WITHOUT running it gets -Ox behaviour under a better name.\n"
             "\n"
+            "  --no-main      emit the CLASS only. --dump adds a `main` for the differential\n"
+            "                 harness to run the document; a consumer wants a module, and a second\n"
+            "                 `main` in the link is an error rather than an inconvenience.\n"
             "  --no-fallback  never hand a document over; --pedantic  also make a delegation exit 4.\n",
             argv[0]);
         return 2;
@@ -10273,7 +10282,7 @@ int main(int argc, char **argv) {
                     "final class %s {\n    void* __inst;\n"
                     "    this() { __inst = createQmlDocument(\"%s\"); }\n}\n",
                     inPath, qPrintable(cls), rootUrl.c_str());
-        if (dump) {
+        if (dump && !noMain) {
             std::printf("\nvoid main(string[] args) {\n"
                         "    qtd_qmltc_init_gui_app();\n"
                         "    auto o = new %s();\n"
@@ -10364,7 +10373,7 @@ int main(int argc, char **argv) {
     // ...but never a runnable entry point for a root we refused: `new IMonthGrid` would hand back a
     // bare QObject standing in for AbstractMonthGrid, construct real QQuickText children under it,
     // and look like a working program. The classes above are still emitted; main is not.
-    if (dump && !rootUnbound) {
+    if (dump && !rootUnbound && !noMain) {
         std::vector<DumpLine> lines;
         collectDump(rootNode, "o.", "", lines);
         std::sort(lines.begin(), lines.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });
