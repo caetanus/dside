@@ -35,6 +35,25 @@ extern (C) nothrow @nogc {
 class QtdObject {
     package void *_cpp;
     package bool _isQObj;   // has destroyed()/parent() -> lifetime is tracked; else dispose-only
+    // WHO CREATED THIS OBJECT — not "who has it now", which is what parenting answers.
+    //
+    // The finalizer used to decide ownership from parenting alone: unparented and not the app
+    // singleton meant "ours, delete it". That is right for `new QWidget()` and WRONG for every
+    // pointer Qt hands back. `QThread.currentThread()` compiles to `QThread.wrap(__QThread_1())`
+    // and the current thread has no parent — so dropping the D reference scheduled a deleteLater
+    // on the running thread, from what looks like a getter. Qt documents that deleting a running
+    // QThread crashes.
+    //
+    // The distinction was already present at the two call sites and simply not recorded: a
+    // generated CONSTRUCTOR allocated the object (`__cpp_new` then `_register()`), while `wrap()`
+    // was GIVEN a pointer. So the default is BORROWED and only the paths that created the object
+    // say otherwise. Nothing in the 385 generated `_register()` call sites has to change.
+    //
+    // This is deliberately not a full ownership model: an API that TRANSFERS ownership either way
+    // (`QLayout::addItem`, a factory return) still needs the typesystem to say so. What it removes
+    // is the failure mode where the binding deletes something it never owned — a leak is the
+    // conservative error here, a use-after-free is not.
+    package bool _ownedByD;
 
     this(void *c, bool isQObj) @nogc nothrow { _cpp = c; _isQObj = isQObj; }
 
@@ -44,7 +63,11 @@ class QtdObject {
     /// Register a freshly-constructed wrapper (built by a `new X(args)` ctor, whose _cpp is
     /// already set via super) for identity + lifetime: the same step wrap() runs after make() —
     /// map the C++ pointer to this wrapper, track destroyed(), and pin if it was born parented.
-    final void _register() nothrow {
+    /// `owned`: this wrapper's object was allocated by the binding (a generated ctor). `wrap()`
+    /// passes false — see the note on `_ownedByD`. Defaulted so the 385 generated call sites,
+    /// which are all constructors, keep meaning exactly what they meant.
+    final void _register(bool owned = true) nothrow {
+        _ownedByD = owned;
         qtd_holder_reg(_cpp, cast(void *) this);
         if (_isQObj) {
             qtd_holder_track(_cpp);
@@ -57,6 +80,8 @@ class QtdObject {
     /// and track destroyed(). Called by the moc mixin/newQObject (wrapper mode only).
     final void _adopt(void *c) nothrow {
         _cpp = c;
+        _ownedByD = true;   // the C++ trampoline was created for THIS D object, by us
+
         qtd_holder_reg(c, cast(void *) this);
         qtd_holder_track(c);
         _pinned[c] = this;
@@ -73,8 +98,9 @@ class QtdObject {
     /// A parented object is Qt-owned -> do nothing. Only C calls here (finalizer-safe).
     ~this() @nogc nothrow {
         if (!_live) return;   // runtime shutting down -> don't touch Qt/GC
-        if (_isQObj && _cpp !is null && qtd_holder_has_parent(_cpp) == 0 && qtd_holder_is_app(_cpp) == 0)
-            qtd_holder_delete_later(_cpp);   // QObject we own (not the app singleton) -> schedule deletion
+        if (_ownedByD && _isQObj && _cpp !is null
+                && qtd_holder_has_parent(_cpp) == 0 && qtd_holder_is_app(_cpp) == 0)
+            qtd_holder_delete_later(_cpp);   // QObject WE created and Qt has not adopted
         if (_cpp !is null)
             qtd_holder_unreg(_cpp);
     }
@@ -104,7 +130,7 @@ QtdObject wrap(void *cptr, scope QtdObject delegate(void *) make) {
     if (cptr is null) return null;
     if (auto w = find(cptr)) return w;
     auto w = make(cptr);           // make() sets w._cpp = cptr via the adopt ctor
-    w._register();                 // map + track destroyed() + pin if parented (shared with `new X`)
+    w._register(false);            // BORROWED: Qt handed us this pointer, we did not allocate it
     return w;
 }
 

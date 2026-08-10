@@ -1,5 +1,358 @@
 # CRITICS.md
 
+## Resposta à rodada 12 (2026-08-10)
+
+Escrita aqui porque a auditoria é o sítio certo para a contestação. **Sete achados, sete
+confirmados** — verifiquei os factos que os sustentam antes de mexer em código:
+
+- `static QThread currentThread() { return QThread.wrap(__QThread_1()); }`, tal como citado;
+- `class QTreeWidgetItem : QtdObject { this(void* c) { super(c, false); } }` com `__cpp_new` no
+  construtor, e o finalizador a só chamar `unreg` quando `_isQObj` é falso. **60** raízes
+  `super(c, false)` no binding QtWidgets, exactamente a contagem da auditoria;
+- 385 sítios gerados com a forma `__cpp_new` → ctor → `this(__r)` → `_register()`;
+- `binding-core` a excluir `sample_*`, e `expected-fails.json` com 11 entradas, nenhuma sobre
+  lifetime de não-`QObject`, retornos emprestados ou exception-safety de construtor.
+
+Três correcções à rodada, todas medidas e nenhuma delas a absolver o projeto.
+
+### 1. O modo de falha do achado #1 não é use-after-free — é um IMPASSE no `exit()`
+
+A auditoria prevê "use-after-free/crash dentro do Qt". O que acontece, com backtrace tirado de um
+coredump:
+
+```
+#0-2  pthread_cond_wait
+#3    QWaitCondition::wait(QMutex*, QDeadlineTimer)
+#5    QThread::~QThread()
+#7    QObject::event(QEvent*)                       <- o deleteLater agendado pelo finalizador
+#10   QCoreApplicationPrivate::sendPostedEvents
+#14   exit()
+```
+
+`~QThread` **espera que a thread termine**, e a thread por quem espera é a que está a correr o
+destrutor. O processo não estoira: fica pendurado no `exit()` para sempre. Para quem usa o binding
+isto é pior do que um crash — não deixa coredump, não aparece num relatório, e lê-se como "a
+aplicação não fecha". A conclusão da auditoria não muda; a descrição do sintoma tinha de mudar,
+porque é por ele que alguém vai procurar.
+
+### 2. O probe que a auditoria pede, escrito como está pedido, é um FALSO VERDE
+
+O critério de resolução diz "adicionar probes GC ... exigindo que o objeto continue vivo". Escrevi
+exactamente isso — largar a referência, `GC.collect()`, verificar que o objecto vive — e **passou
+contra o holder por corrigir**. Não porque o defeito não existisse, mas porque **o finalizador
+nunca correu**: o colector do D varre a stack de forma CONSERVADORA, e o slot morto que ainda
+continha o ponteiro manteve o wrapper alcançável (`inMap=true` depois de dois `collect()`).
+
+Reproduzir exige tirar a referência num frame próprio e **sujar a stack** a seguir. Só então
+`inMap=false`, o finalizador corre, e o impasse aparece. Registo isto como correcção ao critério e
+não como detalhe: um probe de GC que não prova que colectou é a mesma classe de defeito que esta
+auditoria persegue, um nível acima.
+
+### 3. Fechar o buraco perigoso NÃO precisa do typesystem
+
+A auditoria prescreve `OwnedByD`/`Borrowed`/`OwnedByQt` alimentados por regras de ownership do
+typesystem. A metade perigosa fecha com **um bit que já estava disponível nos dois sítios de
+chamada**: um construtor gerado *alocou* o objecto; `wrap()` *recebeu* um ponteiro. `_register()`
+nasce owned, `wrap()` passa `false`, o finalizador exige `_ownedByD`. Toca só o `holder.d` — os 385
+sítios gerados não mudam uma linha, porque o parâmetro tem default.
+
+Medido nos dois sentidos com o mesmo probe: holder antigo **exit 124** (pendurado), holder
+corrigido **exit 0**. Regressão em `borrowed-{ldc2,dmd}`.
+
+O typesystem continua a ser preciso, e por isso ficou inventariado como `risk`
+(`pointer-return-ownership-unknown`): uma API que **transfere** ownership para fora (uma fábrica,
+`QLayout::takeAt`) agora vaza em vez de rebentar. Trocar um use-after-free por um leak é a direcção
+conservadora certa, não é a resposta completa, e a diferença está escrita.
+
+### O que fica por fazer desta rodada, dito em vez de escondido
+
+- **#2 (não-`QObject`)**: aberto. `nonqobject-owned-leaks` e `nonqobject-qt-owned-dangles` estão no
+  inventário. A metade *owned* é mecânica (um thunk de destrutor por classe); a metade *Qt-owned*
+  não é — `QLayoutItem` não tem `destroyed()`, logo a invalidação tem de ser **modelada** a partir
+  do contrato da API, não observada. É desenho, e não o faço com um remendo.
+- **#3 (eixo de ownership no manifest)**: depende de #2 estar decidido; sem isso a metadata seria
+  inventada.
+- **#6 (artefacto instalável)**: aberto.
+- **#4, #5, #7**: #5 e #7 feitos (libsample entrou no `binding-core`; os três gaps de lifetime
+  entraram no inventário). #4 por fazer.
+
+## Rodada 12: o wrapper aprendeu muito com o qmltc-d; ownership ainda nao e geravel por heuristica
+
+### Enquadramento desta rodada
+
+As duas semanas investidas no `qmltc-d` nao foram duas semanas retiradas do binding. A ferramenta
+foi ao mesmo tempo consumidor, oracle e teste de pressao do wrapper generator. O historico recente
+mostra ganhos concretos no produto-base: wrapper como caminho principal, identidade, parenting
+pins, invalidacao por `destroyed()`, dispatch virtual correto, retornos de value types, meta-object,
+deep bindings e varios defeitos que uma aplicacao pequena nunca teria provocado.
+
+O criterio desta rodada e justamente dar credito a esse efeito sem cometer o erro inverso: concluir
+que o wrapper inteiro esta seguro porque o consumidor mais exigente esta verde. O `qmltc-d` pressiona
+fortemente `QObject`, QML, QtQuick e meta-object. Ele quase nao pressiona os casos em que o binding
+precisa decidir ownership de um ponteiro retornado, nem os objetos polimorficos de Qt que nao derivam
+de `QObject`. Foi nessa fronteira que apareceram os achados mais graves.
+
+### Verificacao observada
+
+- A arvore estava limpa no inicio. Durante a auditoria surgiram alteracoes concorrentes, que foram
+  preservadas: `docs/qmltc-d.md` foi movido para `docs/qmltc-d-journal.md` e
+  `tools/qmltc/qmltc_d.cpp` ganhou `--no-main`. Nenhum achado abaixo depende desses trechos instaveis.
+- `./build --list` oferece **1126 top-level targets**: 1123 obrigatorios e 3 opcionais.
+  **918 dos 1123 obrigatorios (81,7%)** pertencem as familias `qmltc*`, `shadowaot-*` ou
+  `leaf-lifetime-*`. O corpus libsample esta presente com 58 targets.
+- `report-selftest` passou: **1126 classificados, 0 unclassified**.
+- `expected-fails-lint` passou: **11 entradas validas**, 3 riscos e 10 probe targets existentes.
+- Os tres manifest gates observados passaram contra Qt 6.11: QtWidgets (8428 simbolos), QML
+  (2593) e Controls (10301).
+- `binding-core` encontrou uma dependencia operacional no cache global do dub: dentro do sandbox,
+  `lupdate-check` tentou remover `~/.dub/.../libdparse.a` e falhou por filesystem read-only. Executado
+  isoladamente com acesso normal ao cache, `lupdate-check` passou. Nao e falha funcional do extrator,
+  mas o agregado nao e hermetico ao workspace.
+- A matriz completa foi iniciada e exercitou com sucesso os eixos centrais observados (Qt5/Qt6,
+  dmd/ldc2, wrapper, moc, uic, qrc, WebEngine, libsample e manifests). Como fontes mudaram enquanto
+  ela rodava, esta rodada nao usa essa execucao como prova atomica de um checkout especifico.
+- Um probe C++ contra o Qt instalado mediu `QThread::currentThread()` no main thread:
+  o objeto retornado estava **sem parent** e `isRunning()==true`. A documentacao oficial do Qt avisa
+  que [apagar um `QThread` em execucao causa crash](https://doc.qt.io/qt-6/qthread.html#dtor.QThread).
+- Na binding QtWidgets gerada, ha 60 modulos cuja raiz chama `super(c, false)` (wrapper polimorfico
+  nao-`QObject`). Pelo menos 14 dessas raizes constroem objetos no heap C++; a contagem nao inclui
+  derivados como `QSpacerItem`, que herdam o estado `false` de `QLayoutItem`.
+
+### O que as duas semanas realmente compraram para o binding
+
+1. **O `qmltc-d` provou ser um excelente north-star consumer.** Ele obrigou o wrapper a sobreviver
+   a arvores dinamicas, meta-objects, propriedades, sinais, tipos de valor, subclassing e APIs Qt
+   privadas numa combinacao que os exemplos Widgets nao oferecem. Isso e engenharia do binding,
+   ainda que o defeito tenha sido descoberto pelo compilador QML.
+
+2. **A barra de qualidade e excepcionalmente boa onde existe oracle.** UIC contra QUiLoader, QML
+   contra o engine, frame + propriedades, manifests por USR e libsample sao evidencias melhores do
+   que uma contagem de metodos compilados. A correcao de deep-leaf identity da rodada anterior e um
+   bom exemplo: o consumidor revelou a falha, e a solucao terminou como invariante do runtime.
+
+3. **O desenho `extern(C++)` continua tecnicamente valioso.** Modulos a la carte, shims somente onde
+   a ABI exige e output gerado sob demanda formam uma proposta distinta de um wrapper C por classe.
+   Os problemas abaixo nao invalidam esse desenho; eles mostram que ABI correta e lifetime correto
+   sao contratos separados.
+
+### Achados criticos
+
+#### 1. Todo `QObject*` sem parent e tratado como D-owned, inclusive retornos emprestados
+
+O holder nao recebe ownership como dado. Ele o infere no finalizador:
+
+```d
+if (_isQObj && _cpp !is null && qtd_holder_has_parent(_cpp) == 0
+        && qtd_holder_is_app(_cpp) == 0)
+    qtd_holder_delete_later(_cpp);
+```
+
+Essa regra e valida para um `new QObject()` criado pelo binding, mas nao para todo ponteiro que uma
+API Qt retorna. O emitter usa a mesma operacao para ambos: `T.wrap(pointer)`. Um caso concreto ja
+esta na superficie gerada:
+
+```d
+static QThread currentThread() { return QThread.wrap(__QThread_1()); }
+```
+
+No probe, esse `QThread` estava sem parent e em execucao. Se nao existir wrapper anterior, `wrap`
+cria um wrapper D, registra o ponteiro e, quando esse wrapper cair no GC, agenda `deleteLater()` no
+`QThread` que representa a thread corrente. `qtd_holder_is_app` protege apenas o singleton da
+aplicacao. Parenting nao distingue “objeto que D criou” de “singleton/borrowed que Qt devolveu”.
+
+Ha outros candidatos da mesma forma (`QThreadPool.globalInstance`,
+`QItemEditorFactory.defaultFactory`, `QErrorMessage.qtHandler`, dispositivos de input etc.). Nao e
+seguro corrigir por uma lista de singletons: o defeito e o tipo de ownership estar ausente da API
+interna do wrapper.
+
+**Impacto:** use-after-free/crash dentro do Qt, provocado de forma nao deterministica pelo GC, em
+uma chamada que parece ser apenas um getter.
+
+**Criterio de resolucao:**
+
+- carregar no wrapper um estado explicito, no minimo `OwnedByD`, `Borrowed` e `OwnedByQt`;
+- fazer construtores gerados nascerem `OwnedByD` ate uma transferencia comprovada;
+- fazer retornos de ponteiro nascerem `Borrowed` por default, promovendo a owned apenas por regra
+  especifica da API;
+- consumir regras de ownership do typesystem ou manter overrides declarativos equivalentes por
+  metodo; parentagem pode atualizar pins, mas nao decidir a origem do ownership;
+- adicionar probes GC para `QThread.currentThread()`, `QThreadPool.globalInstance()` e pelo menos um
+  getter de objeto externo, exigindo que o objeto continue vivo e nunca receba deferred-delete.
+
+#### 2. Wrappers polimorficos nao-`QObject` vazam quando D owns e ficam pendurados quando Qt owns
+
+O runtime marca classes sem `QObject` com `_isQObj=false`. O comentario as chama de
+“dispose-only”, mas nao existe dispose no holder. O finalizador apenas faz `unreg`; nao chama o
+destrutor C++ nem `operator delete`.
+
+Isso e observavel em tipos publicos e comuns:
+
+- `new QTreeWidgetItem()` aloca 96 bytes com `__cpp_new`, executa o construtor por placement e
+  registra o wrapper. Se nunca for inserido numa arvore, o GC remove a entrada do identity map e
+  vaza o objeto C++ inteiro.
+- `new QSpacerItem(...)` faz o mesmo. Ao entrar num layout, o layout toma ownership do item, mas
+  `QLayoutItem` nao e `QObject`: nao ha `parent()`, `destroyed()` nem pinning no protocolo atual.
+- Um `QTreeWidget` toma ownership dos seus items. Quando a arvore C++ os apaga, o wrapper D nao
+  recebe invalidacao. `_cpp` continua nao nulo; a proxima chamada atravessa um dangling pointer em
+  vez de `checkAlive()` falhar.
+
+Qt documenta explicitamente que
+[`QBoxLayout::addSpacerItem` recebe ownership](https://doc.qt.io/qt-6/qboxlayout.html#addSpacerItem)
+e que [`QTreeWidget` recebe ownership dos items](https://doc.qt.io/qt-6/qtreewidget.html#addTopLevelItem).
+Portanto, esse dominio nao pode ser reduzido ao object tree de `QObject`.
+
+**Impacto:** leak deterministico no caminho D-owned e use-after-free/possivel double ownership no
+caminho Qt-owned. O teste `spacer` prova construcao e layout, mas nao lifetime; os testes de
+`ownership.d` provam apenas objetos com `destroyed()`.
+
+**Criterio de resolucao:**
+
+- emitir um destructor thunk por classe polimorfica nao-`QObject` e chama-lo somente para handles
+  `OwnedByD`, seguido de `operator delete`;
+- modelar transferencias em APIs como `QLayout::addItem`, `QTreeWidget::addTopLevelItem`,
+  `takeTopLevelItem`, `QStandardItemModel::setItem` e equivalentes;
+- quando Qt assume ownership de um tipo sem sinal de destruicao, ou instalar um mecanismo de
+  invalidacao no owner, ou recusar um wrapper retido que nao possa ser tornado seguro;
+- adicionar testes de tres estados: unattached coletado/destruido, transferencia para Qt sem
+  double-delete e destruicao do owner invalidando o wrapper; cobrir ao menos `QSpacerItem`,
+  `QTreeWidgetItem` e `QStandardItem`.
+
+#### 3. Os manifests chamam esses metodos de `bound`, mas nao possuem eixo de ownership
+
+O manifest gate responde “o simbolo continuou presente e sua fate nao piorou”. Ele nao responde
+“o ponteiro retornado tem lifetime correto”. Assim, `QThread::currentThread`,
+`QTreeWidget::addTopLevelItem` e os construtores de `QTreeWidgetItem` podem permanecer verdes na
+baseline enquanto a API publica e insegura.
+
+Esse nao e um defeito do manifest como gate de simbolos; e uma promessa excessiva quando ele e
+usado como proxy de cobertura do binding. A coverage atual mistura disponibilidade e usabilidade.
+
+**Criterio de resolucao:** anexar metadata de ownership/transferencia ao manifest para todo
+parametro/retorno de object wrapper, com fate explicita (`owned`, `borrowed`, `transfer-in`,
+`transfer-out`, `ownership-unknown`). `ownership-unknown` deve ser uma recusa ou um risco
+inventariado, nao um `bound` indistinguivel.
+
+### Achados altos
+
+#### 4. Construtor que lanca deixa o bloco de `__cpp_new` sem cleanup
+
+O emitter gera, em centenas de modulos:
+
+```d
+auto __r = __cpp_new(__T_size);
+ctor(__r, ...);
+this(__r);
+_register();
+```
+
+Se o construtor C++ lanca e a camada Lippincott o converte em `QtCppException`, o wrapper nunca e
+registrado e nenhum finalizador conhece `__r`. O bloco alocado antes do placement construction fica
+perdido. O mesmo vale para falhas parciais em ctors shimmed. A suite prova que a excecao e observavel,
+mas nao que o caminho e exception-safe.
+
+**Criterio de resolucao:** um scope guard libera `__r` com `__cpp_delete` se o construtor nao
+terminar; o guard so e cancelado depois de `this(__r)` + `_register()`. Um fixture com construtor que
+lanca repetidamente deve medir alloc/free balance.
+
+#### 5. `binding-core` exclui o corpus mais independente do generator
+
+O agregado foi criado para responder se “generator, runtime, uic, qrc, moc, webengine and gates”
+estao saudaveis, mas sua selecao e:
+
+```d
+auto core = pick(n => !isQmltc(n) && !n.startsWith("sample_"));
+```
+
+Ou seja, exclui deliberadamente os 58 targets de libsample. Esse e justamente o corpus desenhado
+fora deste repositorio para corner cases de binding: MI, overloads, referencias, function pointers,
+move-only, operators e exceptions. Um `binding-core` verde pode coexistir com uma regressao do
+gerador que libsample detectaria.
+
+Tambem nao existem os agregados `runtime` e `release` recomendados na rodada 11. Ha apenas
+`binding-core`, `qmltc-smoke` e `qmltc-corpus`; o build default funciona como release por convencao,
+nao por um contrato nomeado.
+
+**Criterio de resolucao:** incluir libsample em `binding-core` quando o corpus estiver provisionado
+e fazer a ausencia dele falhar esse agregado (ou separar explicitamente `binding-smoke` de
+`binding-conformance`). Criar `runtime` e `release`; o ultimo deve exigir os canarios de corpus e os
+gates que a versao do Qt torna aplicaveis.
+
+#### 6. O projeto ainda nao entrega um binding consumivel fora do proprio grafo de testes
+
+O root `dub.json` tem `targetType: none`; `:runtime` e `sourceLibrary` e admite nao compilar sozinho;
+`generated/` e integralmente ignorado; os specs de produto gravam em diretorios versionados de
+teste; e o README ensina a gerar e rodar a matriz, nao a consumir o resultado de uma aplicacao D.
+
+Isso e coerente para desenvolvimento, mas ainda nao e um release de binding. Hoje nao ha contrato
+documentado para:
+
+- gerar somente os modulos Qt desejados para a versao instalada;
+- compilar/instalar `libbinding` + shims + runtime como artefato reutilizavel;
+- declarar imports e link flags num `dub.json` consumidor;
+- versionar o artefato contra Qt minor, dmd/ldc2 e ABI do runtime;
+- executar um smoke test a partir de um projeto externo, sem imports relativos ao checkout.
+
+O novo `--no-main` concorrente e um passo correto para tornar `qmltc-d` consumivel, mas a mesma
+fronteira ainda falta ao produto-base sobre o qual ele depende.
+
+**Criterio de resolucao:** um exemplo consumidor em diretorio temporario deve depender apenas de um
+artefato instalado/empacotado, criar uma aplicacao Qt minima com `new`, compilar em dmd e ldc2 e
+rodar sem acessar `generated/` ou `.build/` do checkout.
+
+#### 7. O inventario estruturado omite exatamente os riscos de lifetime que a documentacao admite
+
+`docs/test-suite.md` lista “non-QObject” entre os ownership follow-ups. Mas
+`tests/expected-fails.json`, apresentado como structured state de gaps/riscos, nao possui entrada
+para non-QObject, borrowed returns ou exception safety de construtor. Por isso
+`expected-fails-lint OK` e verdadeiro ao mesmo tempo em que tres gaps de lifetime publicos nao
+aparecem no inventario.
+
+Enquanto nao houver runner, o minimo e o inventario ser completo. Caso contrario, a rigorosidade
+do schema valida apenas uma amostra escolhida dos gaps.
+
+### Achados estruturais que permanecem, agora com prioridade corrigida
+
+- Separar helpers especificos de `qmltc-d` do runtime moc continua desejavel, mas e menos urgente
+  que corrigir o ownership do wrapper comum.
+- Um `CompilationContext` explicito ainda e a direcao correta para o compilador QML, mas nao deve
+  competir com a correcao dos handles que toda aplicacao D/Qt usa.
+- A CI continua documentada como scaffold nao comprovado verde, e manifests cobrem apenas Qt 6.11
+  para tres bindings. Para um binding que pretende acompanhar Qt por regeneracao, uma matriz real
+  de pelo menos um Qt distro + o Qt de baseline e parte do produto, nao acabamento.
+- A dependencia do cache global do dub torna `binding-core` menos reproduzivel em sandbox/CI.
+  Um cache configuravel dentro do workspace ou uma imagem de CI imutavel eliminaria essa variavel.
+
+### Prioridade brutal da rodada 12
+
+1. Introduzir ownership explicito no handle e impedir que retornos borrowed caiam no finalizador
+   D-owned; fechar primeiro `QThread.currentThread()` com um probe que hoje seria destrutivo.
+2. Implementar ou recusar lifetime de polimorficos nao-`QObject`; provar `QTreeWidgetItem`,
+   `QSpacerItem` e `QStandardItem` em owned/transfer/destroy.
+3. Tornar construtores exception-safe em torno de `__cpp_new`.
+4. Fazer ownership aparecer no manifest e no expected-fails; `bound` sem ownership conhecido nao
+   pode ser apresentado como superficie segura.
+5. Corrigir os agregados: libsample dentro da resposta de conformance do binding, mais `runtime` e
+   `release` explicitos.
+6. Criar um consumer smoke externo e um artefato instalavel; sem isso ha um excelente laboratorio
+   de binding, ainda nao um binding distribuivel.
+7. Depois disso, retomar as fronteiras internas do `qmltc-d` (`CompilationContext`, runtime split)
+   sem perder o papel dele como stress-test principal.
+
+### Sintese para decisao
+
+O saldo das duas semanas e positivo: o `qmltc-d` fez o wrapper generator crescer em pontos que
+importam e hoje e o melhor teste de integracao do projeto. A conclusao desta rodada nao e reduzir
+esse investimento. E usar a maturidade conquistada para atacar o proximo contrato que o corpus
+QML quase nao enxerga.
+
+O wrapper atual sabe responder **identidade** e, para `QObject` parentado, boa parte de
+**lifetime**. Ele ainda nao sabe responder **ownership por API**. Sem essa terceira resposta, um
+getter pode agendar a destruicao de um objeto emprestado, e um objeto nao-`QObject` pode vazar ou
+ficar pendurado. Isso e mais importante para publicar um binding Qt para D do que aumentar agora a
+porcentagem de documentos compilados pelo consumidor. Corrigir essa fronteira fortalece os dois:
+o binding se torna seguro fora do QML, e o `qmltc-d` passa a apoiar-se numa camada que pode ser
+distribuida com uma promessa real de ownership.
+
 ## Rodada 11: o gerador e seu consumidor mais valioso precisam de uma fronteira
 
 ### Enquadramento corrigido

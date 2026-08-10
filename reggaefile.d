@@ -82,6 +82,14 @@ Build reggaeBuild() {
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension ~ "-" ~ dc, app, ex, dc);
 
+    // A POINTER QT RETURNED IS NOT OURS. The finalizer decided ownership from parenting alone, so
+    // `QThread.currentThread()` — unparented, not the app singleton — got a deleteLater when the D
+    // reference was dropped, and ~QThread deadlocked at exit waiting for the thread running it.
+    // Needs a REAL GC collection, which needs the reference gone from a conservatively scanned
+    // stack; the first version of this test passed because nothing was ever collected.
+    foreach (dc; DCS)
+        all ~= qtdTest("borrowed-" ~ dc, t("wrapper", "borrowed.d"), ex, dc);
+
     // --- CTFE uic: .ui -> typed Ui struct (mixin), built against the widgets binding ---
     auto uicExtra = buildPath(root, "runtime", "uic", "uiform.d") ~ " "
         ~ buildPath(root, "runtime", "qrc", "qrc.d")   // icon_test registers a CTFE .qrc
@@ -272,7 +280,12 @@ Build reggaeBuild() {
         Target[] pick(bool delegate(string) want) {
             return all.filter!(t => want(t.rawOutputs.length ? t.rawOutputs[0] : "")).array;
         }
-        auto core   = pick(n => !isQmltc(n) && !n.startsWith("sample_"));
+        // libsample IS binding conformance, not an extra. It is the corpus designed OUTSIDE this
+        // repository for exactly the corner cases the generator gets wrong — multiple inheritance,
+        // overloads, references, function pointers, move-only types, operators, exceptions — and
+        // excluding it meant a green "is the generator healthy?" could coexist with a regression
+        // that libsample is the only thing here that catches.
+        auto core   = pick(n => !isQmltc(n));
         auto qmlAll = pick(n => isQmltc(n));
         auto smoke  = pick(n => n.startsWith("qmltc-") && !n.canFind("-o3-gate-")
                              && !n.startsWith("qmltc-controls-runtime"));
