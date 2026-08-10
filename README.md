@@ -148,8 +148,13 @@ level does not allow is not compiled with it — it goes to the engine whole.
 | `-O0` | none of ours: Qt builds the document, as `qmlcachegen` bytecode where it can, interpreted where it cannot | by construction — it is the engine |
 | `-O1` | static translation only | nothing crosses untyped |
 | `-O2` | ...and QVariant | value right, type late |
-| `-O3` | ...and containment and delegation, **and only what BEHAVES THE SAME** — what differs on either axis is demoted to `-O0` | measured, per document |
+| `-O3` | ...and containment and delegation, **and only what BEHAVES THE SAME** — what differs on either axis is demoted to `-O0` | measured, per document — **the default** |
 | `-Ox` | `-O3` with the check waived | experimental |
+
+**`-O3` is the default**, and that is a decision rather than the largest number available: it is
+the only level whose figure below was verified by rendering the result and comparing every property
+against the engine, over both corpora, instead of being assumed. `-O1` compiles 111 of 329 and
+proves it without a render; `-Ox` waives the check and is experimental by definition.
 
 `-O3` is not a compiler flag but a pipeline: the compiler cannot tell whether something behaves
 the same — it does not render and it does not run — so the build compiles the document, renders

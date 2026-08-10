@@ -9900,6 +9900,17 @@ int main(int argc, char **argv) {
     //        promises the least, and a document that renders wrong here stays wrong.
     // A document that needs a mechanism its level does not allow is not compiled with it — it goes
     // to the engine WHOLE, which is the one thing that always behaves like the engine.
+    // THE DEFAULT IS -O3, and that is a decision rather than the largest number available. It is
+    // the only level whose figure was verified by rendering the result and comparing every
+    // property against the engine, over both corpora, instead of being assumed: 226 of Qt's 329
+    // Controls documents and 2 of the 14 application-shaped ones compile, every remaining one is
+    // built by Qt itself, and none is unplaced. -O1 compiles 111 of 329 and proves it without a
+    // render; -Ox waives the check entirely and is experimental by definition.
+    //
+    // -O3 and -Ox emit the SAME code — the difference is not in this program. -O3 is a PIPELINE:
+    // compile, render, compare the frame and every property, demote what differs to -O0. Asking
+    // for -O3 without running that check (tests/qmltc/o3.sh, or `./build qmltc-o3-gate-*`) gets
+    // -Ox behaviour under a name that promises more, so the usage line below says so out loud.
     int optLevel = 3;
     std::vector<char *> pos;
     for (int i = 1; i < argc; ++i) {
@@ -9953,7 +9964,30 @@ int main(int argc, char **argv) {
         else if (std::strcmp(argv[i], "--cpptypes") == 0 && i + 2 < argc) { loadDTypes(argv[i + 1], argv[i + 2], true); i += 2; }
         else pos.push_back(argv[i]);
     }
-    if (pos.empty()) { std::fprintf(stderr, "usage: %s [--dump] <file.qml> [ClassName]\n", argv[0]); return 2; }
+    if (pos.empty()) {
+        std::fprintf(stderr,
+            "usage: %s [--dump] [-O0|-O1|-O2|-O3|-Ox] <file.qml> [ClassName]\n"
+            "\n"
+            "  -O is a degree of CERTAINTY, not of speed: each level compiles more and proves less.\n"
+            "  A document that needs a mechanism its level does not allow is handed to the ENGINE\n"
+            "  WHOLE, which is not a failure — it is the level choosing certainty.\n"
+            "\n"
+            "  -O0  Qt builds the document; nothing is compiled. Correct by construction.\n"
+            "  -O1  statically typed translation only, and no document with a SKIPPED member.\n"
+            "  -O2  ...and QVariant where the type is only known at run time.\n"
+            "  -O3  ...and containment and delegation.  [DEFAULT]\n"
+            "  -Ox  the -O3 code path with the check WAIVED. Experimental.\n"
+            "\n"
+            "  -O3 IS A PIPELINE, not a flag: this program cannot tell whether a document behaves\n"
+            "  the same — it does not render and it does not run. The check is tests/qmltc/o3.sh\n"
+            "  (`./build qmltc-o3-gate-*`), which compiles each document, renders it, compares the\n"
+            "  frame AND every property with the engine's, and demotes what differs to -O0.\n"
+            "  Compiling at -O3 WITHOUT running it gets -Ox behaviour under a better name.\n"
+            "\n"
+            "  --no-fallback  never hand a document over; --pedantic  also make a delegation exit 4.\n",
+            argv[0]);
+        return 2;
+    }
     QFile f(pos[0]);
     if (!f.open(QIODevice::ReadOnly)) { std::fprintf(stderr, "qmltc-d: cannot open %s\n", pos[0]); return 2; }
     QString code = QString::fromUtf8(f.readAll());
