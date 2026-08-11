@@ -945,7 +945,10 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // qmlmap.tsv (QML-name -> bound C++ class) is a build output of the binding's gend run;
             // the tool reads it so its bound-type vocabulary is DATA, not hard-coded. Absent (e.g.
             // the QtObject binding) -> the tool just loads nothing.
-            auto qmlmapArg = " --qmlmap " ~ buildPath(bind.genDir, "qmlmap.tsv");
+            // ...and the CORPUS DIRECTORY on the import path, so a fixture can use a sibling
+            // local type the way an application does. Without it a fixture that instantiates one
+            // fails at type resolution, which reads like a compiler gap and is a missing -I.
+            auto qmlmapArg = " --qmlmap " ~ buildPath(bind.genDir, "qmlmap.tsv") ~ " -I " ~ corpusDir;
             // 1) qmltc-d --dump <qml> <Name> -> generated D (class + a value-dumping main).
             auto genD = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".d");
             // Exit 3 is "partial": members were skipped and reported. The fixture suite treats it
