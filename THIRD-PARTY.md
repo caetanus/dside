@@ -34,7 +34,17 @@ directory's own README says. Every header states:
 // SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
 ```
 
-**GPL-3.0-only**, not LGPL. They were vendored so the build stays hermetic — the differential runs
+**GPL-3.0-only**, not LGPL.
+
+**They do not reach the product.** Measured: `tests/install.sh` packages `source/` — the generated
+QtWidgets binding — and `lib/` — its two archives. The binding built from these headers is a
+separate one (`spec_cxx_corpustypes.json`, `libcorpustypes.a`) and **no target installs it**; it is
+linked only into test binaries, which are never distributed. So "we only used it to test" is true of
+the PRODUCT and not of the REPOSITORY: the 42 files are in the tree, and distributing the tree
+distributes them. That is the whole of the exposure, and it is narrower than "it contaminates the
+binding" — but it is not nothing, and it is not a question this document can answer.
+
+They were vendored so the build stays hermetic — the differential runs
 against types we did not write — and the trade that bought is exactly this entry. The upstream
 revision they were taken at is **not recorded**.
 
@@ -60,7 +70,14 @@ Both vendored corpora could be **fetched instead of committed**, which is the pa
 already uses for `libsample`: the CI clones it, and the targets vanish loudly when it is not there.
 That would remove all 102 third-party files from what this repository distributes.
 
-It is not free. `tests/qmltc/cpptypes/` feeds a whole differential family — moc →
+A third option exists for the C++ types and is worth naming, because it is cheaper than fetching:
+**write equivalents ourselves.** The reggaefile describes them as "ordinary Q_OBJECT + QML_ELEMENT +
+Q_PROPERTY classes", and the shapes they exercise — grouped, attached, singleton, a private
+property, extension types — are ones we could write from scratch. What that costs is the property
+the corpus was chosen for: they are types WE DID NOT WRITE, so the compiler cannot have been tailored
+to them. Replacing them keeps the coverage and gives up the independence.
+
+Fetching is not free either. `tests/qmltc/cpptypes/` feeds a whole differential family — moc →
 qmltyperegistrar → `.qmltypes`, then a generated binding over those headers — and fetching it means
 the build needs `qtdeclarative`'s **source**, not just an installed Qt, on any machine that wants
 that coverage. The `.ui` corpus has the same shape and the additional problem that we would first
