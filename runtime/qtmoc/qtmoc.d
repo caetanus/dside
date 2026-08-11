@@ -1341,6 +1341,21 @@ void* createQmlDocument(string docUrl) {
     return qtd_qml_create_document((docUrl ~ "\0").ptr);
 }
 
+/// Build `typeName` from whichever of `uris` (a `;`-separated list) the engine can resolve it in.
+/// The compiler emits this when its own registry does not know the type at all — `Timer`,
+/// `ListModel`, `RowLayout` — because the DOCUMENT'S IMPORTS are what the engine would consult, and
+/// which of them defines the type is not something the registry can answer. Trying is exact: the
+/// first one that yields an object is the right one, and a type no import defines returns null,
+/// which the caller already treats as "the engine could not build it".
+void* createQmlObjectAny(string uris, string typeName, string docUrl = "") {
+    import std.algorithm : splitter;
+    foreach (u; uris.splitter(';')) {
+        if (u.length == 0) continue;
+        if (auto o = createQmlObject(u.idup, typeName, docUrl)) return o;
+    }
+    return null;
+}
+
 void* createQmlObject(string uri, string typeName, string docUrl = "") {
     if (docUrl.length)
         return qtd_qml_create_object_in((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);

@@ -7036,6 +7036,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // The loop below has a local `childType` (the child's QML type NAME) that shadows the map of
     // the same name, so the map is reached through this reference.
     auto &childTypeMap = childType;
+    // A CHILD WE DO NOT BUILD SHIFTS EVERY CHILD AFTER IT. `data[i]` then names something the
+    // engine has somewhere else, which is worse than a short list: Material's CursorDelegate holds a
+    // Connections and a Timer, and building only the Timer put it at data[0] where the engine has
+    // the Connections. So the engine-built fallback below is taken only while nothing has been
+    // skipped yet — a child we can place CORRECTLY is worth having, one we can only place at the
+    // wrong index is not. Measured: the opposite policy (refuse the whole document on any skip)
+    // would cost up to 39 of the 240 documents that compile today.
+    bool skippedAKid = false;
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
         std::string childType = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
@@ -7043,7 +7051,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::fprintf(stderr, "qmltc-d: %s: `Component` in %s is a template, not an object — "
                          "compiling it would instantiate its contents eagerly; skipped (later "
                          "phase)\n", inPath, cls.c_str());
-            ++partial; continue;
+            ++partial; skippedAKid = true; continue;
         }
         if (childType == "Connections") {
             if (!connectionsHandlers(od->initializer, rawHandlers)) {
@@ -7051,6 +7059,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              " `function on<Signal>(...)` members — skipped (later phase)\n", inPath, cls.c_str());
                 ++partial;
             }
+            // EITHER WAY it leaves no object of ours in the list. A handled Connections becomes
+            // signal handlers ON THE PARENT, and the engine still puts a QQmlConnections in `data`
+            // — so from the INDEX's point of view this is a skipped child even when nothing was
+            // refused, and every sibling after it would sit one place early.
+            skippedAKid = true;
             continue;
         }
         auto cbt = boundTypeFor(childType);
@@ -7092,9 +7105,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 dcEngineUri = uriForType(childType);
                 ltFound = true;
             }
+            // ...and a type the REGISTRY does not know at all, which the ENGINE still does. `Timer`
+            // is the plain case and a Timer is the most ordinary piece of application machinery
+            // there is; `ListModel` and `RowLayout` are the same shape. Probed directly,
+            // `createQmlObject("QtQuick", "Timer")` returns a live QQmlTimer, so the containment
+            // path works — what was missing is only the decision, which asked the registry for a
+            // URI it cannot have. The document's own imports are what the ENGINE would consult, so
+            // they are what is consulted here, tried in order at run time.
+            if (!ltFound && !g_bareImports.empty() && !skippedAKid) {
+                std::string tried;
+                for (auto &u : g_bareImports) tried += (tried.empty() ? "" : ";") + u;
+                dcEngineUri = "\x01" + tried;   // marker: resolve by trying, see createQmlObjectAny
+                ltFound = true;
+            }
             if (!ltFound) {
                 std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
                              inPath, childType.c_str(), cls.c_str());
+                skippedAKid = true;
                 dropSkippedChildId(childInit);
                 ++partial; continue;
             }
@@ -9966,7 +9993,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // baseUrl, so a relative path inside it resolves where the engine resolves it. Without
             // it the object reported the synthetic `file:///qtd_delegate.qml` (measured in the dump
             // of Qt's Material TextField).
-            wire.insert(wp + 16, "        __inst = createQmlObject(\"" + g_engineChildUri + "\", \""
+            wire.insert(wp + 16, std::string("        __inst = ")
+                                 + (g_engineChildUri.rfind("\x01", 0) == 0
+                                        ? "createQmlObjectAny(\"" + g_engineChildUri.substr(1)
+                                        : "createQmlObject(\"" + g_engineChildUri) + "\", \""
                                  + g_engineChildType + "\", \"" + selfDocUrl + "\");\n"
                                  "        if (__inst is null) return;\n");
         outerField += mk;
