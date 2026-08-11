@@ -5684,3 +5684,18 @@ answers for the type, and for one outside the binding it never does.
 Named as `default-child-of-unregistered-type-dropped`, with the part that has to be solved first
 written into it — a child built from the document's imports whose members cannot be wired is a Timer
 that never runs, which is worse than one honestly skipped.
+
+**Refined, and this is where it stands.** Neither ordering reproduces the engine on its own.
+PER-LEVEL reverse fixes DelayButton in Basic and Fusion and breaks Universal's by exactly 3 — half of
+a height. GLOBAL reverse, drained once at the root, which is literally what
+`QQmlObjectCreator::finalize` does, gives 19.34375 to both of Basic's ClippedText siblings where the
+engine gives 14.84375 and 5.34375. Both were measured, not reasoned about.
+
+So the difference is NOT ordering alone. There is a third factor and it is *when the parent applies
+its geometry* relative to the child's first layout: a QQuickControl sizes its `contentItem` in its
+own `componentComplete`, so which of the two happens first decides which layout state the child
+freezes — and a Text freezes it once. Any fix has to reproduce that on DelayButton in Basic, Fusion
+AND Universal at the same time; each of the two orderings gets two of the three.
+
+The three parts are on the branch `wip/completion-order` with their measurements, because a stash is
+not somewhere work should live.
