@@ -1,0 +1,21 @@
+# PROPERTIES THE ENGINE DOES NOT REPRODUCE, named because sampling cannot find them reliably.
+#
+# The gate already asks the engine again whenever it accuses us of a difference, and drops any path
+# where the engine then contradicts itself. That catches a value which varies every run. It does
+# NOT catch one that varies SOMETIMES: five consecutive engine runs of Material's SearchField gave
+#
+#     -535015719, 0, -535015719, 0, 0
+#
+# so a sample of five can agree by chance and the path counts as measurable — and Material comes
+# out UNPLACED in one full build and placed in the next. A gate whose verdict depends on which
+# values the allocator happened to leave behind is not a gate, and this is the second time the same
+# property produced a false red.
+#
+# So the ones we have measured are named. One property name per line, matched against the LAST
+# component of a dump path (`background.placeholderTextHAlign`, `contentItem.placeholderTextHAlign`
+# — same property, many paths). Remove an entry the day Qt initialises it.
+
+# QQuickTextInput's placeholder alignment: read out of uninitialised memory in Qt 6.11. Measured
+# across three separate sessions, both as three different values in a row and as an intermittent
+# flip between 0 and one stale value.
+placeholderTextHAlign

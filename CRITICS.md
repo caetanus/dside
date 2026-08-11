@@ -271,6 +271,37 @@ Três coisas que só a tentativa ensinou, todas em comentário no sítio:
 Fica por fazer a parte que é distribuição e não engenharia: o pacote aponta para um prefixo local,
 não está publicado em lado nenhum, e nada versiona o artefacto contra o Qt minor.
 
+### 12. O filtro de reprodutibilidade ainda era probabilístico, e voltou a produzir um falso vermelho
+
+A secção 1 do meu commit anterior dizia que perguntar ao motor outra vez, em vez de pré-filtrar,
+tornava o portão determinístico. **Não tornou**, e a matriz completa apanhou-me: `Material
+UNPLACED=1`, o mesmo `SearchField`, cujo frame ao `-O0` bate byte a byte.
+
+A causa é a mesma um nível abaixo. Cinco corridas seguidas do MOTOR sobre o mesmo documento:
+
+```
+-535015719, 0, -535015719, 0, 0
+```
+
+O valor sai `0` a maior parte das vezes. Uma amostra de cinco pode concordar **por acaso**, o
+caminho conta como mensurável, difere do nosso a sério, e o documento sai UNPLACED numa build e
+colocado na seguinte. Re-verificar em vez de pré-filtrar reduziu a probabilidade; não a eliminou,
+porque nenhuma amostragem finita distingue "o motor reproduz isto" de "o motor deu por acaso os
+mesmos bytes N vezes".
+
+Logo o que é conhecido passa a ser **nomeado**: `tests/qmltc/unreproducible.txt` lista a propriedade
+com a medição que a condena, e o portão retira-a dos dois lados antes de comparar. A amostragem
+fica como rede para as que ainda não conhecemos. Determinístico onde sabemos, probabilístico só
+onde ainda não medimos — e a diferença está escrita no ficheiro em vez de implícita.
+
+Material dá agora o mesmo veredicto em três corridas seguidas: **34 compilados, 27 ao `-O0`,
+UNPLACED=0**.
+
+**É a segunda vez que esta propriedade produz um falso vermelho e a segunda vez que eu declarei o
+portão determinístico cedo demais.** Um filtro probabilístico debaixo de um portão que existe para
+não ter falsos positivos é o mesmo defeito um nível acima — escrevi isso da primeira vez e voltei a
+construir um.
+
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
 - **#2 (não-`QObject`)**: FECHADO para `QTreeWidgetItem` (secção 9), aberto para as restantes. A

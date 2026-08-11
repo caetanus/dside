@@ -90,7 +90,24 @@ judge() {
   # that really differs costs one extra engine run and still reports; a document accused by
   # uninitialised memory converges to zero. Bounded, because a genuine difference never clears.
   flaky=0
+  # NAMED first, sampled second. A property Qt reads out of uninitialised memory is often 0, so
+  # repeated engine runs can agree by chance — see tests/qmltc/unreproducible.txt, which exists
+  # because that let the same document be UNPLACED in one build and placed in the next.
   : > "$D/$2.flaky"
+  if [ -f "$ROOT/tests/qmltc/unreproducible.txt" ]; then
+    awk 'NF && $1 !~ /^#/ {print $1}' "$ROOT/tests/qmltc/unreproducible.txt" | sort -u > "$D/$2.named"
+    awk -F'\t' 'NR==FNR{n[$1];next} { p=$1; sub(/^.*\./, "", p); if (p in n) print $1 }' \
+        "$D/$2.named" "$D/cen/$2.qall.s" | sort -u >> "$D/$2.flaky"
+    awk -F'\t' 'NR==FNR{n[$1];next} { p=$1; sub(/^.*\./, "", p); if (p in n) print $1 }' \
+        "$D/$2.named" "$D/cen/$2.dall.s" | sort -u >> "$D/$2.flaky"
+    sort -u "$D/$2.flaky" -o "$D/$2.flaky"
+    flaky=$(wc -l < "$D/$2.flaky")
+    if [ "$flaky" -gt 0 ]; then
+      for side in "$D/cen/$2.qall.s" "$D/cen/$2.dall.s"; do
+        awk -F'\t' 'NR==FNR{f[$1];next} !($1 in f)' "$D/$2.flaky" "$side" > "$side.f" && mv "$side.f" "$side"
+      done
+    fi
+  fi
   round=0
   while : ; do
     real=$(python3 "$ROOT/tools/qmltc-value-census.py" "$D/cen" 2>/dev/null | awk '
