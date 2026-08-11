@@ -71,6 +71,12 @@ against the wrapper spec rather than the raw one it is still occasionally descri
 
 ## Tracked follow-ups (to make this a real contract)
 
+- The CI asserts a FLOOR and CANARIES for the qmltc suite (≥800 targets, the six o3 gates named
+  individually, and the lifetime/packaging gates by name), the way libsample already had. An absent
+  capability has to be a loud skip, not four fifths of the matrix quietly not being generated.
+  Still **not proven green on a real runner**: the distro Qt is a different minor than the
+  baselines, which is why the manifest gates run advisory there.
+
 - Per-category **counters + regression history** in CI (pass/expected-fail per category),
   not just a green/red matrix, and a structured test report (JSON/TSV) over the ~1100 targets
   (`./build --list | wc -l`; 893 of them belong to the `qmltc*` families, which is why the default
