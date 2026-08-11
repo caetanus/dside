@@ -748,6 +748,15 @@ static std::string g_docUrl;
 // relative url inside a local type resolves against the file that USES it.
 static std::string g_rootDocUrl;
 
+// The url the class currently being emitted attaches — which is NOT always the file it is read
+// from. An object's baseUrl is the document where THAT OBJECT IS DECLARED, and a local type has
+// objects from two: the INSTANCE is declared where it is used, everything inside it is declared in
+// the type's own file. Both halves were measured against the engine — Qt's Dialog reports Dialog.qml
+// for a header built from Basic/Label.qml, and ASignalCross's engine reports ATile.qml for the
+// objects inside an ATile. Applying one url to the whole subtree gets one of the two wrong, and
+// which one depends on where you measured.
+static std::string g_curClassUrl;
+
 // One hop of an OBJECT path: is `owner.prop` an object, and of what type? The registry types a
 // property by its C++ name, and an object-valued one ends in `*`. It also keys some types by QML
 // name and some by C++ class, so the answer is whichever spelling it actually holds — otherwise
@@ -1235,7 +1244,19 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
     if (!cid.empty()) g_childIds[cid] = {field, ctypeResolved, pts, bps, bns, sigs, meths};
 }
 
-static void prescanChildIds(UiObjectInitializer *init) {
+// A QML ID IS VISIBLE IN THE WHOLE DOCUMENT, at any depth — this used to descend one level, so an
+// id declared in a GRANDCHILD did not resolve. Reduced to the two documents that differ by nothing
+// else:
+//
+//   Item { property int w: kid.width; Rectangle { id: kid; width: 30 } }           compiles
+//   Item { property int w: kid.width; Row { Rectangle { id: kid; width: 30 } } }   refused
+//
+// Invisible in Qt's own styles, which put almost everything one level down, and unavoidable in
+// application QML, where a child inside a layout is the normal shape. `prefix` is the accessor path
+// to the object being scanned, so a grandchild's id records `_dc0._dc1` and every consumer of
+// g_childIds keeps working unchanged.
+static void prescanChildIds(UiObjectInitializer *init, const std::string &prefix = "");
+static void prescanChildIds(UiObjectInitializer *init, const std::string &prefix) {
     // A DEFAULT child (`Text { id: placeholder }` written bare) is a child with an id like any
     // other, and Qt's own controls read one constantly: TextField sizes itself from
     // `placeholder.implicitHeight`. Only property-bound children were pre-scanned, so every such
@@ -1249,9 +1270,10 @@ static void prescanChildIds(UiObjectInitializer *init) {
         std::string field, cid, ctypeResolved;
         if (auto *dod = cast<UiObjectDefinition *>(m->member)) {
             ci = dod->initializer;
-            field = "_dc" + std::to_string(dcn++);
+            field = prefix + "_dc" + std::to_string(dcn++);
             if (!ci) continue;
             prescanChildBody(ci, field, dod->qualifiedTypeNameId);
+            prescanChildIds(ci, field + ".");
             continue;
         }
         // `background: Rectangle {}` — a property bound to an object, written as a plain member
@@ -1269,7 +1291,10 @@ static void prescanChildIds(UiObjectInitializer *init) {
                 // `contentItem: Item { id: kid }` followed by any read of `kid.<prop>` was refused,
                 // with the same "expression not supported" the other two kinds used to give. The
                 // comment above records that fix for default children; this is the third kind.
-                if (tob->initializer) prescanChildBody(tob->initializer, fn, tob->qualifiedTypeNameId);
+                if (tob->initializer) {
+                    prescanChildBody(tob->initializer, prefix + fn, tob->qualifiedTypeNameId);
+                    prescanChildIds(tob->initializer, prefix + fn + ".");
+                }
             }
         }
         if (!pub || pub->type != UiPublicMember::Property || !pub->binding) continue;
@@ -1337,7 +1362,8 @@ static void prescanChildIds(UiObjectInitializer *init) {
                 if (auto *fd = cast<FunctionDeclaration *>(se->sourceElement))
                     if (!fd->formals) meths.insert(qs(fd->name.toString()));
         }
-        if (!cid.empty()) g_childIds[cid] = {field, ctypeResolved, pts, bps, bns, sigs, meths};
+        if (!cid.empty()) g_childIds[cid] = {prefix + field, ctypeResolved, pts, bps, bns, sigs, meths};
+        prescanChildIds(ci, prefix + field + ".");   // ...and ITS children's ids, at any depth
     }
 }
 
@@ -5266,6 +5292,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the last file a SIBLING happened to open. A component's url is its identity to the engine,
     // so pointing it at a real, unrelated document is not a cosmetic error.
     const std::string selfDocUrl = g_docUrl;
+    // ...and the url THIS class attaches. My caller's file differs from mine exactly when I am the
+    // ROOT of a local type: the instance belongs to the document that names it. My children see my
+    // file, so they take their own. Restored on every exit, like g_srcText beside it.
+    const std::string parentClassUrl = g_curClassUrl;
+    const bool isLocalTypeRoot = !parentClassUrl.empty() && parentClassUrl != g_docUrl;
+    const std::string myClassUrl = isLocalTypeRoot ? parentClassUrl : g_docUrl;
+    g_curClassUrl = g_docUrl;
+    struct RestoreClassUrl { std::string v; ~RestoreClassUrl() { g_curClassUrl = v; } }
+        __rcu{parentClassUrl};
     bool savedOuterUsed = g_outerUsed, savedCtxUsed = g_ctxUsed;
     auto savedRequiredFill = g_requiredFill;
     auto savedRequired = g_requiredDecls; bool savedHasRequired = g_hasRequiredDecl;
@@ -9166,7 +9201,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         else
             wire += std::string(g_isDelegate
                         ? "        attachContextIn(this, __qmltcOuter, \"" : "        attachContext(this, \"")
-                  + (g_rootDocUrl.empty() ? g_docUrl : g_rootDocUrl)
+                  + (myClassUrl.empty() ? (g_rootDocUrl.empty() ? g_docUrl : g_rootDocUrl) : myClassUrl)
                   + "\");\n";
         wire += "        classBegin(this);\n";
         // Before the CHILDREN, not just before our own bindings: a child's binding can read

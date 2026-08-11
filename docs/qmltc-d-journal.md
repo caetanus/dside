@@ -5802,3 +5802,14 @@ in ATile.qml and take that one. We apply the root's url to the whole subtree.
 
 So the order is: fix the descendants' baseUrl first, then land the id scope. The work is on
 `wip/id-scope`, and one style's worth of coverage is waiting behind a two-line rule.
+
+**Closed, and the layer under it with it.** The rule came out as five lines in `compileObject`: my
+caller's file differs from mine exactly when I am the ROOT of a local type, so the instance takes
+the url of the document that names it and my children — who see my file — take theirs. Both
+measurements hold at once, with no special case for either.
+
+With that, the id scope lands too: Qt's five styles unchanged at 235 compiled, 0 unplaced, 0
+segfaults, all four `-O1` gates unchanged, and the application corpus 3 of 18 → **4**. `ASignalCross`
+now compiles at `-O1` rather than being handed over, which is what surfaced the baseUrl rule in the
+first place. Each of the two changes is a net loss without the other; that is why they are one
+commit.
