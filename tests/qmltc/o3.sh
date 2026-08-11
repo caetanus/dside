@@ -59,7 +59,15 @@ build_at() {  # build_at <levelflag> <tag> <name> <file>  -> $D/<name>_<tag>.png
     -L--start-group -L="$L/libbinding_ldc2.a" -L="$L/libshims.a" -L--end-group \
     -L-lQt6QuickControls2Impl -L-lQt6QuickTemplates2 -L-lQt6Quick -L-lQt6OpenGL -L-lQt6QmlModels \
     -L-lQt6Qml -L-lQt6Network -L-lQt6Gui -L-lQt6Core -L-lstdc++ > "$D/${3}_$2.link" 2>&1 </dev/null || return 1
-  timeout "$TMO" "$D/${3}_$2.bin" --render "$D/${3}_$2.png" >/dev/null 2>&1 </dev/null || return 1
+  # A CRASH IS NOT A LINK FAILURE, and saying "does not build or run" for both is how five of them
+  # hid in plain sight: every green run printed five `Segmentation fault` lines from this line and
+  # placed the documents at -O0, so the gate passed and the behaviour was the engine's. They were
+  # all Material, all `layer.effect`, and all one cause (a QQmlComponent with no creation context —
+  # see qtd_make_component). Exit 2 is a crash, exit 1 is anything else, and the caller says which.
+  timeout "$TMO" "$D/${3}_$2.bin" --render "$D/${3}_$2.png" >/dev/null 2>&1 </dev/null
+  rc=$?
+  [ "$rc" -ge 128 ] && return 2
+  [ "$rc" -eq 0 ] || return 1
   [ -s "$D/${3}_$2.png" ] || return 1
   return 0
 }
@@ -138,7 +146,8 @@ for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
     echo "$n UNJUDGEABLE (the engine renders no frame for it standalone)" >> "$OUT"; continue
   fi
   why=frame
-  if build_at -Ox ox "$n" "$f"; then
+  build_at -Ox ox "$n" "$f"; brc=$?
+  if [ "$brc" -eq 0 ]; then
     judge ox "$n" "$f"; r=$?
     case $r in
       0) if [ "${flaky:-0}" -gt 0 ]; then
@@ -149,6 +158,11 @@ for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
       2) why="the values cannot be measured" ;;
       *) why="$(( r - 2 )) value(s) differ" ;;
     esac
+  elif [ "$brc" -eq 2 ]; then
+    # SAID OUT LOUD. A document that CRASHES is still placed at -O0 and still behaves like the
+    # engine, so the gate stays green — but the state file now names it, because five of these hid
+    # behind "does not build or run" for the whole life of this gate.
+    why="it CRASHES"
   else
     why="it does not build or run"
   fi

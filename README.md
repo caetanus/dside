@@ -270,8 +270,8 @@ normal intermediate state, which is what the gate below measures.
 
 **The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every
 document the engine can draw standalone behaves **identically** to it: same frame, byte for
-byte, and the same value for every property of every named object. 231 of them reach that as
-compiled D; 53 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
+byte, and the same value for every property of every named object. 235 of them reach that as
+compiled D; 49 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
 **none is unplaced**.
 
 | style | documents | compiled | at `-O0` | unjudgeable | unplaced |
@@ -280,12 +280,12 @@ compiled D; 53 reach it as `-O0`, where Qt builds the document; 45 have no frame
 | Fusion | 70 | 52 | 5 | 13 | 0 |
 | Universal | 66 | 50 | 5 | 11 | 0 |
 | Imagine | 56 | 41 | 11 | 4 | 0 |
-| Material | 67 | 36 | 25 | 6 | 0 |
-| **total** | **329** | **231** | **53** | **45** | **0** |
+| Material | 67 | 40 | 21 | 6 | 0 |
+| **total** | **329** | **235** | **49** | **45** | **0** |
 
 Both axes are required, and demoting on either is what makes the number mean something. The
-frame alone placed 253 documents; 22 of those disagreed on a property while the frame matched,
-which is what a control that draws small at its implicit size will do. Those 22 are the
+frame alone placed 258 documents; 23 of those disagreed on a property while the frame matched,
+which is what a control that draws small at its implicit size will do. Those 23 are the
 difference between the two columns — they are at `-O0` now, still identical to the engine,
 just not by our compilation.
 
@@ -321,7 +321,7 @@ application *consuming* Controls rather than defining them.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls | 329 | 231 | 53 | 45 | 0 |
+| Qt's Controls | 329 | 235 | 49 | 45 | 0 |
 | application-shaped | 18 | 2 | 16 | 0 | **0** |
 
 **Two of eighteen** is the honest number, and it is the point rather than an embarrassment: this

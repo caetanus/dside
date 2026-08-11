@@ -934,9 +934,32 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
 #ifdef QTD_HAVE_QML
     if (!uri || !typeName || !QCoreApplication::instance()) return nullptr;
     QQmlEngine* e = qtd_qml_engine();
+    QUrl url(QString::fromUtf8(docUrl && *docUrl ? docUrl : "file:///qtd_delegate.qml"));
+    // HOSTED IN A DOCUMENT, because a QQmlComponent built with setData has NO CREATION CONTEXT and
+    // Qt dereferences it without checking. `QQuickItemLayer::activateEffect()` calls
+    // `m_effectComponent->beginCreate(m_effectComponent->creationContext())`, and beginCreate takes
+    // the context apart straight away — so a null one is a SIGSEGV inside QtQml, three frames from
+    // anything of ours. Measured with gdb on Qt's Material Popup, and it is not one document:
+    // ComboBox, Dialog, Menu, Popup and SearchField all crash, all Material, all through
+    // `layer.effect`. Probed directly: setData gives creationContext() == nullptr and a
+    // `Component { X {} }` built BY a document gives a real one, which is what the engine itself
+    // hands to that call. The document's own url is used, so a relative path inside the component
+    // resolves where the engine resolves it.
+    {
+        QQmlComponent host(e, e);
+        host.setData(QByteArray("import QtQml\nimport ") + uri + "\nComponent { " + typeName + " {} }",
+                     url);
+        if (!host.isError())
+            if (QQmlComponent* hc = qobject_cast<QQmlComponent*>(host.create())) {
+                QQmlEngine::setObjectOwnership(hc, QQmlEngine::CppOwnership);
+                hc->setParent(e);
+                return hc;
+            }
+    }
+    // ...and the old shape as a fallback: a type the hosted form cannot spell is still better
+    // instantiated than refused. It is only unusable where Qt asks for the creation context.
     QQmlComponent* c = new QQmlComponent(e, e);
-    c->setData(QByteArray("import ") + uri + "\n" + typeName + " {}",
-               QUrl(QString::fromUtf8(docUrl && *docUrl ? docUrl : "file:///qtd_delegate.qml")));
+    c->setData(QByteArray("import ") + uri + "\n" + typeName + " {}", url);
     if (c->isError()) {
         std::fprintf(stderr, "qtd: delegate component for '%s' failed: %s\n", typeName,
                      qPrintable(c->errorString()));

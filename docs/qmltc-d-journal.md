@@ -5624,3 +5624,39 @@ accepts, so it needs the full matrix behind it rather than a document.
 Reverted to the green tree meanwhile; the work is on the stash and the entry in
 `tests/expected-fails.json` is `completion-order-not-reversed`, with `remove_when` naming exactly
 this.
+
+### Five segfaults that every green run printed
+
+The o3 gate demotes a document that "does not build or run at -Ox", and that one phrase covered two
+very different things: a link failure and a CRASH. Every full run, including every green one, printed
+five `Segmentation fault` lines from `o3.sh` line 53 and placed the documents at -O0, so behaviour
+was the engine's and the gate passed. Nobody read the lines.
+
+They are all Material, and all one cause: `ComboBox`, `Dialog`, `Menu`, `Popup`, `SearchField` —
+every Material document with a `layer.effect`. gdb, on the committed tree:
+
+```
+#0  QQmlComponent::beginCreate(QQmlContext*)      libQt6Qml
+#1  QQuickItemLayer::activateEffect()             libQt6Quick
+#2  QQuickItemLayer::activate()
+#3  QQuickItem::componentComplete()
+#4  qtmoc.componentComplete!(IPopup_background)
+#5  IPopup.__qmltcKids()
+```
+
+`activateEffect()` calls `m_effectComponent->beginCreate(m_effectComponent->creationContext())`, and
+`beginCreate` takes the context apart immediately. Our component's creation context is **null**,
+because `qtd_make_component` builds it with `new QQmlComponent(engine)` + `setData`. Probed directly,
+ten lines of C++: a setData component reports `creationContext() == nullptr`; a `Component { X {} }`
+built BY a document reports a real one. That is the component the engine hands to that call.
+
+The interesting part is what was already there. `bindComponent` carries a comment naming this exact
+crash — "QQuickItemLayer::activateEffect() dereferences `effect` the moment `layer.enabled` becomes
+true, so the outcome was a SEGV three frames away from the cause (measured on Qt's Material ComboBox,
+gdb)" — and defends against a NULL component by throwing. The component was never null. It was a
+valid component without a context: the right defence for the wrong cause, which is why the crash
+survived it.
+
+Fixed by building the component the way the engine does, hosted in a document and carrying the real
+document url so a relative path inside it still resolves where the engine resolves it. All five
+render.
