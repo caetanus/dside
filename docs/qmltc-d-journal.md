@@ -5558,3 +5558,69 @@ column; and the gate ran over one style on a cost argument that did not survive 
 numbers — Basic judges 38 documents, the other three judge 6, 7 and 7, because the rest of each
 style is handed to the engine and skipped. Four styles are gated now. Imagine is not: `-O1` compiles
 nothing there, and a vacuous run reporting green is worse than no run.
+
+### The fourth rule: componentComplete runs in reverse creation order
+
+The survivor of the seven, `DelayButton` in two styles, was written down as child order and that was
+wrong. Dumping both `contentItem` children whole showed they agree on every property either side
+ASSIGNS — `visible`, `clipX`, `clipWidth`, `height`, `implicitHeight`, `y`, `text` — and exchange
+`baselineOffset`, which neither side assigns.
+
+Instrumenting the generated document answered it in three steps.
+
+**Where they diverge.** Checkpoints around the root's build put it inside `contentItem.__qmltcKids`,
+with both children still 19 high — so not the later resize to 28, and not visibility.
+
+**Why.** A probe per step:
+
+```
+dc0 after new        base=0        h=0
+dc0 after complete   base=5.34375  h=19
+dc1 after new        base=0        h=0
+dc1 after append     base=0        h=19     <- the group already has a height
+dc1 after complete   base=14.8438  h=19
+```
+
+A `Text` freezes its `baselineOffset` at its FIRST layout and never recomputes it on a later resize.
+`dc0` completes while the group is still 0 high and lays out at `ascent - height/2` = 5.34375;
+`dc1`, appended into a group that already has one, gets the ascent itself. The engine has the
+mirror, so the question was never *what* the values are but *which sibling lays out first*.
+
+**The rule.** Reversing the two completes reproduces the engine exactly. That is not a coincidence
+of this document: `QQmlObjectCreator::finalize` keeps every object it built on a stack and drains it
+with `pop()`, so parser-status objects complete in REVERSE creation order. We completed each child
+the moment we created it — the opposite for every sibling but the first.
+
+**And the scope, which one wrong attempt found.** Deferring the whole document to a single drain at
+the root is what the engine looks like from the outside, and it is measurably not what it produces:
+both children then lay out at the parent's final height and read 19.34375 (= 14.84375 + (28-19)/2,
+which is also the arithmetic confirming the model). The engine completes the pair BEFORE the Control
+sizes its `contentItem` — i.e. at the level that built them. Per-LEVEL reverse gives 14.84375 and
+5.34375, the engine's own values, for Basic and Fusion both.
+
+`optlevels-known.txt` is empty now, and it was earned rather than edited: all seven documents came
+down to four rules the compiler was missing.
+
+**And why it is not landed.** The reversal is right and it is not enough: measured over the whole
+matrix it takes 231 compiled documents to **227**. It does not break anything — it removes an
+accident that was hiding two other gaps.
+
+Qt's `DialogButtonBox` binds `contentWidth: contentItem.contentWidth`. `contentItem` is declared as
+an `Item`, and `Item` has no `contentWidth` — the object in it is a ListView. So:
+
+1. The compiler cannot name the leaf signal and **drops every connection of the binding**, printing
+   "its notify is unknown — it would not update". The value is then whatever the first evaluation
+   produced, which was right only for as long as the child happened to be completed before the
+   binding ran. Fixed on the stash by `bindLeafProp`, which asks the object's own meta-object for
+   the member's notify instead of guessing — the same channel everything else here already uses.
+2. That is not enough either, because the read is not **recorded** as a deep read at all when the
+   member is unknown on the property's static type, so nothing ever asks for a leaf. `Dialog` and
+   `DelayButton` recover with (1); `DialogButtonBox` still reads -1 where the engine reads 0.
+
+(2) is the remaining piece: record the deep read when the object property is an object and the
+member resolves through the meta channel, typed by the binding's target. It widens what the compiler
+accepts, so it needs the full matrix behind it rather than a document.
+
+Reverted to the green tree meanwhile; the work is on the stash and the entry in
+`tests/expected-fails.json` is `completion-order-not-reversed`, with `remove_when` naming exactly
+this.

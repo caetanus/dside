@@ -7,21 +7,28 @@
 #
 # One document per line: <Style>/<Name>  # reason
 
-Basic/DelayButton   # LAYOUT ORDER, and NOT child order — the first reading of this was wrong and
-                    # is corrected here. contentItem's two ClippedText siblings are built in the
-                    # engine's order, receive the right bindings, and agree on every property that
-                    # either side assigns: visible (true/false), clipX (-8/-8), clipWidth (100/84),
-                    # height (28/28), implicitHeight (19/19), y (0/0), text. The ONE difference is
-                    # baselineOffset, which NEITHER side assigns — QQuickText sets it when the text
-                    # lays out — and it comes out exactly EXCHANGED: engine 14.84375 / 5.34375,
-                    # ours 5.34375 / 14.84375. The two values are the same text laid out at height
-                    # 28 and at its implicit height 19 (they differ by 19/2). So each side has one
-                    # child in each state and they disagree about which: on the engine the VISIBLE
-                    # child carries the resized baseline, on ours the invisible one does. Both are
-                    # reproducible over three runs, so this is deterministic, not flaky.
-                    # NEXT PROBE, for whoever picks this up: dump baselineOffset after each write in
-                    # __qmltcWire to find which assignment flips it, then compare against the order
-                    # the engine writes visible and the size in.
+Basic/DelayButton   # COMPLETION ORDER. Not child order (the first reading, disproved) and not
+                    # layout order (the second): the two ClippedText siblings are built in the
+                    # engine's order, get the right bindings, and agree on every property either
+                    # side ASSIGNS — visible, clipX, clipWidth, height, implicitHeight, y, text.
+                    # They exchange baselineOffset, which NEITHER side assigns: QQuickText freezes
+                    # it at the FIRST layout and never recomputes it on a later resize. Probed step
+                    # by step: dc0 completes while the group is still 0 high and lays out at
+                    # ascent - height/2 = 5.34375; dc1, appended into a group that already has a
+                    # height, gets the ascent itself, 14.84375. The engine is the mirror.
+                    # THE CAUSE IS KNOWN AND THE FIX IS WRITTEN: QQmlObjectCreator::finalize drains
+                    # its created-object stack with pop(), so parser-status objects complete in
+                    # REVERSE creation order, per level — we complete each child as we create it.
+                    # Reversing it reproduces the engine exactly on both styles.
+                    # WHY IT IS NOT LANDED: it removes an accident that was hiding two other gaps,
+                    # and costs more than it gains until they are closed (measured over the full
+                    # matrix: 231 compiled -> 227). A binding like `contentWidth:
+                    # contentItem.contentWidth` is never wired, because `contentItem` is declared as
+                    # an `Item` and Item has no contentWidth, so (1) the leaf connection needs the
+                    # notify resolved from the object rather than the static type — written, as
+                    # bindLeafProp — and (2) the read is not recorded as a deep read at all when the
+                    # member is unknown on that type, so nothing asks for the leaf. (2) is the
+                    # remaining piece. The work is on the stash, described in the journal.
 Fusion/DelayButton  # The SAME defect, the same two values exchanged — one cause, two styles,
                     # because both DelayButtons are written the same way. Two lines rather than one
                     # so the gate keeps naming each style it actually shows up in.
