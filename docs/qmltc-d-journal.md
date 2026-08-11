@@ -5699,3 +5699,34 @@ AND Universal at the same time; each of the two orderings gets two of the three.
 
 The three parts are on the branch `wip/completion-order` with their measurements, because a stash is
 not somewhere work should live.
+
+### `group { … }` is a grouped property, and we read every one of them as a type
+
+`AAnchors` in the application corpus reported "default child of type 'anchors' not yet supported"
+twice, which reads like a missing feature and is a misreading. QML tells a grouped property from a
+type by CASE: `name { … }` inside an object binds a grouped property when the name starts lowercase
+and instantiates a type when it starts uppercase. We had no such rule, so every braced group was a
+child of an unknown type — dropped, with its id.
+
+Not an `anchors` thing. Probed with the shortest document that could tell:
+
+```qml
+Text { text: "x"; font { pixelSize: 20; bold: true } }
+```
+
+`default child of type 'font' in IG_dc0 not yet supported`. Both spellings are ordinary application
+QML — `anchors { }`, `font { }`, `border { }` — and the DOTTED one already works everywhere, so the
+braced one is normalised into it on the AST before anything looks at the tree. On the AST rather
+than in each consumer because this emitter runs a dozen pre-scans over the same member list, and
+every one of them would otherwise need the rule. It is idempotent: after the first pass the
+UiObjectDefinition is gone from the list, so nothing can be prefixed twice.
+
+`font { pixelSize: 20; bold: true }` now compiles with no diagnostic at all, and AAnchors' false
+complaints give way to the real ones — an anchor LINE (`parent.left`) is not a scalar the meta
+channel converts, which was already true of the dotted spelling.
+
+Two mistakes of mine on the way, both worth the line. The first run showed no change and I went
+looking at the behaviour of a binary that had not been rebuilt, because I had sent the compiler's
+output to /dev/null. The second: AST nodes allocate from a MemoryPool, not with plain `new`, and
+Qt 5 spells the constructor's argument `QStringRef` where Qt 6 spells it `QStringView` — the parity
+rule caught that one, not me.

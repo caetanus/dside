@@ -10,6 +10,7 @@
 // aliases, methods, calls/member-access in expressions — is reported on stderr and skipped, and
 // the file is flagged PARTIAL (exit 3) so nothing is silently dropped.
 #include <QtQml/private/qqmljsengine_p.h>
+#include <QtQml/private/qqmljsmemorypool_p.h>
 #include <QtQml/private/qqmljslexer_p.h>
 #include <QtQml/private/qqmljsparser_p.h>
 #include <QtQml/private/qqmljsast_p.h>
@@ -22,6 +23,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <deque>
 #include <map>
 #include <set>
 #include <functional>
@@ -5131,6 +5133,61 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
     return true;
 }
 
+// `group { a: 1; b: 2 }` IS `group.a: 1; group.b: 2`. QML tells the two apart by CASE — a member
+// spelled `name { … }` binds a grouped PROPERTY when the name starts lowercase and instantiates a
+// TYPE when it starts uppercase — and we read every one of them as a type, so `anchors { left: … }`
+// and `font { pixelSize: 20 }` were both reported as "default child of type 'anchors'/'font' not yet
+// supported" and dropped. Both spellings are ordinary application QML; the dotted one already works
+// everywhere, so the braced one is normalised into it before anything looks at the tree. Doing it on
+// the AST rather than in each consumer is what keeps it to one place: this object emitter runs a
+// dozen pre-scans over the same member list, and every one of them would otherwise need the rule.
+static QString *keepName(const std::string &n) {
+    static std::deque<QString> pool;              // the QStringView must outlive the node
+    pool.push_back(QString::fromStdString(n));
+    return &pool.back();
+}
+static UiQualifiedId *prefixQid(const std::string &group, UiQualifiedId *id) {
+    if (!id) return id;
+    // AST nodes allocate from a MemoryPool (their operator new takes one), so this keeps its own.
+    // A function-local static outlives compilation, which is all these nodes need.
+    static QQmlJS::MemoryPool pool;
+    // The one Qt-version difference here: Qt 5 takes a QStringRef, Qt 6 a QStringView. Both refer
+    // to the QString the pool above keeps alive.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    auto *head = new (&pool) UiQualifiedId(QStringView(*keepName(group)));   // ctor makes it circular
+#else
+    auto *head = new (&pool) UiQualifiedId(QStringRef(keepName(group)));
+#endif
+    head->next = id;
+    return head;
+}
+static void desugarBracedGroups(UiObjectInitializer *init) {
+    if (!init) return;
+    UiObjectMemberList *prev = nullptr;
+    for (auto *m = init->members; m; ) {
+        auto *od = cast<UiObjectDefinition *>(m->member);
+        std::string tn = (od && od->qualifiedTypeNameId) ? typeName(od->qualifiedTypeNameId) : "";
+        // A grouped property is a single lowercase name. A dotted one (`QtQuick.Item`) is a type,
+        // and an empty initializer has nothing to splice.
+        if (tn.empty() || !std::islower((unsigned char) tn[0]) || tn.find('.') != std::string::npos
+                || !od->initializer || !od->initializer->members) {
+            prev = m; m = m->next; continue;
+        }
+        for (auto *im = od->initializer->members; im; im = im->next) {
+            if (auto *sb = cast<UiScriptBinding *>(im->member))
+                sb->qualifiedId = prefixQid(tn, sb->qualifiedId);
+            else if (auto *ob = cast<UiObjectBinding *>(im->member))
+                ob->qualifiedId = prefixQid(tn, ob->qualifiedId);
+            // anything else (a nested braced group) is picked up by the rescan below
+        }
+        auto *innerHead = od->initializer->members, *innerTail = innerHead;
+        while (innerTail->next) innerTail = innerTail->next;
+        innerTail->next = m->next;
+        if (prev) prev->next = innerHead; else init->members = innerHead;
+        m = innerHead;                            // rescan, so a group inside a group unfolds too
+    }
+}
+
 static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              std::string &classes, int &partial, const char *inPath,
                              const std::string &boundBase = "", const DType *dBase = nullptr,
@@ -5203,6 +5260,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // emission and drain their `__outer.<prop>` notify requirements into it.
     std::vector<std::string> needsNotify;
     if (!qmlType.empty()) g_selfQmlType = qmlType;
+    desugarBracedGroups(init);
     g_selfId = "";
     g_selfIds.clear();
     g_selfIdsDefn.clear();
