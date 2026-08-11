@@ -25,5 +25,8 @@
       "QTreeWidget",
       "QTreeWidgetItem"
     ]
-  }
+  },
+  "disposable": [
+    "QTreeWidgetItem"
+  ]
 }

@@ -100,6 +100,20 @@ Build reggaeBuild() {
     // stack; the first version of this test passed because nothing was ever collected.
     foreach (dc; DCS)
         all ~= qtdTest("borrowed-" ~ dc, t("wrapper", "borrowed.d"), ex, dc);
+    // A non-QObject the binding OWNS, in the three states ownership can be in: nobody took it (we
+    // free it), Qt took it (we must not), Qt took it and died (we never touch it). Needs a C++
+    // half because a freed block is not observable from D — and the two cheaper substitutes both
+    // passed against a deliberately broken binding, which is why it watches ONE address.
+    {
+        auto wf = buildPath(root, "tests", "wrapper", "qtd_watchfree.cpp");
+        auto wfo = buildPath(ex.bdir, "qtd_watchfree.o");
+        auto wfObj = Target(wfo, guarded(wfo ~ ".lock",
+            "clang++ " ~ pkgCflags(ex.mods) ~ " -std=c++17 -fPIC -O0 -c " ~ wf ~ " -o " ~ wfo, wfo, [wf]),
+            [Target(wf)]);
+        foreach (dc; DCS)
+            all ~= qtdTest("nonqobject-" ~ dc, t("wrapper", "nonqobject.d"), ex, dc,
+                           wfo, [wfObj]);
+    }
 
     // --- CTFE uic: .ui -> typed Ui struct (mixin), built against the widgets binding ---
     auto uicExtra = buildPath(root, "runtime", "uic", "uiform.d") ~ " "

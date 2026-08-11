@@ -95,6 +95,8 @@ void main(string[] args) {
         foreach (x; s.array) TRANSFER_IN[x.str] = true;
     if (auto s = "transfer_out" in spec.object)
         foreach (x; s.array) TRANSFER_OUT[x.str] = true;
+    if (auto s = "disposable" in spec.object)
+        foreach (x; s.array) DISPOSABLE[x.str] = true;
     if (auto s = "ctor_parents" in spec.object)
         foreach (k, v; s.object) foreach (x; v.array) CTOR_PARENTS[k] ~= x.str;
 

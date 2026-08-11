@@ -355,6 +355,12 @@ __gshared bool[string] TRANSFER_OUT;   // "Class::method/r" or "Class::method/<a
 // Classes whose constructors INSERT the new object into a parent of one of these types, so the
 // object being constructed is owned by that parent from birth: `new QTreeWidgetItem(tree)`.
 __gshared string[][string] CTOR_PARENTS;
+// Classes the binding may DELETE when it still owns them (spec "disposable"). Opt-in per class and
+// deliberately narrow: enabling one means its whole transfer surface has been walked against Qt's
+// documentation, because a transfer MISSING from that list leaves us deleting something Qt will
+// delete too. Everything not listed keeps leaking, which is the safe error.
+__gshared bool[string] DISPOSABLE;
+__gshared string[] DELSHIM;   // class names needing a `delete` trampoline
 struct TrampVirt {
     string name, cppRet, cbCppRet, cbDRet, overrideParams, passArgs, origArgs, cbCppParams, cbDParams;
     string[] imports;
@@ -2150,9 +2156,18 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // isQObject walks BASES for QObject, so QObject itself reports false — include it.
         auto ctorSuper = baseName.length ? "super(__a)"
             : format("super(__a.p, %s)", (isQObject(cur) || name == "QObject") ? "true" : "false");
-        auto ctorBody = format("    this(QtdAdopt __a) @nogc nothrow { %s; }\n"
+        // A disposable class tells the holder HOW to free it; the holder decides WHETHER (it owns
+        // the ownership bit). Set on the adopt ctor because every path — `new X(...)`, `wrap()`,
+        // a subclass — goes through it.
+        string delSet;
+        if (name in DISPOSABLE && !valueType) {
+            DELSHIM ~= name;
+            wd ~= format("extern(C) private void qtd_del_%s(void*) nothrow @nogc;", name);
+            delSet = format(" _setDeleter(&qtd_del_%s);", name);
+        }
+        auto ctorBody = format("    this(QtdAdopt __a) @nogc nothrow { %s;%s }\n"
             ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(QtdAdopt(p))); }",
-            ctorSuper, name, name, name);
+            ctorSuper, delSet, name, name, name);
         // Un-hide the base overloads a same-named derived method would shadow in D. The
         // `static if (hasMember)` guard is the same safety net the raw path uses: the base may
         // have skipped that method for an unmappable type, in which case there is nothing to alias.
@@ -3207,6 +3222,10 @@ string ctorCpp(string manifest, string includeLine) {
     // Gap 1: out-of-line shim for an inline/`= default` ctor — placement-new gives the
     // symbol. Routed through qtd_mk so a rare non-constructible type no-ops instead of
     // breaking the whole lib's compile (see qtd_mk above).
+    // `delete` for a heap object the binding owns: the block came from `operator new` plus a
+    // placement construction, so `delete` — destructor then `operator delete` — is its exact pair.
+    foreach (n; DELSHIM)
+        body ~= format("void qtd_del_%s(void* p) { delete static_cast<%s*>(p); }\n", n, n);
     foreach (c; CTORSHIM)
         body ~= format("void %s(void* self%s) { %sqtd_mk<%s>(self%s);%s }\n",
             c.shimFn, c.cppParams.length ? ", " ~ c.cppParams.join(", ") : "", tryO,

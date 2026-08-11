@@ -113,11 +113,15 @@
     },
     {
       "id": "nonqobject-owned-leaks",
-      "kind": "known_gap",
+      "kind": "risk",
       "area": "holder/lifetime",
-      "reason": "A polymorphic non-QObject wrapper (QLayoutItem/QSpacerItem, QTreeWidgetItem, QStandardItem) is allocated with __cpp_new by its generated ctor and the finalizer only unregisters it: no destructor is called and the C++ block leaks. 60 such roots in the QtWidgets binding.",
-      "remove_when": "a per-class destructor thunk exists and runs for OwnedByD handles only",
-      "since": "2026-08-10"
+      "reason": "CLOSED FOR QTreeWidgetItem, open for every other polymorphic non-QObject. Ownership is now dropped at the call that moves it (spec transfer_in/transfer_out/ctor_parents) and a class listed in `disposable` supplies a delete thunk the holder's finalizer calls when it still owns the object. Enabling a class means its transfer surface was walked against Qt's docs; the ~59 other super(c,false) roots in QtWidgets still leak, which is the safe error.",
+      "remove_when": "every disposable non-QObject the binding constructs has an audited transfer surface",
+      "since": "2026-08-10",
+      "probe_targets": [
+        "nonqobject-ldc2",
+        "nonqobject-dmd"
+      ]
     },
     {
       "id": "nonqobject-qt-owned-dangles",

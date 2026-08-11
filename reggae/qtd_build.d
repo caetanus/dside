@@ -263,7 +263,8 @@ private Target[] extraInputs(string extra) {
     return ts;
 }
 
-Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string extra = "") {
+Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string extra = "",
+              Target[] extraDeps = []) {
     auto lib = qtdBindLib(b, dc);
     auto libPath = buildPath(b.bdir, "libbinding_" ~ dc ~ ".a");
     auto shimsPath = buildPath(b.bdir, "libshims.a");
@@ -273,13 +274,17 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
     auto link = dc ~ " -of=$out " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
         ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
         ~ " -L--end-group " ~ pkgLibs(b.mods);
-    return Target(binName, link, [Target(appMain), lib, b.shims] ~ extraInputs(extra));
+    // extraDeps carries inputs the STRING cannot: an object file another target produces has to
+    // be a Target, not a path — as a path it links fine and is never built, which is the shape of
+    // build node that goes green against a stale artifact.
+    return Target(binName, link, [Target(appMain), lib, b.shims] ~ extraInputs(extra) ~ extraDeps);
 }
 
 // A test target: build the app, then run it headless. Building the phony runs the test.
 // `$in` is the app binary's real path (wherever reggae placed the dependency's output).
-Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "") {
-    auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra);
+Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "",
+               Target[] extraDeps = []) {
+    auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra, extraDeps);
     return Target.phony(name, "QT_QPA_PLATFORM=offscreen $in", [app]);
 }
 

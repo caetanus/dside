@@ -19,6 +19,7 @@ module holder;
 import core.memory : GC;
 
 alias QtdDestroyedFn = extern (C) void function(void *) nothrow;
+alias QtdDeleteFn    = extern (C) void function(void *) nothrow @nogc;
 
 extern (C) nothrow @nogc {
     void  qtd_holder_set_destroyed_hook(QtdDestroyedFn);
@@ -62,6 +63,11 @@ class QtdObject {
     // is the failure mode where the binding deletes something it never owned — a leak is the
     // conservative error here, a use-after-free is not.
     package bool _ownedByD;
+    // HOW to delete this object, for a type Qt will not delete for us. Only the generated class
+    // knows the C++ type; only the holder knows the policy — so the class supplies the one and the
+    // finalizer below decides the other. Null for everything that has no declared way to be
+    // disposed of, which is every class until its transfer surface has been audited.
+    package QtdDeleteFn _deleter;
 
     this(void *c, bool isQObj) @nogc nothrow { _cpp = c; _isQObj = isQObj; }
 
@@ -82,6 +88,11 @@ class QtdObject {
             if (qtd_holder_has_parent(_cpp) != 0) _pinned[_cpp] = this;
         }
     }
+
+    /// The generated class says HOW it is freed; the holder decides WHETHER (see the finalizer).
+    /// A method rather than a field because `package` does not cross into `qt.<pkg>`, and because
+    /// naming it makes the one legitimate caller — the adopt ctor — obvious.
+    final void _setDeleter(QtdDeleteFn d) @nogc nothrow { _deleter = d; }
 
     /// A D subclass / @QObject object adopts its C++ trampoline pointer: set _cpp, register
     /// for identity, PIN (C++ holds a raw dself back-ref, so the GC must not collect this),
@@ -109,6 +120,13 @@ class QtdObject {
         if (_ownedByD && _isQObj && _cpp !is null
                 && qtd_holder_has_parent(_cpp) == 0 && qtd_holder_is_app(_cpp) == 0)
             qtd_holder_delete_later(_cpp);   // QObject WE created and Qt has not adopted
+        // ...and a NON-QObject we still own: nobody took it, so nobody else will free it. There is
+        // no deleteLater here and there must not be — that is a QObject event, and this type has no
+        // event loop, no parent and no destroyed(). Ownership was decided at the calls that move it
+        // (see `transferred`), never by asking now, because asking would dereference a pointer Qt
+        // may already have freed.
+        else if (_ownedByD && !_isQObj && _cpp !is null && _deleter !is null)
+            _deleter(_cpp);
         if (_cpp !is null)
             qtd_holder_unreg(_cpp);
     }
