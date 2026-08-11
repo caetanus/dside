@@ -2835,11 +2835,33 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             }
             return false;
         }
+        // THE DOCUMENT'S OWN NAME IS THE FILE'S, not the D class's. `AEnumRequired.Mode.Busy` in
+        // AEnumRequired.qml refers to the type the FILE defines, and the generated class is called
+        // whatever the caller asked for (`IAEnumRequired` in the differential harness). Comparing
+        // against g_className alone made every self-qualified enum read fail on any document whose
+        // class name is not its file name — which is all of them here.
+        auto namesSelf = [&](const std::string &n) {
+            return n == g_className || (!g_trContext.empty() && n == g_trContext);
+        };
         // `TypeName.Green` -> the D enum member `Color.Green` (int-valued).
-        if (base && qs(base->name.toString()) == g_className) {
+        if (base && namesSelf(qs(base->name.toString()))) {
             auto it = g_enumMember.find(qs(fm->name.toString()));
             if (it != g_enumMember.end()) { out = it->second + "." + qs(fm->name.toString()); return true; }
         }
+        // ...and `TypeName.Color.Green`, which QML accepts just as readily and an application is
+        // likelier to write, because it is the spelling that says which enum. The value lands in
+        // the same place: QML flattens a declared enum's members onto the type, so the middle
+        // segment only has to AGREE with the enum the member belongs to. Without this the whole
+        // binding was refused and the property came out with no initial value at all.
+        if (auto *fmb = cast<FieldMemberExpression *>(fm->base))
+            if (auto *fbb = cast<IdentifierExpression *>(fmb->base);
+                    fbb && namesSelf(qs(fbb->name.toString()))) {
+                auto it = g_enumMember.find(qs(fm->name.toString()));
+                if (it != g_enumMember.end() && it->second == qs(fmb->name.toString())) {
+                    out = it->second + "." + qs(fm->name.toString());
+                    return true;
+                }
+            }
         // `Singleton.member` — a read off the singleton's one instance.
         if (base && g_singletons.count(qs(base->name.toString()))) {
             out = "__singleton_" + qs(base->name.toString()) + "()." + qs(fm->name.toString());
@@ -3868,7 +3890,30 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
         auto *base = cast<IdentifierExpression *>(fm->base);
         if (base && isSelfId(qs(base->name.toString()))) { auto it = ptype.find(qs(fm->name.toString())); return it != ptype.end() ? it->second : ""; }
-        if (base && qs(base->name.toString()) == g_className && g_enumMember.count(qs(fm->name.toString()))) return "int";   // enum member
+        if (base && (qs(base->name.toString()) == g_className
+                     || (!g_trContext.empty() && qs(base->name.toString()) == g_trContext))
+                && g_enumMember.count(qs(fm->name.toString()))) return "int";   // enum member
+        // ...and `<Type>.<Enum>.<Member>`, the spelling that names the enum.
+        if (auto *fmb0 = cast<FieldMemberExpression *>(fm->base))
+            if (auto *fbb0 = cast<IdentifierExpression *>(fmb0->base);
+                    fbb0 && (qs(fbb0->name.toString()) == g_className
+                             || (!g_trContext.empty() && qs(fbb0->name.toString()) == g_trContext))) {
+                auto it0 = g_enumMember.find(qs(fm->name.toString()));
+                if (it0 != g_enumMember.end() && it0->second == qs(fmb0->name.toString())) return "int";
+            }
+        // AN ENCLOSING OBJECT'S ID types its declared properties too. `root.label + "/" + root.mode`
+        // from inside a child: JS `+` converts the non-string side, and this function is what says
+        // there IS one — untyped, the concatenation is emitted as a bare `~` and the generated D
+        // does not compile ("incompatible types: string and int"). The frame already carries the
+        // table; only this reader did not consult it.
+        if (base) {
+            std::string preO; const OuterFrame *frO = nullptr;
+            if (outerHop(qs(base->name.toString()), preO, &frO) && frO) {
+                auto itO = frO->propType.find(qs(fm->name.toString()));
+                if (itO != frO->propType.end() && !itO->second.empty() && itO->second[0] != '@')
+                    return itO->second;
+            }
+        }
         if (qs(fm->name.toString()) == "length") return "int";
         return "";
     }

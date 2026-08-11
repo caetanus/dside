@@ -322,14 +322,21 @@ application *consuming* Controls rather than defining them.
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
 | Qt's Controls | 329 | 235 | 49 | 45 | 0 |
-| application-shaped | 18 | 2 | 16 | 0 | **0** |
+| application-shaped | 18 | 3 | 15 | 0 | **0** |
 
-**Two of eighteen** is the honest number, and it is the point rather than an embarrassment: this
-dialect is where the compiler is weak today and the ladder is what makes it correct anyway. Every
-one of the fourteen behaves identically to the engine, and at `-O1`/`-O2` none of them is emitted
-partial — sixteen are handed over whole, which `qmltc-optlevels-*` checks property by property. The four
+**Three of eighteen** is the honest number, and it is the point rather than an embarrassment: this
+dialect is where the compiler is weak today and the ladder is what makes it correct anyway. All
+eighteen behave identically to the engine, and at `-O1`/`-O2` none of them is emitted partial — the
+other fifteen are handed over whole, which `qmltc-optlevels-*` checks property by property. The four
 newest shapes were added precisely because the compiler cannot compile them: `UNPLACED` stayed 0,
 which is the ladder doing the only job it has.
+
+The third arrived by reading one document's diagnostics to the end. `AEnumRequired` declares a QML
+`enum` and reads it back as `AEnumRequired.Mode.Busy`, and it took three fixes: the three-segment
+spelling of an enum path, the fact that **a document names its own type by the FILE's name and not
+by the generated class's** (which broke the two-segment spelling on every document here too), and a
+type inference that could not see a property read through an ENCLOSING object's id — without which
+JS's `+` had no type to convert and the generated D did not compile at all.
 
 What the second corpus still does not cover is an application's **context**: a document that needs
 the app's C++ context properties, its models and its data. Pointed at a real one (a 78-document

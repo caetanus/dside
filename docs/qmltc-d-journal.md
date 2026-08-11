@@ -5730,3 +5730,34 @@ looking at the behaviour of a binary that had not been rebuilt, because I had se
 output to /dev/null. The second: AST nodes allocate from a MemoryPool, not with plain `new`, and
 Qt 5 spells the constructor's argument `QStringRef` where Qt 6 spells it `QStringView` — the parity
 rule caught that one, not me.
+
+### One document, three chained defects, and the application corpus finally moves
+
+`AEnumRequired` declares a QML `enum` and reads it back — the two forms with which an application
+gives its own component a type. It reported two refusals and, read to the end, cost three fixes,
+each of them general:
+
+**`Type.Enum.Member`.** QML accepts both `Component.Value` and `Component.EnumName.Value`, and an
+application writes the second more readily because it says which enum. Only the two-segment form was
+resolved.
+
+**A document names its own type by the FILE'S name.** The comparison was against `g_className` —
+`IAEnumRequired` in the differential harness — where the document refers to itself as
+`AEnumRequired`. That broke the two-segment spelling as well, on every document whose class name is
+not its file name, which is all of them here.
+
+**`inferType` could not type a property read through an enclosing object's id.** With the two above
+in place the document compiled and then would not LINK:
+
+```
+Error: incompatible types for `(this.__outer.label ~ "/") ~ (this.__outer.mode)`: `string` and `int`
+```
+
+JS's `+` converts the non-string side, and `inferType` is what says there is one. Untyped, the
+concatenation came out as a bare `~`. The frame already carried the property table; only this reader
+did not consult it. The refusal was honest — the code says a side whose type cannot be inferred is
+"already a string, or a visible compile error, never a silently wrong value" — and that is exactly
+what made the gap findable.
+
+With the three, the document compiles at `-O1` and agrees with the engine on every property. The
+application corpus went from 2 of 18 to **3**, which is the first time that number has moved.
