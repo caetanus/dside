@@ -1186,6 +1186,10 @@ static std::map<std::string, std::set<std::string>> g_forceNotify;
 // Collect `id:` and declared property types of every child object bound to a named property, so
 // `<id>.<prop>` resolves in this object's bindings.
 // Records one child's id, declared property types and BOUND-type members, under `field`.
+// Inline components (`component Chip: Item { … }`), by name. Declared up here because the child
+// PRE-SCAN needs them: a child of a type the document defines itself is in no registry.
+static std::map<std::string, UiObjectDefinition *> g_inlineTypes;
+
 static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
                              UiQualifiedId *typeId) {
     std::string cid, ctypeResolved;
@@ -1199,10 +1203,37 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
         if (!g_qmlProps.count(ctype))
             if (auto bm = g_qmlMap.find(ctype); bm != g_qmlMap.end() && g_qmlProps.count(bm->second.first))
                 ctype = bm->second.first;
+        // A TYPE THE DOCUMENT DEFINES ITSELF is in no registry, and the registry is the only thing
+        // consulted here — so a child of an inline component had NO base properties and every
+        // `<id>.<prop>` read on it was refused. `Chip { id: mid }` inside its own document, and
+        // then `midW: mid.width` refused for want of a `width`. The inline component's root is an
+        // ordinary type, so what it derives from answers the question; its OWN declared properties
+        // are read from its body, which is the same shape this function already walks for a child.
+        // Registered before this prescan runs (an inline component is usable anywhere in the
+        // document, including above its declaration), so it costs a map lookup and no parse.
+        if (!g_qmlProps.count(ctype))
+            if (auto ic = g_inlineTypes.find(ctype); ic != g_inlineTypes.end() && ic->second) {
+                if (ic->second->qualifiedTypeNameId) {
+                    std::string base = typeName(ic->second->qualifiedTypeNameId);
+                    if (!g_qmlProps.count(base))
+                        if (auto bm2 = g_qmlMap.find(base); bm2 != g_qmlMap.end()) base = bm2->second.first;
+                    ctype = base;
+                }
+                for (auto *im = ic->second->initializer ? ic->second->initializer->members : nullptr;
+                        im; im = im->next)
+                    if (auto *ip = cast<UiPublicMember *>(im->member);
+                            ip && ip->type == UiPublicMember::Property && ip->memberType) {
+                        const char *idt = dtypeOf(QString::fromStdString(typeName(ip->memberType)));
+                        if (idt[0]) {
+                            bps[qs(ip->name.toString())] = idt;
+                            bns[qs(ip->name.toString())] = qs(ip->name.toString()) + "Changed()";
+                        }
+                    }
+            }
         if (auto qp = g_qmlProps.find(ctype); qp != g_qmlProps.end())
-            for (auto &pp : qp->second) bps[pp.first] = pp.second;
+            for (auto &pp : qp->second) if (!bps.count(pp.first)) bps[pp.first] = pp.second;
         if (auto qn2 = g_qmlNotify.find(ctype); qn2 != g_qmlNotify.end())
-            for (auto &pp : qn2->second) bns[pp.first] = pp.second;
+            for (auto &pp : qn2->second) if (!bns.count(pp.first)) bns[pp.first] = pp.second;
             ctypeResolved = ctype;
     }
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> sigs;
@@ -4664,7 +4695,6 @@ static bool unboundChildType(const std::string &t, const std::string &bound, con
 // it (Qt's SelectionRectangle declares its handle that way and binds it to two properties). It is a
 // local type like any other; the only difference is that it does not live in a file of its own, so
 // it is registered here and resolved through the same lookup.
-static std::map<std::string, UiObjectDefinition *> g_inlineTypes;
 
 static void adoptLocalTypeRows(const std::string &localName, const std::string &baseQmlType) {
     if (localName.empty() || baseQmlType.empty() || localName == baseQmlType) return;

@@ -5848,3 +5848,24 @@ where every other cross-object connect already waits for the tree.
 Worth saying plainly: the gate demoted that document and the matrix stayed green, so nothing here
 was caught by a red. It was caught by reading why a document that compiles with zero diagnostics was
 still demoted.
+
+### A type the document defines itself is in no registry
+
+`AInlineComponent` declares `component Chip: Item { … }`, uses it as `Chip { id: mid }`, and binds
+`midW: mid.width`. Refused, for want of a `width` — because the child pre-scan seeds a child's base
+properties from the REGISTRY, and the registry cannot know a type the document invents.
+
+The answer needed no new analysis. An inline component's root is an ordinary type, so what it
+DERIVES FROM answers the question, and the properties it declares itself are read from its body —
+the same shape this function already walks for any child. Inline components are registered in memory
+before the pre-scan runs, because QML lets a document use one above its own declaration, so it costs
+a map lookup and no parse at all. The declaration moved up the file to be visible there; that was
+the whole cost.
+
+`AInlineComponent` compiles with no diagnostic and agrees with the engine at `-O1` without handing
+anything over. The application corpus is 5 of 18.
+
+`ALocalType` is the same shape one step further out — a type in a sibling `.qml` FILE rather than in
+this document — and it stays refused. Seeding from it means reading that file inside the pre-scan,
+with the parse side effects (`g_docUrl`, `g_srcText`, `g_bareImports`) that the compile path
+carefully saves and restores around every nested load. Cheap to want, not cheap to do safely.
