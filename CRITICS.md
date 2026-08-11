@@ -1,8 +1,15 @@
 # CRITICS.md
 
-## Resposta à rodada 12 (2026-08-10)
+## Resposta à rodada 12 (2026-08-10 / 11)
 
-Escrita aqui porque a auditoria é o sítio certo para a contestação. **Sete achados, sete
+Escrita aqui porque a auditoria é o sítio certo para a contestação.
+
+> **Como ler isto.** As secções numeradas estão pela ordem em que as coisas foram aprendidas, e
+> várias corrigem as anteriores: a §4 propõe um critério que a §8 desmonta e a §10 substitui; a §1
+> declara o portão determinístico e a §12 mostra que não estava. **Onde duas discordam, vale a mais
+> tardia.** O estado actual está na lista de fecho no fim — as secções são o caminho, não o
+> veredicto. Deixei-as assim de propósito: seis das doze existem porque eu estava errado, e apagar
+> o erro apagaria a razão pela qual a correcção é o que é. **Sete achados, sete
 confirmados** — verifiquei os factos que os sustentam antes de mexer em código:
 
 - `static QThread currentThread() { return QThread.wrap(__QThread_1()); }`, tal como citado;
@@ -304,15 +311,34 @@ construir um.
 
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
-- **#2 (não-`QObject`)**: FECHADO para `QTreeWidgetItem` (secção 9), aberto para as restantes. A
-  próxima classe é uma edição de spec mais a caminhada da superfície, que o `ownership-gate` agora
-  exige em vez de confiar.
-- **#3 (ownership no manifest)**: respondido pelo `ownership-gate` em vez de por uma coluna nova
-  (secção 9).
-- **#6 (artefacto instalável)**: FECHADO (secções 7 e 11). Consumidor fora do checkout E pacote dub
-  resolvido por dependência, nos dois compiladores. Falta só publicar/versionar, que é distribuição.
-- **#4, #5, #7**: feitos. #4 no emissor com portão estrutural (secção 5), #5 (libsample entrou no
-  `binding-core`), #7 (os três gaps de lifetime entraram no inventário).
+**Os sete achados estão respondidos.** Matriz completa verde, 1161 alvos.
+
+- **#1** retornos emprestados: FECHADO. Impasse no `exit()` provado por coredump (§1), `_ownedByD`,
+  regressão `borrowed-{ldc2,dmd}`.
+- **#2** não-`QObject`: FECHADO para **duas** classes, por dois critérios diferentes e ambos
+  verificáveis — `QTreeWidgetItem` porque o destrutor se desliga do dono (§10), `QTextStream` porque
+  nada no binding o pode adoptar, logo a superfície é provadamente vazia. As restantes continuam a
+  vazar (o erro seguro), e o `ownership-gate` recusa ligar uma sem a superfície classificada.
+- **#3** ownership no manifest: respondido pelo `ownership-gate` em vez de uma coluna nova (§9).
+  Impedir a superfície perigosa de crescer vale mais do que anotar 8428 símbolos.
+- **#4** ctor que lança: FECHADO no emissor, com portão estrutural sobre 1190 construtores (§5). A
+  prova de runtime falta e o inventário di-lo.
+- **#5** `binding-core`: FECHADO, libsample lá dentro.
+- **#6** artefacto instalável: FECHADO (§7, §11). Pacote dub resolvido por dependência nos dois
+  compiladores, e o pacote regista contra que Qt foi gerado — o consumidor recusa a discrepância,
+  que de outro modo aparece como crash dentro do Qt e não como erro de link. Falta **publicar**,
+  que é escolher onde, não construir o quê.
+- **#7** inventário: FECHADO, 16 entradas — e passou a ser **executado**, não só validado.
+
+**Fechados de rondas anteriores, pelo caminho:** o inventário como runner (r7, 16 probes, um deles a
+vigiar uma *correcção* em vez de uma regressão); piso e canários da suíte qmltc na CI (r10); e a
+medição que o `CompilationContext` (r9) pedia — dois documentos locais com nomes colidentes provam
+que o estado **não** atravessa, portanto o refactor é preventivo com prova em vez de justificado por
+bugs já corrigidos.
+
+**Aberto, e nomeado:** CI verde num runner real (o Qt da distro é outro minor que as baselines; não
+se fecha desta máquina); mais classes descartáveis (cada uma exige a caminhada por classe); publicar
+o pacote.
 
 ## Rodada 12: o wrapper aprendeu muito com o qmltc-d; ownership ainda nao e geravel por heuristica
 
