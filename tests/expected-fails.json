@@ -174,6 +174,17 @@
         "qmltc-optlevels-controls-Basic",
         "qmltc-optlevels-controls-Fusion"
       ]
+    },
+    {
+      "id": "default-child-of-unregistered-type-dropped",
+      "kind": "known_gap",
+      "area": "qmltc-d/default-child",
+      "since": "2026-08-11",
+      "reason": "A default child whose type our registry does not know is DROPPED, with its id, and the document counts a skipped member — `Timer` is the plain case, and a Timer is the most ordinary piece of application machinery there is. The refusal is not because the object cannot be built: measured directly, `createQmlObject(\"QtQuick\", \"Timer\")` and `createQmlObject(\"QtQml\", \"Timer\")` both return a live QQmlTimer, which is the same containment path the compiler already uses for a type no D subclass can wrap (dcEngineUri). What is missing is the decision: that path is only taken when `uriForType(childType)` and `g_qmlCxxType` both answer, and for a type outside the binding neither does, so the child is dropped instead of being built from the document's own imports. NOT a binding gap for SpinBox reasons: QQmlTimer links fine, it is simply not in spec_cxx_controls.json. The risk that has to be handled first is silence — with no registry entry the child's own members (interval, running, repeat, onTriggered) have to go through the meta channel or be refused one by one, and a Timer that is built but never runs is worse than one honestly skipped.",
+      "remove_when": "a default child of a type outside the registry is built by the engine from the document's imports AND its members are wired through the meta channel, with the app corpus judging it rather than skipping it",
+      "probe_targets": [
+        "qmltc-o3-gate-app"
+      ]
     }
   ]
 }

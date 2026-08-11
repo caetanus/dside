@@ -5660,3 +5660,27 @@ survived it.
 Fixed by building the component the way the engine does, hosted in a document and carrying the real
 document url so a relative path inside it still resolves where the engine resolves it. All five
 render.
+
+### The sixteen that "do not build or run", read one by one
+
+With crashes now named separately, the bucket is honest and worth reading. Thirteen of the sixteen
+are Qt refusing to be bound, not a compiler gap, and the spec already carries the measurement:
+`SpinBox` and `DoubleSpinBox` in all five styles fail because `QQuickAbstractSpinBox` is a TEMPLATE
+whose inline `handleComponentComplete()` calls `QQuickIndicatorButtonPrivate::executeIndicator`, a
+private symbol libQt6QuickTemplates2 does not export — adding the headers maps the types and then
+every subclass fails to LINK (measured 2026-08-02, reverted). Basic's `DayOfWeekRow`, `MonthGrid` and
+`WeekNumberColumn` are inert for a neighbouring reason: none is a QQuickItem and QQuickCalendar has
+no export macro at all. Reading the spec before repeating that experiment is the whole value of
+having written it down.
+
+What is left is the application corpus, which is where the compiler is actually weak. `Timer` is the
+plain case and the diagnosis is short: a default child whose type the registry does not know is
+dropped, id and all. Not because it cannot be built — probed directly,
+`createQmlObject("QtQuick", "Timer")` and `createQmlObject("QtQml", "Timer")` both hand back a live
+`QQmlTimer`, through the same containment path the compiler already uses for a type no D subclass can
+wrap. The missing piece is the decision, not the mechanism: that path is taken only when the registry
+answers for the type, and for one outside the binding it never does.
+
+Named as `default-child-of-unregistered-type-dropped`, with the part that has to be solved first
+written into it — a child built from the document's imports whose members cannot be wired is a Timer
+that never runs, which is worse than one honestly skipped.
