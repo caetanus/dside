@@ -31,6 +31,14 @@ extern (C) nothrow @nogc {
     void  qtd_holder_unreg(void *);
 }
 
+/// The tag that selects the ADOPT constructor — "wrap this existing C++ pointer" — as opposed to
+/// the ordinary constructors, which allocate. Untagged it was `this(void* c)`, and D cannot choose
+/// between that and `this(QWidget parent = null, int f = 0)` when the argument is a literal
+/// `null`: `new QWidget(null)` did not compile, which is the first line of the README's own
+/// example. Nothing outside the generated code ever calls it, so giving it a name costs a user
+/// nothing and gives back the spelling everyone tries first.
+struct QtdAdopt { void* p; }
+
 /// Base of every generated object wrapper. Holds the C++ pointer and its lifetime.
 class QtdObject {
     package void *_cpp;

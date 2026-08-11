@@ -272,6 +272,23 @@ Build reggaeBuild() {
             ~ "$in " ~ efJson ~ " " ~ efList ~ "\"", [efb]);
     }
 
+    // --- CAN SOMEBODY ELSE USE THIS? An application built OUTSIDE the checkout, from the import
+    //     path and the two archives alone. Every other target builds from inside, with paths
+    //     reggae knows, which proves the binding compiles and nothing about consuming it — and
+    //     writing this found three things in fifteen minutes that the whole matrix never saw:
+    //     `new QWidget(null)` was ambiguous with the adopt ctor, `w.width()` lives on the second
+    //     base, and QString had no `==` against a D string.
+    {
+        auto cs = buildPath(root, "tests", "consumer", "consumer.sh");
+        if (exists(cs))
+            foreach (dc; DCS)
+                all ~= Target.phony("consumer-smoke-" ~ dc,
+                    "sh " ~ cs ~ " " ~ ex.genDir ~ " " ~ ex.bdir ~ " " ~ dc ~ " "
+                    ~ pkgLibs(ex.mods ~ ["Qt6Core"]),
+                    [Target(cs), Target(buildPath(root, "tests", "consumer", "hello.d")),
+                     ex.gen, qtdBindLib(ex, dc), ex.shims]);
+    }
+
     // --- every allocating wrapper ctor frees its block if construction throws ---
     // Depends on the bindings' gen targets so it reads FRESHLY generated output: run against a
     // stale directory it reports 253 files missing a guard the emitter does emit, which is a red

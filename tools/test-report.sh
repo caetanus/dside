@@ -51,6 +51,7 @@ category() {
     tr-*|lupdate-check) echo i18n ;;
     manifest-gate-*|registry-gate-*|expected-fails-lint|ctor-guard) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
+    consumer-smoke-*) echo gate ;;
     # Wrapper LIFETIME, which is neither moc nor qml: who owns a pointer, and who may delete it.
     borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*) echo lifetime ;;
     *) echo other ;;

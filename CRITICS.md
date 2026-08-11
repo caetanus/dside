@@ -120,13 +120,40 @@ sobrevivia, e passava com o attach desligado, porque nenhuma das duas é observ�
 invariante (`Thread.getThis() !is null` dentro do `run()`), e o controlo negativo dispara.
 Qt5 e Qt6, ldc2 e dmd.
 
+### 7. #6: o binding É consumível — o que faltava era alguém tentar, e três coisas caíram em quinze minutos
+
+A auditoria pede *"um exemplo consumidor em diretorio temporario ... sem acessar `generated/` ou
+`.build/` do checkout"*. Escrevi-o (`tests/consumer/`, portão `consumer-smoke-{ldc2,dmd}`): as
+fontes são copiadas para um directório temporário e a única coisa que aponta de volta são as duas
+peças que um pacote instalaria — o import path e os arquivos. Compila e corre nos dois
+compiladores.
+
+**A parte que interessa não é o portão, são as três coisas que ele encontrou** — nenhuma delas
+visível de dentro do grafo, porque lá dentro ninguém escreve uma aplicação:
+
+| o que se escreve | o que acontecia |
+|---|---|
+| `new QWidget(null)` | **não compilava** — `null` ambíguo entre o ctor de adopção `this(void*)` e `this(QWidget parent = null, …)`. É a primeira linha do exemplo do README. |
+| `w.width()` | **não existe** — vem de `QPaintDevice`, a SEGUNDA base; é `w.asQPaintDevice().width()`. O manifest chama-lhe `inherited`, o que é verdade e é surpreendente. |
+| `label.text() == "olá"` | **não compilava** — `QString` construía de `string` e lia para `string`, mas não comparava. |
+
+Duas estão corrigidas: o ctor de adopção passou a levar uma etiqueta (`QtdAdopt`), que era a razão
+inteira da ambiguidade e que nenhum utilizador escreve; e `QString` ganhou `opEquals(string)` nos
+dois layouts (Qt5 e Qt6). A terceira fica: expor a segunda base como se fosse a primeira é uma
+decisão de superfície, não um remendo.
+
+O que continua verdadeiro do achado #6: **os artefactos não estão instalados em lado nenhum**. Um
+consumidor a sério nomeia um pacote, não um directório de build. O portão prova a metade que se
+pode provar hoje e diz no cabeçalho qual é a metade que não prova.
+
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
 - **#2 (não-`QObject`)**: aberto, agora decomposto em dois (secção 4 acima). As classes com
   pergunta de dono são mecânicas; a família `QLayoutItem` não é.
 - **#3 (eixo de ownership no manifest)**: depende de #2 estar decidido; sem isso a metadata seria
   inventada.
-- **#6 (artefacto instalável)**: aberto.
+- **#6 (artefacto instalável)**: metade feita (secção 7): existe um consumidor fora do checkout, no
+  build, nos dois compiladores. A metade que falta é empacotar — nada está instalado.
 - **#4, #5, #7**: feitos. #4 no emissor com portão estrutural (secção 5), #5 (libsample entrou no
   `binding-core`), #7 (os três gaps de lifetime entraram no inventário).
 

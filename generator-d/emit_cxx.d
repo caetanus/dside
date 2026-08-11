@@ -2080,7 +2080,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 // registration both completed".
                 wctors ~= format("    this(%s) {\n        auto __r = __cpp_new(__%s_size);\n"
                     ~ "        scope(failure) __cpp_delete(__r);\n"
-                    ~ "        %s(__r%s);\n        this(__r);\n        _register();\n    }",
+                    ~ "        %s(__r%s);\n        this(QtdAdopt(__r));\n        _register();\n    }",
                     dparams.join(", "), name, ctorFn,
                     callargs.length ? ", " ~ callargs.join(", ") : "");
                 wci++;
@@ -2099,10 +2099,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // isQObject is constant per wrapper hierarchy -> set at the base-less root; derived
         // just super(c). Non-QObjects (no destroyed()/parent()) are dispose-only in the holder.
         // isQObject walks BASES for QObject, so QObject itself reports false — include it.
-        auto ctorSuper = baseName.length ? "super(c)"
-            : format("super(c, %s)", (isQObject(cur) || name == "QObject") ? "true" : "false");
-        auto ctorBody = format("    this(void* c) @nogc nothrow { %s; }\n"
-            ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(p)); }",
+        auto ctorSuper = baseName.length ? "super(__a)"
+            : format("super(__a.p, %s)", (isQObject(cur) || name == "QObject") ? "true" : "false");
+        auto ctorBody = format("    this(QtdAdopt __a) @nogc nothrow { %s; }\n"
+            ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(QtdAdopt(p))); }",
             ctorSuper, name, name, name);
         // Un-hide the base overloads a same-named derived method would shadow in D. The
         // `static if (hasMember)` guard is the same safety net the raw path uses: the base may
@@ -2772,6 +2772,12 @@ extern (C++) struct QString {
         d = null;
     }
     ~this() { __release(); }
+    // COMPARING is the third thing anyone does with a string, after making one and reading it, and
+    // it was the only one missing: `label.text() == "hi"` did not compile. Found by writing an
+    // application against the binding from outside the checkout, which is the one thing the test
+    // graph never did.
+    extern (D) bool opEquals(string other) const { return toString() == other; }
+    extern (D) bool opEquals(const(char)[] other) const { return toString() == other; }
     extern (D) string toString() const {                   // qs.to!string uses this
         if (d is null) return "";
         auto size = *cast(const(int)*)(cast(const(char)*) d + 4);
@@ -2820,6 +2826,12 @@ extern (C++) struct QString {
         d = null;
     }
     ~this() { __release(); }
+    // COMPARING is the third thing anyone does with a string, after making one and reading it, and
+    // it was the only one missing: `label.text() == "hi"` did not compile. Found by writing an
+    // application against the binding from outside the checkout, which is the one thing the test
+    // graph never did.
+    extern (D) bool opEquals(string other) const { return toString() == other; }
+    extern (D) bool opEquals(const(char)[] other) const { return toString() == other; }
     extern (D) string toString() const {                   // qs.to!string uses this
         if (ptr is null || size == 0) return "";
         return (cast(const(wchar)[]) ptr[0 .. size]).to!string;
