@@ -24,9 +24,11 @@
     "QTreeWidgetItem": [
       "QTreeWidget",
       "QTreeWidgetItem"
-    ]
+    ],
+    "QTextStream": []
   },
   "disposable": [
+    "QTextStream",
     "QTreeWidgetItem"
   ],
   "no_transfer": [

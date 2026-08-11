@@ -115,7 +115,7 @@
       "id": "nonqobject-owned-leaks",
       "kind": "risk",
       "area": "holder/lifetime",
-      "reason": "CLOSED FOR QTreeWidgetItem, open for every other polymorphic non-QObject. Ownership is now dropped at the call that moves it (spec transfer_in/transfer_out/ctor_parents) and a class listed in `disposable` supplies a delete thunk the holder's finalizer calls when it still owns the object. Enabling a class means its transfer surface was walked against Qt's docs; the ~59 other super(c,false) roots in QtWidgets still leak, which is the safe error.",
+      "reason": "MEASURED per binding, not guessed. A non-QObject wrapper only leaks if the binding can ALLOCATE it: QtWidgets has 60 such roots but 14 heap-constructible, Controls 98/15, QML 21/7, Quick 98/16. Two are disposable today — QTreeWidgetItem (its destructor detaches from its owner) and QTextStream (nothing in the binding takes one, so its transfer surface is provably empty). The rest still leak, which is the safe error, and ownership-gate-* refuses to let one be enabled without classifying its surface.",
       "remove_when": "every disposable non-QObject the binding constructs has an audited transfer surface",
       "since": "2026-08-10",
       "probe_targets": [

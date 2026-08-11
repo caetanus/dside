@@ -59,10 +59,15 @@ for f in sorted(gen.glob("qt/*/*.d")):
             if key not in declared:
                 unclassified.append(key)
 
-# ...and the constructors of the disposable class itself, whose parent parameter adopts it.
+# ...and the constructors of the disposable class itself, whose parent parameter adopts it. An
+# EMPTY list is a valid answer — "checked: no constructor parameter adopts this" — and has to be
+# written down for the same reason `no_transfer` does: an unanswered question and an answered one
+# must not look the same. QTextStream is the case: nothing in the binding takes a QTextStream at
+# all, so its transfer surface is empty and disposal carries no audit risk.
 for c in disposable:
     if c not in ctor_parents:
-        unclassified.append("%s::<ctor>  (no ctor_parents entry: does a parent argument adopt it?)" % c)
+        unclassified.append("%s::<ctor>  (no ctor_parents entry: does a parent argument adopt it? "
+                            "write [] if none)" % c)
 
 if unclassified:
     print("ownership-gate: %d parameter(s) of a DISPOSABLE type are unclassified." % len(unclassified),
