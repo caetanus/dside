@@ -244,6 +244,33 @@ classe passa a ter dois requisitos, não um: a caminhada da superfície (que o `
 exige) **e** um destrutor que se desligue — ou, na falta dele, a certeza de que a lista está
 completa, que é uma afirmação muito mais forte.
 
+### 11. #6 FECHADO — e o que faltava não era maquinaria, era ninguém ter tentado
+
+O critério da auditoria: *"um exemplo consumidor em diretorio temporario deve depender apenas de um
+artefato instalado/empacotado"*. Está feito: `tests/install.sh` dispõe os artefactos como um pacote
+dub e `dub-consumer-{ldc2,dmd}` resolve-o por `dependencies`, compila e corre — a aplicação nunca
+nomeia um import path nem um arquivo.
+
+**O pacote inteiro é um import path, dois arquivos e onze linhas de `dub.json`**, e um só pacote
+serve os dois compiladores (`lflags-ldc` / `lflags-dmd`). Não havia nada para construir. O que
+faltava era o mesmo que faltava aos três papercuts da secção 7: ninguém tinha tentado usar isto de
+fora.
+
+Três coisas que só a tentativa ensinou, todas em comentário no sítio:
+
+- os `libs` do dub têm de ser **nomes simples**; passar a linha do `pkg-config` faz um `-lQt6Widgets`
+  chegar como `--l-lQt6Widgets`;
+- o consumidor corre com `--skip-registry=all`, senão um engano no nome do pacote vai à rede e a
+  falha lê-se como problema de ligação em vez de empacotamento;
+- e o primeiro build falhou por **corrida no grafo**, não por empacotamento: os dois consumidores
+  alcançam o nó de instalação e este backend corre-o uma vez por alvo que lá chega, portanto duas
+  instalações correram em paralelo e a que chegou primeiro ao `rm -rf $PREFIX` apagou o que a outra
+  estava a copiar. Guardado com lock, como os outros artefactos partilhados. É a terceira vez que
+  esta propriedade do backend morde nesta rodada.
+
+Fica por fazer a parte que é distribuição e não engenharia: o pacote aponta para um prefixo local,
+não está publicado em lado nenhum, e nada versiona o artefacto contra o Qt minor.
+
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
 - **#2 (não-`QObject`)**: FECHADO para `QTreeWidgetItem` (secção 9), aberto para as restantes. A
@@ -251,8 +278,8 @@ completa, que é uma afirmação muito mais forte.
   exige em vez de confiar.
 - **#3 (ownership no manifest)**: respondido pelo `ownership-gate` em vez de por uma coluna nova
   (secção 9).
-- **#6 (artefacto instalável)**: metade feita (secção 7): existe um consumidor fora do checkout, no
-  build, nos dois compiladores. A metade que falta é empacotar — nada está instalado.
+- **#6 (artefacto instalável)**: FECHADO (secções 7 e 11). Consumidor fora do checkout E pacote dub
+  resolvido por dependência, nos dois compiladores. Falta só publicar/versionar, que é distribuição.
 - **#4, #5, #7**: feitos. #4 no emissor com portão estrutural (secção 5), #5 (libsample entrou no
   `binding-core`), #7 (os três gaps de lifetime entraram no inventário).
 

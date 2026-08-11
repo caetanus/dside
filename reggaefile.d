@@ -303,6 +303,35 @@ Build reggaeBuild() {
                      ex.gen, qtdBindLib(ex, dc), ex.shims]);
     }
 
+    // --- INSTALL IT, then DEPEND on it. `consumer-smoke` builds an application outside the
+    //     checkout but still points -I and -L at a build directory, which is a path that happens
+    //     to exist rather than a dependency. This lays the artifacts out as a dub package and lets
+    //     dub resolve it — the half of round 12 #6 that was actually missing. It turned out to be
+    //     an import path, two archives and eleven lines of dub.json: there was no machinery to
+    //     build, only nobody had tried.
+    {
+        auto ins = buildPath(root, "tests", "install.sh");
+        auto dcs = buildPath(root, "tests", "consumer", "dub-consumer.sh");
+        auto prefix = buildPath(ex.bdir, "pkg");
+        if (exists(ins) && exists(dcs)) {
+            auto stamp = buildPath(ex.bdir, "pkg.stamp");
+            // GUARDED, because both consumers reach this node and this backend runs it once per
+            // reaching target: two installs raced, and the one that got to `rm -rf $PREFIX` first
+            // deleted what the other was copying. The failure looked like a packaging bug and was
+            // a build-graph one — the same shape the uidump object memoisation exists for.
+            auto instCmd = "sh " ~ ins ~ " " ~ ex.genDir ~ " " ~ ex.bdir ~ " " ~ prefix
+                ~ " qtd-qtwidgets " ~ pkgLibs(ex.mods).replace("-L-l", "-l") ~ " && touch " ~ stamp;
+            auto inst = Target(stamp,
+                guarded(prefix ~ ".lock", instCmd, stamp,
+                        [ex.genDir ~ "/gen.stamp"]),
+                [Target(ins), ex.gen] ~ DCS.map!(dc => qtdBindLib(ex, dc)).array ~ [ex.shims]);
+            foreach (dc; DCS)
+                all ~= Target.phony("dub-consumer-" ~ dc,
+                    "sh " ~ dcs ~ " " ~ prefix ~ " qtd-qtwidgets " ~ dc,
+                    [Target(dcs), Target(buildPath(root, "tests", "consumer", "hello.d")), inst]);
+        }
+    }
+
     // --- the audited transfer surface has to STAY audited ---
     // A class in `disposable` is one the binding will DELETE while it still owns it, which is safe
     // exactly as long as every API that could take ownership of it is declared. The list was walked
