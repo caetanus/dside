@@ -5813,3 +5813,38 @@ segfaults, all four `-O1` gates unchanged, and the application corpus 3 of 18 �
 now compiles at `-O1` rather than being handed over, which is what surfaced the baseUrl rule in the
 first place. Each of the two changes is a net loss without the other; that is why they are one
 commit.
+
+### `a += b` is `a = a + b`, and two mistakes worth keeping
+
+A counter is the most ordinary handler body there is, and none of these compiled:
+
+```qml
+MouseArea { onClicked: root.n = 5 }     // compiled
+MouseArea { onClicked: root.n += 1 }    // refused
+MouseArea { onClicked: n += 1 }         // refused
+```
+
+There WAS a compound-assignment path and it accepted only a bare name that is a property of this
+very object. Rewriting `a += b` into `a = a + b` at the top of the statement compiler means the six
+assignment paths below — own property, base property, id, enclosing object, group member, attached
+one — answer it, each already knowing how to write its own shape. Handling `+=` in each would have
+been six copies of one line of JavaScript semantics.
+
+**`QSOperator::Add` is 0.** It is the first member of the enum, so `if (plain && …)` — a truth test
+on the mapped operator — silently exempted the one case this is most needed for. `-=`, `*=` and `/=`
+worked and `+=` did not, which is a worse state than none of them working, because it looks fixed.
+It only surfaced because the probe was a TABLE of four forms rather than one: three passing and one
+failing points at the mapping, where one failing points anywhere.
+
+**And the `instOf` that lived in the wrong scope.** With ids resolving at any depth, a root binding
+started connecting to `_dc0._dc1` — the WRAPPER of an engine-built Slider — and threw at
+construction ("no such signal valueChanged() … or a null endpoint"). The rewrite that turns such a
+field into `instOf(field)` was applied to the immediate parent's copy of g_childIds, which is saved
+and restored around every nested compile, so it never reached an outer object. Invisible while an id
+only resolved one level down, because the immediate parent was always the one resolving. The id is
+the DOCUMENT's, so the set of engine-built ids is too. The connect also moved to the late phase,
+where every other cross-object connect already waits for the tree.
+
+Worth saying plainly: the gate demoted that document and the matrix stayed green, so nothing here
+was caught by a red. It was caught by reading why a document that compiles with zero diagnostics was
+still demoted.

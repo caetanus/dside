@@ -1172,6 +1172,9 @@ struct ChildRef {
     std::set<std::string> methods0;
 };
 static std::map<std::string, ChildRef> g_childIds;
+// Ids whose object the ENGINE builds: the field holds a wrapper and every signal and property is
+// the instance's. Document-scoped, like the ids themselves.
+static std::set<std::string> g_engineIds;
 // property name -> type the DOCUMENT declares for the object bound to it (see OuterFrame::childTypes)
 static std::map<std::string, std::string> g_childDeclType;
 
@@ -4117,6 +4120,45 @@ static bool compileStmtList(StatementList *list, const std::map<std::string, std
 static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptype, std::string &body) {
     // A brace block `{ a = ...; b = ...; }` -> each statement in order.
     if (auto *blk = cast<Block *>(st)) return compileStmtList(blk->statements, ptype, body);
+    // `a += b` IS `a = a + b`. There was a compound-assignment path and it only accepted a BARE name
+    // that is a property of this very object, so a counter — the most ordinary handler body there
+    // is — was refused the moment it was written any other way:
+    //
+    //   MouseArea { onClicked: root.n = 5 }    compiled
+    //   MouseArea { onClicked: root.n += 1 }   refused
+    //   MouseArea { onClicked: n += 1 }        refused
+    //
+    // Rewriting it here means the ASSIGNMENT paths below answer it, and there are six of them —
+    // an own property, a base property, an id, an enclosing object, a group member, an attached
+    // one — each of which already knows how to write its own shape. Handling `+=` in each would be
+    // six copies of a rule that is one line of JavaScript semantics.
+    if (auto *es0 = cast<ExpressionStatement *>(st))
+        if (auto *bin0 = cast<BinaryExpression *>(es0->expression)) {
+            // -1, not 0: QSOperator::Add IS 0 (the first member of the enum), so a truth test on
+            // the mapped operator silently exempted the one case this is most needed for. `-=`
+            // worked and `+=` did not, which is a worse state than neither.
+            int plain = -1;
+            switch (bin0->op) {
+            case QSOperator::InplaceAdd: plain = QSOperator::Add; break;
+            case QSOperator::InplaceSub: plain = QSOperator::Sub; break;
+            case QSOperator::InplaceMul: plain = QSOperator::Mul; break;
+            case QSOperator::InplaceDiv: plain = QSOperator::Div; break;
+            default: break;
+            }
+            // The bare-own-property case keeps its own path: it emits `n += 1` rather than
+            // `n = n + 1`, which is the same value and the shorter read, and for a `string` it
+            // emits `~=` where D has no `+=`.
+            bool bareOwn = false;
+            if (auto *idl = cast<IdentifierExpression *>(bin0->left))
+                bareOwn = ptype.count(qs(idl->name.toString())) > 0;
+            if (plain >= 0 && !bareOwn) {
+                static QQmlJS::MemoryPool pool;   // AST nodes allocate from one; this outlives the run
+                auto *sum = new (&pool) BinaryExpression(bin0->left, plain, bin0->right);
+                auto *asg = new (&pool) BinaryExpression(bin0->left, QSOperator::Assign, sum);
+                auto *st2 = new (&pool) ExpressionStatement(asg);
+                return compileStmt(st2, ptype, body);
+            }
+        }
     // `var c = <expr>` -> a D local (`auto c = ...`). Type inferred for correct numeric formatting.
     if (auto *vs = cast<VariableStatement *>(st)) {
         for (auto *d = vs->declarations; d; d = d->next) {
@@ -7056,9 +7098,18 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // enclosing object's binding can run before its children exist, and reading the field
             // off a null reference SEGFAULTS where every other read here answers a default
             // (measured, gdb: Qt's Material TextField root reading `placeholder.implicitWidth`).
-            if (std::string cid0 = idOfInit(childInit); !cid0.empty())
+            if (std::string cid0 = idOfInit(childInit); !cid0.empty()) {
                 if (auto it0 = g_childIds.find(cid0); it0 != g_childIds.end())
                     it0->second.field = "instOf(" + it0->second.field + ")";
+                // ...and REMEMBERED, because g_childIds is saved and restored around a nested
+                // compile: the rewrite lands in the immediate parent's copy and is gone by the time
+                // an OUTER object resolves the same id. That was invisible while an id only
+                // resolved one level down; now that it resolves at any depth, Qt's Slider inside a
+                // Column made a root's binding connect to the WRAPPER and throw ("no such signal
+                // valueChanged() ... or a null endpoint"). The id is the document's, so a set of
+                // ids is the right scope for the fact.
+                g_engineIds.insert(cid0);
+            }
         }
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_engineChildCls = savedDEC; g_engineChildType = savedDET; g_engineChildUri = savedDEU;
@@ -9343,8 +9394,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     auto bn = cr.baseNotify.find(mem);
                     std::string sig = bn != cr.baseNotify.end() && !bn->second.empty()
                                     ? bn->second : (mem + "Changed()");
-                    wire += "        connectMeta(" + cr.field + ", \"" + sig
-                          + "\", this, \"__rc_" + p.name + "()\");\n";
+                    // LATE, because the child does not exist yet. This object's wire runs BEFORE
+                    // __qmltcKids(), so the field is null and the connect throws "no such signal
+                    // ... or a null endpoint" — which is what Qt's Slider inside a Column did the
+                    // moment a deep id became resolvable at all. The late phase is where every
+                    // other cross-object connect already waits for the tree to be built.
+                    std::string cfield = cr.field;
+                    if (g_engineIds.count(d.substr(0, dot)) && cfield.rfind("instOf(", 0) != 0)
+                        cfield = "instOf(" + cfield + ")";
+                    lateWire += "        connectMeta(" + cfield + ", \"" + sig
+                              + "\", this, \"__rc_" + p.name + "()\");\n";
+                    lateWire += "        __rc_" + p.name + "();\n";
                     continue;
                 }
                 // `Type.member` — the notify belongs to the ATTACHED object.
