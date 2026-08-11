@@ -113,6 +113,27 @@ QML document carrying a real `Binding`, which `qmlcachegen` turns into bytecode.
 binding and not a function — what makes a delegated expression live is the engine capturing a
 *binding's* dependencies, and a function call captures nothing.
 
+### Where the fourth mechanism is not applied yet, and it is one rule
+
+Delegation is applied to an EXPRESSION and to a whole DOCUMENT. It is not applied to a CHILD, and
+three of the open items in `tests/expected-fails.json` are that single absence seen from different
+sides:
+
+- a default child whose **type** the registry does not know (`Timer`, `ListModel`, `RowLayout`) is
+  dropped, though `createQmlObject("QtQuick", "Timer")` returns a live one — measured;
+- a default child whose **shape** is unsupported (a `Connections` without the target form) is
+  dropped for a different reason and by the same code;
+- and dropping either **shifts the indices** of the children after it, so `data[i]` no longer names
+  what the engine has there. Building some siblings and not others turns that from a short list into
+  a wrong one, which is how it became visible at all.
+
+The rule the codebase already states for a document — *"a document we cannot compile is not
+abandoned, it is instantiated by the engine and reached through its interface like any other opaque
+object"* — is the same rule a child wants. A child we cannot compile should be **built by the
+engine**, not dropped: the indices stay right, the object behaves, and what we could not compile
+costs a level rather than a member. That is one design, not three fixes, and it is why the three
+entries name each other.
+
 ## `-O` is a degree of certainty
 
 The scale is the four mechanisms in order, and it runs the other way from speed: **the higher the
