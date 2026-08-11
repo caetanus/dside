@@ -69,6 +69,44 @@ auto col = QColor(0, 0, 128);        // value type — struct ctor
 auto v   = make!QVariant();          // value type, no-arg (D forbids a struct this())
 ```
 
+## Using it from your own project
+
+The build above produces two artifacts a consumer needs, and nothing else:
+
+```sh
+ldc2 -of=myapp myapp.d \
+     -I<checkout>/generated/qt-6.11/cxx-qtwidgets \
+     -L--start-group \
+       -L=<checkout>/.build/qt-6.11-cxx-qtwidgets/libbinding_ldc2.a \
+       -L=<checkout>/.build/qt-6.11-cxx-qtwidgets/libshims.a \
+     -L--end-group $(pkg-config --libs Qt6Widgets) -L-lstdc++
+```
+
+That is the whole contract: one import path, two archives, and Qt's own libraries. `tests/consumer/`
+is exactly this — sources copied to a temporary directory and built there, so nothing in the
+checkout can be reached by a relative path — and it runs in the matrix as
+`consumer-smoke-{ldc2,dmd}`.
+
+**Not yet a package.** Those paths point into a build directory; a real consumer should name a
+dependency. Installing the artifacts is open work, and it is why the gate above copies the
+application out but still points back at the checkout for the binding.
+
+```d
+import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlabel;
+
+auto w = new QWidget(null);   // or `new QWidget()`
+auto l = new QLabel(w);       // parented -> Qt owns it, the wrapper is pinned
+l.setText("hello from D");
+assert(l.text() == "hello from D");        // QString compares against a D string
+w.resize(200, 60);
+```
+
+**One surprise worth knowing.** `w.width()` does not exist. `QWidget` inherits it from
+`QPaintDevice`, its *second* base, and D has single inheritance — so the secondary base is reached
+explicitly: `w.asQPaintDevice().width()`. Every multiply-inherited Qt class gets an `asX()` upcast
+like that. The per-symbol manifest records such methods as `inherited`, which is accurate and does
+not tell you where to look.
+
 ## Highlights (see `docs/FEATURES.md` for the full list)
 
 - **Pure `extern(C++)`** codegen: value types (correct ABI incl. CoW), enums,

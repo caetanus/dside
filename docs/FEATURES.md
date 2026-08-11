@@ -47,6 +47,20 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 - C++/Qt exception → D `QtCppException` (Lippincott + **per-signature guards**, complete coverage);
   error-return wrappers for out-param errors (bad JSON/PNG). Gated by `"exceptions"`.
 
+## Consuming the binding (what a user meets, not what the tests meet)
+
+- **Contract**: one import path (`generated/<qt>/<binding>`) + two archives (`libbinding_<dc>.a`,
+  `libshims.a`) + Qt's own libs. Gated by `consumer-smoke-{ldc2,dmd}`, which builds an application
+  in a temporary directory outside the checkout.
+- **Construction**: `new QWidget(null)` and `new QWidget()` both work — the adopt ctor takes a
+  `QtdAdopt` tag precisely so a literal `null` is not ambiguous with a parent argument.
+- **`QString`**: constructs from a D `string`, `toString()`s back to one, and compares with `==`
+  against one. Value semantics are Qt's (CoW, refcounted).
+- **Multiple inheritance**: D has one base, so a secondary C++ base is an explicit upcast —
+  `w.asQPaintDevice().width()`, not `w.width()`. This is the one place the surface does not read
+  like Qt's documentation, and the manifest's `inherited` fate does not point at it.
+- **Not installed**: the paths above are build directories. Packaging is open work.
+
 ## Build / platform
 - reggae binary backend; ldc2 + dmd; Qt5 + Qt6 parity; à-la-carte binaries.
 - Windows/MSVC-x64: deferred — see `docs/windows-roadmap.md`.
