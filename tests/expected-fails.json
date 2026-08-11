@@ -123,8 +123,8 @@
       "id": "nonqobject-qt-owned-dangles",
       "kind": "known_gap",
       "area": "holder/lifetime",
-      "reason": "When Qt takes ownership of a non-QObject (a layout adopting a QLayoutItem, a QTreeWidget adopting its items) and later deletes it, the D wrapper is not invalidated: _cpp stays non-null and the next call dereferences freed memory instead of failing checkAlive(). QLayoutItem has no destroyed() signal, so the invalidation has to be modelled rather than observed.",
-      "remove_when": "ownership transfer is declared per API and the owner's destruction invalidates what it took",
+      "reason": "MEASURED: destroy a QTreeWidget that owns a QTreeWidgetItem and the item's D wrapper still reports _cpp non-null — checkAlive() never fires. QLayoutItem/QTreeWidgetItem have no destroyed() signal, so nothing invalidates the wrapper. This also rules out the obvious fix: a finalizer that asks parent()/treeWidget() before deleting is CALLING THROUGH the freed pointer, so the query is itself the use-after-free. Ownership has to be dropped at the call that transfers it, not queried at destruction.",
+      "remove_when": "transfer-in APIs are declared and the emitter drops D ownership at that call, or the types are not D-constructible at all",
       "since": "2026-08-10"
     },
     {

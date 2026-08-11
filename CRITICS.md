@@ -146,6 +146,41 @@ O que continua verdadeiro do achado #6: **os artefactos não estão instalados e
 consumidor a sério nomeia um pacote, não um directório de build. O portão prova a metade que se
 pode provar hoje e diz no cabeçalho qual é a metade que não prova.
 
+### 8. O #2 muda de desenho quando se mede: PERGUNTAR quem é o dono é, ele próprio, o use-after-free
+
+Antes de construir a metade "segura" do #2 — as classes que têm uma pergunta de dono — medi o que
+acontece do outro lado. `QTreeWidget` apaga os seus items; o wrapper D fica assim:
+
+```
+antes: item vivo, _cpp = true
+depois de destruir a árvore: _cpp = true   (o wrapper NÃO foi invalidado)
+```
+
+`checkAlive()` nunca dispara: o `_cpp` continua não nulo a apontar para um objecto que o Qt já
+apagou. Isto é o `nonqobject-qt-owned-dangles` do inventário, agora observado e não deduzido.
+
+**E é isso que derruba a metade que eu ia construir.** O esquema seria: no finalizador, perguntar
+`parent()`/`treeWidget()` e só apagar se ninguém for dono. Mas essa pergunta é uma chamada
+*através do `_cpp`* — sobre um objecto que pode já ter sido apagado. **A pergunta é o
+use-after-free, no exacto momento em que dela se precisa.** Perguntar mais cedo (como o
+`reparented()` faz para `QObject`) não salva: entre a última chamada e a colecção, a árvore pode
+morrer e o bit fica velho.
+
+Logo não há esquema por OBSERVAÇÃO que funcione para um tipo sem sinal de destruição. Restam dois
+desenhos, ambos por decisão e nenhum por remendo:
+
+1. **Largar a posse na CHAMADA que transfere.** `QTreeWidget::addTopLevelItem`, `QLayout::addItem`,
+   `QStandardItemModel::setItem` — declarados no typesystem, e o emissor põe um
+   `holder.transferred(a0)` onde já põe `holder.reparented(a0)`. Não precisa de perguntar nada
+   depois, porque a posse muda no sítio onde a API diz que muda.
+2. **Não deixar o D ser dono destes tipos** — construí-los só através das APIs do dono.
+
+**O que NÃO consegui demonstrar, e digo-o:** que a leitura seguinte toca memória libertada. O
+valgrind não arranca nesta máquina (falta debuginfo da glibc), o ASan não instrumenta os `delete`
+dentro das bibliotecas do Qt, e interpor o `operator delete` no executável não pegou nem com
+`--export-dynamic` (duas tentativas). A ausência de invalidação está medida; o resto do argumento é
+por construção, e não precisa de mais.
+
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
 - **#2 (não-`QObject`)**: aberto, agora decomposto em dois (secção 4 acima). As classes com
