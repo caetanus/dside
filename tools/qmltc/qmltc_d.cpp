@@ -7092,6 +7092,19 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 dcEngineUri = uriForType(childType);
                 ltFound = true;
             }
+            // ...and a type the REGISTRY does not know at all, which the ENGINE still does. `Timer`
+            // is the plain case and a Timer is the most ordinary piece of application machinery
+            // there is; `ListModel` and `RowLayout` are the same shape. Probed directly,
+            // `createQmlObject("QtQuick", "Timer")` returns a live QQmlTimer, so the containment
+            // path works — what was missing is only the decision, which asked the registry for a
+            // URI it cannot have. The document's own imports are what the ENGINE would consult, so
+            // they are what is consulted here, tried in order at run time.
+            if (!ltFound && !g_bareImports.empty()) {
+                std::string tried;
+                for (auto &u : g_bareImports) tried += (tried.empty() ? "" : ";") + u;
+                dcEngineUri = "\x01" + tried;   // marker: resolve by trying, see createQmlObjectAny
+                ltFound = true;
+            }
             if (!ltFound) {
                 std::fprintf(stderr, "qmltc-d: %s: default child of type '%s' in %s not yet supported — skipped (later phase)\n",
                              inPath, childType.c_str(), cls.c_str());
@@ -9966,7 +9979,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // baseUrl, so a relative path inside it resolves where the engine resolves it. Without
             // it the object reported the synthetic `file:///qtd_delegate.qml` (measured in the dump
             // of Qt's Material TextField).
-            wire.insert(wp + 16, "        __inst = createQmlObject(\"" + g_engineChildUri + "\", \""
+            wire.insert(wp + 16, std::string("        __inst = ")
+                                 + (g_engineChildUri.rfind("\x01", 0) == 0
+                                        ? "createQmlObjectAny(\"" + g_engineChildUri.substr(1)
+                                        : "createQmlObject(\"" + g_engineChildUri) + "\", \""
                                  + g_engineChildType + "\", \"" + selfDocUrl + "\");\n"
                                  "        if (__inst is null) return;\n");
         outerField += mk;
