@@ -1,5 +1,39 @@
 # CRITICS.md
 
+## Adenda (2026-08-11): onde a auditoria estava certa e eu só o provei depois
+
+A regra desta casa é contestar na auditoria o que eu provar errado. O reverso pesa o mesmo, e esta
+adenda é isso.
+
+**"Build verde ainda não é report estruturado" (rodada 5 refeita, #8) estava certo, e o custo era
+maior do que a auditoria imaginava.** Não é uma questão de apresentação. O portão o3 despromove um
+documento que *"does not build or run at -Ox"*, e essa frase cobria duas coisas diferentes: uma
+falha de link e um SIGSEGV. **Cinco segfaults saíam em todas as corridas — incluindo todas as
+verdes** — e ninguém os leu, porque o comportamento ficava correcto (o documento cai para o motor) e
+o portão passava. Eram os cinco documentos do Material com `layer.effect`, todos pela mesma causa:
+um `QQmlComponent` construído com `setData` não tem contexto de criação, e o
+`QQuickItemLayer::activateEffect()` passa-o a `beginCreate`, que o desmonta sem verificar. Backtrace
+por gdb, causa provada por sonda isolada, corrigido — e o portão passou a dizer `CRASHES`. Quatro
+dos cinco passaram de despromovidos a compilados: 231 → 235.
+
+O detalhe que mais dá razão à auditoria: **a defesa já lá estava, para a causa errada.** O
+`bindComponent` tem um comentário que nomeia este crash, com gdb e tudo, e protege-se de um
+componente **nulo** lançando excepção. O componente nunca foi nulo. Um teste verde e um comentário
+convincente coexistiram com o defeito durante meses.
+
+**A mesma forma, uma segunda vez, sem a auditoria a apontar.** O README dizia que o `-O1` compila
+111 dos 329 documentos do Qt e que "nada atravessa sem tipo" nesse nível. A primeira metade era
+medida; a segunda era uma **contagem sem comparação nenhuma por trás** — o portão o3 julga `-Ox`,
+que é código diferente, e o `qmltc-optlevels` só andava pelo corpus de aplicação. Ao julgar a sério,
+sete documentos do próprio Qt discordavam do motor. Seis eram três regras que faltavam ao
+compilador (uma ligação que desreferencia `null` não escreve nada; o valor por omissão de
+`property color` é preto opaco e não um `QColor` inválido; os *imports* de um documento carregam os
+seus recursos). Não eram problemas do `-O1`: corrigi-las levou o nível por omissão de 226 a 231.
+
+**A lição que fica, e que é da auditoria e não minha:** um portão que converte "rebentou" em
+"não colocou" mantém o *comportamento* correcto e destrói a *informação*. Foi por isso que o
+`UNPLACED=0` continuou a ser um bom critério de falha e um mau critério de saúde.
+
 ## Resposta à rodada 12 (2026-08-10 / 11)
 
 Escrita aqui porque a auditoria é o sítio certo para a contestação.
