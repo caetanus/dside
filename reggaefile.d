@@ -59,9 +59,14 @@ Build reggaeBuild() {
         all ~= qtdTest("ownership-" ~ dc, t("wrapper", "ownership.d"), wrap, dc);   // destruction invariants
     }
 
+    // The bindings the ctor-guard gate reads. Collected as they are created so the gate depends on
+    // their gen targets rather than on whatever happens to be on disk.
+    QtdBinding[] ctorGuardBindings;
+
     // --- WRAPPER mode QtWidgets (Qt6 + Qt5): widget app + moc/trampoline ---
     void widgets(string spec, string[] mods, string tag) {
         auto b = qtdBinding(root, spec, mods);
+        ctorGuardBindings ~= b;
         foreach (dc; DCS) {
             all ~= qtdTest("widget_test-" ~ dc ~ "-" ~ tag, t("wrapper", "widget_test.d"), b, dc);
             all ~= qtdTest("moc_test-" ~ dc ~ "-" ~ tag, t("wrapper", "moc_test.d"), b, dc);
@@ -83,6 +88,7 @@ Build reggaeBuild() {
 
     // --- smuggled example apps against the non-wrap QtWidgets binding (Qt6) ---
     auto ex = qtdBinding(root, "spec_cxx_qtwidgets.json", ["Qt6Widgets"]);
+    ctorGuardBindings ~= ex;
     foreach (app; dirEntries(buildPath(root, "tests", "examples"), "*.d", SpanMode.shallow).map!(e => e.name).array.sort)
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension ~ "-" ~ dc, app, ex, dc);
@@ -264,6 +270,21 @@ Build reggaeBuild() {
         all ~= Target.phony("expected-fails-lint",
             "sh -c \"" ~ buildPath(root, "build") ~ " --list > " ~ efList ~ " 2>/dev/null; "
             ~ "$in " ~ efJson ~ " " ~ efList ~ "\"", [efb]);
+    }
+
+    // --- every allocating wrapper ctor frees its block if construction throws ---
+    // Depends on the bindings' gen targets so it reads FRESHLY generated output: run against a
+    // stale directory it reports 253 files missing a guard the emitter does emit, which is a red
+    // that says nothing about the code.
+    {
+        auto cg = buildPath(root, "tests", "ctorguard.sh");
+        if (exists(cg)) {
+            Target[] deps = [Target(cg)];
+            string dirs;
+            foreach (b; ctorGuardBindings) { deps ~= b.gen; dirs ~= " " ~ b.genDir; }
+            if (dirs.length)
+                all ~= Target.phony("ctor-guard", "sh " ~ cg ~ dirs, deps);
+        }
     }
 
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---

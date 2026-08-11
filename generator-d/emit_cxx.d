@@ -2072,7 +2072,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 // then _register()s for identity + destroyed()-tracking + parent-pin. Safe because
                 // the C++ object is C++-heap-owned (Qt deletes it) while the GC owns only the small
                 // wrapper. `this(void* c)` (the wrap adopt ctor) stays distinct by param type.
+                // `scope(failure)` is the exception-safety half. Between __cpp_new and _register()
+                // NOTHING owns the block: the wrapper is not in the identity map and no finalizer
+                // knows the pointer, so a C++ ctor that throws — turned into a QtCppException by
+                // the Lippincott layer — leaked it outright. scope(failure) frees it and is
+                // cancelled by falling off the end, which is precisely "construction AND
+                // registration both completed".
                 wctors ~= format("    this(%s) {\n        auto __r = __cpp_new(__%s_size);\n"
+                    ~ "        scope(failure) __cpp_delete(__r);\n"
                     ~ "        %s(__r%s);\n        this(__r);\n        _register();\n    }",
                     dparams.join(", "), name, ctorFn,
                     callargs.length ? ", " ~ callargs.join(", ") : "");

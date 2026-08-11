@@ -64,17 +64,71 @@ O typesystem continua a ser preciso, e por isso ficou inventariado como `risk`
 `QLayout::takeAt`) agora vaza em vez de rebentar. Trocar um use-after-free por um leak é a direcção
 conservadora certa, não é a resposta completa, e a diferença está escrita.
 
+### 4. O achado #2 não é um gap, são DOIS — e a resolução que a auditoria propõe transforma o leak num double-free
+
+O critério dela é: *"emitir um destructor thunk por classe polimorfica nao-`QObject` e chama-lo
+somente para handles `OwnedByD`"*. Chamar por `OwnedByD` **não é suficiente e é perigoso**, porque
+nada limpa esse estado quando o Qt adopta o objecto: `_ownedByD` é posto na construção, e o
+`reparented()` — o único sítio que reavalia a posse — sai logo à entrada quando `_isQObj` é falso.
+Um `QSpacerItem` que entrou num layout continua `OwnedByD`. O thunk apagava-o, e o layout apaga-o
+outra vez. Hoje vaza; com essa resolução, **double-free**.
+
+O que separa os casos não é `QObject` vs não-`QObject`. É **existir ou não uma pergunta sobre quem
+é o dono**, e isso é um facto por classe que o gerador vê:
+
+| classe | pergunta disponível |
+|---|---|
+| `QTreeWidgetItem` | `parent()` + `treeWidget()` |
+| `QStandardItem` | `parent()` + `model()` |
+| `QListWidgetItem` | `listWidget()` |
+| `QTableWidgetItem` | `tableWidget()` |
+| **`QSpacerItem` / `QWidgetItem`** (`QLayoutItem`) | **nenhuma** |
+
+Para as quatro primeiras, o thunk é mecânico e seguro: é exactamente a regra que os `QObject` já
+usam (`qtd_holder_has_parent`), com a pergunta trocada. Para a família `QLayoutItem` não há
+pergunta nenhuma — depois de entregue a um layout não há como saber, e não há sinal quando o layout
+o apaga. Ali só há três saídas honestas: declarar a transferência no typesystem
+(`QLayout::addItem` transfere), não deixar o D construir esses tipos e expor só as APIs do layout
+que recebem valores (`addSpacing`, `addStretch`), ou aceitar o leak e documentá-lo.
+
+Continua por fazer — mas a razão agora é precisa, e as duas metades não têm a mesma resposta.
+
+### 5. #4 fechado no emissor; a prova de runtime não existe e digo porquê
+
+`scope(failure) __cpp_delete(__r)` na linha a seguir ao `__cpp_new`, cancelado por chegar ao fim —
+que é literalmente "construção E registo completaram-se". Portão `ctor-guard`: **1190 construtores
+que alocam, todos com a guarda**, lido de output recém-gerado (contra um directório velho o portão
+reportava 253 ficheiros sem guarda, um vermelho que não diz nada sobre o código).
+
+É uma garantia **estrutural**: prova que a guarda é emitida, não que dispara. Provar que dispara
+precisa de uma classe ligada cujo construtor lance, e não existe — os construtores do Qt não
+lançam. Fica inventariado em `ctor-throw-leaks-cpp-new` em vez de ser apresentado como fechado.
+
+### 6. `new QThread` deixou de ser o problema — passou a ser o trampolim
+
+Por decisão do utilizador, e é melhor do que as três opções que eu tinha posto. Um objecto só: a
+subclasse gerada, e o `run()` a cair em D. `subclass: ["QWidget", "QThread"]` bastou — o gerador já
+produziu `__QThread_vnames = ["event", "run", ...]` sem uma linha de código novo.
+
+A peça que faltava **não é do `QThread`**: o `__ovTramp` é o único ponto por onde qualquer virtual
+entra em D, e é lá que uma thread que o druntime nunca viu se regista. O Qt pode chamar qualquer
+virtual de uma thread que criou; `QThread::run()` é só o caso onde isso é o propósito. Custo no
+caso normal: uma leitura de TLS.
+
+E o primeiro teste disto **não valia nada** — verificava que o TLS lia de volta e que uma alocação
+sobrevivia, e passava com o attach desligado, porque nenhuma das duas é observável. Afirma agora o
+invariante (`Thread.getThis() !is null` dentro do `run()`), e o controlo negativo dispara.
+Qt5 e Qt6, ldc2 e dmd.
+
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
-- **#2 (não-`QObject`)**: aberto. `nonqobject-owned-leaks` e `nonqobject-qt-owned-dangles` estão no
-  inventário. A metade *owned* é mecânica (um thunk de destrutor por classe); a metade *Qt-owned*
-  não é — `QLayoutItem` não tem `destroyed()`, logo a invalidação tem de ser **modelada** a partir
-  do contrato da API, não observada. É desenho, e não o faço com um remendo.
+- **#2 (não-`QObject`)**: aberto, agora decomposto em dois (secção 4 acima). As classes com
+  pergunta de dono são mecânicas; a família `QLayoutItem` não é.
 - **#3 (eixo de ownership no manifest)**: depende de #2 estar decidido; sem isso a metadata seria
   inventada.
 - **#6 (artefacto instalável)**: aberto.
-- **#4, #5, #7**: #5 e #7 feitos (libsample entrou no `binding-core`; os três gaps de lifetime
-  entraram no inventário). #4 por fazer.
+- **#4, #5, #7**: feitos. #4 no emissor com portão estrutural (secção 5), #5 (libsample entrou no
+  `binding-core`), #7 (os três gaps de lifetime entraram no inventário).
 
 ## Rodada 12: o wrapper aprendeu muito com o qmltc-d; ownership ainda nao e geravel por heuristica
 
