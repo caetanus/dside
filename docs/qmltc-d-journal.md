@@ -5784,3 +5784,21 @@ Invisible in Qt's own styles, which put almost everything one level down, and un
 application QML, where a child inside a layout is the normal shape. Named as
 `id-in-a-grandchild-not-resolvable`, with the two-line reduction in the entry rather than the
 four-document symptom.
+
+**And the layer under it.** Making the id resolve is written and does not land, because it makes
+`ASignalCross` COMPILE at `-O1` where it used to be handed over — and that exposes a pre-existing
+defect:
+
+```
+data[0].data[0].data[0].baseUrl   engine: ATile.qml   ours: ASignalCross.qml
+```
+
+`g_rootDocUrl` exists for a reason that was itself measured: the engine reports the INSTANTIATING
+document for a local type used as a binding, which is why Qt's Dialog reports Dialog.qml and not
+Basic/Label.qml for its header. Both measurements are right, and the rule is narrower than either
+one on its own: **an object's baseUrl is the document where THAT OBJECT IS DECLARED.** The ATile
+instance is declared in the using document and takes its url; the objects inside ATile are declared
+in ATile.qml and take that one. We apply the root's url to the whole subtree.
+
+So the order is: fix the descendants' baseUrl first, then land the id scope. The work is on
+`wip/id-scope`, and one style's worth of coverage is waiting behind a two-line rule.
