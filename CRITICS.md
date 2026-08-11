@@ -220,6 +220,30 @@ Qt5** (`setItemSelected`, `setItemHidden`, `setItemExpanded`, `setFirstItemColum
 getters, que o Qt6 removeu) — uma diferença de superfície entre versões que nenhuma auditoria à
 vista teria apanhado.
 
+### 10. O critério que decide se uma classe pode ser descartada NÃO é "tem pergunta de dono"
+
+Ia a seguir para o `QStandardItem` — tem `parent()` e `model()`, portanto pela minha própria
+decomposição da secção 4 seria a "metade mecânica". Fui ler o destrutor primeiro:
+
+| classe | o que o destrutor diz |
+|---|---|
+| `QTreeWidgetItem` | *"The item will be removed from QTreeWidgets to which it has been added. **This makes it safe to delete an item at any time**."* |
+| `QStandardItem` | *"Destructs the item. This causes the item's children to be destructed as well."* |
+| `QLayoutItem` | *"Destroys the QLayoutItem."* |
+
+**Só o primeiro se DESLIGA do dono.** Os outros dois deixam o dono com um ponteiro morto se nós
+apagarmos primeiro — e o dono não tem como saber.
+
+Isso corrige a secção 4: a propriedade que torna uma classe segura de descartar não é *"consigo
+perguntar quem é o dono"* (o `QStandardItem` consegue e continua perigoso), é **"o destrutor
+desliga-se do dono"**. Com essa propriedade, uma transferência em falta na lista é sobrevivível;
+sem ela, é um ponteiro pendurado dentro do Qt.
+
+Por isso o `QStandardItem` **não** foi ligado, apesar de ser o candidato óbvio. Ligar mais uma
+classe passa a ter dois requisitos, não um: a caminhada da superfície (que o `ownership-gate` já
+exige) **e** um destrutor que se desligue — ou, na falta dele, a certeza de que a lista está
+completa, que é uma afirmação muito mais forte.
+
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
 - **#2 (não-`QObject`)**: FECHADO para `QTreeWidgetItem` (secção 9), aberto para as restantes. A
