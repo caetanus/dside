@@ -70,6 +70,11 @@ Build reggaeBuild() {
             // binding also compiles: prove they link and no-op here, not just that the C++ unit
             // compiles (qtmoc-probe-noqml covers that half).
             all ~= qtdTest("noqml_helpers-" ~ dc ~ "-" ~ tag, t("wrapper", "noqml_helpers.d"), b, dc);
+            // `new QThread` is a QThread: one object, a trampoline, and run() landing in D. The
+            // piece that makes it real is generic rather than QThread's — every virtual callback
+            // attaches a thread druntime has not seen, because Qt is free to call one from a
+            // thread it created and D code there otherwise has no registered stack.
+            all ~= qtdTest("thread_test-" ~ dc ~ "-" ~ tag, t("wrapper", "thread_test.d"), b, dc);
         }
     }
     widgets("spec_cxx_qtwidgets_wrap.json", ["Qt6Widgets"], "qt6");

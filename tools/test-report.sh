@@ -52,7 +52,7 @@ category() {
     manifest-gate-*|registry-gate-*|expected-fails-lint) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
     # Wrapper LIFETIME, which is neither moc nor qml: who owns a pointer, and who may delete it.
-    borrowed-*|ownership-*|wraptest-*|moclife*) echo lifetime ;;
+    borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*) echo lifetime ;;
     *) echo other ;;
   esac
 }

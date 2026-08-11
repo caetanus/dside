@@ -872,6 +872,29 @@ template __qtdIsFn(T, string m) {
 }
 // generates the extern(C) trampoline that adapts the C++ virtual to the D method `vn`. A
 // unique name per class (__ov_<Class>_<idx>) so it doesn't collide in C linkage.
+/// A THREAD DRUNTIME HAS NEVER SEEN cannot run D code. Qt calls virtuals on threads it created —
+/// `QThread::run()` is the entire purpose of QThread — and on such a thread D has no TLS, no GC
+/// registration and no stack range for the collector to scan. That is undefined behaviour, not a
+/// slow path: the first GC allocation inside `run()` decides how it fails.
+///
+/// So the attach lives at the ONE place every virtual callback enters D, rather than in a QThread
+/// mechanism. `Thread.getThis()` is a TLS read, so the ordinary case (Qt's main thread, already
+/// known) costs one comparison; only a genuinely foreign thread attaches, and it detaches on the
+/// way out so druntime does not keep a Thread for a stack that is gone.
+struct QtdAttached {
+    private bool _mine;
+    @disable this(this);
+    ~this() nothrow @nogc { if (_mine) { import core.thread : thread_detachThis; thread_detachThis(); } }
+}
+QtdAttached qtdAttachThread() nothrow {
+    import core.thread : Thread, thread_attachThis;
+    QtdAttached a;
+    if (Thread.getThis() is null) {
+        try { thread_attachThis(); a._mine = true; } catch (Throwable) {}
+    }
+    return a;
+}
+
 string __ovTramp(T, string vn, size_t idx)() {
     import std.traits : ReturnType, Parameters;
     alias R = ReturnType!(__traits(getMember, T, vn));
@@ -887,11 +910,12 @@ string __ovTramp(T, string vn, size_t idx)() {
     // callback error policy (counted/recorded/hooked), never silently swallowed.
     static if (is(R == void))
         return "extern(C) static void " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
-            ~ ") nothrow { try { " ~ call ~ "; } catch (Exception e) { qtdOnCallbackError(e); } }\n";
+            ~ ") nothrow { auto __at = qtdAttachThread(); try { " ~ call
+            ~ "; } catch (Exception e) { qtdOnCallbackError(e); } }\n";
     else
         return "extern(C) static " ~ R.stringof ~ " " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
-            ~ ") nothrow { try { return " ~ call ~ "; } catch (Exception e) { qtdOnCallbackError(e); return "
-            ~ R.stringof ~ ".init; } }\n";
+            ~ ") nothrow { auto __at = qtdAttachThread(); try { return " ~ call
+            ~ "; } catch (Exception e) { qtdOnCallbackError(e); return " ~ R.stringof ~ ".init; } }\n";
 }
 
 /// Mixin for a Qt class subclassed in D that is ALSO @QObject: it overrides
