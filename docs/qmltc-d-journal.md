@@ -5761,3 +5761,26 @@ what made the gap findable.
 
 With the three, the document compiles at `-O1` and agrees with the engine on every property. The
 application corpus went from 2 of 18 to **3**, which is the first time that number has moved.
+
+### A QML id is visible in the whole document; ours was visible one level down
+
+Four of the remaining application documents refused a declared property's initial binding with the
+same message, which looked like one cause. The cheapest possible probe said otherwise, and it is
+worth writing down because it cost two minutes instead of an afternoon:
+
+```qml
+Item { property int w: kid.width; Rectangle { id: kid; width: 30 } }          // compiles
+Item { property int w: kid.width; Row { Rectangle { id: kid; width: 30 } } }  // refused
+```
+
+The two differ by one `Row`. An id declared in a GRANDCHILD does not resolve, and a QML id is
+document-scoped — visible everywhere in the file, at any depth.
+
+It is three of the four: `ALocalType` reads three ATiles in a Row, `AControlsApp` a Slider in a
+Column, `AInlineComponent` a Chip in a Row. The fourth, `ALoaderInline`, only looks the same — its
+`loader` IS a direct child and what it reads is `loader.item`, which exists only at run time.
+
+Invisible in Qt's own styles, which put almost everything one level down, and unavoidable in
+application QML, where a child inside a layout is the normal shape. Named as
+`id-in-a-grandchild-not-resolvable`, with the two-line reduction in the entry rather than the
+four-document symptom.
