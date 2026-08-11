@@ -181,12 +181,52 @@ dentro das bibliotecas do Qt, e interpor o `operator delete` no executável não
 `--export-dynamic` (duas tentativas). A ausência de invalidação está medida; o resto do argumento é
 por construção, e não precisa de mais.
 
+### 9. #2 fechado para uma classe, e o #3 respondido pelo sítio que interessa
+
+**Feito**, pelo desenho que o utilizador escolheu (largar a posse na chamada que transfere). Uma
+classe listada em `disposable` fornece um thunk de `delete` e o finalizador do holder chama-o
+quando ainda é dono. A política fica no holder, o conhecimento do tipo na classe gerada, e nenhum
+dos dois sabe a metade do outro.
+
+Ligado **só** para `QTreeWidgetItem`. As outras ~59 raízes `super(c, false)` do QtWidgets continuam
+a vazar, que é o erro seguro. Teste `nonqobject-{ldc2,dmd}` cobre os três estados, e **os dois
+controlos negativos foram corridos**:
+
+- sem o `disposable` → estado 1 falha: o órfão é desregistado e o bloco nunca libertado;
+- sem a transferência declarada → estado 2 falha: *"a árvore perdeu o item: o binding libertou algo
+  que o Qt possui"* — o double-free que este desenho existe para evitar, apanhado pelo teste.
+
+**O teste precisou de três tentativas para ser prova**, e as três falhas são a parte reutilizável:
+o mapa de identidade não distingue nada (o `unreg` corre haja ou não delete); um contador global de
+frees também não (uma colecção liberta muita coisa); só vigiar UM endereço distingue — e só resulta
+porque o `delete` em causa está no shim do próprio binding, compilado no binário.
+
+**A ordem das classes não foi arbitrária, e a razão é documentada.** `~QTreeWidgetItem` retira-se
+das árvores — *"This makes it safe to delete an item at any time"* — logo um engano nesta classe
+corrige-se sozinho. `~QLayoutItem` diz apenas *"Destroys the QLayoutItem"*: um `QSpacerItem` que
+apaguemos por engano deixa o layout com um ponteiro morto. A família `QLayoutItem` exige a lista
+completa sem perdão, e por isso não vem a seguir por omissão.
+
+**E o #3 fica respondido onde interessa mais do que no manifest.** A queixa é que `bound` sem
+ownership conhecido é apresentado como superfície segura. Em vez de anotar 8428 símbolos com
+metadata que ninguém lê, `ownership-gate-*` torna **impossível** a superfície perigosa crescer em
+silêncio: para cada classe descartável, todo método gerado que a receba tem de estar classificado
+como `transfer_in`, `transfer_out` ou `no_transfer`, e qualquer outro falha o build. O `no_transfer`
+existe de propósito — *"não é transferência"* é um achado, não uma ausência; sem ele, um método por
+verificar e um verificado-e-inofensivo são indistinguíveis, que é exactamente a queixa do #3.
+
+Encontrou dezanove métodos por classificar no minuto em que foi escrito, e depois mais oito **só no
+Qt5** (`setItemSelected`, `setItemHidden`, `setItemExpanded`, `setFirstItemColumnSpanned` e os
+getters, que o Qt6 removeu) — uma diferença de superfície entre versões que nenhuma auditoria à
+vista teria apanhado.
+
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
-- **#2 (não-`QObject`)**: aberto, agora decomposto em dois (secção 4 acima). As classes com
-  pergunta de dono são mecânicas; a família `QLayoutItem` não é.
-- **#3 (eixo de ownership no manifest)**: depende de #2 estar decidido; sem isso a metadata seria
-  inventada.
+- **#2 (não-`QObject`)**: FECHADO para `QTreeWidgetItem` (secção 9), aberto para as restantes. A
+  próxima classe é uma edição de spec mais a caminhada da superfície, que o `ownership-gate` agora
+  exige em vez de confiar.
+- **#3 (ownership no manifest)**: respondido pelo `ownership-gate` em vez de por uma coluna nova
+  (secção 9).
 - **#6 (artefacto instalável)**: metade feita (secção 7): existe um consumidor fora do checkout, no
   build, nos dois compiladores. A metade que falta é empacotar — nada está instalado.
 - **#4, #5, #7**: feitos. #4 no emissor com portão estrutural (secção 5), #5 (libsample entrou no

@@ -303,6 +303,21 @@ Build reggaeBuild() {
                      ex.gen, qtdBindLib(ex, dc), ex.shims]);
     }
 
+    // --- the audited transfer surface has to STAY audited ---
+    // A class in `disposable` is one the binding will DELETE while it still owns it, which is safe
+    // exactly as long as every API that could take ownership of it is declared. The list was walked
+    // by hand against Qt's documentation once; this makes the walk a build step, so binding one
+    // more method that takes such a type cannot widen the surface in silence. It found nineteen
+    // unclassified methods the moment it was written.
+    {
+        auto og = buildPath(root, "tests", "ownership-gate.sh");
+        if (exists(og))
+            foreach (b; ctorGuardBindings)
+                all ~= Target.phony("ownership-gate-" ~ b.specName.stripExtension.replace("spec_cxx_", ""),
+                    "sh " ~ og ~ " " ~ buildPath(root, "generator", b.specName) ~ " " ~ b.genDir,
+                    [Target(og), b.gen]);
+    }
+
     // --- every allocating wrapper ctor frees its block if construction throws ---
     // Depends on the bindings' gen targets so it reads FRESHLY generated output: run against a
     // stale directory it reports 253 files missing a guard the emitter does emit, which is a red

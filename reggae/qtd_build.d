@@ -71,6 +71,8 @@ struct QtdBinding {
     string genDir;    // pure generated sources (owned by gend, wiped on each regen)
     string bdir;      // reggae build artifacts (objects, archives) — kept out of genDir
     string[] mods;    // pkg-config modules (Qt6Widgets, …)
+    string specName;  // the spec file this binding was generated from — gates that read DECLARED
+                      // policy (ownership transfers) need the spec, not just its output
 }
 
 // The Qt minor a binding was generated for ("6.11"), taken from its genDir (…/qt-6.11/cxx-…),
@@ -214,7 +216,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]),
         [gen]);
 
-    return QtdBinding(gen, shims, root, genDir, bdir, mods);
+    return QtdBinding(gen, shims, root, genDir, bdir, mods, spec);
 }
 
 // Per-compiler binding archive: compile every generated .d module to its own object

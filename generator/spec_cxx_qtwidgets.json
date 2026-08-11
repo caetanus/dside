@@ -28,5 +28,32 @@
   },
   "disposable": [
     "QTreeWidgetItem"
+  ],
+  "no_transfer": [
+    "QTreeWidget::closePersistentEditor/0",
+    "QTreeWidget::collapseItem/0",
+    "QTreeWidget::editItem/0",
+    "QTreeWidget::expandItem/0",
+    "QTreeWidget::indexFromItem/0",
+    "QTreeWidget::indexOfTopLevelItem/0",
+    "QTreeWidget::isFirstItemColumnSpanned/0",
+    "QTreeWidget::isItemExpanded/0",
+    "QTreeWidget::isItemHidden/0",
+    "QTreeWidget::isItemSelected/0",
+    "QTreeWidget::isPersistentEditorOpen/0",
+    "QTreeWidget::itemAbove/0",
+    "QTreeWidget::itemBelow/0",
+    "QTreeWidget::itemWidget/0",
+    "QTreeWidget::openPersistentEditor/0",
+    "QTreeWidget::removeItemWidget/0",
+    "QTreeWidget::scrollToItem/0",
+    "QTreeWidget::setCurrentItem/0",
+    "QTreeWidget::setFirstItemColumnSpanned/0",
+    "QTreeWidget::setItemExpanded/0",
+    "QTreeWidget::setItemHidden/0",
+    "QTreeWidget::setItemSelected/0",
+    "QTreeWidget::setItemWidget/0",
+    "QTreeWidget::visualItemRect/0",
+    "QTreeWidgetItem::indexOfChild/0"
   ]
 }
