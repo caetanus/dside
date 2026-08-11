@@ -368,6 +368,19 @@ Build reggaeBuild() {
         }
     }
 
+    // --- the inventory is EXECUTED, not just well-formed (critics r7, open since) ---
+    // The linter checks that every named probe target exists; it has never run one, and the cost of
+    // that showed: `virtual-container-return` stayed listed after the shim that closed it landed,
+    // because "the entry is well-formed" and "the entry is still true" are different questions.
+    {
+        auto efr = buildPath(root, "tests", "expected-fails-run.sh");
+        auto efj = buildPath(root, "tests", "expected-fails.json");
+        if (exists(efr))
+            all ~= Target.phony("expected-fails-run",
+                "sh " ~ efr ~ " " ~ efj ~ " " ~ buildPath(root, "build"),
+                [Target(efr), Target(efj)]);
+    }
+
     // --- holder lifetime layer, unit-tested in isolation (no generated binding) ---
     all ~= holderTests(root);
 

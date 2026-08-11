@@ -76,6 +76,8 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 - **Flip the last two specs**: WebEngine and `corpustypes` still generate without the wrapper. They
   are the only remaining raw-path consumers now that `spec_cxx_qtwidgets{,_qt5}.json` and the QML
   family are wrapper-mode.
-- **`tests/expected-fails.json` is a linted INVENTORY, not a runner**: the linter checks schema,
-  unique ids, known kinds and that named probe targets exist. Nothing evaluates `remove_when`, so a
-  gap that has been closed can stay listed and no gate objects.
+- **`tests/expected-fails.json` is linted AND partly executed**: `expected-fails-lint` checks
+  schema, unique ids, known kinds and that named probe targets exist; `expected-fails-run` now RUNS
+  those probes and fails if a documented risk stops being covered (14 targets today). What is still
+  missing is unexpected-PASS detection — that needs each entry to declare whether its probe should
+  pass or fail, and `remove_when` is still prose nothing evaluates.
