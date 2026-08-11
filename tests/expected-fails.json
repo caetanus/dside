@@ -127,9 +127,13 @@
       "id": "nonqobject-qt-owned-dangles",
       "kind": "known_gap",
       "area": "holder/lifetime",
-      "reason": "MEASURED: destroy a QTreeWidget that owns a QTreeWidgetItem and the item's D wrapper still reports _cpp non-null — checkAlive() never fires. QLayoutItem/QTreeWidgetItem have no destroyed() signal, so nothing invalidates the wrapper. This also rules out the obvious fix: a finalizer that asks parent()/treeWidget() before deleting is CALLING THROUGH the freed pointer, so the query is itself the use-after-free. Ownership has to be dropped at the call that transfers it, not queried at destruction.",
+      "reason": "MEASURED: destroy a QTreeWidget that owns a QTreeWidgetItem and the item's D wrapper still reports _cpp non-null — checkAlive() never fires. QLayoutItem/QTreeWidgetItem have no destroyed() signal, so nothing invalidates the wrapper. This also rules out the obvious fix: a finalizer that asks parent()/treeWidget() before deleting is CALLING THROUGH the freed pointer, so the query is itself the use-after-free. Ownership has to be dropped at the call that transfers it, not queried at destruction. The probe ASSERTS the gap: when it fails, the gap is closed and this entry must be removed.",
       "remove_when": "transfer-in APIs are declared and the emitter drops D ownership at that call, or the types are not D-constructible at all",
-      "since": "2026-08-10"
+      "since": "2026-08-10",
+      "probe_targets": [
+        "dangle-ldc2",
+        "dangle-dmd"
+      ]
     },
     {
       "id": "ctor-throw-leaks-cpp-new",

@@ -60,8 +60,25 @@ void main(string[] args) {
                         errs ~= id ~ ": probe_target `" ~ (pt.type == JSONType.string ? pt.str : "?")
                             ~ "` is not a real build target (dangling)";
                 }
-            } else if ("probe_targets" in e.object) {   // field-by-kind: only risk carries probes
-                errs ~= id ~ ": kind=" ~ k ~ " must NOT carry `probe_targets`";
+            } else if ("probe_targets" in e.object) {
+                // A KNOWN GAP MAY CARRY PROBES, and the best ones do. The rule used to be "only a
+                // risk has probes", on the assumption that a gap is by definition untested — but a
+                // probe can assert that the gap is STILL REAL, and then the day somebody closes it
+                // the probe fails and names the entry to delete. That is the unexpected-pass
+                // detection this inventory has been missing since round 7, and it needs no new
+                // field: `dangle-{ldc2,dmd}` asserts that a non-QObject whose owner died leaves a
+                // wrapper that still believes it is alive.
+                //
+                // The other kinds keep the prohibition: a permanent_exclusion is not going to stop
+                // being excluded, so a probe there would only rot.
+                if (k != "known_gap")
+                    errs ~= id ~ ": kind=" ~ k ~ " must NOT carry `probe_targets`";
+                else foreach (pt; e["probe_targets"].array) {
+                    nProbe++;
+                    if (pt.type != JSONType.string || pt.str !in targets)
+                        errs ~= id ~ ": probe_target `" ~ (pt.type == JSONType.string ? pt.str : "?")
+                            ~ "` is not a real build target (dangling)";
+                }
             }
         }
     }

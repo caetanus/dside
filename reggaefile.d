@@ -106,6 +106,12 @@ Build reggaeBuild() {
     // stack; the first version of this test passed because nothing was ever collected.
     foreach (dc; DCS)
         all ~= qtdTest("borrowed-" ~ dc, t("wrapper", "borrowed.d"), ex, dc);
+    // ...and a probe that asserts a documented GAP is still real, so the day it is closed the
+    // inventory says so instead of quietly describing something that no longer happens. Read
+    // tests/wrapper/dangle.d before "fixing" it: its failure is good news with instructions.
+    foreach (dc; DCS)
+        all ~= qtdTest("dangle-" ~ dc, t("wrapper", "dangle.d"), ex, dc);
+
     // A non-QObject the binding OWNS, in the three states ownership can be in: nobody took it (we
     // free it), Qt took it (we must not), Qt took it and died (we never touch it). Needs a C++
     // half because a freed block is not observable from D — and the two cheaper substitutes both
