@@ -86,8 +86,11 @@ sh tests/install.sh generated/qt-6.11/cxx-qtwidgets .build/qt-6.11-cxx-qtwidgets
 
 That is the whole package: an import path, two archives, and eleven lines of `dub.json` that pick
 the right archive per compiler. `dub build --compiler=ldc2` and `--compiler=dmd` both work from the
-same install. It is **not published anywhere** — the path is local and nothing versions the artifact
-against the Qt minor, which is the part of this that is distribution rather than engineering.
+same install. The package records the Qt it was generated against and the generator commit
+(`qtd-build.txt`), and the consumer refuses a mismatch: a binding built from 6.11's headers and
+linked against another minor mangles the same symbols, so it would surface as a crash inside Qt
+rather than a link error. It is **not published anywhere** — the path is local, which is the part
+of this that is distribution rather than engineering.
 
 **Or by hand**, which is what the package expands to:
 

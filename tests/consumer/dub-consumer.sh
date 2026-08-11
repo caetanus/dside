@@ -29,6 +29,21 @@ cat > "$TMP/dub.json" <<EOF
 }
 EOF
 
+# THE QT THE PACKAGE WAS BUILT AGAINST must be the Qt that is here now. A binding generated from
+# 6.11's headers and linked against a different minor is undefined behaviour that shows up as a
+# crash inside Qt, not as a link error — the symbols mangle the same. Two numbers and a comparison
+# is the whole check, and nothing in the artifact carried the first one until now.
+if [ -f "$PREFIX/qtd-build.txt" ]; then
+  built=$(sed -n 's/^qt=//p' "$PREFIX/qtd-build.txt")
+  have=$(pkg-config --modversion Qt6Core 2>/dev/null || echo unknown)
+  if [ "$built" != "$have" ]; then
+    echo "dub-consumer: the package was generated against Qt $built and this machine has Qt $have." >&2
+    echo "Regenerate the binding — the symbols mangle the same and the mismatch would surface as a" >&2
+    echo "crash inside Qt rather than as a link error." >&2
+    exit 1
+  fi
+fi
+
 cd "$TMP"
 # --skip-registry: this must resolve LOCALLY. Without it a typo in the package name reaches the
 # network and the failure reads like a connectivity problem instead of a packaging one.
