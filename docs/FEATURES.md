@@ -59,7 +59,14 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 - **Multiple inheritance**: D has one base, so a secondary C++ base is an explicit upcast —
   `w.asQPaintDevice().width()`, not `w.width()`. This is the one place the surface does not read
   like Qt's documentation, and the manifest's `inherited` fate does not point at it.
-- **Not installed**: the paths above are build directories. Packaging is open work.
+- **As a package**: `tests/install.sh` lays the artifacts out as a dub package (one `dub.json`,
+  both compilers via `lflags-ldc`/`lflags-dmd`) and `dub-consumer-{ldc2,dmd}` resolves it by name.
+  Not published anywhere and not versioned against the Qt minor — that part is distribution.
+- **Ownership**: a pointer Qt RETURNS is borrowed; a generated constructor owns what it allocated;
+  a declared transfer moves ownership at the call (`transfer_in`/`transfer_out`/`ctor_parents`).
+  A class in `disposable` is freed by the binding when it still owns it — only `QTreeWidgetItem`
+  today, because its destructor detaches itself from its owner and most item classes' do not.
+  `ownership-gate-*` fails the build if any method taking a disposable type is unclassified.
 
 ## Build / platform
 - reggae binary backend; ldc2 + dmd; Qt5 + Qt6 parity; à-la-carte binaries.

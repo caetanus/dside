@@ -71,7 +71,25 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 
 ## Using it from your own project
 
-The build above produces two artifacts a consumer needs, and nothing else:
+**As a dub dependency.** `./build dub-consumer-ldc2` installs the binding as a package and builds an
+application against it; the same two steps by hand are:
+
+```sh
+sh tests/install.sh generated/qt-6.11/cxx-qtwidgets .build/qt-6.11-cxx-qtwidgets \
+                    /where/you/want/it qtd-qtwidgets $(pkg-config --libs Qt6Widgets)
+```
+
+```json
+{ "name": "myapp", "targetType": "executable",
+  "dependencies": { "qtd-qtwidgets": { "path": "/where/you/want/it" } } }
+```
+
+That is the whole package: an import path, two archives, and eleven lines of `dub.json` that pick
+the right archive per compiler. `dub build --compiler=ldc2` and `--compiler=dmd` both work from the
+same install. It is **not published anywhere** — the path is local and nothing versions the artifact
+against the Qt minor, which is the part of this that is distribution rather than engineering.
+
+**Or by hand**, which is what the package expands to:
 
 ```sh
 ldc2 -of=myapp myapp.d \
@@ -82,14 +100,10 @@ ldc2 -of=myapp myapp.d \
      -L--end-group $(pkg-config --libs Qt6Widgets) -L-lstdc++
 ```
 
-That is the whole contract: one import path, two archives, and Qt's own libraries. `tests/consumer/`
-is exactly this — sources copied to a temporary directory and built there, so nothing in the
-checkout can be reached by a relative path — and it runs in the matrix as
-`consumer-smoke-{ldc2,dmd}`.
-
-**Not yet a package.** Those paths point into a build directory; a real consumer should name a
-dependency. Installing the artifacts is open work, and it is why the gate above copies the
-application out but still points back at the checkout for the binding.
+One import path, two archives, and Qt's own libraries. `tests/consumer/` is exactly this — sources
+copied to a temporary directory and built there, so nothing in the checkout can be reached by a
+relative path — and it runs in the matrix as `consumer-smoke-{ldc2,dmd}`, beside
+`dub-consumer-{ldc2,dmd}` which does the same through the package.
 
 ```d
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlabel;
