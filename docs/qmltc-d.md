@@ -127,6 +127,13 @@ sides:
   what the engine has there. Building some siblings and not others turns that from a short list into
   a wrong one, which is how it became visible at all.
 
+Which of the two directions to take was settled by counting rather than arguing: **39 of the 240
+documents that compile today skip a default child** — Basic's `ComboBox`, `Dialog`, `Drawer`, `Menu`,
+`Popup` and `ScrollView` among them. Refusing a document whenever one child is refused would cost up
+to all 39, so the tightening is out and the widening is the only affordable answer. (That those 39
+match the engine today with a child missing says their skipped children are at the END of the list,
+where nothing shifts behind them. Luck, not a property.)
+
 The rule the codebase already states for a document — *"a document we cannot compile is not
 abandoned, it is instantiated by the engine and reached through its interface like any other opaque
 object"* — is the same rule a child wants. A child we cannot compile should be **built by the

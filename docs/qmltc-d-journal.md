@@ -5896,3 +5896,14 @@ others is what made it visible.
 So the entry's blocker changed, and for the better: it is not "the members cannot be typed" — they
 can — it is "a document must build every default child or none". Parked on
 `wip/engine-builds-unknown-child` with that written into `remove_when`.
+
+**The index question, answered by counting.** "Build every default child or none" reads like the
+safe policy until it is measured: **39 of the 240 documents that compile today skip one** — Basic's
+ComboBox, Dialog, Drawer, Menu, Popup and ScrollView among them. Refusing a document whenever one
+child is refused would cost up to all 39, so tightening is not on the table and the only affordable
+direction is the other one: build every child, letting the engine build what we cannot compile.
+
+Worth noticing what those 39 also say. They match the engine today WITH a child missing, which means
+their skipped children sit at the end of the list, where nothing shifts behind them. That is luck.
+The moment a skipped child has a sibling after it — Material's CursorDelegate, a Connections before
+a Timer — the indices move and the document is wrong in a way no count of skipped members predicts.
