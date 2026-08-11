@@ -1101,6 +1101,50 @@ extern "C" int qtd_bind_leaf(void* ownerV, const char* prop, const char* sig, vo
     return 1;
 }
 
+// A SIGNAL FOUND BY NAME on the object that is there. A child the ENGINE builds can be of a type
+// our registry never heard of — `Timer` is the plain one — so `onTriggered` has no signature to
+// connect with and the handler was refused outright. QML names a handler after the signal and
+// nothing else, so the name is all we are given and all we need: the meta-object supplies the
+// signature. The receiving slot takes no parameters, which Qt allows for any signal.
+extern "C" int qtd_connect_by_name(void* sndrV, const char* signalName, void* recvV,
+                                   const char* slot) {
+    QObject* s = static_cast<QObject*>(sndrV);
+    QObject* r = static_cast<QObject*>(recvV);
+    if (!s || !r || !signalName || !slot) return 0;
+    const QMetaObject* mo = s->metaObject();
+    QByteArray want(signalName);
+    for (int i = 0; i < mo->methodCount(); ++i) {
+        QMetaMethod m = mo->method(i);
+        if (m.methodType() != QMetaMethod::Signal || m.name() != want) continue;
+        std::string sig = std::string("2") + m.methodSignature().constData();
+        std::string sl  = std::string("1") + slot;
+        return QObject::connect(s, sig.c_str(), r, sl.c_str()) ? 1 : 0;
+    }
+    return 0;
+}
+
+// A property write that CREATES the property when the meta-object has none, which is what QML does
+// for a type whose members the document itself declares (`ListElement { name: "alpha" }`). Used only
+// where the compiler has no registry entry to check against — see setPropAny in qtmoc.d.
+extern "C" int qtd_prop_set_any(void* o, const char* n, const char* v) {
+    if (!o || !n) return 0;
+    QObject* q = static_cast<QObject*>(o);
+    QVariant val = QString::fromUtf8(v ? v : "");
+    int pi = q->metaObject()->indexOfProperty(n);
+    if (pi >= 0) {                       // declared: convert to its type, as setProp would
+        QMetaProperty mp = q->metaObject()->property(pi);
+        QVariant c = val;
+        // Qt 5 converts by type ID, Qt 6 by QMetaType — the same seam the rest of this file uses.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        if (c.convert(mp.metaType())) return mp.write(q, c) ? 1 : 0;
+#else
+        if (c.convert(mp.userType())) return mp.write(q, c) ? 1 : 0;
+#endif
+        return mp.write(q, val) ? 1 : 0;
+    }
+    return q->setProperty(n, val) ? 1 : 0;   // undeclared: QML creates it, and so do we
+}
+
 // How many leaf connections the table holds. A probe cannot prove the cleanup above from the
 // outside — the entries are invisible — so the count is exported for exactly that: build a tree,
 // destroy it, and require the table back at its baseline.

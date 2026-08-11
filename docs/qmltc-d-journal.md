@@ -5921,3 +5921,32 @@ exposed that — the same one that had rejected the wide version.
 
 Qt's five styles unchanged at 235, Material back to 40, application corpus 5 → **6**.
 `default-child-of-unregistered-type-dropped` leaves the inventory.
+
+### A handler is named after its signal, and a type we do not know has no declared properties
+
+Two changes that came out of the same document and the same principle: for an object the ENGINE
+built of a type outside the binding, the registry has no answer, and the meta-object does.
+
+**`connectMetaByName`.** `onTriggered` on a `Timer` had no signature to connect with, so the handler
+was refused outright even though its body compiled. QML names a handler after its signal and nothing
+else, so the name is all we are given and all we need — the meta-object supplies the signature, and
+the receiving slot takes no parameters, which Qt allows for any signal. A name no signal answers to
+returns 0 rather than throwing: the handler is then simply not wired and the level demotes the
+document. `ATimerCounter` compiles and agrees.
+
+**`setPropAny`, and a defect of mine it fixed.** Letting the engine build an unknown child had landed
+two hours earlier with `AListView` THROWING at construction — `setProp failed: no writable property
+"name" on QQmlListElement` — and the matrix stayed green, because the gate demotes a document that
+does not build. The green was right; reading it as "nothing new" was not.
+
+`ListElement { name: "alpha" }` CREATES a property; that is what QML does there. Our `setProp` throws
+on an undeclared name on purpose, so a typo cannot quietly become a dynamic property — but that check
+needs a registry entry to mean anything, and for a type outside the binding there is none. So the
+write becomes the tolerant one exactly where the strict one could not have worked. `AListView` goes
+from throwing to building-and-wrong (its model stays empty), which the gate demotes either way — not
+a gain in the count, a gain in kind.
+
+Two readings of my own to correct alongside. I took `rc=0` from a pipeline whose `$?` was `head`'s,
+not the program's; run properly it was 1, five times out of five. And `QMetaProperty::metaType()` is
+Qt 6 only — the second time in one session that the parity rule caught what I wrote against the API
+in front of me.

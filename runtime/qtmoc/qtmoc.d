@@ -1095,6 +1095,20 @@ void bindEval(scope void delegate() f) {
 void setProp(T)(T o, string name, int v) {
     if (!qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "int");
 }
+private extern(C) int qtd_prop_set_any(void*, const(char)*, const(char)*);
+/// Write a property on an object whose TYPE WE DO NOT KNOW, creating it if the meta-object has no
+/// such name — which is what QML itself does: `ListElement { name: "alpha" }` gives a
+/// QQmlListElement a `name` it did not have. [setProp] throws on an undeclared name on purpose, so
+/// a typo cannot quietly become a dynamic property; that check needs a registry entry to mean
+/// anything, and for a type outside the binding there is none. The value crosses as TEXT and
+/// QMetaType converts, the same channel every value here already travels on.
+void setPropAny(T, V)(T o, string name, V v) {
+    import std.conv : to;
+    static if (is(V == string)) auto s = v;
+    else                        auto s = v.to!string;
+    qtd_prop_set_any(qobjOf(o), (name ~ "\0").ptr, (s ~ "\0").ptr);
+}
+
 /// Reads a real (double) property by name.
 double propDouble(T)(T o, string name) { return qtd_prop_get_double(__bindRecv(o, name), (name ~ "\0").ptr); }
 /// Writes a real (double) property by name (fires the notify, if any).
@@ -1544,6 +1558,18 @@ void ensureModule(string uri) {
 int bindLeaf(T, R)(T owner, string prop, string sig, R recv, string slot) {
     import std.string : toStringz;
     return qtd_bind_leaf(qobjOf(owner), prop.toStringz, sig.toStringz, qobjOf(recv), slot.toStringz);
+}
+
+private extern(C) int qtd_connect_by_name(void*, const(char)*, void*, const(char)*);
+/// Connect a signal found by NAME on whatever object is there, to a parameterless slot. A child the
+/// ENGINE builds can be of a type our registry never heard of, so `onTriggered` on a `Timer` has no
+/// signature to connect with — and QML names a handler after the signal and nothing else, so the
+/// name is all there is and all that is needed: the meta-object supplies the rest. Returns non-zero
+/// when the connection was made; a name no signal answers to returns 0 rather than throwing,
+/// because the handler is then simply not wired and the level demotes the document.
+int connectMetaByName(T, R)(T sndr, string signalName, R recv, string slot) {
+    import std.string : toStringz;
+    return qtd_connect_by_name(qobjOf(sndr), signalName.toStringz, qobjOf(recv), slot.toStringz);
 }
 
 /// Connect `owner.prop`'s NOTIFY to `recv.slot`, so a binding that reads through an object property

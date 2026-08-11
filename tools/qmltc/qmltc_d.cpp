@@ -7463,7 +7463,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     notifyProp.clear();   // not a property change: nothing to mark as notified
                 }
             }
-        if ((!isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp))) || !bodyOk) {
+        // ...and when this object is one the ENGINE built, the signal can be found by NAME at run
+        // time instead of being named here. A child of a type outside the binding — `Timer` is the
+        // plain case — has no entry in the signal table, so `onTriggered` was refused outright even
+        // though QML names a handler after its signal and nothing else. The body still has to
+        // compile; only the SIGNATURE is what we did not have. See connectMetaByName.
+        bool connByName = false;
+        if (!isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp))
+                && bodyOk && g_selfIsEngineInst && !sigParams)
+            connByName = true;
+        if ((!connByName && !isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp)))
+                || !bodyOk) {
             std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
             ++partial; continue;
         }
@@ -7492,8 +7502,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         handlerSlots += "    @Slot void " + slotName + "(" + dparams + ") {\n" + hbody + "    }\n";
         // Connect with the base notify's REAL signature when that is what this handler is on.
         std::string connSig = baseNotifyOk ? baseNotifySig : (h.sig + "(" + cppsig + ")");
-        handlerWire += "        connectMeta(" + sndr + ", \"" + connSig + "\", this, \""
-                     + slotName + "(" + cppsig + ")\");\n";
+        if (connByName)
+            handlerWire += "        connectMetaByName(" + sndr + ", \"" + h.sig + "\", this, \""
+                         + slotName + "()\");\n";
+        else
+            handlerWire += "        connectMeta(" + sndr + ", \"" + connSig + "\", this, \""
+                         + slotName + "(" + cppsig + ")\");\n";
     }
     // Component.onCompleted runs once at construction — emit its body at the tail of __qmltcWire
     // (after children built, bindings initialised, handlers connected), matching QML's timing.
@@ -9942,7 +9956,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             ownNames.insert(p0.name);
             ownNames.insert(p0.name + "Changed()");
         }
-        auto toInst = [&ownNames](std::string &buf) {
+        // A TYPE WE DO NOT KNOW HAS NO DECLARED PROPERTIES to check a write against, and QML's own
+        // answer there is to CREATE the property: `ListElement { name: "alpha" }` is exactly that,
+        // and a QQmlListElement has no `name` until the document gives it one. Our setProp throws on
+        // an undeclared name on purpose — a typo would otherwise become a dynamic property and go
+        // unnoticed — but that check needs a registry entry to be meaningful, and for these classes
+        // there is none. So the write becomes the tolerant one, which is what the engine does, and
+        // the typo protection is given up exactly where it could not have worked anyway.
+        const bool unknownEngineType = !g_qmlProps.count(g_selfQmlType);
+        auto toInst = [&ownNames, unknownEngineType](std::string &buf) {
+            if (unknownEngineType)
+                for (size_t a2 = 0; (a2 = buf.find("setProp(", a2)) != std::string::npos; )
+                    if (a2 == 0 || (buf[a2 - 1] != 'y' && buf[a2 - 1] != 'w'))   // not setPropAny/...Obj
+                        { buf.replace(a2, 8, "setPropAny("); a2 += 11; }
+                    else a2 += 8;
             size_t at = 0;
             while ((at = buf.find("(this", at)) != std::string::npos) {
                 // What is being asked OF this object: `f(this, "<name>"…)`. When the name is one we
