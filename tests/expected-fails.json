@@ -162,6 +162,17 @@
       "since": "2026-08-11",
       "reason": "`property alias inner: box.color` — an alias whose target is a VALUE-TYPE property of a child — is refused with \"alias target is unsupported\". Found while building the two-locals fixture for the CompilationContext question; the alias had to be dropped for the fixture to compile, which is how it surfaced. Aliases onto a child's scalar and onto base properties work. Left as a gap rather than fixed on measurement, not instinct: the shape appears ZERO times across Qt's five Controls styles, and the value-type channel is where a wrongly-typed field once cost eight link failures here.",
       "remove_when": "an alias whose target is a child's value-type property compiles, or is refused with a reason"
+    },
+    {
+      "id": "child-order-differs-delaybutton",
+      "kind": "known_gap",
+      "area": "qmltc-d/child-order",
+      "since": "2026-08-11",
+      "reason": "Basic/DelayButton builds contentItem's two children in the OPPOSITE order to the engine: contentItem.data[0] and data[1] carry each other's baselineOffset (14.84375 / 5.34375). Found the first time -O1 was judged over Qt's own corpus rather than counted — the o3 gate judges -Ox, which is different code, and qmltc-optlevels only walked the application corpus. Behaviour is safe (the o3 pipeline already demotes this document on the value axis); what was false is the claim that -O1 needed no such demotion. Named in optlevels-known.txt so the gate still fails on anything new.",
+      "remove_when": "contentItem's children are built in the engine's order and the Basic entry leaves optlevels-known.txt",
+      "probe_targets": [
+        "qmltc-optlevels-controls-Basic"
+      ]
     }
   ]
 }

@@ -1,0 +1,13 @@
+# DOCUMENTS THAT COMPILE AT A CERTAINTY LEVEL AND DO NOT MATCH THE ENGINE.
+#
+# The certainty levels promise agreement, so every line here is a broken promise, not an excuse.
+# They are named rather than skipped so the gate still fails on anything NEW, and so the list can
+# only shrink by fixing something. The o3 pipeline already demotes each of these to -O0, so the
+# BEHAVIOUR is the engine's — what is wrong is the claim that -O1 needed no such demotion.
+#
+# One document per line: <Style>/<Name>  # reason
+
+Basic/DelayButton   # CHILD ORDER: contentItem.data[0] and data[1] carry each other's
+                    # baselineOffset (14.84375 / 5.34375 swapped). The two children are built in
+                    # the opposite order to the engine's. Found by judging -O1 over Qt's corpus for
+                    # the first time; the o3 gate already demoted this document on the value axis.

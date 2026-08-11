@@ -55,8 +55,25 @@ for O in 1 2; do
         > "$OUT/o$O.link" 2>&1 \
     || { echo "optlevels: -O$O does not link" >&2; sed -n '1,5p' "$OUT/o$O.link" >&2; exit 1; }
   QT_QPA_PLATFORM=offscreen "$OUT/o$O.bin" --dumpall 2>"$OUT/o$O.err" | sort > "$OUT/o$O.txt"
-  if ! diff -q "$OUT/engine.txt" "$OUT/o$O.txt" > /dev/null; then
-    echo "optlevels: -O$O DISAGREES with the engine on $QMLFILE" >&2
+  # THROUGH THE CENSUS, like the o3 gate, and not a raw diff. A path the oracle marks `<missing>`
+  # is one it cannot walk, not a disagreement: Qt defers a Transition's animations, so at rest the
+  # engine has none and we have ours. A raw diff called five Basic documents wrong on that alone —
+  # the harness reporting itself, which is exactly what the census was written to stop. Named
+  # non-reproducible properties are dropped too, for the reason in unreproducible.txt.
+  RT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+  rm -rf "$OUT/cen$O"; mkdir -p "$OUT/cen$O"
+  cp "$OUT/o$O.txt" "$OUT/cen$O/d.dall.s"; cp "$OUT/engine.txt" "$OUT/cen$O/d.qall.s"
+  if [ -f "$RT/tests/qmltc/unreproducible.txt" ]; then
+    awk 'NF && $1 !~ /^#/ {print $1}' "$RT/tests/qmltc/unreproducible.txt" | sort -u > "$OUT/named"
+    for side in "$OUT/cen$O/d.dall.s" "$OUT/cen$O/d.qall.s"; do
+      awk -F'\t' 'NR==FNR{n[$1];next} { p=$1; sub(/^.*\./, "", p); if (!(p in n)) print }' \
+          "$OUT/named" "$side" > "$side.f" && mv "$side.f" "$side"
+    done
+  fi
+  real=$(python3 "$RT/tools/qmltc-value-census.py" "$OUT/cen$O" 2>/dev/null | awk '
+    $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
+  if [ "${real:-0}" -ne 0 ]; then
+    echo "optlevels: -O$O DISAGREES with the engine on $QMLFILE ($real real difference(s))" >&2
     diff "$OUT/engine.txt" "$OUT/o$O.txt" >&2 || true
     exit 1
   fi

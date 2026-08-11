@@ -249,7 +249,12 @@ resolves every image through a `NinePatchImageSelector` and Material is built on
 
 `qmltc-optlevels-*` holds the levels to that promise: each document is built at `-O1` and `-O2`
 and both must produce the engine's value for every property of every named object, and the same
-value as each other. `-O3` is deliberately outside it — `-O3` is a pipeline, and disagreeing
+value as each other. Over the application corpus, and — since the counts above were only ever
+counts — over Qt's Basic style too (`qmltc-optlevels-controls-Basic`): 38 documents compiled at a
+certainty level agree with the engine on every property, 31 are handed over, and **one does not**.
+`DelayButton` builds `contentItem`'s two children in the opposite order, which the first run of
+that check found; it is named in `optlevels-known.txt` rather than skipped, so the gate still fails
+on anything new and the list can only shrink by fixing something. `-O3` is deliberately outside it — `-O3` is a pipeline, and disagreeing
 before the demotion step is its normal intermediate state, which is what the gate below measures.
 
 **The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every

@@ -228,6 +228,24 @@ Build reggaeBuild() {
         all ~= qmltcControlsRuntimeTargets(root, ctrl);
         all ~= o3GateTargets(root, ctrl);   // every judgeable document renders like the engine
         all ~= optLevelTargets(root, ctrl); // ...and the levels agree with it and with each other
+        // ...and over QT'S OWN corpus, where the certainty levels had only a COUNT. The README said
+        // -O1 compiles 111 of 329 and that nothing crosses untyped there; the first half was
+        // measured and the second was not, because the o3 gate judges -Ox — DIFFERENT CODE — and
+        // qmltc-optlevels only walked the application corpus. One style, because each document is a
+        // full generate/link/run/compare on two levels; naming the style keeps the scope honest.
+        {
+            auto od = buildPath(root, "tests", "qmltc", "optlevels-dir.sh");
+            auto styleDir = buildPath(qtInstallQml(), "QtQuick", "Controls", "Basic");
+            if (exists(od) && exists(styleDir))
+                all ~= Target.phony("qmltc-optlevels-controls-Basic",
+                    "sh " ~ od ~ " " ~ buildPath(ctrl.bdir, "qmltc-d") ~ " "
+                    ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " " ~ styleDir ~ " "
+                    ~ buildPath(ctrl.bdir, "optlevels-Basic") ~ " " ~ ctrl.bdir ~ " "
+                    ~ ctrl.genDir ~ " ldc2 " ~ pkgLibs(ctrl.mods),
+                    [Target(od), Target(buildPath(root, "tests", "qmltc", "optlevels.sh")),
+                     Target(buildPath(root, "tests", "qmltc", "optlevels-known.txt")),
+                     qmltcTool(root, ctrl), ctrl.gen, qtdBindLib(ctrl, "ldc2"), ctrl.shims]);
+        }
         // ...and the LEAF TABLE's identity and lifetime, which no document can observe: the count
         // of live leaf connections is not a value the differential can dump. Two owners must be
         // two entries, and destroying the tree must empty the table.
