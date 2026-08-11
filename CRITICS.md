@@ -345,7 +345,10 @@ construir um.
 
 ### O que fica por fazer desta rodada, dito em vez de escondido
 
-**Os sete achados estão respondidos.** Matriz completa verde, 1161 alvos.
+**Os sete achados estão respondidos.** Matriz completa verde, 1161 alvos **no dia em que isto foi
+escrito** — a adenda no topo traz os números de 2026-08-11 (2224 alvos, 235 documentos do Qt
+compilados, 0 segfaults) e o que mudou desde então. Esta lista é o veredicto da RODADA; os
+números são os da altura.
 
 - **#1** retornos emprestados: FECHADO. Impasse no `exit()` provado por coredump (§1), `_ownedByD`,
   regressão `borrowed-{ldc2,dmd}`.
