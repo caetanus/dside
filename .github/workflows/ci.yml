@@ -77,6 +77,31 @@ jobs:
             ./build --list 2>/dev/null | grep -qE "^- ${canary}\$" || { echo "::error::missing canary conformance target: $canary"; exit 1; }
           done
 
+      # THE SAME FLOOR FOR THE BIGGEST SUITE (critics r10 #5, open since then). libsample gets a
+      # count and canaries above; the qmltc families — which are most of the graph and the only
+      # thing that measures the QML compiler against the engine — got neither, so on a runner
+      # without QtQuick.Controls they would simply not be generated and the job would go green over
+      # a matrix missing four fifths of itself. A capability that is absent must be a LOUD skip.
+      - name: Assert the qmltc suite and its gates are present
+        run: |
+          n=$(./build --list 2>/dev/null | grep -c '^- qmltc' || true)
+          echo "qmltc targets: $n"
+          test "$n" -ge 800 || { echo "::error::qmltc suite incomplete: $n < 800 (QtQuick.Controls missing?)"; exit 1; }
+          # The o3 gates are the promise itself: every judgeable document behaves like the engine.
+          # Named individually because a missing STYLE is the failure mode — o3GateTargets emits a
+          # red target for one and a single explicit skip when Controls is absent entirely.
+          for g in Basic Fusion Universal Imagine Material app; do
+            ./build --list 2>/dev/null | grep -qE "^- qmltc-o3-gate-${g}\$" \
+              || { echo "::error::missing o3 gate: qmltc-o3-gate-$g"; exit 1; }
+          done
+          # ...and the lifetime/packaging gates added since, for the same reason: each of them was
+          # written because something silently went green without it.
+          for g in borrowed-ldc2 nonqobject-ldc2 threadguard-ldc2-qt6 ctor-guard \
+                   ownership-gate-qtwidgets consumer-smoke-ldc2 dub-consumer-ldc2; do
+            ./build --list 2>/dev/null | grep -qE "^- ${g}\$" \
+              || { echo "::error::missing gate: $g"; exit 1; }
+          done
+
       # SINGLE recorded execution (critics r8 #8): the report script builds+runs every mandatory
       # (non-optional) target ONCE, records per-target status/timing/log into report.tsv, and EXITS
       # NON-ZERO if anything failed — so the artifact IS the result that gates the job, not a second
@@ -95,6 +120,7 @@ jobs:
         run: |
           ./build manifest-gate-qtwidgets
           ./build manifest-gate-qml
+          ./build manifest-gate-controls
 
       - name: Upload report + coverage artifacts
         if: always()
