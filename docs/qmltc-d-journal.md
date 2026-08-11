@@ -5869,3 +5869,30 @@ anything over. The application corpus is 5 of 18.
 this document — and it stays refused. Seeding from it means reading that file inside the pre-scan,
 with the parse side effects (`g_docUrl`, `g_srcText`, `g_bareImports`) that the compile path
 carefully saves and restores around every nested load. Cheap to want, not cheap to do safely.
+
+### The engine can build what we cannot name, and building SOME siblings is worse than none
+
+The largest cluster left in the application corpus was four documents refusing a default child of a
+type the registry does not know — `Timer`, `ListModel` twice, `RowLayout`. The mechanism was never
+missing: probed directly, `createQmlObject("QtQuick", "Timer")` returns a live QQmlTimer, and the
+containment path already holds a child the engine builds. What refused it was asking the REGISTRY
+for a URI it cannot have. The document's own imports are what the engine would consult, so trying
+them in order is the answer.
+
+It works, and the cluster stops being a cluster: `AListView` reaches zero diagnostics and agrees
+with the engine, `ATimerCounter` is left with only its handler refused, `AListModel` moves on to a
+Repeater's `model`, `ALayouts` to `anchors.fill`. Four documents, four different next questions.
+
+**And it costs Material's `CursorDelegate`**, measured by running that gate with and without the
+change: COMPILED → DEMOTED, 235 → 234, net zero against the one gained.
+
+The reason is worth more than the trade. That document holds a `Connections` and a `Timer` as
+siblings. We still skip the Connections and now build the Timer, so our `data[0]` is the Timer where
+the engine's is the Connections — **a wrong object at a known index**, which is worse than an absent
+one: every `data[i]` in the document, and every comparison over it, is off by one. Skipping a
+default child has always shifted the indices of the ones after it. Building some siblings and not
+others is what made it visible.
+
+So the entry's blocker changed, and for the better: it is not "the members cannot be typed" — they
+can — it is "a document must build every default child or none". Parked on
+`wip/engine-builds-unknown-child` with that written into `remove_when`.
