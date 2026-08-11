@@ -53,7 +53,7 @@ category() {
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
     consumer-smoke-*|dub-consumer-*) echo gate ;;
     # Wrapper LIFETIME, which is neither moc nor qml: who owns a pointer, and who may delete it.
-    borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*|nonqobject-*) echo lifetime ;;
+    borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*|threadguard-*|nonqobject-*) echo lifetime ;;
     *) echo other ;;
   esac
 }

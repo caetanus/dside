@@ -80,6 +80,12 @@ Build reggaeBuild() {
             // attaches a thread druntime has not seen, because Qt is free to call one from a
             // thread it created and D code there otherwise has no registered stack.
             all ~= qtdTest("thread_test-" ~ dc ~ "-" ~ tag, t("wrapper", "thread_test.d"), b, dc);
+            // ...and the door that opens with it stays locked. The meta-object runtime's side
+            // tables are owner-thread only and abort loudly off it; until QThread was subclassable
+            // there was no ordinary way for a user to reach that guard, because D never ran on a
+            // thread Qt made. Now run() does, and creating a QObject in there is the first thing
+            // anyone will try. A SAFETY test: the right outcome is the abort, not a worker QObject.
+            all ~= qtdTest("threadguard-" ~ dc ~ "-" ~ tag, t("wrapper", "threadguard.d"), b, dc);
         }
     }
     widgets("spec_cxx_qtwidgets_wrap.json", ["Qt6Widgets"], "qt6");
