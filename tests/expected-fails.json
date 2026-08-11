@@ -185,6 +185,17 @@
       "probe_targets": [
         "qmltc-o3-gate-app"
       ]
+    },
+    {
+      "id": "no-licence-so-nothing-is-publishable",
+      "kind": "known_gap",
+      "area": "packaging/legal",
+      "since": "2026-08-11",
+      "reason": "The repository declares no licence anywhere: no LICENSE file, no `license` field in any dub.json (the root one, generator-d's, or the one tests/install.sh writes into the installed package), and no statement in the README or docs. The dub registry requires the field, and publishing code without a licence is not a defect to be fixed by whoever finds it — it is the author's decision. Worth naming because the audit's round-12 closing list records #6 as \"falta publicar, que é escolher ONDE, não construir o quê\", and that is not the whole picture: a piece of the WHAT is missing too. Asked and deliberately deferred on 2026-08-11 — the answer was to keep it unpublished for now, so this is a decision on hold and not an oversight.",
+      "remove_when": "a licence is chosen, a LICENSE file exists, and the field is set in the root dub.json, generator-d/dub.json and the package tests/install.sh writes",
+      "probe_targets": [
+        "dub-consumer-ldc2"
+      ]
     }
   ]
 }

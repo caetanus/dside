@@ -89,8 +89,9 @@ the right archive per compiler. `dub build --compiler=ldc2` and `--compiler=dmd`
 same install. The package records the Qt it was generated against and the generator commit
 (`qtd-build.txt`), and the consumer refuses a mismatch: a binding built from 6.11's headers and
 linked against another minor mangles the same symbols, so it would surface as a crash inside Qt
-rather than a link error. It is **not published anywhere** — the path is local, which is the part
-of this that is distribution rather than engineering.
+rather than a link error. It is **not published anywhere** — the path is local. Two things stand between it and a
+registry, and only one of them is distribution: there is also **no licence** declared anywhere in
+this repository, which the registry requires and which is the author's call rather than a defect.
 
 **Or by hand**, which is what the package expands to:
 
