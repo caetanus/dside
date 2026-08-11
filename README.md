@@ -298,18 +298,22 @@ declared properties, little loose JS, imports from Qt. Application QML is a diff
 there is a second corpus for it (`tests/qmltc/app/`, gate `qmltc-o3-gate-app`) — list models and
 delegates, `ListView`, `Loader`, real JS with loops and arrays and objects, states and
 transitions, inline components, `Connections`, signals crossing documents, one document
-instantiating another from its own directory, anchors, a `Timer`, and an application *consuming*
-Controls rather than defining them.
+instantiating another from its own directory, anchors, a `Timer`, `QtQuick.Layouts` (a different
+module, with its own attached properties), `Behavior on` with an animation, the `Qt` global object
+(`formatDateTime`, `rgba`, enums), a QML-declared `enum` with a `required` property, and an
+application *consuming* Controls rather than defining them.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
 | Qt's Controls | 329 | 226 | 58 | 45 | 0 |
-| application-shaped | 14 | 2 | 12 | 0 | **0** |
+| application-shaped | 18 | 2 | 16 | 0 | **0** |
 
-**Two of fourteen** is the honest number, and it is the point rather than an embarrassment: this
+**Two of eighteen** is the honest number, and it is the point rather than an embarrassment: this
 dialect is where the compiler is weak today and the ladder is what makes it correct anyway. Every
 one of the fourteen behaves identically to the engine, and at `-O1`/`-O2` none of them is emitted
-partial — twelve are handed over whole, which `qmltc-optlevels-*` checks property by property.
+partial — sixteen are handed over whole, which `qmltc-optlevels-*` checks property by property. The four
+newest shapes were added precisely because the compiler cannot compile them: `UNPLACED` stayed 0,
+which is the ladder doing the only job it has.
 
 What the second corpus still does not cover is an application's **context**: a document that needs
 the app's C++ context properties, its models and its data. Pointed at a real one (a 78-document
