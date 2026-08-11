@@ -5907,3 +5907,17 @@ Worth noticing what those 39 also say. They match the engine today WITH a child 
 their skipped children sit at the end of the list, where nothing shifts behind them. That is luck.
 The moment a skipped child has a sibling after it — Material's CursorDelegate, a Connections before
 a Timer — the indices move and the document is wrong in a way no count of skipped members predicts.
+
+**And the narrow rule that made it land.** The first version cost Material's CursorDelegate; the
+second costs nothing. One sentence: a child we do not build shifts every child after it, so only
+build a child we can place at THE INDEX THE ENGINE GIVES IT. While nothing has been skipped that
+index is ours; from the first skip on it is not.
+
+Applying it turned up something the reading of the code had missed: a `Connections` is a skipped
+child EVEN WHEN WE HANDLE IT SUCCESSFULLY. Its handlers become signals on the parent and the engine
+still puts a QQmlConnections in `data`, so it never occupies the place it holds for the engine.
+Without marking it as skipped the rule does not work, and CursorDelegate is the document that
+exposed that — the same one that had rejected the wide version.
+
+Qt's five styles unchanged at 235, Material back to 40, application corpus 5 → **6**.
+`default-child-of-unregistered-type-dropped` leaves the inventory.
