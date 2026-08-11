@@ -89,6 +89,14 @@ void main(string[] args) {
     if (auto h = "headers" in spec.object) foreach (x; h.array) headers ~= x.str;
     if (auto s = "subclass" in spec.object)   // classes to subclass from D (trampolines)
         foreach (x; s.array) SUBCLASS[x.str] = true;
+    // Ownership that moves at a call. See the note on TRANSFER_IN in emit_cxx.d — these are
+    // audited per class against Qt's own documentation, not inferred.
+    if (auto s = "transfer_in" in spec.object)
+        foreach (x; s.array) TRANSFER_IN[x.str] = true;
+    if (auto s = "transfer_out" in spec.object)
+        foreach (x; s.array) TRANSFER_OUT[x.str] = true;
+    if (auto s = "ctor_parents" in spec.object)
+        foreach (k, v; s.object) foreach (x; v.array) CTOR_PARENTS[k] ~= x.str;
 
     // discover_module and headers COMBINE: a module (e.g. <QtQuick>) plus extra headers (e.g. the
     // private element headers that declare QQuickRectangle/QQuickText) are all scanned together.

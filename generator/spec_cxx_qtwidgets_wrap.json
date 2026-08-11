@@ -9,5 +9,21 @@
   "subclass": [
     "QWidget",
     "QThread"
-  ]
+  ],
+  "transfer_in": [
+    "QTreeWidget::addTopLevelItem/0",
+    "QTreeWidget::insertTopLevelItem/1",
+    "QTreeWidget::setHeaderItem/0",
+    "QTreeWidgetItem::addChild/0",
+    "QTreeWidgetItem::insertChild/1"
+  ],
+  "transfer_out": [
+    "QTreeWidgetItem::removeChild/0"
+  ],
+  "ctor_parents": {
+    "QTreeWidgetItem": [
+      "QTreeWidget",
+      "QTreeWidgetItem"
+    ]
+  }
 }

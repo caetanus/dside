@@ -159,6 +159,34 @@ void reparented(QtdObject w) nothrow {
     else if (!nowParented && pinned) _pinned.remove(c);
 }
 
+/// OWNERSHIP MOVES AT THE CALL THAT MOVES IT. For a `QObject` the question can be asked afterwards
+/// — `reparented()` above asks Qt who the parent is now. For everything else it cannot, and that is
+/// not an inconvenience but the whole difficulty: `QTreeWidget` deletes its items and
+/// `QLayout` deletes its `QLayoutItem`s with no signal at all, so by the time a finalizer wants to
+/// know, the object it would have to ask may already be freed. Measured: destroy a QTreeWidget and
+/// the item's wrapper still reports `_cpp` non-null. **The question is itself the use-after-free.**
+///
+/// So the transfer is recorded where the API says it happens. `QTreeWidget::addTopLevelItem` takes
+/// ownership; the generated method calls this on the argument, and the wrapper stops being the
+/// owner from that line on — nothing has to be asked later.
+///
+/// The failure modes are NOT symmetric, which is why the list of such methods is per class and
+/// audited rather than guessed: a method that transfers and is MISSING from the list leaves us
+/// believing we own something Qt will delete (double free), while a method wrongly listed only
+/// means nobody deletes it (leak). Deletion is therefore enabled per class, and only for classes
+/// whose transfer surface has been walked.
+void transferred(QtdObject w) nothrow {
+    if (w is null) return;
+    w._ownedByD = false;
+}
+
+/// ...and the other direction: `takeTopLevelItem`, `takeAt`, `takeItem` hand the object BACK, so
+/// the caller owns it again. Without this the ladder is one-way and a taken item leaks forever.
+void takenBack(QtdObject w) nothrow {
+    if (w is null) return;
+    w._ownedByD = true;
+}
+
 /// destroyed() hook: C++ deleted the object -> invalidate any live wrapper + drop it.
 extern (C) void onDestroyed(void *cptr) nothrow {
     if (!_live) return;   // runtime shutting down -> don't touch the GC

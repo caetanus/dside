@@ -336,6 +336,25 @@ __gshared MICast[] MICASTS;
 // C++ trampoline (qtvirt) whose virtuals forward to D callbacks — so a C++
 // framework calling a virtual dispatches into the D override.
 __gshared bool[string] SUBCLASS;
+
+// OWNERSHIP MOVES AT THE CALL THAT MOVES IT (spec "transfer_in" / "transfer_out").
+//
+// For a QObject the question can be asked afterwards — `holder.reparented` asks Qt who the parent
+// is now. For everything else it cannot: QTreeWidget deletes its items and QLayout deletes its
+// QLayoutItems with no signal, so by the time a finalizer wants to know, the object it would have
+// to ask may already be freed. The question is itself the use-after-free (measured).
+//
+// So the API says it instead, per PARAMETER — because it is per parameter:
+// `QTreeWidget::setItemWidget(item, column, widget)` takes ownership of the WIDGET, not the item.
+//   "QTreeWidget::addTopLevelItem/0"   argument 0 stops being D-owned
+//   "QTreeWidget::takeTopLevelItem/r"  the RETURN comes back to us
+// Entries are audited against Qt's documentation one class at a time; a MISSING transfer is the
+// dangerous direction (we would keep believing we own it), a spurious one only leaks.
+__gshared bool[string] TRANSFER_IN;    // "Class::method/<argIndex>"
+__gshared bool[string] TRANSFER_OUT;   // "Class::method/r" or "Class::method/<argIndex>"
+// Classes whose constructors INSERT the new object into a parent of one of these types, so the
+// object being constructed is owned by that parent from birth: `new QTreeWidgetItem(tree)`.
+__gshared string[][string] CTOR_PARENTS;
 struct TrampVirt {
     string name, cppRet, cbCppRet, cbDRet, overrideParams, passArgs, origArgs, cbCppParams, cbDParams;
     string[] imports;
@@ -2006,6 +2025,15 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (!isStat) reck ~= "holder.reparented(this);";
                     foreach (wa; wrapArgs) reck ~= format("holder.reparented(%s);", wa);
                 }
+                // ...and the DECLARED ownership moves, which parenting cannot answer for a
+                // non-QObject. Keyed per argument index, because `setItemWidget(item, col, widget)`
+                // takes the widget and not the item.
+                foreach (ai, an; anames)
+                    if (wrapArgs.canFind(an)) {
+                        auto tkey = format("%s::%s/%d", name, mn, ai);
+                        if (tkey in TRANSFER_IN)  reck ~= format("holder.transferred(%s);", an);
+                        if (tkey in TRANSFER_OUT) reck ~= format("holder.takenBack(%s);", an);
+                    }
                 string body_;
                 // ref returns are accessors that don't reparent -> keep the one-liner (a
                 // local + `return _r` would escape a reference to the local anyway).
@@ -2035,6 +2063,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             bool viaShim = isInline(c);
             try {
                 string[] dparams, declps, callargs, cppPs, anames; bool allSimple = true;
+                string ctorParent;   // the parameter that ADOPTS the object being constructed
                 auto na = clang_Cursor_getNumArguments(c);
                 foreach (i; 0 .. na) {
                     auto a = clang_Cursor_getArgument(c, i);
@@ -2051,6 +2080,20 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (!deflt.length && !pd.startsWith("ref ") && hasDefault(a)) deflt = format(" = %s.init", pd);
                     dparams ~= format("%s a%d%s", pd, i, deflt);
                     callargs ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
+                    // A ctor that INSERTS the new object into a parent: `new QTreeWidgetItem(tree)`
+                    // is appended to the tree, so the tree owns it from birth and the wrapper must
+                    // not. Qt states this per class, not per signature, which is why the spec names
+                    // the OWNER TYPES and the rule reads the parameter list — the eight
+                    // QTreeWidgetItem ctors split correctly on it without eight entries.
+                    // The FIRST parameter of an owner type, and only the first. Qt's convention is
+                    // `(parent, ...)`, and the rest can be owner-TYPED without owning anything:
+                    // `QTreeWidgetItem(QTreeWidget *parent, QTreeWidgetItem *preceding, int)`
+                    // inserts into the parent AFTER preceding, so `preceding` adopts nothing.
+                    // Taking any matching parameter said it did — a leak rather than a crash, but
+                    // still a lie about who owns the object.
+                    if (pw.length && !ctorParent.length)
+                        if (auto ps = name in CTOR_PARENTS)
+                            if ((*ps).canFind(pw)) ctorParent = format("a%d", i);
                 }
                 if (viaShim && (!allSimple || nestedInaccessible(cur))) return;
                 auto sk = declps.map!(p => p.split(" ")[0]).join(",");
@@ -2080,9 +2123,15 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 // registration both completed".
                 wctors ~= format("    this(%s) {\n        auto __r = __cpp_new(__%s_size);\n"
                     ~ "        scope(failure) __cpp_delete(__r);\n"
-                    ~ "        %s(__r%s);\n        this(QtdAdopt(__r));\n        _register();\n    }",
+                    ~ "        %s(__r%s);\n        this(QtdAdopt(__r));\n        _register();%s\n    }",
                     dparams.join(", "), name, ctorFn,
-                    callargs.length ? ", " ~ callargs.join(", ") : "");
+                    callargs.length ? ", " ~ callargs.join(", ") : "",
+                    // ...only when a parent was actually PASSED. These parameters default to null
+                    // (`new QTreeWidgetItem()` reaches the same overload), and a null parent adopts
+                    // nothing — transferring there would hand ownership to nobody and leak.
+                    ctorParent.length
+                        ? format("\n        if (%s !is null) holder.transferred(this);", ctorParent)
+                        : "");
                 wci++;
             } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
         }
