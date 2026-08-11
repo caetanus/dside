@@ -164,14 +164,15 @@
       "remove_when": "an alias whose target is a child's value-type property compiles, or is refused with a reason"
     },
     {
-      "id": "child-order-differs-delaybutton",
+      "id": "baseline-layout-order-delaybutton",
       "kind": "known_gap",
-      "area": "qmltc-d/child-order",
+      "area": "qmltc-d/layout-order",
       "since": "2026-08-11",
-      "reason": "Basic/DelayButton builds contentItem's two children in the OPPOSITE order to the engine: contentItem.data[0] and data[1] carry each other's baselineOffset (14.84375 / 5.34375). Found the first time -O1 was judged over Qt's own corpus rather than counted — the o3 gate judges -Ox, which is different code, and qmltc-optlevels only walked the application corpus. Behaviour is safe (the o3 pipeline already demotes this document on the value axis); what was false is the claim that -O1 needed no such demotion. Named in optlevels-known.txt so the gate still fails on anything new.",
-      "remove_when": "contentItem's children are built in the engine's order and the Basic entry leaves optlevels-known.txt",
+      "reason": "DelayButton's two contentItem siblings agree with the engine on every property either side ASSIGNS — visible, clipX, clipWidth, height, implicitHeight, y, text — and disagree on baselineOffset, which NEITHER side assigns: QQuickText sets it when the text lays out. The two values are exactly EXCHANGED (engine 14.84375 / 5.34375, ours the reverse) and are the same text laid out at height 28 and at its implicit height 19. So each side has one child in each state and they disagree about which; on the engine the visible child carries the resized baseline, on ours the invisible one does. Reproducible over three runs on both sides. One cause, two styles (Basic and Fusion write the control the same way). NOTE: the first reading of this called it CHILD ORDER, which measurement disproved — the children are built in the engine's order with the right bindings. It is the ONE survivor of the seven documents that judging -O1 over Qt's corpus found; the other six came down to three missing rules (a binding that dereferences null writes nothing, an unset `color` is opaque black, a document's imports carry their resources) and are fixed. Behaviour is safe — the o3 pipeline demotes both documents on the value axis; what was false is the claim that -O1 needed no such demotion.",
+      "remove_when": "both DelayButton children lay out in the engine's order and both entries leave optlevels-known.txt",
       "probe_targets": [
-        "qmltc-optlevels-controls-Basic"
+        "qmltc-optlevels-controls-Basic",
+        "qmltc-optlevels-controls-Fusion"
       ]
     }
   ]

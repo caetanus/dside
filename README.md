@@ -250,31 +250,42 @@ resolves every image through a `NinePatchImageSelector` and Material is built on
 `qmltc-optlevels-*` holds the levels to that promise: each document is built at `-O1` and `-O2`
 and both must produce the engine's value for every property of every named object, and the same
 value as each other. Over the application corpus, and — since the counts above were only ever
-counts — over Qt's Basic style too (`qmltc-optlevels-controls-Basic`): 38 documents compiled at a
-certainty level agree with the engine on every property, 31 are handed over, and **one does not**.
-`DelayButton` builds `contentItem`'s two children in the opposite order, which the first run of
-that check found; it is named in `optlevels-known.txt` rather than skipped, so the gate still fails
-on anything new and the list can only shrink by fixing something. `-O3` is deliberately outside it — `-O3` is a pipeline, and disagreeing
-before the demotion step is its normal intermediate state, which is what the gate below measures.
+counts — over four of Qt's five styles (`qmltc-optlevels-controls-{Basic,Fusion,Universal,Material}`),
+which is **108 documents** judged property by property at a certainty level: 38, 36, 27 and 7.
+The first run of that check found **seven** documents that compiled at a certainty level and did
+not match, and six of them were three missing rules rather than six quirks: a binding that
+dereferences `null` must write **nothing** (JS throws and the engine keeps the default), QML's
+default for an unset `property color` is **opaque black** where a default-constructed `QColor` is
+*invalid*, and a document's **imports** must be loaded and not only the module it lives in, because
+a module carries its resources. Fixing those three moved five of Qt's documents from `-O0` to
+compiled at the *default* level as well. What is left is one defect in two styles: `DelayButton`
+lays its two `contentItem` children out in the opposite order — they agree on every property
+either side *assigns* and exchange `baselineOffset`, which neither side assigns. Named in
+`optlevels-known.txt` with the measurement rather
+than skipped, so the gate still fails on anything new and the list can only shrink by fixing
+something. Imagine is absent for the opposite reason — `-O1` compiles nothing there, so the run
+would be vacuous, and the script says so instead of reporting a green it did not earn. `-O3` is
+deliberately outside all of this: it is a pipeline, and disagreeing before the demotion step is its
+normal intermediate state, which is what the gate below measures.
 
 **The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every
 document the engine can draw standalone behaves **identically** to it: same frame, byte for
-byte, and the same value for every property of every named object. 226 of them reach that as
-compiled D; 58 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
+byte, and the same value for every property of every named object. 231 of them reach that as
+compiled D; 53 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
 **none is unplaced**.
 
 | style | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Basic | 70 | 53 | 6 | 11 | 0 |
-| Fusion | 70 | 49 | 8 | 13 | 0 |
-| Universal | 66 | 49 | 6 | 11 | 0 |
+| Basic | 70 | 52 | 7 | 11 | 0 |
+| Fusion | 70 | 52 | 5 | 13 | 0 |
+| Universal | 66 | 50 | 5 | 11 | 0 |
 | Imagine | 56 | 41 | 11 | 4 | 0 |
-| Material | 67 | 34 | 27 | 6 | 0 |
-| **total** | **329** | **226** | **58** | **45** | **0** |
+| Material | 67 | 36 | 25 | 6 | 0 |
+| **total** | **329** | **231** | **53** | **45** | **0** |
 
 Both axes are required, and demoting on either is what makes the number mean something. The
-frame alone placed 247 documents; 21 of those disagreed on a property while the frame matched,
-which is what a control that draws small at its implicit size will do. Those 21 are the
+frame alone placed 253 documents; 22 of those disagreed on a property while the frame matched,
+which is what a control that draws small at its implicit size will do. Those 22 are the
 difference between the two columns — they are at `-O0` now, still identical to the engine,
 just not by our compilation.
 
@@ -310,7 +321,7 @@ application *consuming* Controls rather than defining them.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls | 329 | 226 | 58 | 45 | 0 |
+| Qt's Controls | 329 | 231 | 53 | 45 | 0 |
 | application-shaped | 18 | 2 | 16 | 0 | **0** |
 
 **Two of eighteen** is the honest number, and it is the point rather than an embarrassment: this

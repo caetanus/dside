@@ -231,20 +231,30 @@ Build reggaeBuild() {
         // ...and over QT'S OWN corpus, where the certainty levels had only a COUNT. The README said
         // -O1 compiles 111 of 329 and that nothing crosses untyped there; the first half was
         // measured and the second was not, because the o3 gate judges -Ox — DIFFERENT CODE — and
-        // qmltc-optlevels only walked the application corpus. One style, because each document is a
-        // full generate/link/run/compare on two levels; naming the style keeps the scope honest.
+        // qmltc-optlevels only walked the application corpus.
+        //
+        // FOUR STYLES, not one. It started as Basic alone, on the argument that each document is a
+        // full generate/link/run/compare on two levels and one style keeps the scope honest. Then
+        // the other four were measured by hand once, and three of them held defects Basic could
+        // not: a binding that dereferences null, the default of an unset `color`, and a resource
+        // that lives in an imported module. With those fixed the four styles judge 38, 36, 27 and 7
+        // documents — 108 in all — and the rest of each style is handed to the engine and skipped.
+        // Imagine is absent for the opposite reason: -O1 compiles NOTHING there, so the run is
+        // vacuous and the script says so rather than reporting a green it did not earn.
         {
             auto od = buildPath(root, "tests", "qmltc", "optlevels-dir.sh");
-            auto styleDir = buildPath(qtInstallQml(), "QtQuick", "Controls", "Basic");
-            if (exists(od) && exists(styleDir))
-                all ~= Target.phony("qmltc-optlevels-controls-Basic",
+            foreach (style; ["Basic", "Fusion", "Universal", "Material"]) {
+                auto styleDir = buildPath(qtInstallQml(), "QtQuick", "Controls", style);
+                if (!exists(od) || !exists(styleDir)) continue;
+                all ~= Target.phony("qmltc-optlevels-controls-" ~ style,
                     "sh " ~ od ~ " " ~ buildPath(ctrl.bdir, "qmltc-d") ~ " "
                     ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " " ~ styleDir ~ " "
-                    ~ buildPath(ctrl.bdir, "optlevels-Basic") ~ " " ~ ctrl.bdir ~ " "
+                    ~ buildPath(ctrl.bdir, "optlevels-" ~ style) ~ " " ~ ctrl.bdir ~ " "
                     ~ ctrl.genDir ~ " ldc2 " ~ pkgLibs(ctrl.mods),
                     [Target(od), Target(buildPath(root, "tests", "qmltc", "optlevels.sh")),
                      Target(buildPath(root, "tests", "qmltc", "optlevels-known.txt")),
                      qmltcTool(root, ctrl), ctrl.gen, qtdBindLib(ctrl, "ldc2"), ctrl.shims]);
+            }
         }
         // ...and the LEAF TABLE's identity and lifetime, which no document can observe: the count
         // of live leaf connections is not a value the differential can dump. Two owners must be
@@ -742,10 +752,18 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
     // models, Loaders, real JS, states, inline components, signals crossing documents and one
     // document instantiating another from its own directory. Judged by exactly the same two axes.
     auto appDir = buildPath(root, "tests", "qmltc", "app");
+    // GUARDED, one lock per state file. o3.sh truncates `o3gate/o3_<name>.txt` at the top and then
+    // appends a line per document, so two concurrent instances of the SAME gate interleave into one
+    // file: measured, 114 lines for a 70-document style, `compiled=86` on those 70, and UNPLACED=2
+    // where the clean run says 0 — a red that reads exactly like a compiler regression. The binary
+    // backend re-schedules a node when the build description is regenerated mid-run, which is how
+    // it happened; this is the same shape already fixed for the qmltc tool binary and the install
+    // node. No freshness test (empty `newerThan`): a gate must always run, only never twice at once.
     if (exists(appDir))
         ts ~= Target.phony("qmltc-o3-gate-app",
-            "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ appDir ~ " " ~ bind.bdir ~ " "
-            ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'",
+            guarded(buildPath(outDir, "o3_app.lock"),
+                "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ appDir ~ " " ~ bind.bdir ~ " "
+                ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'", "", []),
             [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
     auto ctlDir = buildPath(qtInstallQml(), "QtQuick", "Controls");
     // A MISSING STYLE IS A RED GATE, not a missing one. Controls absent altogether is a genuine
@@ -765,8 +783,9 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
         }
         // One compiler only: the levels are a property of the GENERATED code, not of who compiles
         // it, and the ldc2/dmd split is already covered everywhere else.
-        auto cmd = "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " " ~ bind.bdir ~ " "
-                 ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'";
+        auto cmd = guarded(buildPath(outDir, "o3_" ~ style ~ ".lock"),
+                 "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " " ~ bind.bdir ~ " "
+                 ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'", "", []);
         ts ~= Target.phony("qmltc-o3-gate-" ~ style, cmd,
                            [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
     }

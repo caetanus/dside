@@ -50,11 +50,11 @@ generated"*. So the measurement is: did it produce a header?
 | Material | 67 | 60 | 7 |
 | **total** | **329** | **280** | **49** |
 
-Ours, on the same 329, judged on both axes: **226 compiled · 58 at `-O0` · 45 unjudgeable ·
+Ours, on the same 329, judged on both axes: **231 compiled · 53 at `-O0` · 45 unjudgeable ·
 0 unplaced.**
 
 **These two numbers do not mean the same thing and must not be put side by side.** 280 is "the
-compiler produced output". 226 is "compiled, rendered, and every property of every named object
+compiler produced output". 231 is "compiled, rendered, and every property of every named object
 agrees with the engine". The comparable statement is the one below.
 
 ### Where the two disagree, document by document

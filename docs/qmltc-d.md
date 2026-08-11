@@ -172,7 +172,7 @@ Two corpora, the same two axes, both gated in `./build`.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls (5 styles) | 329 | 226 | 58 | 45 | **0** |
+| Qt's Controls (5 styles) | 329 | 231 | 53 | 45 | **0** |
 | application-shaped | 14 | 2 | 12 | 0 | **0** |
 
 Every document the engine can draw standalone behaves **identically** to it: same frame byte for
@@ -247,6 +247,48 @@ in the census column.
 `-O3` is judged by the gate, deliberately not by `qmltc-optlevels-*`: `-O3` compiles greedily and
 the gate demotes, so "disagrees before demotion" is its normal intermediate state rather than a
 defect.
+
+### What judging `-O1` over Qt's own corpus found
+
+The claim "`-O1` agrees with the engine" was a count until it was measured: `-O1` compiled 111 of
+Qt's 329 Controls documents, and nobody had checked what those 111 produced. Running every style
+through the per-document comparison found **seven** that compiled at a certainty level and did not
+match — and six of them were three missing rules rather than six quirks:
+
+| rule | what the engine does | what we did |
+|---|---|---|
+| a binding that dereferences `null` writes **nothing** | JS throws, the whole binding aborts, the property keeps its default | our reads were null-tolerant and produced a value |
+| QML's default for `property color` is **opaque black** | `#000000` | a default-constructed `QColor` is *invalid*, which prints `#00000000` |
+| a document's **imports** are loaded, not just its own module | the module brings its resources | one `ensureModule` for the document's module only |
+
+The third is the least obvious: Universal's `CheckIndicator` lives in
+`QtQuick.Controls.Universal.impl` and draws a checkmark out of `QtQuick.Controls.Universal`, so
+without the import the URL does not resolve, the image reports `status: Error`, and every geometry
+downstream of its size is wrong — ten differences on one document, all from one failed load. Fusion
+never showed it because there the images and the document share a module.
+
+What is left is one defect in two styles: `DelayButton`'s two content children agree with the
+engine on every property either side *assigns* — `visible`, `clipX`, `clipWidth`, `height`,
+`implicitHeight`, `y`, `text` — and exchange `baselineOffset`, which **neither side assigns**:
+QQuickText sets it when the text lays out. The two values are the same text laid out at height 28
+and at its implicit height 19, so each side has one child in each state and they disagree about
+which. (The first reading of this called it child order; measurement disproved that.) It is named
+in
+`tests/qmltc/optlevels-known.txt` with its measurement, and the `-O3` gate already demotes the
+document, so the *behaviour* is the engine's — the broken promise is `-O1`'s, not the default's.
+Four of the five styles are under continuous judgement
+(`qmltc-optlevels-controls-{Basic,Fusion,Universal,Material}`): **108 documents** compiled at a
+certainty level and compared property by property — 38, 36, 27 and 7 — with the rest of each style
+handed to the engine and skipped. Imagine is absent for the opposite reason: `-O1` compiles nothing
+there, which makes the run vacuous, and the script refuses to report a green it did not earn.
+
+The count itself is a result of the three rules. Before them the same run reported 6 failures on
+Fusion and 1 on Universal and never got far enough to report a check count; now it judges 36 and 27
+of them and they agree.
+
+Fixing the three rules also moved five of Qt's documents from `-O0` to compiled at the **default**
+level — the measured claim below went from 226 to 231 — which is the useful way to read this: a
+certainty level nobody had judged was hiding defects that cost the default level too.
 
 ## Scope, and what is not characterised
 

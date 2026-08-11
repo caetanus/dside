@@ -1048,8 +1048,45 @@ bool invoke0(T)(T o, string member) { return qtd_invoke0(qobjOf(o), (member ~ "\
 private extern(C) void* qtd_prop_get_obj(void*, const(char)*);
 /// The object held by a QObject*-valued property — how a GROUPED property (`group.count`) is
 /// reached: the group is a child object, its members are plain properties on it.
-void* propObj(T)(T o, string name) { return qtd_prop_get_obj(qobjOf(o), (name ~ "\0").ptr); }
-int propInt(T)(T o, string name) { return qtd_prop_get_int(qobjOf(o), (name ~ "\0").ptr); }
+void* propObj(T)(T o, string name) { return qtd_prop_get_obj(__bindRecv(o, name), (name ~ "\0").ptr); }
+int propInt(T)(T o, string name) { return qtd_prop_get_int(__bindRecv(o, name), (name ~ "\0").ptr); }
+
+/// JS SEMANTICS, WHICH A BINDING INHERITS: reading a property off `null` THROWS, and a QML binding
+/// that throws writes NOTHING — the property keeps what it had, which for an initial binding is the
+/// type's default. Measured against the engine on a document whose `property Item control` is null:
+///
+///   readonly property color c: Qt.darker(control.palette.text, 1.2)   engine: #000000 (INVALID)
+///   property string        s: "x" + control.objectName                engine: "" — not "x"
+///
+/// Our reads were null-tolerant and produced a value instead: a TRANSPARENT colour (#00000000) and
+/// "x". Seven of Qt's own documents — Fusion's CheckIndicator, RadioIndicator, SliderGroove,
+/// ButtonPanel and DelayButton, Universal's CheckIndicator — disagreed with the engine on exactly
+/// this and nothing else. `s` is the decisive one: had the expression merely yielded `undefined`,
+/// the engine would read "xundefined".
+///
+/// The reads stay null-tolerant OUTSIDE a binding, because the WIRING uses the same helpers:
+/// `tryConnectMeta(propObj(__outer, "control"), ...)` must survive a null control rather than abort
+/// the object's construction. So the throw is SCOPED — only code running inside [bindEval] sees it.
+class QmlNullDeref : Exception {
+    this(string prop) @safe pure nothrow { super("QML TypeError: null has no property '" ~ prop ~ "'"); }
+}
+private bool __inBinding = false;
+/// The receiver of a property read, checked for the null a binding must not survive.
+void* __bindRecv(T)(T o, string name) {
+    auto q = qobjOf(o);
+    if (q is null && __inBinding) throw new QmlNullDeref(name);
+    return q;
+}
+/// Evaluate ONE binding. A null dereference inside aborts it and writes nothing, as the engine
+/// does; any other exception propagates. Each initial binding is wrapped separately because the
+/// engine aborting one does not stop the object being built — only that one property stays at its
+/// default.
+void bindEval(scope void delegate() f) {
+    auto saved = __inBinding;
+    __inBinding = true;
+    scope(exit) __inBinding = saved;
+    try f(); catch (QmlNullDeref) {}
+}
 /// Writes an int property by name (fires the notify, if any).
 /// Writes a property and THROWS when the write did not land: an undeclared name (which would
 /// quietly become a DYNAMIC property, changing nothing the meta-object knows about) or a value the
@@ -1059,20 +1096,20 @@ void setProp(T)(T o, string name, int v) {
     if (!qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "int");
 }
 /// Reads a real (double) property by name.
-double propDouble(T)(T o, string name) { return qtd_prop_get_double(qobjOf(o), (name ~ "\0").ptr); }
+double propDouble(T)(T o, string name) { return qtd_prop_get_double(__bindRecv(o, name), (name ~ "\0").ptr); }
 /// Writes a real (double) property by name (fires the notify, if any).
 void setProp(T)(T o, string name, double v) {
     if (!qtd_prop_set_double(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "double");
 }
 /// Reads a bool property by name.
-bool propBool(T)(T o, string name) { return qtd_prop_get_bool(qobjOf(o), (name ~ "\0").ptr); }
+bool propBool(T)(T o, string name) { return qtd_prop_get_bool(__bindRecv(o, name), (name ~ "\0").ptr); }
 /// Writes a bool property by name (fires the notify, if any).
 void setProp(T)(T o, string name, bool v) {
     if (!qtd_prop_set_bool(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "bool");
 }
 /// Reads a QString property by name as a D string.
 string propStr(T)(T o, string name) {
-    auto qs = qtd_prop_get_qs(qobjOf(o), (name ~ "\0").ptr);
+    auto qs = qtd_prop_get_qs(__bindRecv(o, name), (name ~ "\0").ptr);
     auto s = qsToD(qs); qtd_qs_free(qs); return s;
 }
 /// JS `||` and `&&` return an OPERAND, not a bool: `a || b` is `a` when `a` is truthy, else `b`.

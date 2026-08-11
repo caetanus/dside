@@ -36,8 +36,12 @@ mkdir -p "$OUT"
 QT_QPA_PLATFORM=offscreen "$BDIR/qmlvalues" "$QMLFILE" --dumpall "$OUT/objs" 2>/dev/null \
   | sort > "$OUT/engine.txt"
 if [ ! -s "$OUT/engine.txt" ]; then
-  echo "optlevels: the ENGINE dumps nothing for $QMLFILE — nothing to compare against" >&2
-  exit 1
+  # UNJUDGEABLE, not failed. The o3 gate has always given a document the engine cannot build
+  # standalone its own column; this script called it a disagreement, and so reported Fusion's
+  # TextFieldBackground as a broken promise when there is nothing to compare against at all. Exit 2
+  # so a caller can tell "nothing to judge" from "judged, and wrong".
+  echo "optlevels: the ENGINE dumps nothing for $QMLFILE — unjudgeable, not compared" >&2
+  exit 2
 fi
 
 for O in 1 2; do

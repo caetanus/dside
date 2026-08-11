@@ -23,7 +23,7 @@ mkdir -p "$OUT"
 # than skipped: the gate still fails on anything new, and the list can only shrink by fixing
 # something. See optlevels-known.txt.
 KNOWN="$HERE/optlevels-known.txt"
-checked=0; skipped=0; bad=0; known=0
+checked=0; skipped=0; bad=0; known=0; unjudgeable=0
 for f in $(find "$DIR" -name '*.qml' | sort); do
   n=$(basename "$f" .qml)
   # Does -O1 actually compile it? If it hands the document over, there is nothing of ours to judge.
@@ -31,9 +31,15 @@ for f in $(find "$DIR" -name '*.qml' | sort); do
   if grep -q "handing the DOCUMENT to the engine" "$OUT/$n.probe"; then
     skipped=$((skipped + 1)); continue
   fi
-  if sh "$HERE/optlevels.sh" "$TOOL" "$QMLMAP" "$f" "I$n" "$OUT/$n" "$BDIR" "$GDIR" "$DC" $LIBS \
-       > "$OUT/$n.log" 2>&1; then
+  sh "$HERE/optlevels.sh" "$TOOL" "$QMLMAP" "$f" "I$n" "$OUT/$n" "$BDIR" "$GDIR" "$DC" $LIBS \
+     > "$OUT/$n.log" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
     checked=$((checked + 1))
+  elif [ "$rc" -eq 2 ]; then
+    # The engine builds nothing for it standalone. That is the o3 gate's UNJUDGEABLE column, and
+    # not a verdict about us in either direction.
+    unjudgeable=$((unjudgeable + 1))
   elif [ -f "$KNOWN" ] && grep -qE "^$(basename "$DIR")/$n[[:space:]]" "$KNOWN"; then
     known=$((known + 1))
     echo "optlevels-dir: $n disagrees, and is a KNOWN broken promise (optlevels-known.txt)" >&2
@@ -45,4 +51,4 @@ done
 
 [ "$bad" -eq 0 ] || { echo "optlevels-dir: $bad document(s) compiled at a certainty level and did not match" >&2; exit 1; }
 [ "$checked" -gt 0 ] || { echo "optlevels-dir: NOTHING was checked in $DIR — every document was handed over, which makes this gate vacuous" >&2; exit 1; }
-echo "optlevels-dir OK ($(basename "$DIR")): $checked document(s) compiled at -O1/-O2 agree with the engine on every property; $skipped handed over; $known known broken promise(s)"
+echo "optlevels-dir OK ($(basename "$DIR")): $checked document(s) compiled at -O1/-O2 agree with the engine on every property; $skipped handed over; $unjudgeable unjudgeable; $known known broken promise(s)"

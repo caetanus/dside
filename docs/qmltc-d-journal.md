@@ -5485,3 +5485,76 @@ Three layers, each measured, each real: the generated D did not compile (fixed),
 does not follow the instance (partly fixed, reverted with the rest), and the dump's accessor chain
 needs to be consistent about which of the two objects each level names — which is the same
 "two objects, one path" the wrapper section above describes, met from a third direction.
+
+## Judging `-O1` over Qt's own corpus, and the three rules it found
+
+The certainty levels promised agreement and nobody had checked. `-O1` compiled 111 of Qt's 329
+Controls documents; the o3 gate judges `-Ox`, which is *different code*, and `qmltc-optlevels` only
+walked the application corpus. So the claim "nothing crosses untyped at `-O1`" was a count with no
+comparison behind it.
+
+Running every style through the per-document comparison found **seven** documents that compiled at
+a certainty level and did not match the engine. The first one (Basic's `DelayButton`) looked like a
+one-off and was named in `optlevels-known.txt`. The other four styles said otherwise: Fusion 5,
+Universal 1, Material 0, Imagine vacuous. Seven is not a list of quirks, so they were read together.
+
+**The shape they shared.** Every one of the Fusion and Universal documents lives in an `impl/`
+folder and declares `property Item control`, which is null when the document is built on its own.
+Their diffs were all downstream of that: `checkMarkColor` `#00000000` where the engine has
+`#000000`, and the `visible` flags that follow from it.
+
+The first hypothesis — that the two colours were the same value printed two ways — was killed by a
+three-line probe: `QVariant::fromValue(QColor())` prints `#000000` and `QColor(Qt::transparent)`
+prints `#00000000`. Different values.
+
+**Rule 1, measured on a document written for the purpose.** Four bindings off a null `Item`:
+
+| binding | engine |
+|---|---|
+| `Qt.darker(control.palette.text, 1.2)` | `#000000` — an *invalid* QColor |
+| `"x" + control.objectName` | `""` |
+| `control.width + 3` | `0` |
+| `control.enabled && !control.activeFocus` | `false` |
+
+`s1` is the one that settles it: had the expression merely evaluated to `undefined`, the engine
+would read `"xundefined"`. It reads `""`, so the binding **threw and wrote nothing** — JS semantics,
+which QML inherits. Our reads were null-tolerant and produced a value.
+
+The fix could not simply make the reads throw: the *wiring* uses the same helpers, and
+`tryConnectMeta(propObj(__outer, "control"), …)` must survive a null control rather than abort the
+object's construction. So the throw is scoped to a `bindEval` block, one per binding — per binding
+and not per object, because the engine aborting one binding does not stop the rest being built.
+
+**Rule 2, found because rule 1 did not close Fusion.** With the guard in, `CheckIndicator` went from
+5 differences to 2, both colours, both on the root's own declared properties — and the slot *was*
+guarded. Instrumenting the field showed it holding all zeros (an invalid QColor) while `propStr`
+returned `#00000000`, which looked impossible until the bare case was tried: a `property color` with
+**no binding at all** already disagreed. QML's default for a colour property is opaque black; a
+default-constructed `QColor` is invalid. The same gap already handled for `real` (D initialises a
+float to NaN where QML says 0), in another type.
+
+Spelled as a CTFE function rather than a struct literal, because `QColor` declares constructors and
+D then refuses initialiser syntax. The layout it writes is identical in the Qt5 binding, checked by
+`static assert` against `generated/qt-5.15`.
+
+**Rule 3, the last one standing.** Universal's `CheckIndicator` still differed on ten values, all
+downstream of one: `data[0].status Error`. Its checkmark is
+`qrc:/…/Controls/Universal/images/checkmark.png`, and the document lives in
+`QtQuick.Controls.Universal.impl` but *imports* `QtQuick.Controls.Universal` — which is the module
+that registers the resource. We ensured the document's own module and not its imports. Fusion never
+showed it because there the images and the document share a module.
+
+**What it was worth.** Six of the seven closed. The survivor is `DelayButton`, in two styles, whose
+`contentItem` children exchange a `baselineOffset` that neither side assigns — named, with its
+measurement, after a first reading that blamed child order and was disproved by dumping both
+children whole: every property either side writes agrees. And the three
+rules were not `-O1` problems: the full matrix went from 226 compiled to **231**, and from 58
+documents at `-O0` to **53**. A certainty level nobody had judged was hiding defects that cost the
+default level too.
+
+Two harness defects fell out of the same run. A document the engine cannot build standalone counted
+as a *disagreement* (Fusion's `TextFieldBackground`) instead of getting the o3 gate's UNJUDGEABLE
+column; and the gate ran over one style on a cost argument that did not survive contact with the
+numbers — Basic judges 38 documents, the other three judge 6, 7 and 7, because the rest of each
+style is handed to the engine and skipped. Four styles are gated now. Imagine is not: `-O1` compiles
+nothing there, and a vacuous run reporting green is worse than no run.

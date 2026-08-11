@@ -33,6 +33,44 @@ using namespace QQmlJS::AST;
 
 static std::string qs(const QString &s) { return s.toStdString(); }
 
+// A BINDING THAT DEREFERENCES NULL WRITES NOTHING. JS throws on `null.x`, and the engine lets the
+// throw abort the whole binding: the property keeps its default. Our reads were null-tolerant and
+// produced a value instead — a transparent QColor where the engine leaves an invalid one, "x" where
+// the engine leaves "". Seven of Qt's own Fusion/Universal documents disagreed with the engine on
+// that and on nothing else. See `bindEval` in qtmoc.d for the measurement.
+//
+// The guard is per BINDING, not per object: the engine aborting one binding does not stop the rest
+// of the object being built, so wrapping a whole wire body would turn one bad binding into many.
+static std::string bindGuard(const std::string &body) {
+    return "        bindEval({\n" + body + "        });\n";
+}
+
+// ...and the same for the INITIAL evaluation, which lives in the wire body as one statement per
+// line — the shape an existing pass over `baseWire` already relies on. Only a property WRITE that
+// reads through an object is wrapped: the wiring calls on the neighbouring lines
+// (`tryConnectMeta(propObj(__outer, "control"), …)`) are deliberately null-tolerant and must stay
+// outside, or a null control would stop the object being wired at all.
+static std::string guardWire(const std::string &w) {
+    std::string out;
+    for (size_t i = 0, j; i < w.size(); i = j + 1) {
+        j = w.find('\n', i);
+        if (j == std::string::npos) j = w.size() - 1;
+        std::string line = w.substr(i, j - i + 1);
+        bool write = line.rfind("        setProp(", 0) == 0 || line.rfind("        setPropObj(", 0) == 0;
+        // A read the guard is about is a prop* CALL taking an object: propObj/propStr/propInt/
+        // propBool/propDouble. Testing for "prop" alone would match `setProp(` itself, so the
+        // helpers are named.
+        bool reads = line.find("propObj(") != std::string::npos || line.find("propStr(") != std::string::npos
+             || line.find("propInt(") != std::string::npos || line.find("propBool(") != std::string::npos
+             || line.find("propDouble(") != std::string::npos;
+        size_t end = line.find_last_not_of("\n\r");
+        bool stmt = end != std::string::npos && line[end] == ';';
+        if (write && reads && stmt) out += "        bindEval({ " + line.substr(8, end - 7) + " });\n";
+        else out += line;
+    }
+    return out;
+}
+
 // A QML name is not necessarily a valid D IDENTIFIER: `delegate` and `scope` are ordinary QML
 // property names and both are D keywords, and they are not rare — 138 of the 944 .qml files Qt
 // ships use one. Emitting them verbatim produced D that does not compile, which no diagnostic
@@ -7995,7 +8033,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             g_deepReads.clear();
             if (!conns.empty() || !lateConns.empty() || !sibConns.empty()) {
                 handlerSlots += "    @Slot void __rcb_" + ba.first + "() {\n" + lateLeaf
-                              + "    " + assign + "    }\n";
+                              + bindGuard("    " + assign) + "    }\n";
                 bindWire += conns;
                 if (!lateConns.empty() || !sibConns.empty())
                     lateWire += lateConns + sibConns + "        __rcb_" + ba.first + "();\n";
@@ -8521,7 +8559,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             ++partial;
         }
         if (!conns.empty() || !sibConns.empty()) {
-            if (emitSlot) handlerSlots += "    @Slot void " + slot + "() {\n    " + assign + "    }\n";
+            if (emitSlot)
+                handlerSlots += "    @Slot void " + slot + "() {\n" + bindGuard("    " + assign) + "    }\n";
             bindWire += conns;
             if (!sibConns.empty()) lateWire += sibConns + "        " + slot + "();\n";
         }
@@ -8592,7 +8631,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string slot = "__rcw_" + st.name;
         std::string stmt = "        setProp(this, \"state\", " + ce + " ? \"" + st.name
                          + "\" : \"\");\n";
-        whenMethods += "    @Slot void " + slot + "() {\n" + stmt + "    }\n";
+        whenMethods += "    @Slot void " + slot + "() {\n" + bindGuard(stmt) + "    }\n";
         wireGroupDeps(st.when, slot, stmt, "`when` of state '" + st.name + "'", false);
         lateWire += "        " + slot + "();\n";
     }
@@ -8889,6 +8928,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         return "        static if (is(typeof(_v) : typeof(" + p.name + "))) { " + direct + " }\n"
              + "        else setProp(this, \"" + p.name + "\", _v);\n";
     };
+    bool colorDefaultEmitted = false;   // one CTFE helper per class, and only where a colour exists
     for (auto &p : props) {
         // A declared `var` whose value is a CHILD OBJECT is held by the child's own field, which is
         // named after the property and already carries @Property. Emitting the marker as well gave
@@ -8901,6 +8941,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         node.scalars.push_back({p.name, p.dtype});
         std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
+        // ...and the SAME GAP for a colour, which cost five of Qt's own documents. QML's default
+        // for `property color` is OPAQUE BLACK; a default-constructed QColor is INVALID, and the
+        // two are different values that print differently (#000000 against #00000000). It shows
+        // whenever the property's binding never lands — which, now that a null dereference aborts
+        // the binding as the engine does, is exactly Fusion's `checkMarkColor` and `pressedColor`.
+        // Spelled as a CTFE function rather than a literal because QColor declares constructors,
+        // which rules out struct-initialiser syntax; it writes the layout the binding declares
+        // (spec Rgb, 16-bit alpha 0xffff) on a little-endian host.
+        if (p.dtype == "QColor" && !colorDefaultEmitted) {
+            colorDefaultEmitted = true;
+            body += "    private static QColor __qmlColorDefault() {\n"
+                    "        QColor c; c.cspec[0] = 1; c.ct[0] = 0xff; c.ct[1] = 0xff; return c;\n"
+                    "    }\n";
+        }
+        const char *colorInit = p.dtype == "QColor" ? " = __qmlColorDefault()" : "";
         if (p.bound) {
             // D initialises a floating-point field to NaN; QML's default for `real` is 0. The
             // difference is observable the moment one binding reads another before it has been
@@ -8908,7 +8963,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // before `baseLightness` is assigned, and a NaN factor aborts Qt inside qRound.
             // (The value settles either way, through the notify; it is the transient that differs.)
             const char *zero = (p.dtype == "double" || p.dtype == "float") ? " = 0" : "";
-            body += "    " + notifyUda + p.dtype + " " + p.name + zero + ";\n";
+            body += "    " + notifyUda + p.dtype + " " + p.name + zero + colorInit + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
             // Which binding currently drives this property. 0 = the declarative one; a
             // `Qt.binding(...)` install switches it, and a plain assignment (`p = 42`) clears it
@@ -8920,14 +8975,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 body += "    private int __bind_" + p.name + " = 0;\n";
                 recompute += "    @Slot void __rc_" + p.name + "() {\n"
                            + "        if (__bind_" + p.name + " != 0) return;\n"
-                           + "        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
-                           + storeInto(p) + "    }\n";
+                           + bindGuard("        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
+                                       + storeInto(p)) + "    }\n";
                 anyBound = true;
                 continue;
             }
             recompute += "    @Slot void __rc_" + p.name + "() {\n"
-                       + "        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
-                       + storeInto(p) + "    }\n";
+                       + bindGuard("        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
+                                   + storeInto(p)) + "    }\n";
             anyBound = true;
         } else {
             // An empty expr means the value is written through the meta-object (see metaAssigns):
@@ -8936,7 +8991,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // binding was refused kept that NaN and reported it as the property's value (Fusion's
             // SliderGroove `offset`, where the engine reads 0).
             body += "    " + notifyUda + p.dtype + " " + p.name
-                  + (p.expr.empty() ? ((p.dtype == "double" || p.dtype == "float") ? " = 0" : "")
+                  + (p.expr.empty() ? ((p.dtype == "double" || p.dtype == "float") ? " = 0"
+                                                                                   : colorInit)
                                     : " = " + p.expr) + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
         }
@@ -8949,9 +9005,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &b : rb.second) {
             recompute += "    @Slot void __rc_" + rb.first + "_" + std::to_string(b.idx) + "() {\n"
                        + "        if (__bind_" + rb.first + " != " + std::to_string(b.idx) + ") return;\n"
-                       + "        auto _v = " + coerceTo(pt, b.expr) + ";\n"
-                       + "        if (" + rb.first + " != _v) { " + rb.first + " = _v;"
-                       + (notified(rb.first) ? " " + rb.first + "Changed.emit();" : "") + " }\n    }\n";
+                       + bindGuard("        auto _v = " + coerceTo(pt, b.expr) + ";\n"
+                                   + "        if (" + rb.first + " != _v) { " + rb.first + " = _v;"
+                                   + (notified(rb.first) ? " " + rb.first + "Changed.emit();" : "")
+                                   + " }\n") + "    }\n";
             for (auto &d : b.deps)
                 if (isProp(d))
                     bindWire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_"
@@ -8976,6 +9033,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // installs, and resolution is lazy, so this only has to precede the first read.
         if (!g_docModule.empty())
             wire += "        ensureModule(\"" + g_docModule + "\");\n";
+        // ...and every module the document IMPORTS, not just the one it lives in. A module brings
+        // its RESOURCES with it: Universal's CheckIndicator sits in `QtQuick.Controls.Universal.impl`
+        // but its checkmark is `qrc:/…/Controls/Universal/images/checkmark.png`, registered by the
+        // `QtQuick.Controls.Universal` plugin the document imports. Without the import the URL does
+        // not resolve, the Image reports status Error and every geometry that follows from its size
+        // is wrong — measured as ten differences on one document, all downstream of one failed load.
+        // Fusion never showed it because there the images and the document share a module.
+        for (auto &imp : g_bareImports)
+            if (imp != g_docModule)
+                wire += "        ensureModule(\"" + imp + "\");\n";
         // classBegin() BEFORE any property is assigned, which is the order the engine uses: a
         // type implementing QQmlParserStatus may need to know it is being built from a document
         // (rather than constructed directly) before it sees its first assignment.
@@ -9059,14 +9126,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // to the property it intercepts.
         for (auto &vt : varTextInit) {
             std::string slot = "__rcv_" + vt.first;
-            handlerSlots += "    @Slot void " + slot + "() {\n        setProp(this, \""
-                          + vt.first + "\", " + vt.second + ");\n    }\n";
+            handlerSlots += "    @Slot void " + slot + "() {\n"
+                          + bindGuard("        setProp(this, \"" + vt.first + "\", "
+                                      + vt.second + ");\n") + "    }\n";
             lateWire += "        " + slot + "();\n";
         }
         for (auto &vo : varObjInit) {
             std::string slot = "__rcv_" + vo.first;
-            handlerSlots += "    @Slot void " + slot + "() {\n        setPropObj(this, \""
-                          + vo.first + "\", " + vo.second + ");\n    }\n";
+            handlerSlots += "    @Slot void " + slot + "() {\n"
+                          + bindGuard("        setPropObj(this, \"" + vo.first + "\", "
+                                      + vo.second + ");\n") + "    }\n";
             lateWire += "        " + slot + "();\n";
         }
         wire += vsWire;
@@ -9528,7 +9597,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            + (node.hasFinal ? "        __qmltcFinal();\n" : ""));
     }
     std::string lateMethod = node.hasLate
-        ? "    void __qmltcLate() {\n" + lateWire + lateKids + "    }\n" : "";
+        ? "    void __qmltcLate() {\n" + guardWire(lateWire) + lateKids + "    }\n" : "";
     if (node.hasFinal)
         lateMethod += "    void __qmltcFinal() {\n" + finalSelf + finalKids + "    }\n";
     if (delegRewrite) {
@@ -9676,7 +9745,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     }
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + lateMethod + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods
              + childFields + aliasProps + methods + recompute + handlerSlots + groupHandlerSlots
-             + attachedHandlerSlots + wire + "}\n";
+             + attachedHandlerSlots + guardWire(wire) + "}\n";
     g_selfId = savedId;
     g_selfIds = savedIds;
     g_selfIdsDefn = savedIdsDefn;

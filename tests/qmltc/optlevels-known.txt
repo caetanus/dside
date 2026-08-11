@@ -7,7 +7,34 @@
 #
 # One document per line: <Style>/<Name>  # reason
 
-Basic/DelayButton   # CHILD ORDER: contentItem.data[0] and data[1] carry each other's
-                    # baselineOffset (14.84375 / 5.34375 swapped). The two children are built in
-                    # the opposite order to the engine's. Found by judging -O1 over Qt's corpus for
-                    # the first time; the o3 gate already demoted this document on the value axis.
+Basic/DelayButton   # LAYOUT ORDER, and NOT child order — the first reading of this was wrong and
+                    # is corrected here. contentItem's two ClippedText siblings are built in the
+                    # engine's order, receive the right bindings, and agree on every property that
+                    # either side assigns: visible (true/false), clipX (-8/-8), clipWidth (100/84),
+                    # height (28/28), implicitHeight (19/19), y (0/0), text. The ONE difference is
+                    # baselineOffset, which NEITHER side assigns — QQuickText sets it when the text
+                    # lays out — and it comes out exactly EXCHANGED: engine 14.84375 / 5.34375,
+                    # ours 5.34375 / 14.84375. The two values are the same text laid out at height
+                    # 28 and at its implicit height 19 (they differ by 19/2). So each side has one
+                    # child in each state and they disagree about which: on the engine the VISIBLE
+                    # child carries the resized baseline, on ours the invisible one does. Both are
+                    # reproducible over three runs, so this is deterministic, not flaky.
+                    # NEXT PROBE, for whoever picks this up: dump baselineOffset after each write in
+                    # __qmltcWire to find which assignment flips it, then compare against the order
+                    # the engine writes visible and the size in.
+Fusion/DelayButton  # The SAME defect, the same two values exchanged — one cause, two styles,
+                    # because both DelayButtons are written the same way. Two lines rather than one
+                    # so the gate keeps naming each style it actually shows up in.
+
+# WHAT WAS HERE AND IS NOT ANY MORE. Judging -O1 over all five styles first found SEVEN documents,
+# and six of them came down to three rules the compiler was missing rather than to six quirks:
+#
+#   * a binding that dereferences null must write NOTHING (JS throws; the engine keeps the default)
+#   * QML's default for `property color` is OPAQUE BLACK, where a default-constructed QColor is
+#     INVALID — different values that print differently
+#   * a document's IMPORTS must be loaded, not only the module the document lives in, because a
+#     module carries its resources
+#
+# Fusion's CheckIndicator, RadioIndicator, SliderGroove and ButtonPanel and Universal's
+# CheckIndicator all agree with the engine now. Naming them here would have hidden three real gaps
+# behind five well-documented excuses, which is the failure mode this file is one step away from.
