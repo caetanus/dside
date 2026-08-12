@@ -25,10 +25,14 @@ Basic/DelayButton   # COMPLETION ORDER. Not child order (the first reading, disp
                     # matrix: 231 compiled -> 227). A binding like `contentWidth:
                     # contentItem.contentWidth` is never wired, because `contentItem` is declared as
                     # an `Item` and Item has no contentWidth, so (1) the leaf connection needs the
-                    # notify resolved from the object rather than the static type — written, as
-                    # bindLeafProp — and (2) the read is not recorded as a deep read at all when the
-                    # member is unknown on that type, so nothing asks for the leaf. (2) is the
-                    # remaining piece. The work is on the stash, described in the journal.
+                    # notify resolved from the object rather than the static type and (2) the read
+                    # is not recorded as a deep read at all when the member is unknown on that type,
+                    # so nothing asks for the leaf.
+                    # BOTH ARE NOW LANDED — bindLeafProp and propAny, in the commit that closed the
+                    # 516 refused reads across Qt's five styles. The reversal was last measured
+                    # against a tree that had NEITHER of them, so the -4 it cost is a number about a
+                    # compiler that no longer exists: it has to be measured again before it can be
+                    # judged. Branch `wip/completion-order`.
 Fusion/DelayButton  # The SAME defect, the same two values exchanged — one cause, two styles,
                     # because both DelayButtons are written the same way. Two lines rather than one
                     # so the gate keeps naming each style it actually shows up in.
