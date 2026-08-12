@@ -2587,9 +2587,13 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     && objPathExpr(fqV->base, tgtQ, tqQ)) {
                 auto itQ = amQ->second.find(memQ);
                 if (itQ != amQ->second.end() && !itQ->second.empty() && itQ->second.back() != '*') {
+                    // A colour crosses as TEXT, here as everywhere else: Qt's Material writes
+                    // every one of its colours as `control.Material.<name>`, and reading one as a
+                    // double is not a refusal but a WRONG VALUE, which is worse.
                     std::string rdQ = dtype == "int" ? "propInt"
                         : (dtype == "double" || dtype == "real" || dtype == "float") ? "propDouble"
-                        : dtype == "string" ? "propStr" : dtype == "bool" ? "propBool" : "";
+                        : (dtype == "string" || dtype == "color") ? "propStr"
+                        : dtype == "bool" ? "propBool" : "";
                     if (!rdQ.empty()) {
                         out = rdQ + "(" + attachedExprOn(tgtQ, tnQ) + ", \"" + memQ + "\")";
                         return true;
@@ -3148,7 +3152,10 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     // already travels, and what the oracle prints from the same QVariant. Without
                     // this, `Color.blend(control.palette.mid, ...)` could not compile its own
                     // arguments even though each one is a plain read.
-                    if (dtype == "string")
+                    // ...and `color` is the same request under its own name: a declared
+                    // `property color x: <obj>.<colour>` compiles its value with the property's
+                    // QML type, not with "string", and only the string spelling was accepted here.
+                    if (dtype == "string" || dtype == "color")
                         if (auto qc2 = g_qmlCxxType.find(own); qc2 != g_qmlCxxType.end())
                             if (auto c2 = qc2->second.find(qs(fm->name.toString()));
                                     c2 != qc2->second.end() && c2->second.rfind("QColor", 0) == 0) {
@@ -5703,6 +5710,29 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &sg : g_signals) g_scope.insert(sg);
         g_propType = pt0;
         for (auto &bp : g_baseProps) g_propType[bp.first] = bp.second;
+        // ...and an OBJECT-typed declared property is a PATH HEAD from the start, not from the
+        // line it is written on. QML has no ordering rule between members, and Qt's Material
+        // RadioIndicator relies on that: `readonly property color targetColor: control.Material...`
+        // is written THREE LINES ABOVE `property T.AbstractButton control`. The name was already
+        // pre-scanned into scope here; only the TYPE waited for the main loop, and without it the
+        // read is not an object path, so the whole binding was refused and the colour kept its
+        // default. Proven by reordering the two lines in a probe: same expression, same document,
+        // one compiles and one does not.
+        for (auto *m = init ? init->members : nullptr; m; m = m->next) {
+            auto *pub = cast<UiPublicMember *>(m->member);
+            if (!pub || pub->type != UiPublicMember::Property) continue;
+            std::string pn = qs(pub->name.toString());
+            std::string pty = pub->memberType ? typeName(pub->memberType) : std::string();
+            if (pn.empty() || pty.empty() || g_propType.count(pn)) continue;
+            if (pub->typeModifier == QLatin1String("list")) continue;
+            // Only a QML OBJECT type. `boundTypeFor` is not that test — QColor is a bound type
+            // too — and accepting it made `readonly property color targetColor` a PATH HEAD, so
+            // `border.color: targetColor` emitted the D field where the meta channel was wanted and
+            // the document stopped compiling. Measured, on the one document this whole change was
+            // written for.
+            if (isQmlObjectType(pty))
+                g_propType[pn] = "@" + pty;
+        }
         // Pre-resolve aliases whose target needs no child object, so a binding can USE the alias.
         for (auto *m = init ? init->members : nullptr; m; m = m->next) {
             auto *pub = cast<UiPublicMember *>(m->member);
@@ -6639,6 +6669,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::vector<std::string> ids; collectIds(es->expression, ids);
                 props.push_back({name, dt, expr, true, ids, g_deepReads});
                 g_deepReads.clear();
+                // A COLOUR keeps crossing as text even when its binding compiles here. The two
+                // colour branches below already do that, and this one did not — so the moment an
+                // attached-colour expression started compiling, every READ of the property emitted
+                // the QColor FIELD where the meta channel was wanted, and `border.color:
+                // targetColor` stopped compiling at all. One route per type, not one per branch.
+                if (!std::strcmp(dt, "QColor")) g_metaTextProps.insert(name);
             // A declared VALUE-TYPE property (`readonly property color checkMarkColor: <expr>`):
             // Qt's Fusion declares twenty of them and reads them from its children. The property
             // has to EXIST — the field carries the value type so the meta-object records it as
