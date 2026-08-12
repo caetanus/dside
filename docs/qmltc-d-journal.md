@@ -6065,3 +6065,18 @@ So it was reverted, for the third time this session on the same principle: a cha
 shown to do anything must not read as a fix. What is worth keeping is the blind spot itself — the
 differential is silent about a whole property kind, which means any work on `var` is unjudgeable
 until the dump covers it. That is a harness gap, and it comes first.
+
+**Written, and it found something on the first run.** Making both walkers print a `var` holding an
+array of primitives took FOUR sites, three of them not where expected: the oracle's QJSValue branch;
+our own C++ walker `qtd_dump_object_as`, because `--dumpall` does NOT use the generated `writefln`
+list (a probe found that, not a reading); and a third branch, because the engine hands a QJSValue
+while a `var` we filled ourselves holds the QVariantList that came out of `QJSValue::toVariant()` —
+two spellings of one value that must print alike or the comparison becomes about which side stored
+it.
+
+With that done the minimal case agrees on both sides — `items 3,1,4,1,5` — and the first full matrix
+failed on `qmltc_CDeepRead_ldc2`: the ENGINE has `data[0].sequences` and we print nothing. A real
+asymmetry that the blind spot was hiding, found within minutes of removing it.
+
+Reverted because it breaks a fixture, not because it is wrong. That is the argument for finishing
+it: an entire property kind was unobserved, and the moment it was observed it produced a difference.
