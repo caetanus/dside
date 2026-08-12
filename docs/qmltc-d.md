@@ -208,7 +208,7 @@ Two corpora, the same two axes, both gated in `./build`.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls (5 styles) | 329 | 235 | 49 | 45 | **0** |
+| Qt's Controls (5 styles) | 329 | 236 | 48 | 45 | **0** |
 | application-shaped | 14 | 2 | 12 | 0 | **0** |
 
 Every document the engine can draw standalone behaves **identically** to it: same frame byte for
@@ -313,8 +313,8 @@ in
 `tests/qmltc/optlevels-known.txt` with its measurement, and the `-O3` gate already demotes the
 document, so the *behaviour* is the engine's — the broken promise is `-O1`'s, not the default's.
 Four of the five styles are under continuous judgement
-(`qmltc-optlevels-controls-{Basic,Fusion,Universal,Material}`): **108 documents** compiled at a
-certainty level and compared property by property — 38, 36, 27 and 7 — with the rest of each style
+(`qmltc-optlevels-controls-{Basic,Fusion,Universal,Material}`): **110 documents** compiled at a
+certainty level and compared property by property — 39, 37, 27 and 7 — with the rest of each style
 handed to the engine and skipped. Imagine is absent for the opposite reason: `-O1` compiles nothing
 there, which makes the run vacuous, and the script refuses to report a green it did not earn.
 
@@ -323,7 +323,7 @@ Fusion and 1 on Universal and never got far enough to report a check count; now 
 of them and they agree.
 
 Fixing the three rules also moved five of Qt's documents from `-O0` to compiled at the **default**
-level — the measured claim below went from 226 to 231, and a crash fix took it to 235 — which is the useful way to read this: a
+level — the measured claim below went from 226 to 231, a crash fix took it to 235, and completing in the engine's order took it to 236 — which is the useful way to read this: a
 certainty level nobody had judged was hiding defects that cost the default level too.
 
 ## Scope, and what is not characterised
