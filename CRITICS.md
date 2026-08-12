@@ -2989,6 +2989,70 @@ e callback policy precisam virar contrato unico, versionado e quebravel.
 > callback coberta). Roadmap declarado (nao feito): placar historico, IR, typesystem, ABI
 > probes, Windows. Regressao 126/126, ldc2+dmd, Qt5+Qt6, corpus 53/53.
 
+## Resposta à rodada 4 refeita (escrita a 2026-08-12)
+
+A rodada mais antiga do ficheiro, e a que envelheceu melhor: as três prioridades que ela declarou
+"brutais" foram todas atacadas, e duas fecharam. **Sete fechados, três abertos, um parcial.**
+
+- **#1 coverage não respondia "qual símbolo falhou": FECHADO, e era a prioridade nº1 dela.** Existe
+  o manifest por símbolo que ela desenhou, com os fates que ela nomeou:
+  `coverage-manifest.tsv`, 8429 linhas, `cppClass · symbol · usr · fate`, com `bound` (4479),
+  `inherited` (1487), `shimmed` (1046), `unmapped-type` (725), `signal` (501), `pure-virtual` (190)
+  e `inline-failed`. E é **gated** — `manifest-gate OK [qtwidgets]: 8428 symbols (class+USR), no
+  regression`, corrido agora.
+- **#2 a suíte precisava de placar por categoria/compilador/Qt: FECHADO na estrutura.** O
+  `tools/test-report.sh` emite TSV com colunas explícitas — categoria, compilador, Qt, capability
+  opcional, status (pass/fail/skip), duração — e tem self-test do parser (r9 #3). O que a auditoria
+  pediu e **não** existe é a metade "histórica": os contadores são de uma execução, não persistidos
+  ao longo do tempo. Dito como parcial, não como fecho.
+- **#3 o gerador é grande demais para auditar com conforto: ABERTO.** O `emit_cxx.d` continua a
+  concentrar AST walk, política de tipos, emissão textual, heurísticas ABI, recovery de inline
+  methods, shim C++ e diagnóstico. É a mesma família do "contexto explícito" das rodadas 9/10/11 —
+  o compilador e o gerador têm o mesmo defeito de fronteira, e nenhum dos dois tem portão.
+- **#4 o subset regex do typesystem é tecto real: ABERTO**, e a rodada 12 explica porquê a resposta
+  foi outra: em vez de anotar 8428 símbolos com semântica de ownership, o `ownership-gate` impede a
+  superfície perigosa de CRESCER. É uma escolha, não um fecho, e está dita como escolha.
+- **#5 ownership é área de morte do binding: FECHADO** na rodada 12 — borrowed por omissão
+  (`_ownedByD`), impasse do `exit()` provado por coredump, `ownership-gate`, e duas classes
+  não-`QObject` classificadas por critérios verificáveis.
+- **#6 o metaobject runtime engolia excepções: FECHADO** — ver r5 #4: zero `catch (Exception) {}`
+  vazios, catorze sítios em `qtdOnCallbackError`.
+- **#7 `qtdmoc.cpp` usava mapas globais sem história de cleanup: FECHADO** — ver r6 #1 e r11 #1: os
+  dois caminhos limpam, e há dois testes que exigem as tabelas de volta ao valor de base
+  (`moclife_test.d`, `moclife_widget.d`, `leaf_lifetime.d`).
+- **#8 XML feito à mão em UIC/QRC exige corpus e não confiança: FECHADO.** 60 `.ui` no corpus,
+  diferenciados contra o **QUiLoader do próprio Qt** (`corpus-check`), e o QRC a servir bytes
+  exactos através do `QFile`/`QResource` do Qt. O oráculo deixou de ser a nossa opinião.
+- **#9 assumptions de ABI/layout precisam de probes formais: ABERTO.** O `emit_cxx.d` raciocina
+  sobre `sizeof`/layout em vários sítios (o comentário do QList com `begin@8, end@12, array[]@16` é
+  o exemplo), e existem provas indirectas — `valuetypeprop`, `subclasscast`, `ctorguard` — mas não
+  há um probe que afirme os layouts em si. É o achado mais antigo ainda por tocar.
+- **#10 Windows/MSVC fora da maturidade PySide: ABERTO** e nunca disputado.
+- **#11 comentários antigos feriam a credibilidade: FECHADO.** `generator-d/gen.d` abre hoje a
+  descrever o que é ("shared front-end for the binding generator, in D on the libclang C API");
+  `runtime/uic/uiform.d` abre como "a compile-time (CTFE) `uic`" e não como subset proof-of-concept.
+
+---
+
+## Fecho da releitura completa (2026-08-12)
+
+**Sete rodadas relidas (4 a 12), 65 achados, 52 fechados.** O que resta agrupa-se em quatro
+famílias, e nenhuma é surpresa:
+
+1. **Fronteiras** — o runtime partilhado (r9 #2, r11 #5) e o gerador/compilador (r4 #3, r9 #4,
+   r10 #6, r11 #6). Abertas há cinco rodadas e a métrica das duas ANDOU PARA TRÁS hoje.
+2. **Prova institucional** — CI verde num runner real, dois minors Qt6, publicar (r5 #1, r7 #1,
+   r7 #7, r12 #6). Não se fecham desta máquina; a última depende da licença.
+3. **Superfícies por construir** — formas QML (r6 #6), typesystem (r4 #4), Windows (r4 #10), probes
+   de ABI (r4 #9), mais classes descartáveis (r12 #2).
+4. **Um resíduo com número** — o DAG do libsample: 116 anúncios de `libsample.a` numa matriz
+   completa para 58 consumidores (r7 #8, r8 #9).
+
+**A regularidade, agora com sete rodadas de prova:** todo achado que virou **alvo com nome** fechou e
+ficou fechado. Todo achado que dependia de eu escolher trabalho sem portão continua aberto, e dois
+deles pioraram enquanto eu fechava os outros. A auditoria não precisa de me apontar casos: precisa
+de me obrigar a pôr portão onde eu não quero.
+
 ## Rodada 4 refeita: chegada limpa pelo codigo
 
 Escopo lido nesta rodada: `generator-d/`, `runtime/{holder,qtmoc,uic,qrc}/`,
