@@ -196,6 +196,17 @@
       "probe_targets": [
         "qmltc-o3-gate-app"
       ]
+    },
+    {
+      "id": "engine-built-child-needs-source-not-objects",
+      "kind": "known_gap",
+      "area": "qmltc-d/delegation",
+      "since": "2026-08-11",
+      "reason": "AListView compiles with NO diagnostic and is demoted on the frame: its ListModel is built by the engine, its ListElement children are built by the engine, and the list is still empty — `count` 0 against the engine's 3. Not an oversight in the wiring. `ListElement` is not an object anyone appends: QQmlListModel's rows are built by the QML compiler out of the DOCUMENT'S TEXT, so an element instantiated on its own is a shell with nowhere to go. Building a type and then its children separately cannot reproduce that at any level of effort, which sharpens the design note in docs/qmltc-d.md: delegating a CHILD has to hand the engine the subtree's SOURCE, the way --shadow-dir already does for a delegated expression, not a type name and a list of property writes.",
+      "remove_when": "a child the compiler cannot compile is handed to the engine AS SOURCE — its own text, in the document's context — and AListView's model has three rows",
+      "probe_targets": [
+        "qmltc-o3-gate-app"
+      ]
     }
   ]
 }

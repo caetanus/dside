@@ -134,6 +134,14 @@ to all 39, so the tightening is out and the widening is the only affordable answ
 match the engine today with a child missing says their skipped children are at the END of the list,
 where nothing shifts behind them. Luck, not a property.)
 
+**And one shape says the rule has to be about SOURCE, not about objects.** `AListView` builds its
+`ListModel` through the engine and its `ListElement` children too, and the list still comes out
+empty: `count` 0 where the engine has 3. `ListElement` is not an object anyone appends — QQmlListModel's
+rows are built by the QML compiler out of the document's own text, so a `ListElement` instantiated on
+its own is a shell with nowhere to go. Building a type and then its children separately cannot
+reproduce that at any level of effort. What the engine needs is the SUBTREE'S SOURCE, which is what
+`--shadow-dir` already hands it for a delegated expression.
+
 The rule the codebase already states for a document — *"a document we cannot compile is not
 abandoned, it is instantiated by the engine and reached through its interface like any other opaque
 object"* — is the same rule a child wants. A child we cannot compile should be **built by the
