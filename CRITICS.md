@@ -2337,6 +2337,54 @@ merece confiança automática. A próxima rodada não precisa de mais superfíci
 parecer grande; precisa fazer CI, registro QML e gates falharem de modo impossível
 de confundir.
 
+## Resposta à rodada 6 (escrita a 2026-08-12)
+
+Dez achados. **Oito fechados, um alargado mas ainda estreito, um ABERTO e é justo que esteja.**
+
+- **#1 o cleanup de `g_moAttach` estava partido no caminho `QtdWidget`: FECHADO, e com o teste que
+  faltava.** A auditoria tinha razão em dizer que a resolução da rodada 5 era falsa: o
+  `moclife_test.d` só destruía um objecto criado por `newQObject`. Existe hoje
+  `tests/wrapper/moclife_widget.d`, que abre a citar "critics r6 #1" e afirma as duas metades — a
+  subclasse anexada regista **uma** entrada em `g_moAttach`, e destruí-la limpa `g_moAttach` **e** o
+  `_reg` (`qobjOf(w) is null` depois). É alvo do build nos dois compiladores.
+- **#2 o manifest gate perdia overloads: FECHADO.** A chave é hoje `class + USR`, que é exactamente
+  o que a auditoria pediu ("enquanto a chave não incluir assinatura canónica/USR, a frase 'falha
+  quando um símbolo desaparece' é objectivamente falsa"), e há unittest a provar o caso que ela
+  reproduziu com um manifest sintético: dois USRs sob o mesmo `class+nome`, um desaparece, o gate
+  falha. A segunda metade do achado — "gates só para duas superfícies" — está **melhor e não
+  fechada**: são três (`qtwidgets`, `qml`, `controls`), continuam a faltar Qt5, WebEngine e os
+  restantes specs.
+- **#3 `expected-fails.json` sem consumidor: FECHADO** na rodada 12 (executado, 23 sondas).
+- **#4 o report TSV não descrevia a matriz: FECHADO** (ver r8 #8 e r9 #3, com self-test).
+- **#5 não existia CI: FECHADO na estrutura, ABERTO na prova** — ver r7 #1.
+- **#6 a superfície QML pública era estreita: ALARGADA, e digo até onde.** `cppSig` aceitava seis
+  tipos escalares; hoje aceita, além desses, **qualquer struct de valor ligada** (resolvida por
+  `QMetaType::fromName`, o que cobre QColor/QSize/QRectF sem código por tipo), **QVariant** via
+  `QmlVar`, **listas** via `QQmlListProperty<QObject>`, e **qualquer classe ligada** como `X*` — que
+  é o que uma `property Item control` precisa. Os corner cases do registo que a auditoria listou
+  estão fechados noutras rodadas: o pool do Qt5 e o resultado ignorado de `qmlregister` na r7 #2, o
+  cache do metaobject por nome na r7 #3. O que continua por fazer é a lista de FORMAS — enum/flags
+  como tal, revisions, singleton, uncreatable, attached/extension, read-only/required/constant —, e
+  isso não é dívida escondida: é superfície por construir.
+- **#7 `lupdate-d` — falta provar a semântica: ABERTO, e a reclassificação da auditoria continua
+  exacta.** O que ela chamou de "mudança não provada" continua não provado: o fixture
+  `tests/lupdate/fixture.golden.ts` tem **todas** as traduções `type="unfinished"`, isto é, o teste
+  golden prova extracção e **não** prova preservação de catálogo traduzido, merge D+QML/UI,
+  plural/numerus, source locations nem propagação de erro de subprocesso. O extractor ganhou
+  unittests para as formas de disambiguação (`"x".tr(disambig)`, UFCS), que é a metade fácil. Chamar
+  ao conjunto "pipeline fechado" continuaria generoso, e por isso não o chamo.
+- **#8 a documentação voltou a contradizer o código: FECHADO** — ver r11 #7.
+- **#9 "UIC feature-complete" excedia o oracle: FECHADO.** Existem hoje dois diferenciais contra o
+  **QUiLoader** do próprio Qt: `uicheck` sobre os fixtures e `corpus-check` sobre o corpus inteiro
+  de `.ui` do Qt. A afirmação deixou de exceder o oráculo porque o oráculo passou a ser o Qt.
+- **#10 o QRC estava muito menos coberto que o UIC: FECHADO** — ver r8 #10 (PNG, bytes exactos
+  através do `QFile`/`QResource` do Qt).
+
+**A releitura das cinco rodadas (6 a 11) fecha em 37 de 46.** E o #7 é o único achado destas cinco
+que continua aberto **sem** estar noutra rodada com outro nome — os outros oito repetem-se. É,
+portanto, o próximo a fechar, e é pequeno: um catálogo com uma tradução a sério e a asserção de que
+ela sobrevive ao merge.
+
 ## Rodada 6: vocês fecharam tickets; eu fui procurar falsos verdes
 
 Li o projeto como se tivesse chegado agora: gerador, specs, runtime
