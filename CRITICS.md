@@ -1977,6 +1977,58 @@ testes; só este `CRITICS.md` fica em português por ser o documento da crítica
   oracle diferencial de QRC vs `rcc`; runner de expected-fails; IR/typesystem;
   wrapper-default; Windows/SEH; qmltc-d (design travado no plano).
 
+## Resposta à rodada 7 (escrita a 2026-08-12)
+
+Dez achados. **Oito fechados, dois abertos** — e os dois abertos já estão nomeados nas rodadas
+posteriores, o que é o desenho certo: um achado que atravessa rodadas deve aparecer com o mesmo nome
+em todas.
+
+- **#1 a CI não executava a matriz que o projeto chama de contrato: FECHADO na estrutura, ABERTO na
+  prova.** `ci.yml` corre generate → build → test em Linux nos DOIS compiladores, com o cabeçalho a
+  citar r5 #5 / r7 #1 / r8 #1. O que continua por provar é o mesmo item que a rodada 12 já nomeia:
+  **verde num runner real**. Não se fecha desta máquina, e digo-o aqui outra vez em vez de o deixar
+  implícito.
+- **#2 `qmlRegisterType` detectava a falha em C++ e perdia-a na API D: FECHADO.** Hoje **lança**:
+  conflito de tipo sob a mesma chave lança com a chave pública no texto; o backend a devolver null
+  lança com o nome do tipo; e o mesmo tipo na mesma versão é um no-op explícito que **não volta a
+  consumir o pool do Qt5** — que era a terceira parte do achado. A factory D que lança já não deixa
+  um carrier sem backend: o caminho está guardado (é o r8 #5).
+- **#3 o cache de metaobject não chaveava a forma completa: FECHADO, e a chave prova-o à vista.**
+  `key` inclui hoje `nome:tipo@notify` por propriedade, com o comentário "NOTIFY participates too
+  (critics r7 #3)", e os homónimos que o achado pedia existem como alvos (`homonym-*`,
+  `homocollide-*`, oito no grafo) em vez de dois nomes diferentes a fingir uma colisão.
+- **#4 os gates aceitavam metadado corrompido: FECHADO NOS DOIS, e ambos dizem FAIL-CLOSED na
+  primeira linha.** O `manifest_gate.d`: "a malformed line, a duplicate class+USR key (in EITHER
+  file), or a fate outside the fixed enum is a hard failure, not a warning" — os `dups` que a
+  auditoria viu coleccionados e ignorados são hoje rejeitados. O `expected_fails_check.d`: valida o
+  valor de `schema` contra o valor fixo do PROGRAMA (não o do documento), rejeita ids duplicados,
+  exige strings não vazias nos campos obrigatórios, e exige que cada `probe_target` de um `risk`
+  nomeie um alvo real de `./build --list`. "A typo can't invent an accepted schema/kind" está lá
+  escrito como intenção e implementado.
+- **#5 o consumidor de expected-fails não consumia expectativas: FECHADO** na rodada 12 —
+  `expected-fails-run` executa as sondas, e hoje são 23 alvos sobre 24 entradas.
+- **#6 o report inferia factos e produzia linhas falsas: FECHADO** (r8 #8): é a execução de registo,
+  sai não-zero, marca DIRTY e regista *skip* em vez de um verde que não aconteceu.
+- **#7 as APIs privadas testadas em duas instalações e não numa matriz de versões: ABERTO.** É o
+  mesmo problema do #1 visto do outro lado, e o reggaefile já contém metade da resposta: os portões
+  de baseline **desligam-se** quando o minor do Qt instalado difere daquele contra o qual a baseline
+  foi gerada, com o raciocínio escrito no sítio — sem isso, uma regressão passaria despercebida
+  precisamente na máquina cujo Qt bate certo. Falta o que a auditoria pediu: **dois minors Qt6 em
+  jobs verdes**, e falha de API privada diagnosticável como incompatibilidade em vez de um `./build`
+  vermelho indistinto.
+- **#8 o grafo libsample agendava o mesmo produtor repetidamente: MEIO FECHADO, com número** — ver
+  rodada 8 #9: `libsample.a` anunciado 116 vezes numa matriz completa, os outros três a zero.
+- **#9 QRC era um subset estreito sem oráculo: FECHADO** — ver rodada 8 #10: PNG e bytes exactos
+  através do próprio `QFile`/`QResource`.
+- **#10 a documentação ficou atrás do código novo: FECHADO** — ver rodada 11 #7 e rodada 9.
+
+**O que fica desta releitura de quatro rodadas (7 a 11), dito de uma vez:** trinta e seis achados,
+**vinte e nove fechados**. Os que não fecham são sempre os mesmos sete, e agrupam-se em três
+famílias: a fronteira do runtime partilhado, o contexto do compilador, e a prova institucional (CI
+num runner real, dois minors Qt6, publicar). As duas primeiras são trabalho que eu adio porque
+nenhum portão as mede. A terceira **não se fecha desta máquina** — e é a única das três em que adiar
+não é uma escolha minha.
+
 ## Rodada 7: o código local amadureceu; a promessa institucional ainda não
 
 Recomecei pelo estado atual, sem aceitar a resolução da rodada 6 como prova. Li os
