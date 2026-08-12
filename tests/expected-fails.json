@@ -207,6 +207,17 @@
       "probe_targets": [
         "qmltc-o3-gate-app"
       ]
+    },
+    {
+      "id": "label-lays-out-before-its-text-arrives",
+      "kind": "known_gap",
+      "area": "qmltc-d/layout-timing",
+      "since": "2026-08-11",
+      "reason": "AControlsApp compiles with NO diagnostic and is demoted on the frame. Narrowed: its Label's `text` is right (\"level 35%\", same as the engine) and its HEIGHT is right (19, which comes from font metrics, so the font and the layout are both there) — only the WIDTH is 0 against 78.65625, and 140 values follow from that one. The Label is completed (componentComplete is emitted for it), so this is not a missing completion. The shape is the one DelayButton's baselineOffset already showed: a Text measures itself ONCE, and if the measurement happens while the text is still empty — `level` reads 0 before the Slider is wired, `text` is set afterwards — the height (a font property) is right and the width (a content property) stays 0. Same family as `completion-order-not-reversed`, and it is the second document to point at it.",
+      "remove_when": "the Label measures itself after its text arrives — most likely the same fix as completion-order-not-reversed — and AControlsApp is judged rather than demoted",
+      "probe_targets": [
+        "qmltc-o3-gate-app"
+      ]
     }
   ]
 }
