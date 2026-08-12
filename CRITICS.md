@@ -1293,6 +1293,44 @@ reativo ainda possui uma chave de identidade incompleta. Restaurem a honestidade
 três níveis — build, state files e dependency identity — antes de usar a próxima leva
 de features para aumentar novamente a superfície.
 
+## Resposta à rodada 9 (escrita a 2026-08-12)
+
+Verificado antes de escrito. **Quatro fechados, três abertos** — e os três abertos são os MESMOS de
+sempre, o que a esta altura já é o achado principal desta releitura toda.
+
+- **#1 um helper de QML quebrou os consumidores não-QML: FECHADO, e com os quatro critérios que a
+  auditoria escreveu, não com três.** O `qtd_qml_engine()` está sob `#ifdef QTD_HAVE_QML`, e o
+  comentário no sítio nomeia o defeito pelo que ele é — *"a feature-isolation defect, not a QML
+  one"*. Os probes existem e são alvos do build: `qtmoc-probe-noqml` compila `qtdmoc.cpp`
+  deliberadamente **sem** QtQml ("No QtQml in sight: the configuration that broke"), e
+  `qtmoc-probe-qml6` e `qtmoc-probe-qml5` cobrem as duas versões. `./build` sai zero.
+- **#2 `qtmoc` é uma fronteira larga demais: ABERTO E PIOR.** É o #5 da rodada 11 — 2533 linhas, 49
+  guardas, e dois globais de compilador QML acrescentados hoje ao runtime partilhado.
+- **#3 o report não descrevia a maior parte da matriz: FECHADO, incluindo a parte que a auditoria
+  pôs como preferência e não como requisito.** `category()` conhece `qmltc-*`, `qmltc5-*`,
+  `qmltcq-*`, `qmltcc-*`, `qmltcd-*` e `leaf-lifetime-*`; `qtaxis()` reconhece `qmltc5-*` e
+  `qtmoc-probe-qml5` como Qt5; e o parser tem **self-test** (`--self-test`, alvo `report-selftest`)
+  com um nome canário por família, exactamente como pedido. O que fica por fazer é a preferência
+  declarada — a metadata nascer no alvo reggae em vez de ser reconstruída por padrões — e isso
+  continua por fazer, dito aqui em vez de contado como fechado.
+- **#4 o `qmltc-d` precisa de contexto explícito: ABERTO E PIOR.** 11.197 linhas. Ver rodada 11.
+- **#5 o melhor modelo de ownership não era o default: FECHADO.** Os nove bindings de produto são
+  wrapper (`controls`, `qml`, `qml_qt5`, `quick`, `qtwidgets`, `qtwidgets_wrap`,
+  `qtwidgets_wrap_qt5`, `webengine_wrap`, `wraptest`); os que continuam raw são fixtures e probes do
+  próprio gerador (`enum`, `flags`, `ctr`, `str`, `signals`, `probe`, `corpustypes`, `test`), que
+  existem para testar o emissor e não para ser consumidos. E `X_new` deixou de ser API: o README diz
+  que não existe em lado nenhum e o `docs/FEATURES.md` chama-lhe INACEITÁVEL.
+- **#6 o runtime moc limitado à owner thread: ABERTO E INALTERADO** — ver rodada 10 #7, com a
+  classificação que a auditoria lhe deu.
+- **#7 generator IR, typesystem e manifests incompletos: ABERTO.** O `ownership-gate` da rodada 12
+  atacou a metade que interessava (impedir a superfície perigosa de crescer) em vez de anotar 8428
+  símbolos, e isso está respondido lá; o IR e o typesystem continuam por fazer.
+
+**O padrão, agora com três rodadas de prova:** de dezasseis achados relidos hoje (rodadas 9, 10 e
+11), fecharam-se treze — e os três que não fecham são o mesmo par de fronteiras (o runtime
+partilhado, o contexto do compilador) mais a política de thread. Os treze tinham portão ou viraram
+portão. Os três não têm nenhum, e a métrica deles ANDOU PARA TRÁS enquanto eu fechava os outros.
+
 ## Rodada 9: o qmltc-d virou teste de integração; as fronteiras do projeto não acompanharam
 
 Esta rodada corrige a régua da crítica anterior. O objeto principal continua sendo o
