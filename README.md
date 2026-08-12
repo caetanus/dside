@@ -271,18 +271,18 @@ normal intermediate state, which is what the gate below measures.
 
 **The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every
 document the engine can draw standalone behaves **identically** to it: same frame, byte for
-byte, and the same value for every property of every named object. 236 of them reach that as
+byte, and the same value for every property of every named object. 245 of them reach that as
 compiled D; 49 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
 **none is unplaced**.
 
 | style | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Basic | 70 | 53 | 6 | 11 | 0 |
-| Fusion | 70 | 53 | 4 | 13 | 0 |
-| Universal | 66 | 50 | 5 | 11 | 0 |
+| Basic | 70 | 54 | 5 | 11 | 0 |
+| Fusion | 70 | 54 | 3 | 13 | 0 |
+| Universal | 66 | 51 | 4 | 11 | 0 |
 | Imagine | 56 | 40 | 12 | 4 | 0 |
-| Material | 67 | 40 | 21 | 6 | 0 |
-| **total** | **329** | **236** | **48** | **45** | **0** |
+| Material | 67 | 46 | 15 | 6 | 0 |
+| **total** | **329** | **245** | **39** | **45** | **0** |
 
 Both axes are required, and demoting on either is what makes the number mean something. The
 frame alone placed 258 documents; 23 of those disagreed on a property while the frame matched,
@@ -322,7 +322,7 @@ application *consuming* Controls rather than defining them.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls | 329 | 236 | 48 | 45 | 0 |
+| Qt's Controls | 329 | 245 | 39 | 45 | 0 |
 | application-shaped | 18 | 7 | 11 | 0 | **0** |
 
 **Seven of eighteen** is the honest number, and it is the point rather than an embarrassment: this

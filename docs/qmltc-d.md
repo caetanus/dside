@@ -208,7 +208,7 @@ Two corpora, the same two axes, both gated in `./build`.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls (5 styles) | 329 | 236 | 48 | 45 | **0** |
+| Qt's Controls (5 styles) | 329 | 245 | 39 | 45 | **0** |
 | application-shaped | 14 | 2 | 12 | 0 | **0** |
 
 Every document the engine can draw standalone behaves **identically** to it: same frame byte for
@@ -323,7 +323,7 @@ Fusion and 1 on Universal and never got far enough to report a check count; now 
 of them and they agree.
 
 Fixing the three rules also moved five of Qt's documents from `-O0` to compiled at the **default**
-level — the measured claim below went from 226 to 231, a crash fix took it to 235, and completing in the engine's order took it to 236 — which is the useful way to read this: a
+level — the measured claim below went from 226 to 231, a crash fix took it to 235, completing in the engine's order took it to 239, and how Qt's own styles read a colour took it to 245 — which is the useful way to read this: a
 certainty level nobody had judged was hiding defects that cost the default level too.
 
 ## Scope, and what is not characterised
