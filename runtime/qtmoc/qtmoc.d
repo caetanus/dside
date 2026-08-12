@@ -1048,7 +1048,14 @@ bool invoke0(T)(T o, string member) { return qtd_invoke0(qobjOf(o), (member ~ "\
 private extern(C) void* qtd_prop_get_obj(void*, const(char)*);
 /// The object held by a QObject*-valued property — how a GROUPED property (`group.count`) is
 /// reached: the group is a child object, its members are plain properties on it.
-void* propObj(T)(T o, string name) { return qtd_prop_get_obj(__bindRecv(o, name), (name ~ "\0").ptr); }
+void* propObj(T)(T o, string name) {
+    auto r = __bindRecv(o, name);
+    auto z = (name ~ "\0").ptr;
+    auto v = qtd_prop_get_obj(r, z);
+    // ...and if it is not there YET, it may be one Qt defers: reading is what builds it.
+    if (v is null && __qmltcDeferred.length && __forceDeferred(r, name)) v = qtd_prop_get_obj(r, z);
+    return v;
+}
 int propInt(T)(T o, string name) { return qtd_prop_get_int(__bindRecv(o, name), (name ~ "\0").ptr); }
 
 /// JS SEMANTICS, WHICH A BINDING INHERITS: reading a property off `null` THROWS, and a QML binding
@@ -1589,6 +1596,63 @@ T propAny(T, O)(O o, string name) {
         auto qs = qtd_prop_get_qs(r, z);
         auto s = qsToD(qs); qtd_qs_free(qs); return s;
     } else static assert(false, "propAny: no channel for " ~ T.stringof);
+}
+
+private extern(C) int qtd_deferred_index(void*, const(char)*);
+private struct __Deferred { void* owner; string prop; int rank; void delegate() build; }
+private __Deferred[] __qmltcDeferred;
+
+/// Build the child bound to `prop` — NOW, or at the owner's own completion if QT DEFERS that
+/// property. Which properties those are is in the META-OBJECT and nowhere else: it is not in
+/// plugins.qmltypes, so no registry carries it, and a hard-coded "background, contentItem,
+/// indicator" would be the per-type mechanism this project keeps refusing. The object is asked.
+///
+/// A property nothing defers takes the immediate branch, which is what every document compiled to
+/// before this existed.
+void buildProp(T)(T owner, string prop, void delegate() build) {
+    import std.string : toStringz;
+    auto q = qobjOf(owner);
+    int rank = q is null ? -1 : qtd_deferred_index(q, prop.toStringz);
+    if (rank < 0) { build(); return; }
+    __qmltcDeferred ~= __Deferred(q, prop, rank, build);
+}
+
+/// READING A DEFERRED PROPERTY BUILDS IT. Qt's deferred pointer does this — the getter executes
+/// what was held — and Qt's own QML depends on it: `contentWidth: contentItem.contentWidth` in
+/// Basic's DialogButtonBox is evaluated while the contentItem is still unbuilt, and under the engine
+/// that read is what brings it into existence. Held back, the read finds null, the binding aborts
+/// and the property keeps its default of -1 where the engine has 0.
+/// Returns true when something was built, so the caller can read again.
+private bool __forceDeferred(void* owner, string prop) {
+    foreach (i, d; __qmltcDeferred) {
+        if (d.owner !is owner || d.prop != prop) continue;
+        auto build = d.build;
+        __qmltcDeferred = __qmltcDeferred[0 .. i] ~ __qmltcDeferred[i + 1 .. $];
+        build();
+        return true;
+    }
+    return false;
+}
+
+/// Build what was held for this object, in the order its meta-object puts them, each child complete
+/// before the next is built — and all of them before the OWNER completes, which is the whole point:
+/// QQuickControl::componentComplete builds background and contentItem and only then resizes them, so
+/// a Text that measures itself here does so at its natural size, exactly as under the engine.
+void runDeferred(T)(T owner) {
+    if (__qmltcDeferred.length == 0) return;
+    auto q = qobjOf(owner);
+    if (q is null) return;
+    __Deferred[] mine;
+    size_t keep = 0;
+    foreach (d; __qmltcDeferred) {
+        if (d.owner is q) mine ~= d;
+        else __qmltcDeferred[keep++] = d;
+    }
+    __qmltcDeferred.length = keep;
+    if (mine.length == 0) return;
+    import std.algorithm : sort;
+    mine.sort!((a, b) => a.rank < b.rank);
+    foreach (d; mine) d.build();
 }
 
 private extern(C) int qtd_connect_by_name(void*, const(char)*, void*, const(char)*);

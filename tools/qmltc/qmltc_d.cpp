@@ -7027,7 +7027,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             && !isListProp(g_selfQmlType, cb.field);
         childFields += std::string(declaredObjProp ? "    @Property " : "    ")
                      + childCls + " " + dIdent(cb.field) + ";\n";
-        childWire += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
+        // ...and the whole block goes through buildProp, which asks the object whether Qt DEFERS
+        // this property. It almost never does, and then the thunk runs on the spot and the code is
+        // what it always was. When it does — background, contentItem, indicator on a Control — the
+        // child is built inside the owner's completion instead, before the owner stretches it.
+        std::string kidBlk;
+        kidBlk += std::string((kid.usesOuter || g_isDelegate) ? "        __qmltcOuter = cast(void*) this;\n" : "")
                    + "        " + dIdent(cb.field) + " = "
                    + (cbt.first.empty() ? "newQObject!" + childCls + "()" : "new " + childCls + "()") + ";\n"
                    + "        setQtParent(" + dIdent(cb.field) + ", this);\n"
@@ -7055,6 +7060,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    + "        " + dIdent(cb.field) + ".__qmltcKids();\n"
                    // componentComplete IS ours to call, and only now: the child is in the tree.
                    + "        componentComplete(" + dIdent(cb.field) + ");\n";
+        childWire += "        buildProp(this, \"" + cb.field + "\", {\n" + kidBlk + "        });\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
                 childType[kid.id + "." + s.first] = s.second;
@@ -9854,6 +9860,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // children — completes itself here, because nobody else does.
         // Never BOTH: a Repeater re-completed after it has created its items releases them through
         // an already-completed QQmlDelegateModel, and Qt segfaults in QQuickRepeater::clear().
+        // ...and anything Qt deferred is built HERE, last, in the order the meta-object gives —
+        // after every property of this object is set and before it completes. See buildProp.
+        if (!childWire.empty()) wire += "        runDeferred(this);\n";
         if (!thisParentCompletes) wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         // THE SPLIT. `__qmltcWire` keeps what the object does to ITSELF; everything from the

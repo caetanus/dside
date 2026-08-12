@@ -1136,6 +1136,44 @@ extern "C" int qtd_bind_leaf_prop(void* ownerV, const char* prop, const char* le
     return 1;
 }
 
+// QT DEFERS SOME CHILDREN, and says which in the META-OBJECT: Q_CLASSINFO("DeferredPropertyNames",
+// "background,contentItem,indicator"). Those objects are not built during the object pass at all —
+// QQuickControl::componentComplete builds them itself, completes each as it is built, and only then
+// calls resizeContent. Building them eagerly, as we did, lets the control stretch a contentItem
+// before it has ever laid out, and a QQuickText freezes baselineOffset at its FIRST layout: six of
+// Qt's documents disagreed on exactly that value and nothing else.
+//
+// Returns a RANK to build in, or -1 for "not deferred, build it now". The rank is not the order the
+// classinfo lists: Qt runs the most-derived class's deferred properties first. A Button's indicator
+// is introduced by QQuickAbstractButton and its background/contentItem by QQuickControl, and Qt runs
+// indicator, then background, then contentItem — the reverse of the one string that names all three.
+// So the rank is (how far the DECLARING class is from the object's own class, then the position
+// within that class's list), which reproduces Qt's order without encoding any type's names.
+extern "C" int qtd_deferred_index(void* o, const char* name) {
+    if (!o || !name) return -1;
+    const QMetaObject* mo = static_cast<QObject*>(o)->metaObject();
+    int pi = mo->indexOfProperty(name);
+    if (pi < 0) return -1;
+    QByteArray want(name);
+    int depth = 0;
+    for (const QMetaObject* m = mo; m; m = m->superClass(), ++depth) {
+        // The class that DECLARES the property owns the moment it is built.
+        if (m->propertyOffset() > pi) continue;
+        for (int i = m->classInfoOffset(); i < m->classInfoCount(); ++i) {
+            QMetaClassInfo ci = m->classInfo(i);
+            if (qstrcmp(ci.name(), "DeferredPropertyNames") != 0) continue;
+            int pos = 0;
+            const QList<QByteArray> parts = QByteArray(ci.value()).split(',');
+            for (const QByteArray& part : parts) {
+                if (part.trimmed() == want) return depth * 1000 + pos;
+                ++pos;
+            }
+        }
+        break;   // the declaring class does not defer it; a base's list cannot introduce it
+    }
+    return -1;
+}
+
 // Does the object in hand declare this property at all? Asked before a read the compiler could not
 // check statically, so a name nothing answers to aborts the binding instead of quietly reading 0.
 extern "C" int qtd_prop_has(void* o, const char* n) {
