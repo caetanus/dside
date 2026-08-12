@@ -344,6 +344,18 @@ Build reggaeBuild() {
             ~ buildPath(root, "runtime", "qtmoc", "qtmoc.d") ~ " " ~ rbBase, [rbb]);
     }
 
+    // --- COMPILER CONTEXT RATCHET (critics r4 #3 / r9 #4 / r10 #6 / r11 #6): the twin of the one
+    //     above, for the other five-round finding with no target behind it. It does not introduce
+    //     the CompilationContext; it stops the implicit one from spreading.
+    {
+        auto ccD = buildPath(root, "tests", "compiler_context.d");
+        auto ccBin = buildPath(root, ".build", "compiler-context-bin");
+        auto ccBase = buildPath(root, "tests", "compiler-context.baseline");
+        auto ccb = Target(ccBin, "dmd -of=$out " ~ ccD, [Target(ccD)]);
+        all ~= Target.phony("compiler-context",
+            "$in " ~ buildPath(root, "tools", "qmltc", "qmltc_d.cpp") ~ " " ~ ccBase, [ccb]);
+    }
+
     // --- expected-fails registry consumer: validate schema/kind and that every `risk` probe names
     //     a real build target (so the inventory is enforcement, not just prose).
     {

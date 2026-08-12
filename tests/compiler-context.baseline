@@ -1,0 +1,12 @@
+# COMPILER CONTEXT RATCHET — see tests/compiler_context.d and CRITICS r4 #3 / r9 #4 / r10 #6 / r11 #6.
+#
+# These numbers may only go DOWN. Raising one is allowed and is meant to cost an edit here plus a
+# sentence saying why: the finding they measure survived five rounds precisely because nothing made
+# its growth visible, and the file grew 7% while it was open.
+#
+# globals:  file-scope mutable `static … g_… ;` in tools/qmltc/qmltc_d.cpp — the context with no
+#           type. 98 on 2026-08-12, in an 11.198-line file.
+# ctxsaves: sites that save a global to restore it later — the implicit context made visible.
+#           51 on 2026-08-12; all 51 verified by hand to restore.
+globals 98
+ctxsaves 51

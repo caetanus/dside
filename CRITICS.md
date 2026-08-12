@@ -3070,6 +3070,36 @@ Provado a morder: com a baseline em 32 e a realidade em 33, falha e diz o que fa
 
 Isto não fecha o achado. Fecha a razão pela qual ele não fechava.
 
+### E o gémeo, no mesmo dia
+
+`compiler-context` faz o mesmo pela outra fronteira — a que as rodadas 4, 9, 10 e 11 descrevem com
+as mesmas palavras: *"dezenas de globais mutáveis… um `DocumentContext` implícito distribuído pelo
+arquivo."*
+
+- **`globals` — 98.** Estáticos mutáveis de ficheiro em `qmltc_d.cpp`, num ficheiro de 11.198
+  linhas. É o contexto que não tem tipo.
+- **`ctxsaves` — 51.** Sítios que guardam um global para o repor depois. Isto é o contexto implícito
+  **tornado visível**: cada um é um escopo que um `CompilationContext` a sério possuiria.
+
+Uma nota sobre como este segundo número foi apurado, porque quase produziu uma acusação falsa e o
+método novo travou-a a tempo. Uma primeira contagem deu 51 salvaguardas e **49** reposições, e essa
+diferença é exactamente o defeito que a auditoria previu — estado que não volta ao sítio. Fui ver as
+nove suspeitas uma a uma: **todas repõem**, em linhas com várias atribuições
+(`g_srcText = …; g_docUrl = …;`) que a contagem ancorada não via. Não há aqui defeito nenhum, e o que
+há é a razão pela qual `ctxsaves` conta SAVES e não a diferença: um número que parece uma acusação e
+não é vale menos do que um número honesto.
+
+Os dois roquetes correm no build:
+
+```
+runtime-boundary  OK: qml_fns=33 d_state=3   (at baseline; it may only go down)
+compiler-context  OK: globals=98 ctxsaves=51 (at baseline; it may only go down)
+```
+
+**As duas famílias que atravessaram sete rodadas têm agora métrica.** Continuam abertas — nenhum
+destes alvos move uma linha de código para o sítio certo. O que mudou é que deixaram de depender de
+eu me lembrar delas.
+
 ## Rodada 4 refeita: chegada limpa pelo codigo
 
 Escopo lido nesta rodada: `generator-d/`, `runtime/{holder,qtmoc,uic,qrc}/`,
