@@ -6078,12 +6078,17 @@ With that done the minimal case agrees on both sides — `items 3,1,4,1,5` — a
 failed: the ENGINE has `data[0].sequences` and we print nothing. A real asymmetry that the blind
 spot was hiding, found within minutes of removing it.
 
-The failing target took a second look. It went into the record as `CDeepRead`, read off a log line
-where two builds' output had interleaved — and chasing that document found an engine with no
-`sequences` anywhere, which is how the misreading surfaced. It is the QUICK corpus's
-`QEnumOnlyType`, whose `data[0]` is a `QQuickShortcut`; `sequences` is its own property. A wrong
-document name in a handoff sends the next person to the wrong file, so it is corrected rather than
-left.
+**And the target is not identified.** It went into the record as `CDeepRead`, read off a log line
+where two builds' output had interleaved; that document's `data[0]` is a plain QQuickRectangle with
+no such property, checked with QQmlListReference. The second guess was `QEnumOnlyType`, the only
+document in any corpus holding a `Shortcut` — and it prints `data[0].sequence`, SINGULAR, value 9,
+with no `sequences` anywhere. Two names, both written down, both checked, both wrong.
+
+So the entry says "not identified" rather than a third guess. What defeated both attempts is worth
+more than either: the failure was read off an INTERLEAVED PARALLEL LOG, where one target's output
+sits inside another's line. The per-target `.qall`/`.dall` files beside each check say the same
+thing unambiguously, and a serial run says it too. That is how to reproduce it in one go instead of
+three.
 
 Reverted because it breaks a fixture, not because it is wrong. That is the argument for finishing
 it: an entire property kind was unobserved, and the moment it was observed it produced a difference.
