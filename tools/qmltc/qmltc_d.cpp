@@ -8169,6 +8169,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     && objPathExpr(ba.second, oe9, oq9)) {
                 (oe9.rfind("__outer", 0) == 0 ? earlyWire : baseWire)
                     += "        setPropObj(this, \"" + ba.first + "\", " + oe9 + ");\n";
+                // ...AND AGAIN IN THE LATE PHASE when the object comes from the enclosing one. A
+                // SIBLING declared further down the file does not exist yet in the early wire, so
+                // the assignment lands null and stays null: Qt's RectangularGlow writes
+                // `sourceItem: shaderItem` on a ShaderEffectSource declared ABOVE the ShaderEffect
+                // it names. The early one is kept — something is relying on it — and the late one
+                // is the same call with the same value, so a sibling that DID exist is written
+                // twice with no observable difference. instOf because an engine-built sibling is a
+                // wrapper, and handing that over is refused outright.
+                if (oe9.rfind("__outer", 0) == 0)
+                    lateWire += "        setPropObj(this, \"" + ba.first + "\", instOf(" + oe9 + "));\n";
                 node.baseProps.push_back({ba.first, ty});
                 continue;
             }
