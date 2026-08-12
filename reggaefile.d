@@ -344,6 +344,28 @@ Build reggaeBuild() {
             ~ buildPath(root, "runtime", "qtmoc", "qtmoc.d") ~ " " ~ rbBase, [rbb]);
     }
 
+    // --- ABI LAYOUT PROBE (critics r4 #9, the oldest finding untouched until 2026-08-12): the
+    //     container bridge reads QList's FIELDS at offsets the generator hard-codes, and those got
+    //     in as "verified empirically". This asserts the same layout against the installed Qt
+    //     headers and reads it BOTH ways — through our offsets and through Qt's own API — so a
+    //     layout change fails here with the numbers instead of downstream with a bad pointer.
+    //     Runtime, not sizeof-only: reordering two fields keeps the size and breaks the values.
+    {
+        auto abiSrc = buildPath(root, "tests", "abi", "qlist_layout.cpp");
+        foreach (mod; ["Qt6Core", "Qt5Core"])
+        {
+            if (execute(["pkg-config", "--exists", mod]).status != 0) continue;
+            auto tag = mod == "Qt5Core" ? "-qt5" : "";
+            auto bin = buildPath(root, ".build", "abi-layout" ~ (tag.length ? "5" : "6"));
+            // pkg-config directly: pkgCflags/pkgLibs speak ldc's `-L-l…` dialect, and this one
+            // is compiled by g++ — the mismatch showed up as an undefined QArrayData::allocate,
+            // which is a linker saying "you gave me no -lQt6Core" in the least obvious way.
+            auto b = Target(bin, "sh -c 'g++ -std=c++17 -fPIC $(pkg-config --cflags " ~ mod
+                            ~ ") -o $out $in $(pkg-config --libs " ~ mod ~ ")'", [Target(abiSrc)]);
+            all ~= Target.phony("abi-layout" ~ tag, "$in", [b]);
+        }
+    }
+
     // --- COMPILER CONTEXT RATCHET (critics r4 #3 / r9 #4 / r10 #6 / r11 #6): the twin of the one
     //     above, for the other five-round finding with no target behind it. It does not introduce
     //     the CompilationContext; it stops the implicit one from spreading.

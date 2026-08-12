@@ -3100,6 +3100,40 @@ compiler-context  OK: globals=98 ctxsaves=51 (at baseline; it may only go down)
 destes alvos move uma linha de código para o sítio certo. O que mudou é que deixaram de depender de
 eu me lembrar delas.
 
+### E o achado mais antigo do ficheiro (r4 #9) deixou de estar por tocar
+
+*"ABI/layout assumptions precisam de probes formais"* é da rodada 4 e nunca tinha sido mexido. A
+razão de ser um risco real está escrita pelo próprio gerador: a ponte de contentores **não chama o
+Qt** para ler um `QList` — o struct D gerado lê os CAMPOS nos offsets que o gerador escreve à mão,
+porque é isso que torna a travessia gratuita em vez de uma cópia. E esses offsets entraram como o
+comentário admite: *"Verified empirically (offset=24 for QVector&lt;double&gt;)"*. Um offset empírico
+é um offset correcto até ao dia em que não é, e nesse dia a falha é um ponteiro errado, não um erro
+de compilação.
+
+`abi-layout` afirma o MESMO layout que o gerador emite, contra os cabeçalhos do Qt instalado, e
+lê-o das duas maneiras — pelos nossos offsets e pela API do próprio Qt:
+
+```
+abi-layout OK (Qt6): QList<T> is {void* d; T* ptr; qsizetype size} — ptr and size read through the
+                     generator's offsets equal Qt's own, for int, double and QString; QVector is QList
+abi-layout OK (Qt5): QList begin@8/end@12/array@16 and QVector size@4/offset@16 read through the
+                     generator's offsets equal Qt's own
+```
+
+Três decisões que valem mais do que o alvo:
+
+- **não é só `static_assert` de tamanho.** Trocar dois campos de sítio mantém o `sizeof` e parte os
+  valores; provado a morder com os campos trocados, e falha com os dois números lado a lado.
+- **nunca desreferencia um layout já desmentido.** A primeira versão rebentava com SIGSEGV quando o
+  ponteiro não batia certo — e reportar uma mudança de layout como segfault é exactamente o
+  diagnóstico que este probe existe para substituir. Hoje pára antes, com `rc=1`.
+- **cobre as duas versões.** Os layouts do Qt5 (`QListData` com `begin@8`) e do Qt6
+  (`QArrayDataPointer`) são diferentes, e o gerador emite módulos distintos para eles; o probe segue
+  a mesma divisão.
+
+Isto responde também a metade da r7 #7: uma mudança de API privada passa a ser diagnosticável
+**como incompatibilidade**, com os números, em vez de um `./build` vermelho indistinto.
+
 ## Rodada 4 refeita: chegada limpa pelo codigo
 
 Escopo lido nesta rodada: `generator-d/`, `runtime/{holder,qtmoc,uic,qrc}/`,
