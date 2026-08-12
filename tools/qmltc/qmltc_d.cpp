@@ -7491,6 +7491,28 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     }
                     continue;
                 }
+                // ...and an alias whose target is a CHILD, named by its id and nothing else:
+                // `property alias handle: handle` is how Qt's Material SwitchIndicator publishes
+                // the object it built, and how a control above reaches it. It carries no scalar to
+                // compare, but it IS a property in the engine's meta-object — `handle <object>`
+                // was in the engine's dump and absent from ours — so it forwards to the child's
+                // own field, exactly as the self-property form above does.
+                if (auto *idb = cast<IdentifierExpression *>(al.second)) {
+                    std::string cid = qs(idb->name.toString());
+                    if (auto ci = g_childIds.find(cid); ci != g_childIds.end() && !ci->second.field.empty()) {
+                        // The field's own D type, asked of D rather than reconstructed here: the
+                        // child classes are emitted in this same file and a class body is
+                        // order-independent, so `typeof` names it exactly and cannot drift.
+                        std::string cty = "typeof(" + dIdent(ci->second.field) + ")";
+                        {
+                            aliasProps += "    @PropertyAlias(\"" + al.first + "\") " + cty
+                                        + " __pa_" + al.first + "() { return " + dIdent(ci->second.field) + "; }\n"
+                                        + "    void __pa_" + al.first + "_set(" + cty + " v) { "
+                                        + dIdent(ci->second.field) + " = v; }\n";
+                            continue;
+                        }
+                    }
+                }
                 std::fprintf(stderr, "qmltc-d: %s: alias '%s' target is unsupported — skipped (later phase)\n", inPath, al.first.c_str());
                 ++partial; continue;
             }
