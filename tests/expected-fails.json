@@ -230,6 +230,15 @@
       "probe_targets": [
         "qmltc-o3-gate-app"
       ]
+    },
+    {
+      "id": "declared-property-on-an-engine-built-child-is-invisible",
+      "title": "a property the document declares on a child we did not generate a class for lands on the wiring object",
+      "reason": "Qt's Material ToolButton writes `readonly property bool square: control.contentItem.width <= control.contentItem.height` on a Ripple — a type outside our registry, so the child is ENGINE-BUILT: a wrapper holding the real object in `__inst`. The declared property becomes a @Property FIELD ON THE WRAPPER, where nothing that reads the tree can see it. The engine puts it on the object. Measured: `background.square true` is present in the engine's dump and absent in ours, with NO DIAGNOSTIC — a silently dropped declared member, which is the worse half.\n\nTRIED AND REVERTED (2026-08-12): mirroring the value onto the instance with setPropAny, guarded by `is(typeof(__inst))` so it costs nothing in an ordinary class. It runs, and it does not show: setPropAny creates a DYNAMIC property (QObject::setProperty on an undeclared name), which lives in dynamicPropertyNames() and not in the meta-object, and every walk of the tree — ours and the census's — reads the meta-object. So the value is there and unreachable.\n\nWhat it needs is the property IN the meta-object, which is what the engine does for a QML-declared property: QQmlOpenMetaObject, or the QMetaObjectBuilder path this project already uses for D-defined @QObject types, applied to an object someone else built. Worth exactly one document today (Material's ToolButton) and worth more than that as a class: a declared member that disappears without a word is the failure mode the certainty levels exist to catch.",
+      "remove_when": "Material's ToolButton dumps `background.square true`, which means a document-declared property on an engine-built child is on the OBJECT and reachable through its meta-object",
+      "kind": "known_gap",
+      "area": "qmltc-d/engine-built-children",
+      "since": "2026-08-12"
     }
   ]
 }
