@@ -6182,3 +6182,67 @@ factor is the one already named — *when the parent applies its geometry relati
 first layout*. Completing in the engine's order is necessary and is not sufficient. The branch is
 kept merged with everything landed since, so the next attempt begins from this table instead of
 from a cherry-pick.
+
+## The third factor has a name, and it is not the completion order
+
+Four documents were held by "when the parent applies its geometry relative to the child's first
+layout", which is a description of a symptom, not a cause. Universal's DelayButton gave the cause,
+because with the reversal applied it was off by exactly +3.0 in every place `baselineOffset`
+appears, and a constant is a lead.
+
+The formula came first, measured on three Texts in one document rather than reasoned about:
+`baselineOffset = ascent + (height − contentHeight)/2` for `AlignVCenter`, with the plain default
+font giving ascent 14.84375 and contentHeight 19. Applied to the DelayButton, whose engine values
+are `contentItem.height 24`, `contentHeight 18`, `baselineOffset 13.921875`, exactly one reading
+survives: **ascent 13.921875 with the layout done at height 18** — the Text's own natural size. Ours
+read 16.921875, which is the same ascent with the layout done at height 24.
+
+A probe on the generated document said when that happens, to the line:
+
+```
+before-bg-assign   ctrl.h=8  implBH=0  | ci.h=0  ci.baseline=0
+after-bg-assign    ctrl.h=32 implBH=32 | ci.h=24 ci.baseline=0
+```
+
+Assigning the background gives the control its implicit height, the control immediately stretches
+the contentItem to 24, and only later does the contentItem complete and freeze its baseline against
+that stretched height. The engine cannot do this, and the reason is in Qt's own headers:
+
+```cpp
+Q_CLASSINFO("DeferredPropertyNames", "background,contentItem,indicator")
+```
+
+**`background` and `contentItem` are DEFERRED PROPERTIES.** Qt does not build them during the object
+pass at all. `QQuickControl::componentComplete` builds them itself, in that order, completing each
+as it is built, and only afterwards calls `resizeContent`. So when the background arrives there is
+no contentItem to stretch; when the contentItem arrives it is completed at its natural size; the
+stretch comes last and the baseline is already frozen.
+
+Proven by doing it by hand on the generated file — no source change, just the two children moved
+into the completion step in classinfo order:
+
+```
+ci-before-complete  ctrl.h=32 | ci.h=0  ci.baseline=0
+ci-after-complete   ctrl.h=32 | ci.h=18 ci.baseline=13.9219
+after-self-complete ctrl.h=32 | ci.h=24 ci.baseline=13.9219
+```
+
+`baselineOffset 17.921875`, `contentItem.baselineOffset 13.921875` — the engine's values, both of
+them, on a document that disagreed on exactly those two.
+
+So the completion-order reversal was chasing the right family with the wrong mechanism. It is
+`optlevels-known.txt`'s two DelayButtons, Universal's, Imagine's CheckBox/RadioButton/TextField and
+`label-lays-out-before-its-text-arrives` — one cause, six documents.
+
+### How it should be built, and why it is not a per-type list
+
+The name list is in `Q_CLASSINFO`, which is in the META-OBJECT — it is not in `plugins.qmltypes`, so
+the registry cannot carry it, and hard-coding "background, contentItem, indicator" would be exactly
+the per-type mechanism this project keeps refusing. The object can be asked.
+
+The emission stays uniform: every child bound to a property is wrapped in a thunk and handed to the
+runtime with the property's name. The runtime asks the meta-object whether that name is deferred —
+if it is not, the thunk runs immediately, which is today's behaviour unchanged; if it is, the thunk
+is held and run at the owner's completion, in the order the classinfo names them, each child
+completed as it is built. One rule, no list, and a document that uses no deferred property compiles
+to the same code it does now.
