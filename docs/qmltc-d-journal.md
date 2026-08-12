@@ -6152,3 +6152,33 @@ A pin for each half: the corpus check compares every property against the engine
 `qmltc-pedantic-CDynLeaf` requires the document to compile with **zero delegations**, which is the
 only thing that can tell "we translated it" from "the engine did it for us". Proven to
 discriminate: the same flag on Imagine's Label exits 4.
+
+## The reversal, measured against a compiler that has what it was waiting for
+
+`optlevels-known.txt` had said the completion-order reversal was held back by two missing pieces,
+and both went in with the dynamic leaf read. So the −4 it cost was a number about a compiler that
+no longer exists, and the only honest thing was to measure it again. Cherry-picked onto the current
+tree (`wip/completion-order-2`), keeping the landed read and taking the branch's more general late
+phase — `bindLeafProp` whenever the signal cannot be named, not only for a dynamic read.
+
+|            | before | with the reversal |
+|---|---|---|
+| Basic      | 52, `-O1` 38, DelayButton a named broken promise | **53, `-O1` 39, promise KEPT** |
+| Fusion     | 52, `-O1` 36, DelayButton a named broken promise | **53, `-O1` 37, promise KEPT** |
+| Universal  | 50 | 49, and DelayButton now DISAGREES at `-O1` |
+| Imagine    | 41 | 38 |
+| Material   | 40 | 40 |
+| total      | 235 | 233 |
+
+The total is the same as the last measurement, and everything under it moved. The two documents
+this file has carried as broken promises now KEEP their promise; one promise moved to Universal's
+DelayButton, where `baselineOffset` is off by exactly +3.0 in all three places it appears. And the
+three Imagine documents it costs are **CheckBox, RadioButton and TextField — the same three as
+before**, which neither landed piece touched.
+
+That is what makes it still not a landing, and it is a sharper "no" than the last one: every
+remaining case is one value, `baselineOffset`, measured once and never recomputed, and the missing
+factor is the one already named — *when the parent applies its geometry relative to the child's
+first layout*. Completing in the engine's order is necessary and is not sufficient. The branch is
+kept merged with everything landed since, so the next attempt begins from this table instead of
+from a cherry-pick.
