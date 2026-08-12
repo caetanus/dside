@@ -5950,3 +5950,30 @@ Two readings of my own to correct alongside. I took `rc=0` from a pipeline whose
 not the program's; run properly it was 1, five times out of five. And `QMetaProperty::metaType()` is
 Qt 6 only — the second time in one session that the parity rule caught what I wrote against the API
 in front of me.
+
+### The same defect, found again by its other half
+
+Three hours after fixing a connect that pointed at the WRAPPER of an engine-built child, the same
+defect turned up in the READ. `AControlsApp` compiled with zero diagnostics and stayed demoted, so:
+
+```
+level     engine 0.35   ours 0
+summary   engine high   ours low
+```
+
+`connectMeta(instOf(_dc0._dc1), "valueChanged()", …)` beside `propDouble(_dc0._dc1, "value")` — the
+subscription on the instance, the read on the wrapper, which has no `value` and answers 0. **Half a
+fix reads exactly like a working one until the value is compared.**
+
+Two attempts failed before the third worked, and why they failed is the useful part. Both tried to
+DECIDE, at the point of emitting the read, whether the child is engine-built — and that information
+does not exist yet: a declared property's binding is compiled BEFORE the children are, so nothing
+known at that moment can answer it. There is no right moment.
+
+The third attempt deleted the question instead of answering it. `instOf` is already neutral — the
+instance where there is one, the object itself where there is not — so the read goes through it
+UNCONDITIONALLY and the ordering stops mattering. Less code than either of the attempts that tried
+to be clever, and no global state to keep in step.
+
+`level` reads 0.35 and `summary` reads "high". The document is still demoted, on the frame, which is
+a different question — correctness gained without the count moving, which is the honest way round.

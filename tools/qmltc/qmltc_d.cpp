@@ -2248,7 +2248,14 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
         // same reason — the late phase connects and re-evaluates once. (Qt's TextField reads
         // `placeholder.implicitWidth` for its own implicitWidth; that is this case.)
         g_depIsSibling = true;
-        oe = ci2->second.field; oq = ci2->second.qmlType; return true;
+        // THE INSTANCE, not the wrapper, for a child the ENGINE built — the same rewrite the
+        // connect already makes, and the one an outer object never sees because g_childIds is saved
+        // and restored around every nested compile. `slider.value` read 0 off a wrapper that has no
+        // `value` while the connect beside it was correctly on instOf(...)'s valueChanged(): half a
+        // fix reads exactly like a working one until the value is compared.
+        oe = (g_engineIds.count(n2) && ci2->second.field.rfind("instOf(", 0) != 0)
+                 ? "instOf(" + ci2->second.field + ")" : ci2->second.field;
+        oq = ci2->second.qmlType; return true;
     }
     // A DECLARED object property of THIS object (`property Item control`): the field is the wrapper
     // and its QML type is what the document declared, which is how a path through it gets typed.
@@ -2713,6 +2720,16 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             auto ci = g_childIds.find(qs(base->name.toString()));
             if (ci != g_childIds.end()) {
                 std::string mem = qs(fm->name.toString());
+                // THE INSTANCE, not the wrapper — the same rewrite the CONNECT already makes. The
+                // field of an engine-built child holds a wrapper with none of the object's
+                // properties, so `slider.value` read 0 while the connect beside it was correctly
+                // subscribed to instOf(...)'s valueChanged(). Half a fix reads exactly like a
+                // working one until the value is compared. g_engineIds is the document's, because
+                // the id is; the map's own field is only rewritten in the immediate parent's copy,
+                // which an outer object never sees.
+                if (g_engineIds.count(qs(base->name.toString()))
+                        && ci->second.field.rfind("instOf(", 0) != 0)
+                    ci->second.field = "instOf(" + ci->second.field + ")";
                 auto pt = ci->second.propType.find(mem);
                 if (pt != ci->second.propType.end()) { out = ci->second.field + "." + mem; return true; }
                 auto bp = ci->second.baseProps.find(mem);
@@ -2738,7 +2755,17 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 }
                 const char *rd = bp->second == "string" ? "propStr(" : bp->second == "double" ? "propDouble("
                                : bp->second == "bool" ? "propBool(" : "propInt(";
-                out = rd + ci->second.field + ", \"" + mem + "\")";
+                // THROUGH instOf, ALWAYS. A child the engine builds keeps a wrapper in that field
+                // and every property is the INSTANCE's, so the read has to reach past it — and
+                // whether it does cannot be decided here, because a declared property's binding is
+                // compiled BEFORE the children are, i.e. before it is known which of them the
+                // engine builds. `slider.value` read 0 off a wrapper with no `value` while the
+                // connect beside it was correctly subscribed to instOf(...)'s valueChanged(): half
+                // a fix reads exactly like a working one until the value is compared. instOf is
+                // already neutral — the instance where there is one, the object itself where there
+                // is not — so wrapping unconditionally removes the ordering question instead of
+                // answering it.
+                out = rd + std::string("instOf(") + ci->second.field + "), \"" + mem + "\")";
                 return true;
             }
         }
