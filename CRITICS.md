@@ -3053,6 +3053,23 @@ ficou fechado. Todo achado que dependia de eu escolher trabalho sem portão cont
 deles pioraram enquanto eu fechava os outros. A auditoria não precisa de me apontar casos: precisa
 de me obrigar a pôr portão onde eu não quero.
 
+### O primeiro desses portões existe (2026-08-12)
+
+`runtime-boundary` é um alvo do build, e mede a fronteira que as rodadas 9 e 11 pedem — não a
+desenha, impede-a de recuar. Dois números contados da fonte, os dois fail-closed no CRESCIMENTO:
+
+- **`qml_fns` — 33 de 62.** Metade das funções `extern "C"` do runtime partilhado toca QQml/QQuick.
+  É o número que descreve a queixa da auditoria, e só se baixa mexendo código para fora.
+- **`d_state` — 3.** Globais mutáveis de estado de compilador em `qtmoc.d`. **Dois foram
+  acrescentados por mim no dia em que escrevi esta resposta.**
+
+A baseline vive em `tests/runtime-boundary.baseline` e **só pode descer**. Subi-la é permitido e é
+para doer: obriga a editar um ficheiro versionado e a escrever porquê — que é exactamente o acto
+deliberado que faltava. Encolher passa e pede a baseline para baixo, para o roquete não afrouxar.
+Provado a morder: com a baseline em 32 e a realidade em 33, falha e diz o que fazer.
+
+Isto não fecha o achado. Fecha a razão pela qual ele não fechava.
+
 ## Rodada 4 refeita: chegada limpa pelo codigo
 
 Escopo lido nesta rodada: `generator-d/`, `runtime/{holder,qtmoc,uic,qrc}/`,

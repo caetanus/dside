@@ -330,6 +330,20 @@ Build reggaeBuild() {
         && bindingQtMinor(ex.genDir) == installedQtMinor("Qt6Widgets")
         && bindingQtMinor(qml.genDir) == installedQtMinor("Qt6Qml");
 
+    // --- RUNTIME BOUNDARY RATCHET (critics r9 #2 / r11 #5): the audit has asked since round 9 for
+    //     the QML compiler's runtime to leave the shared meta-object unit, and it is the one
+    //     long-lived finding with no target behind it — which is why it RECEDED twice in one day
+    //     while gated findings closed. This does not draw the boundary; it stops it receding.
+    {
+        auto rbD = buildPath(root, "tests", "runtime_boundary.d");
+        auto rbBin = buildPath(root, ".build", "runtime-boundary-bin");
+        auto rbBase = buildPath(root, "tests", "runtime-boundary.baseline");
+        auto rbb = Target(rbBin, "dmd -of=$out " ~ rbD, [Target(rbD)]);
+        all ~= Target.phony("runtime-boundary",
+            "$in " ~ buildPath(root, "runtime", "qtmoc", "qtdmoc.cpp") ~ " "
+            ~ buildPath(root, "runtime", "qtmoc", "qtmoc.d") ~ " " ~ rbBase, [rbb]);
+    }
+
     // --- expected-fails registry consumer: validate schema/kind and that every `risk` probe names
     //     a real build target (so the inventory is enforcement, not just prose).
     {

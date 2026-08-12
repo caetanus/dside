@@ -1,0 +1,12 @@
+# RUNTIME BOUNDARY RATCHET — see tests/runtime_boundary.d and CRITICS r9 #2 / r11 #5.
+#
+# These numbers may only go DOWN. Raising one is allowed and is meant to cost an edit here plus a
+# sentence saying why, because the boundary they measure has been open since round 9 precisely
+# because nothing made its growth visible.
+#
+# qml_fns: `extern "C"` functions in runtime/qtmoc/qtdmoc.cpp whose body touches QQml/QQuick.
+#          33 of 62 on 2026-08-12 — half the shared meta-object runtime is QML.
+# d_state: module-level mutable globals of compiler state in runtime/qtmoc/qtmoc.d.
+#          3 on 2026-08-12, two of them added that same day (__qmltcPending, __qmltcDeferred).
+qml_fns 33
+d_state 3
