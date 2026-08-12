@@ -239,6 +239,15 @@
       "kind": "known_gap",
       "area": "qmltc-d/engine-built-children",
       "since": "2026-08-12"
+    },
+    {
+      "id": "material-sliderhandle-frame-differs-with-every-value-equal",
+      "title": "the only Material frame left, and the census agrees on every value it reads",
+      "kind": "known_gap",
+      "area": "qmltc-d/render-context",
+      "since": "2026-08-12",
+      "reason": "Material's SliderHandle renders as a filled pink circle under the engine and as nothing under ours, and BOTH sides dump `data[0].color #00000000` — transparent. So the pixel that differs is not any value the census reads, which is the opposite of every other document in this file.\n\nThe document explains why it is delicate: `readonly property var control: parent`, and both colours are `root.control ? <Material colour> : \"transparent\"`. Standalone the item has no parent, so `control` is null and both colours ARE transparent — which is what both sides dump. The engine's frame is pink anyway, so under the o3 gate's render its item has a parent that ours does not, and the value dumped is not the value drawn.\n\nThat makes this a question about the RENDER CONTEXT the two harnesses give the object, not about the compiler: both `color` bindings are already DELEGATED to the engine here, so the expression is the engine's own. Named rather than left inside a demoted count, because a difference the value axis cannot see is exactly the kind this project keeps being surprised by.",
+      "remove_when": "Material's SliderHandle renders identically, which means the object is drawn in the same parent context on both sides — or the difference is shown to be a real value one after all"
     }
   ]
 }
