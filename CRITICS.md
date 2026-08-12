@@ -34,6 +34,35 @@ seus recursos). Não eram problemas do `-O1`: corrigi-las levou o nível por omi
 "não colocou" mantém o *comportamento* correcto e destrói a *informação*. Foi por isso que o
 `UNPLACED=0` continuou a ser um bom critério de falha e um mau critério de saúde.
 
+### Adenda (2026-08-12): a mesma forma mais duas vezes, e nenhuma delas foi a auditoria a apontar
+
+O achado #8 da rodada 5 — *build verde ainda não é report estruturado* — voltou a dar-me razão a
+ele e não a mim, em dois sítios novos. Registo-os aqui porque é a auditoria que fica com o crédito.
+
+**Uma excepção escondida atrás de "não constrói nem corre".** Dois documentos do Material apareciam
+sob essa frase, que eu já tinha desdobrado em "falha de link" e "SIGSEGV" — e afinal cobria uma
+terceira coisa: uma **excepção D em tempo de execução**. `anchors.fill: shaderItem` ancora a um
+irmão construído pelo motor, e nós entregávamos o embrulho em vez da instância; a propriedade é
+`QQuickItem*`, o embrulho não herda dela, a escrita é recusada e o `setPropObj` lança. O portão
+dizia a mesma frase de sempre e nunca chegou a ver um pixel. Corrigido, os dois passaram a **correr
+e a diferir em 7 valores** — um documento que lança não diz nada sobre os sete.
+
+**Um membro declarado a desaparecer sem uma palavra.** O `ToolButton` do Material escreve
+`readonly property bool square: ...` num filho de um tipo fora do registo. A propriedade era gerada
+no objecto de fiação, onde ninguém que percorra a árvore a vê — e **não havia diagnóstico nenhum**.
+O motor tem `background.square true` no despejo; nós não tínhamos linha. Foi o censo de valores que
+o apanhou, não o compilador: exactamente o desenho que a auditoria pediu quando disse que um build
+verde não é um report. A tentativa óbvia — criar a propriedade com `setPropAny` — corre e continua
+invisível, porque nasce **dinâmica** e todo o passeio pela árvore lê o meta-objecto; está registada
+com essa medição em `expected-fails.json`.
+
+**E os números da adenda acima envelheceram para melhor.** 231 → 235 passou a **248** documentos do
+Qt compilados; o `-O1` julga **110** (39/37/27/7) em vez de 108; e o
+`tests/qmltc/optlevels-known.txt` — os documentos que compilam a um nível de certeza e **não** batem
+certo com o motor — está **vazio** pela primeira vez desde que existe. A frase "nada atravessa sem
+tipo" já não é uma contagem sem comparação atrás: é 110 documentos comparados propriedade a
+propriedade, e o que não chega lá está nomeado.
+
 ## Resposta à rodada 12 (2026-08-10 / 11)
 
 Escrita aqui porque a auditoria é o sítio certo para a contestação.
