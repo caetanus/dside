@@ -185,6 +185,17 @@
       "probe_targets": [
         "dub-consumer-ldc2"
       ]
+    },
+    {
+      "id": "anchor-line-dependency-has-no-notify",
+      "kind": "known_gap",
+      "area": "qmltc-d/anchors",
+      "since": "2026-08-11",
+      "reason": "An anchor line VALUE now crosses — `anchors.left: parent.left` compiles through copyProp, which moves it between two meta-objects without either side naming QQuickAnchorLine — and AAnchors went from 10 diagnostics to 2. What is left is the DEPENDENCY: `anchors.left: left.right` (anchoring to a sibling) reports \"depends on 'left.right', which has no known notify\", and an anchor line HAS no notify because a side does not change. Two attempts at the rule failed and both are worth not repeating. (1) 'a member the registry knows with no NOTIFY is constant' is the right rule by Qt's own convention and CANNOT FIRE: the registry does not carry anchor-line properties at all, so the test never matches — inert, reverted. (2) 'wire the OBJECT rather than the member' is right in principle — what can change is which object is on the other end, not the line — and did not move the number either, so the sibling case is reaching this diagnostic through some path other than the copyProp branch. Finding which path is the next step, and it is the third sub-attempt, so it was stopped rather than guessed at.",
+      "remove_when": "`anchors.left: left.right` compiles, i.e. an anchor-line dependency is treated as constant on whatever path the sibling form actually takes, and AAnchors and ALayouts are judged rather than skipped",
+      "probe_targets": [
+        "qmltc-o3-gate-app"
+      ]
     }
   ]
 }
