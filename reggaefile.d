@@ -222,6 +222,24 @@ Build reggaeBuild() {
                                ["Qt6QuickControls2Impl", "Qt6QuickTemplates2", "Qt6Quick",
                                 "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, ctrl, buildPath(root, "tests", "qmltc", "controls"), "c");
+        // AGREEING WITH THE ENGINE IS NOT THE SAME AS COMPILING IT. An expression the compiler
+        // refuses is handed to the engine, which then produces the right value — so the corpus
+        // check above stays green while the document quietly stops being a translation. `--pedantic`
+        // is the only thing that can tell those apart: it makes a delegation an error. Named
+        // documents only, because most of the corpus is not delegation-free and pretending
+        // otherwise would turn this into a list of exceptions.
+        {
+            auto cdir = buildPath(root, "tests", "qmltc", "controls");
+            foreach (doc; ["CDynLeaf"]) {
+                auto qmlFile = buildPath(cdir, doc ~ ".qml");
+                if (!exists(qmlFile)) continue;
+                all ~= Target.phony("qmltc-pedantic-" ~ doc,
+                    buildPath(ctrl.bdir, "qmltc-d") ~ " --pedantic --dump " ~ qmlFile ~ " " ~ doc
+                    ~ " --qmlmap " ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " -I " ~ cdir
+                    ~ " > /dev/null",
+                    [Target(qmlFile), qmltcTool(root, ctrl), ctrl.gen]);
+            }
+        }
         // ...and the same compiler pointed at QML NOBODY HERE WROTE: Qt's own Basic style files,
         // generated, linked and CONSTRUCTED. Six defects lived where compile-clean cannot see —
         // they all build and then die (or silently build the wrong object) at construction.

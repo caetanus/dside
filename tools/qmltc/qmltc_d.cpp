@@ -684,8 +684,20 @@ static std::vector<std::pair<int, std::string>> g_outerNeedsNotify;
 // runs — a Control creates its indicator during completion — so the connect for these is deferred
 // to the LATE phase, which the root triggers once the whole tree is complete. Drained by whichever
 // binding compiled the expression.
-struct DeepRead { std::string obj, inner, member, innerQmlType; };
+struct DeepRead { std::string obj, inner, member, innerQmlType;
+                  bool dyn = false;   // the member is not on the DECLARED type; resolve it live
+                };
 static std::vector<DeepRead> g_deepReads;
+// The D type a leaf read lands in when the property table cannot say what the member is. Only the
+// scalars the deep-read path already handles: anything else keeps refusing, because guessing a
+// conversion is how a wrong value becomes an invisible one.
+static const char *dynLeafType(const QString &dtype) {
+    if (dtype == "double" || dtype == "float" || dtype == "real") return "double";
+    if (dtype == "int") return "int";
+    if (dtype == "bool") return "bool";
+    if (dtype == "string") return "string";
+    return nullptr;
+}
 
 // The QML module this document BELONGS to, read from the qmldir beside it. Qt's Controls style
 // files are part of QtQuick.Controls.Basic, and a Control only gets its theme (hence its palette)
@@ -2859,6 +2871,19 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                     return true;
                                 }
                             }
+                            // THE MEMBER IS NOT ON THE DECLARED TYPE, and that is not the same as
+                            // it not existing: `background` is an `Item` and Qt's Imagine style
+                            // reads `background.topPadding` on every control, which belongs to the
+                            // NinePatchImage actually assigned. Read it through the meta-object of
+                            // the object in hand, in the type this position wants. A name the
+                            // object does not answer to aborts the binding (propAny throws), which
+                            // is what the engine does with `undefined`.
+                            if (const char *dl = dynLeafType(dtype)) {
+                                out = std::string("propAny!") + dl + "(propObj(" + obj + ", \""
+                                    + inner + "\"), \"" + mem + "\")";
+                                g_deepReads.push_back({obj, inner, mem, innerQml, true});
+                                return true;
+                            }
                         }
                 }
             }
@@ -2886,6 +2911,12 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                                         g_deepReads.push_back({"this", inner, mem, innerQml});
                                         return true;
                                     }
+                                }
+                                if (const char *dl = dynLeafType(dtype)) {   // see the note above
+                                    out = std::string("propAny!") + dl + "(propObj(this, \""
+                                        + inner + "\"), \"" + mem + "\")";
+                                    g_deepReads.push_back({"this", inner, mem, innerQml, true});
+                                    return true;
                                 }
                             }
                     }
@@ -3642,7 +3673,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // operands. Compiling `a || b` as `(bool || bool)` would assign 1 or 0 to a width — and in
         // practice it did not even compile, so the binding was refused and the property kept its
         // default of 0 while the engine computed 200.
-        if (logical && (dtype == "double" || dtype == "int")) {
+        // A DOCUMENT SPELLS IT `real`, and the registry spells the same thing `double` — this test
+        // knew only the registry's spelling, so `property real neg: -x || 0` fell through to the
+        // bool operator and assigned 1 where the engine had -9. Qt's own styles never showed it:
+        // they write these guards on BASE properties, which arrive here already typed `double`.
+        if (logical && (dtype == "double" || dtype == "int" || dtype == "real" || dtype == "float")) {
             std::string l2, r2;
             if (compileExpr(bin->left, dtype, l2) && compileExpr(bin->right, dtype, r2)) {
                 out = std::string(bin->op == QSOperator::Or ? "__qmltcOr(" : "__qmltcAnd(")
@@ -8322,7 +8357,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     auto nt = qn->second.find(dr.member);
                     if (nt != qn->second.end()) sig = nt->second;
                 }
-                if (sig.empty()) {
+                if (sig.empty() && !dr.dyn) {
                     std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s reads '%s.%s' whose "
                                  "notify is unknown — it would not update (later phase)\n",
                                  inPath, ba.first.c_str(), cls.c_str(), dr.inner.c_str(), dr.member.c_str());
@@ -8333,8 +8368,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // signal from inside the slot (a root's `parent` is still null in the LATE phase).
                 lateConns += "        connectNotify(" + dr.obj + ", \"" + dr.inner
                            + "\", this, \"__rcb_" + ba.first + "()\");\n";
-                lateLeaf  += "        bindLeaf(" + dr.obj + ", \"" + dr.inner + "\", \"" + sig
-                           + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                lateLeaf  += dr.dyn
+                           ? "        bindLeafProp(" + dr.obj + ", \"" + dr.inner + "\", \"" + dr.member
+                             + "\", this, \"__rcb_" + ba.first + "()\");\n"
+                           : "        bindLeaf(" + dr.obj + ", \"" + dr.inner + "\", \"" + sig
+                             + "\", this, \"__rcb_" + ba.first + "()\");\n";
             }
             g_deepReads.clear();
             if (!conns.empty() || !lateConns.empty() || !sibConns.empty()) {
@@ -9495,7 +9533,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     auto nt = qn->second.find(dr.member);
                     if (nt != qn->second.end()) sig = nt->second;
                 }
-                if (sig.empty()) {
+                if (sig.empty() && !dr.dyn) {
                     std::fprintf(stderr, "qmltc-d: %s: binding '%s' in %s reads '%s.%s' whose notify "
                                  "is unknown — it would not update (later phase)\n",
                                  inPath, p.name.c_str(), cls.c_str(), dr.inner.c_str(), dr.member.c_str());
@@ -9506,8 +9544,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // wire time connected to null for a root's `parent` (and for HeaderView.syncView).
                 lateWire += "        connectNotify(" + dr.obj + ", \"" + dr.inner
                           + "\", this, \"__rcd_" + p.name + "()\");\n";
-                dleaf += "        bindLeaf(" + dr.obj + ", \"" + dr.inner + "\", \"" + sig
-                       + "\", this, \"__rc_" + p.name + "()\");\n";
+                dleaf += dr.dyn
+                       ? "        bindLeafProp(" + dr.obj + ", \"" + dr.inner + "\", \"" + dr.member
+                         + "\", this, \"__rc_" + p.name + "()\");\n"
+                       : "        bindLeaf(" + dr.obj + ", \"" + dr.inner + "\", \"" + sig
+                         + "\", this, \"__rc_" + p.name + "()\");\n";
             }
             if (!dleaf.empty()) {
                 recompute += "    @Slot void __rcd_" + p.name + "() {\n" + dleaf

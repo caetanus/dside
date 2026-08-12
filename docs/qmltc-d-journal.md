@@ -6092,3 +6092,63 @@ three.
 
 Reverted because it breaks a fixture, not because it is wrong. That is the argument for finishing
 it: an entire property kind was unobserved, and the moment it was observed it produced a difference.
+
+## The member is not on the declared type, and that is not the same as it not existing
+
+Back to code after four cycles that produced record. The thread had a named piece waiting in
+`optlevels-known.txt`: *"the read is not recorded as a deep read at all when the member is unknown
+on that type, so nothing asks for the leaf."* One line, no measurement — so the first move was to
+count it. A `fprintf` at each of the two fall-through points, the tool pointed at every document of
+all five styles: **516 refused reads across 71 documents.**
+
+They are not scattered. 478 are Imagine, and they are all one sentence, written on every control
+that style has:
+
+```qml
+topPadding: background ? background.topPadding : 0
+topInset:   background ? -background.topInset || 0 : 0
+```
+
+`background` is declared `Item`. `Item` has no `topPadding` — it belongs to the `NinePatchImage`
+the style actually assigns. No static table can type that member, and the compiler treated "the
+declared type does not have it" as "it does not exist", refused the read, and moved on.
+
+The replacement is the meta-object, which is where this project keeps ending up. `propAny!T` reads
+through the object in hand and `bindLeafProp` asks that same object's meta-object for the notify to
+re-subscribe to — the property name is all the document gives, and it is all either one needs. The
+one thing the read must do that its static sibling need not: a name the object does not answer to
+**throws**, so the binding aborts and the property keeps its default. JS yields `undefined` there
+and the assignment is refused; writing 0 instead would be a value the engine never produces, and it
+would be invisible.
+
+**And it moved no counted number.** 235 documents compiled before, 235 after; Imagine 41/11 before,
+41/11 after; Material judged 7 at `-O1` before, 7 after. The reason is worth more than the change:
+when the read was refused, the whole expression was handed to the ENGINE, which evaluated it
+correctly. The value was never wrong. What was wrong was the claim — a document containing a
+delegation is not a translation, and `-O1` refuses it for exactly that reason.
+
+So the measurement that matters is not the compiled count. It is that Imagine's documents now
+report `0 skipped, 0 weakly typed` and a single remaining delegation each: `states: [ {...} ]` on a
+`NinePatchImageSelector`. And that one will not be closed in the compiler either — the selector is
+a type of the Imagine impl module, absent from our registry, so its objects are engine-built
+children and `-O1` refuses on that axis whatever happens to `states`. Unlocking Imagine is a
+GENERATION question, not a compiler one. Recorded here so the next attempt does not start by
+compiling `states` and then discover it bought nothing.
+
+### The test found a bug in something else
+
+`tests/qmltc/controls/CDynLeaf.qml` writes the Imagine sentence against base QtQuick types. It
+agreed with the engine on the dynamic read and on the live re-subscription immediately — and
+disagreed on the third line, `property real neg: background ? -background.radius || 0 : 0`, where
+the engine has -9 and we had 1.
+
+1 is `true`. JS `||` returns an OPERAND, and the compiler knows that: there is a rule that compiles
+a logical operator in a numeric target as `__qmltcOr` instead of a bool. It tests `dtype == "double"
+|| dtype == "int"`. A DOCUMENT spells that type `real`. Qt's own styles never showed it because
+they write these guards on base properties, which arrive already typed `double` from the registry —
+the same value under two spellings, and the test knew one of them.
+
+A pin for each half: the corpus check compares every property against the engine, and
+`qmltc-pedantic-CDynLeaf` requires the document to compile with **zero delegations**, which is the
+only thing that can tell "we translated it" from "the engine did it for us". Proven to
+discriminate: the same flag on Imagine's Label exits 4.

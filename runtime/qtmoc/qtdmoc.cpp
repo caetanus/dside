@@ -1101,6 +1101,48 @@ extern "C" int qtd_bind_leaf(void* ownerV, const char* prop, const char* sig, vo
     return 1;
 }
 
+// THE SAME SUBSCRIPTION, WITH THE SIGNAL RESOLVED FROM THE OBJECT instead of named by the caller.
+// `background.topPadding` is written all over Qt's Imagine style, and `background` is declared as an
+// `Item` — which has no topPadding. The member belongs to the NinePatchImage that is actually there,
+// so no static table can name its notify, and the compiler refused the read outright rather than
+// wire something it could not see. The meta-object of the object in hand can name it, which is the
+// same channel the rest of this file already travels on.
+extern "C" int qtd_bind_leaf_prop(void* ownerV, const char* prop, const char* leafProp, void* recvV,
+                                  const char* slot) {
+    QObject* owner = static_cast<QObject*>(ownerV);
+    QObject* recv  = static_cast<QObject*>(recvV);
+    if (!owner || !recv) return 0;
+    int pi = owner->metaObject()->indexOfProperty(prop);
+    if (pi < 0) return 0;
+    QObject* cur = qvariant_cast<QObject*>(owner->metaObject()->property(pi).read(owner));
+    // The key is the PROPERTY, not the signal: the signal is whatever the object currently there
+    // answers with, and a re-subscription after that object is replaced must find the same entry.
+    std::string kk = std::string("#") + leafProp;
+    std::string k = qtd_leaf_key(owner, recv, slot, prop, kk.c_str());
+    std::lock_guard<std::mutex> g(g_leafMx);
+    auto it = g_leafConn.find(k);
+    if (it != g_leafConn.end()) { QObject::disconnect(it->second); g_leafConn.erase(it); }
+    if (!cur) return 0;                       // not assigned yet: the notify connect will come back
+    int li = cur->metaObject()->indexOfProperty(leafProp);
+    if (li < 0) return 0;                     // the object there does not have it either
+    QMetaMethod ns = cur->metaObject()->property(li).notifySignal();
+    if (!ns.isValid()) return 0;              // a constant property never changes; nothing to wire
+    std::string s = std::string("2") + ns.methodSignature().constData(), m = std::string("1") + slot;
+    auto c = QObject::connect(cur, s.c_str(), recv, m.c_str());
+    if (!c) return 0;
+    g_leafConn[k] = c;
+    qtd_leaf_watch(owner, k);
+    qtd_leaf_watch(recv, k);
+    return 1;
+}
+
+// Does the object in hand declare this property at all? Asked before a read the compiler could not
+// check statically, so a name nothing answers to aborts the binding instead of quietly reading 0.
+extern "C" int qtd_prop_has(void* o, const char* n) {
+    if (!o || !n) return 0;
+    return static_cast<QObject*>(o)->metaObject()->indexOfProperty(n) >= 0 ? 1 : 0;
+}
+
 // A SIGNAL FOUND BY NAME on the object that is there. A child the ENGINE builds can be of a type
 // our registry never heard of — `Timer` is the plain one — so `onTriggered` has no signature to
 // connect with and the handler was refused outright. QML names a handler after the signal and

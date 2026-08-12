@@ -1560,6 +1560,37 @@ int bindLeaf(T, R)(T owner, string prop, string sig, R recv, string slot) {
     return qtd_bind_leaf(qobjOf(owner), prop.toStringz, sig.toStringz, qobjOf(recv), slot.toStringz);
 }
 
+private extern(C) int qtd_bind_leaf_prop(void*, const(char)*, const(char)*, void*, const(char)*);
+/// The same subscription as [bindLeaf], for a leaf whose NOTIFY NO STATIC TABLE CAN NAME. Qt's
+/// Imagine style writes `background.topPadding` on every control, and `background` is declared as an
+/// `Item`, which has no such member: it belongs to the NinePatchImage that is actually assigned. The
+/// property name is all the document gives, and the object's own meta-object supplies the signal.
+int bindLeafProp(T, R)(T owner, string prop, string leafProp, R recv, string slot) {
+    import std.string : toStringz;
+    return qtd_bind_leaf_prop(qobjOf(owner), prop.toStringz, leafProp.toStringz,
+                              qobjOf(recv), slot.toStringz);
+}
+
+private extern(C) int qtd_prop_has(void*, const(char)*);
+/// Read a property THE DECLARED TYPE DOES NOT HAVE, off whatever object is there. Companion to
+/// [setPropAny] on the read side, and it needs one thing that one does not: a name the object does
+/// not answer to must abort the binding. In JS the read yields `undefined` and the assignment is
+/// refused, so the property keeps its default — writing 0 instead would be a value the engine never
+/// produces, and it would be invisible, which is worse.
+T propAny(T, O)(O o, string name) {
+    import std.string : toStringz;
+    auto r = __bindRecv(o, name);
+    auto z = name.toStringz;
+    if (!qtd_prop_has(r, z)) throw new QmlNullDeref(name);
+    static if (is(T == double))     return qtd_prop_get_double(r, z);
+    else static if (is(T == bool))  return qtd_prop_get_bool(r, z);
+    else static if (is(T == int))   return qtd_prop_get_int(r, z);
+    else static if (is(T == string)) {
+        auto qs = qtd_prop_get_qs(r, z);
+        auto s = qsToD(qs); qtd_qs_free(qs); return s;
+    } else static assert(false, "propAny: no channel for " ~ T.stringof);
+}
+
 private extern(C) int qtd_connect_by_name(void*, const(char)*, void*, const(char)*);
 /// Connect a signal found by NAME on whatever object is there, to a parameterless slot. A child the
 /// ENGINE builds can be of a type our registry never heard of, so `onTriggered` on a `Timer` has no
