@@ -3134,6 +3134,25 @@ Três decisões que valem mais do que o alvo:
 Isto responde também a metade da r7 #7: uma mudança de API privada passa a ser diagnosticável
 **como incompatibilidade**, com os números, em vez de um `./build` vermelho indistinto.
 
+### E o resíduo do DAG: 116 → 58, por uma aresta a menos
+
+O último item com número (r7 #8 / r8 #9) era `libsample.a` anunciado **116 vezes** numa matriz
+completa para 58 consumidores. A causa não era o `flock` nem a falta de cache: era uma **aresta
+redundante**. Cada aplicação de teste listava `sampleLib` nas suas dependências **e** chegava-lhe
+por `libT`/`shimsT` através do `genT` — e o backend binário materializa uma dependência uma vez por
+ARESTA, não por nó. 29 casos × 2 compiladores × 2 caminhos = 116.
+
+Removida a que era transitiva (a linha de link continua a receber o arquivo, que é o que as
+referências mútuas precisam), a matriz completa anuncia **58**. Metade dos processos, o mesmo grafo,
+`rc=0` e todos os `sample_*` verdes.
+
+**E o self-test do report apanhou-me pelo caminho.** Os três alvos que criei hoje entraram sem
+classificação, e o alvo que a rodada 9 #3 pediu falhou com os quatro nomes:
+*"self-test FAIL unclassified target: runtime-boundary"*. Classifiquei-os como `gate`, marquei o
+`abi-layout-qt5` no eixo Qt5, e acrescentei um canário por cada um — dois dos quais escrevi errados
+à primeira, e foi o self-test a corrigir-me também nisso. É a coisa mais barata desta sessão inteira
+e apanhou quatro omissões minhas em dez minutos.
+
 ## Rodada 4 refeita: chegada limpa pelo codigo
 
 Escopo lido nesta rodada: `generator-d/`, `runtime/{holder,qtmoc,uic,qrc}/`,

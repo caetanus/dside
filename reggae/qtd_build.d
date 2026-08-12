@@ -366,8 +366,14 @@ Target[] libsampleTargets(string root, string pyside) {
         cases.sort();
         foreach (c; cases) {
             auto n = "sample_" ~ baseName(c).stripExtension ~ "-" ~ dc;
+            // sampleLib is NOT listed here: libT and shimsT already reach it through genT, and
+            // naming it again adds one edge PER TEST APP. The binary backend materialises a
+            // dependency once per EDGE, so 58 apps x 2 compilers announced libsample.a 116 times —
+            // each a no-op behind its flock, and each still a process. The link line keeps the
+            // archive (grp), which is what the mutual refs actually need; the dependency is the
+            // transitive one. (critics r7 #8 / r8 #9)
             auto app = Target(n ~ "-bin", dc ~ " -of=$out " ~ c ~ " -I" ~ gen ~ " " ~ grp,
-                [Target(c), libT, shimsT, sampleLib]);
+                [Target(c), libT, shimsT]);
             outs ~= Target.phony(n, "QT_QPA_PLATFORM=offscreen $in", [app]);
         }
     }

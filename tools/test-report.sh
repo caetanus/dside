@@ -47,7 +47,10 @@ category() {
     qml-*|qmlreg-*|qmlaot-*|shadowaot-*|qmltc-o3-gate-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
     reglife-*|valuetypeprop-*|subclasscast-*) echo qml ;;
     slotoverload-*) echo moc ;;
-    qtmoc-probe-*|report-selftest) echo gate ;;
+    # ...and the ratchets/probes that answer the long-lived structural findings (r4 #9, r9 #2,
+    # r11 #5/#6). They are gates: they fail the build, they take no compiler and no Qt version of
+    # their own except abi-layout-qt5, which the qtaxis below marks.
+    qtmoc-probe-*|report-selftest|runtime-boundary|compiler-context|abi-layout|abi-layout-qt5) echo gate ;;
     tr-*|lupdate-check) echo i18n ;;
     manifest-gate-*|registry-gate-*|expected-fails-lint|expected-fails-run|ctor-guard|ownership-gate-*) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
@@ -66,7 +69,7 @@ qtaxis() {
     *-qt5*) echo qt5 ;;
     # The Qt5 transpiler suite spells its version in the FAMILY, not as a `-qt5` suffix, so 122
     # Qt5 targets were being reported as Qt6 — the one axis the report exists to get right.
-    qmltc5-*|qtmoc-probe-qml5) echo qt5 ;;
+    qmltc5-*|qtmoc-probe-qml5|abi-layout-qt5) echo qt5 ;;
     manifest-gate-*|registry-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*|report-selftest) echo - ;;
     *) echo qt6 ;;
   esac
@@ -103,6 +106,10 @@ if [ "$selftest" = yes ]; then
   ck qtmoc-probe-qml5                gate      qt5 -
   ck manifest-gate-qml               gate      -   -
   ck report-selftest                 gate      -   -
+  ck runtime-boundary                gate      qt6 -
+  ck compiler-context                gate      qt6 -
+  ck abi-layout                      gate      qt6 -
+  ck abi-layout-qt5                  gate      qt5 -
   ck tr-ldc2                         i18n      qt6 ldc2
   ck qrc-ldc2                        misc      qt6 ldc2
   # ...and no target the build actually offers may be unclassified.
