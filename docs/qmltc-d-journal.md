@@ -5977,3 +5977,24 @@ to be clever, and no global state to keep in step.
 
 `level` reads 0.35 and `summary` reads "high". The document is still demoted, on the frame, which is
 a different question — correctness gained without the count moving, which is the honest way round.
+
+### An anchor is a property, and copyProp already carries what no D type can name
+
+`anchors.left: parent.left` was refused as "value is not a scalar the channel can convert", and the
+path beside it already handled `anchors.fill: parent` — an OBJECT. What was missing is the middle
+case: a PROPERTY OF an object.
+
+Checked before designing anything: `left`, `right` and `top` are ordinary Q_PROPERTYs on QQuickItem,
+of type `QQuickAnchorLine`. No D type can name that, and none has to — `copyProp` moves a value from
+one meta-object to another without either side naming its type, which is the channel a `font` copy
+already travels on. Anchoring to a SIBLING is what application layout is built from and what none of
+Qt's styles does, which is why this shape survived so long.
+
+`AAnchors` goes from 10 diagnostics to 2. The two left are dependency notifies: an anchor line has no
+NOTIFY, because a side does not change, and the dependency wiring treats a missing notify as fatal.
+
+**A second attempt, reverted before it landed.** Qt's convention is that a Q_PROPERTY without NOTIFY
+is not tracked, so "the registry knows this member and it has no notify" should mean CONSTANT rather
+than refused. It would be the right rule, and it cannot fire: the registry does not carry anchor-line
+properties at all, so the test never matches. Inert — and an inert change is worse than none, because
+it reads as a fix.

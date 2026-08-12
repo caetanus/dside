@@ -9093,6 +9093,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 lateWire += "        " + slot + "();\n";
                 continue;
             }
+            // ...and a PROPERTY OF an object, which is what an anchor is: `anchors.left:
+            // parent.left` reads a QQuickAnchorLine — an ordinary Q_PROPERTY on QQuickItem, checked
+            // — and no D type can name it. It does not have to: copyProp moves a value from one
+            // meta-object to another without either side naming its type, which is the same channel
+            // a `font` copy already travels on. Anchoring to a SIBLING is the shape application
+            // layout is built from and none of Qt's styles uses.
+            if (auto *fmv = cast<FieldMemberExpression *>(ga.second))
+                if (std::string oe, oq; objPathExpr(fmv->base, oe, oq)) {
+                    std::string src = qs(fmv->name.toString());
+                    std::string slot = "__rcg_" + gname + "_" + mem;
+                    std::string ost = "        copyProp(" + oe + ", \"" + src
+                                    + "\", propObj(this, \"" + gname + "\"), \"" + mem + "\");\n";
+                    handlerSlots += "    @Slot void " + slot + "() {\n" + ost + "    }\n";
+                    wireGroupDeps(ga.second, slot, ost, "object-group member '" + ga.first + "'", false);
+                    lateWire += "        " + slot + "();\n";
+                    continue;
+                }
             std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s: value is not a scalar "
                          "the channel can convert [%s] — skipped (later phase)\n",
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
