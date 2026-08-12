@@ -2366,13 +2366,25 @@ Dez achados. **Oito fechados, um alargado mas ainda estreito, um ABERTO e é jus
   cache do metaobject por nome na r7 #3. O que continua por fazer é a lista de FORMAS — enum/flags
   como tal, revisions, singleton, uncreatable, attached/extension, read-only/required/constant —, e
   isso não é dívida escondida: é superfície por construir.
-- **#7 `lupdate-d` — falta provar a semântica: ABERTO, e a reclassificação da auditoria continua
-  exacta.** O que ela chamou de "mudança não provada" continua não provado: o fixture
-  `tests/lupdate/fixture.golden.ts` tem **todas** as traduções `type="unfinished"`, isto é, o teste
-  golden prova extracção e **não** prova preservação de catálogo traduzido, merge D+QML/UI,
-  plural/numerus, source locations nem propagação de erro de subprocesso. O extractor ganhou
-  unittests para as formas de disambiguação (`"x".tr(disambig)`, UFCS), que é a metade fácil. Chamar
-  ao conjunto "pipeline fechado" continuaria generoso, e por isso não o chamo.
+- **#7 `lupdate-d` — falta provar a semântica: METADE FECHADA, e a primeira versão desta resposta
+  estava ERRADA. Corrijo-a aqui, que é onde ela foi escrita.** Eu tinha olhado para
+  `tests/lupdate/fixture.golden.ts`, visto todas as traduções em `type="unfinished"` e concluído
+  que a preservação de catálogo não estava provada. Não é o ficheiro golden que a prova — é o
+  ALVO. O `lupdate-check` faz duas coisas em sequência: compara a extracção com o golden, e depois
+  **copia o golden, injecta uma tradução a sério com `sed`, volta a correr o extractor sobre o mesmo
+  catálogo e exige que a tradução ainda lá esteja**. Corri-o agora: *"lupdate-check OK: golden match
+  + existing translation preserved across re-run"*, e o comentário no sítio cita a própria auditoria
+  como razão de existir. Ler o fixture e não ler o alvo foi exactamente o erro que esta auditoria
+  costuma apanhar-me a fazer.
+
+  O que **fica** por provar, agora com a lista certa: o merge **D + QML/UI** (o driver encaminha
+  `.ui`/`.qml` para o `lupdate` do Qt e junta com `lconvert`, mas o fixture não tem nenhum dos
+  dois — zero ficheiros `.ui`/`.qml` no teste), **plural/numerus**, **source locations**, e a
+  **propagação de erro de subprocesso** — que está escrita no código com o cuidado certo
+  ("A subprocess FAILURE must fail us, not be swallowed", com `status != 0` a devolver 1 em três
+  sítios) e **não** tem teste que a exercite com um subprocesso deliberadamente partido. Chamar ao
+  conjunto "pipeline fechado" continua generoso; chamar-lhe "preservação não provada", como eu
+  chamei há minutos, era falso.
 - **#8 a documentação voltou a contradizer o código: FECHADO** — ver r11 #7.
 - **#9 "UIC feature-complete" excedia o oracle: FECHADO.** Existem hoje dois diferenciais contra o
   **QUiLoader** do próprio Qt: `uicheck` sobre os fixtures e `corpus-check` sobre o corpus inteiro
@@ -2380,10 +2392,14 @@ Dez achados. **Oito fechados, um alargado mas ainda estreito, um ABERTO e é jus
 - **#10 o QRC estava muito menos coberto que o UIC: FECHADO** — ver r8 #10 (PNG, bytes exactos
   através do `QFile`/`QResource` do Qt).
 
-**A releitura das cinco rodadas (6 a 11) fecha em 37 de 46.** E o #7 é o único achado destas cinco
-que continua aberto **sem** estar noutra rodada com outro nome — os outros oito repetem-se. É,
-portanto, o próximo a fechar, e é pequeno: um catálogo com uma tradução a sério e a asserção de que
-ela sobrevive ao merge.
+**A releitura das cinco rodadas (6 a 11) fecha em 37 de 46, e meia.** O #7 continua a ser o único
+achado destas cinco aberto **sem** estar noutra rodada com outro nome — os outros oito repetem-se —,
+mas o que falta dele é menor do que eu escrevi: não é a preservação, é o merge com `.ui`/`.qml`,
+plural, source locations e um teste que parta um subprocesso de propósito.
+
+**E fica a lição, que é sobre mim e não sobre o código:** verifiquei o FICHEIRO e não o ALVO, e
+escrevi uma acusação falsa com a confiança de quem tinha verificado. É a terceira vez esta semana
+que a diferença entre "li o artefacto" e "corri a coisa" muda a conclusão.
 
 ## Rodada 6: vocês fecharam tickets; eu fui procurar falsos verdes
 
