@@ -6075,8 +6075,15 @@ two spellings of one value that must print alike or the comparison becomes about
 it.
 
 With that done the minimal case agrees on both sides — `items 3,1,4,1,5` — and the first full matrix
-failed on `qmltc_CDeepRead_ldc2`: the ENGINE has `data[0].sequences` and we print nothing. A real
-asymmetry that the blind spot was hiding, found within minutes of removing it.
+failed: the ENGINE has `data[0].sequences` and we print nothing. A real asymmetry that the blind
+spot was hiding, found within minutes of removing it.
+
+The failing target took a second look. It went into the record as `CDeepRead`, read off a log line
+where two builds' output had interleaved — and chasing that document found an engine with no
+`sequences` anywhere, which is how the misreading surfaced. It is the QUICK corpus's
+`QEnumOnlyType`, whose `data[0]` is a `QQuickShortcut`; `sequences` is its own property. A wrong
+document name in a handoff sends the next person to the wrong file, so it is corrected rather than
+left.
 
 Reverted because it breaks a fixture, not because it is wrong. That is the argument for finishing
 it: an entire property kind was unobserved, and the moment it was observed it produced a difference.
