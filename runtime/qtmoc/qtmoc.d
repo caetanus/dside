@@ -1578,6 +1578,21 @@ int bindLeafProp(T, R)(T owner, string prop, string leafProp, R recv, string slo
                               qobjOf(recv), slot.toStringz);
 }
 
+private extern(C) int qtd_prop_value_member(void*, const(char)*, const(char)*, double*);
+/// Read a MEMBER of a value-typed property — `color.a`, `font.pixelSize`, `size.width`. QColor is
+/// neither a QObject nor a Q_GADGET; QML reaches its members through a VALUE TYPE the engine
+/// registers per metatype, and that is the channel used here, so what is readable is exactly what
+/// QML can read. A member nothing answers to aborts the binding, like every other read that finds
+/// nothing: the engine yields `undefined` there and the assignment is refused.
+double propValueMember(T)(T o, string prop, string member) {
+    import std.string : toStringz;
+    double v = 0;
+    auto r = __bindRecv(o, prop);
+    if (!qtd_prop_value_member(r, prop.toStringz, member.toStringz, &v))
+        throw new QmlNullDeref(prop ~ "." ~ member);
+    return v;
+}
+
 private extern(C) int qtd_prop_has(void*, const(char)*);
 /// Read a property THE DECLARED TYPE DOES NOT HAVE, off whatever object is there. Companion to
 /// [setPropAny] on the read side, and it needs one thing that one does not: a name the object does

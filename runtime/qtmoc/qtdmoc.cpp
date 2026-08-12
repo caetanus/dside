@@ -1174,6 +1174,33 @@ extern "C" int qtd_deferred_index(void* o, const char* name) {
     return -1;
 }
 
+// A MEMBER OF A VALUE-TYPED PROPERTY: `color.a`, `font.pixelSize`, `size.width`. QColor is neither a
+// QObject nor a Q_GADGET, so no meta-object of its own answers for `a` — QML reaches it through a
+// VALUE TYPE, and QQmlProperty resolves a dotted path straight through it — the same route QML
+// itself takes, so the set of readable members is EXACTLY QML's. Nothing here knows what a colour
+// is, which is the point.
+//
+// `layer.enabled: control.enabled && color.a > 0 && !control.flat` is Qt's Material Button, and
+// `color.a` is the whole reason that line could not compile — so the background was never put in a
+// layer, and seven of Material's documents drew a shape the engine does not draw at all.
+extern "C" int qtd_prop_value_member(void* o, const char* prop, const char* member, double* out) {
+#ifdef QTD_HAVE_QML
+    if (!o || !prop || !member || !out) return 0;
+    QObject* q = static_cast<QObject*>(o);
+    // QQmlProperty resolves a DOTTED path through a value type — it is what QML itself uses for
+    // `color.a`, and it is public, where the value-type registry is not.
+    QQmlProperty p(q, QString::fromUtf8(prop) + QLatin1Char('.') + QString::fromUtf8(member));
+    if (!p.isValid()) return 0;
+    const QVariant got = p.read();
+    if (!got.isValid() || !got.canConvert<double>()) return 0;
+    *out = got.toDouble();
+    return 1;
+#else
+    (void) o; (void) prop; (void) member; (void) out;
+    return 0;
+#endif
+}
+
 // Does the object in hand declare this property at all? Asked before a read the compiler could not
 // check statically, so a name nothing answers to aborts the binding instead of quietly reading 0.
 extern "C" int qtd_prop_has(void* o, const char* n) {

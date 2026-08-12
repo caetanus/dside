@@ -2897,6 +2897,21 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     && (g_selfId.empty() || inner != g_selfId))
                 if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end()) {
                     auto it = qc->second.find(inner);
+                    // A VALUE-typed property is not an object and has no meta-object of its own,
+                    // and `color.a` is read all over Qt's Material style — it is what makes
+                    // `layer.enabled: control.enabled && color.a > 0 && !control.flat` compile, and
+                    // without it the background is never put in a layer at all. QML reaches those
+                    // members through a value type; propValueMember takes the same route, so what
+                    // is readable here is exactly what is readable in QML.
+                    // ...and an EMPTY dtype counts: a comparison compiles its operands with no
+                    // target type, and `color.a > 0` is exactly the shape this exists for.
+                    if (it != qc->second.end() && !it->second.empty() && it->second.back() != '*'
+                            && (dtype.isEmpty() || dtype == "double" || dtype == "int"
+                                || dtype == "real" || dtype == "float" || dtype == "bool")) {
+                        std::string rd = "propValueMember(this, \"" + inner + "\", \"" + mem + "\")";
+                        out = dtype == "bool" ? "(" + rd + " != 0)" : rd;
+                        return true;
+                    }
                     if (it != qc->second.end() && !it->second.empty() && it->second.back() == '*') {
                         std::string innerQml = qmlNameOfCxx(it->second);
                         if (!innerQml.empty())
