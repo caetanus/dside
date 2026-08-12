@@ -9150,8 +9150,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // other read through the tree: `parent` is not set until the parent assigns us.
             if (std::string oe, oq; objPathExpr(ga.second, oe, oq)) {
                 std::string slot = "__rcg_" + gname + "_" + mem;
+                // ...through instOf, because the object may be an ENGINE-BUILT child, which is a
+                // wrapper holding the real one in `__inst`. Handing the wrapper over is not a
+                // near-miss: the property is declared `QQuickItem*`, the wrapper does not inherit
+                // it, and the write is refused — Material's BoxShadow and RectangularGlow anchor
+                // to a ShaderEffect sibling and died on exactly that. instOf is neutral where
+                // there is no wrapper, so it is applied without asking which kind this is.
                 std::string ost = "        setPropObj(propObj(this, \"" + gname + "\"), \"" + mem
-                                + "\", " + oe + ");\n";
+                                + "\", instOf(" + oe + "));\n";
                 handlerSlots += "    @Slot void " + slot + "() {\n" + ost + "    }\n";
                 wireGroupDeps(ga.second, slot, ost, "object-group member '" + ga.first + "'", false);
                 lateWire += "        " + slot + "();\n";
