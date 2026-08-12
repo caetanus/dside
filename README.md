@@ -323,9 +323,9 @@ application *consuming* Controls rather than defining them.
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
 | Qt's Controls | 329 | 235 | 49 | 45 | 0 |
-| application-shaped | 18 | 6 | 12 | 0 | **0** |
+| application-shaped | 18 | 7 | 11 | 0 | **0** |
 
-**Six of eighteen** is the honest number, and it is the point rather than an embarrassment: this
+**Seven of eighteen** is the honest number, and it is the point rather than an embarrassment: this
 dialect is where the compiler is weak today and the ladder is what makes it correct anyway. All
 eighteen behave identically to the engine, and at `-O1`/`-O2` none of them is emitted partial — the
 other fifteen are handed over whole, which `qmltc-optlevels-*` checks property by property. The four

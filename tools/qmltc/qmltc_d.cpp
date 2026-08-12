@@ -4329,6 +4329,15 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                 // QML converts the value to the property's declared type; D will not narrow
                 // implicitly (`lastWidth = width` is int <- qreal on an Item).
                 body += "        " + lv + " = " + coerceTo(ty, val) + ";\n";
+                // ...AND THE NOTIFY. In QML an assignment IS a change notification — it is the whole
+                // reason anything bound downstream moves. `Component.onCompleted: root.target = 40`
+                // wrote the field and stopped, so `width: root.target` never re-ran and the box
+                // stayed at its initial 80 where the engine settles at 40. The recompute path has
+                // always emitted (see storeInto); only the imperative one did not. `static if`
+                // because the Signal field exists only where something asked for a notify, and D
+                // answers that at compile time — nothing is emitted where there is nothing.
+                body += "        static if (__traits(hasMember, typeof(this), \"" + nm + "Changed\"))\n"
+                        "            " + nm + "Changed.emit();\n";
                 return true;
             }
     // `Type.member = <expr>` / `Type.member++` / `Type.<signal>()` on an ATTACHED object.
@@ -4605,6 +4614,16 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
             // implicitly, and a qreal base property read (`lastWidth = width`) is exactly that.
             body += "        " + name + " " + op + " "
                   + (std::string(op) == "=" ? coerceTo(it->second, rhs) : rhs) + ";\n";
+            // ...AND THE NOTIFY, which an imperative assignment owes exactly as much as a binding
+            // does. `Component.onCompleted: root.target = 40` wrote the D field and stopped there,
+            // so `width: root.target` never re-ran and the box stayed at its initial 80 where the
+            // engine settles at 40. In QML an assignment IS a change notification; that is the whole
+            // reason anything downstream moves. The recompute path already emits (see storeInto) —
+            // only the imperative one did not. `static if` because the Signal field exists only for
+            // a property something declared a notify for, and this compiler does not know which
+            // from here; D answers that at compile time and emits nothing where there is nothing.
+            body += "        static if (__traits(hasMember, typeof(this), \"" + name + "Changed\"))\n"
+                    "            " + name + "Changed.emit();\n";
             return true;
         }
     }

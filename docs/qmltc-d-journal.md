@@ -5998,3 +5998,30 @@ is not tracked, so "the registry knows this member and it has no notify" should 
 than refused. It would be the right rule, and it cannot fire: the registry does not carry anchor-line
 properties at all, so the test never matches. Inert — and an inert change is worse than none, because
 it reads as a fix.
+
+### An assignment IS a notification, and the imperative path never sent one
+
+`ABehavior` compiled with NO diagnostic at all and stayed demoted. That question — why is a clean
+document demoted — has found three real defects in one session, and this is the deepest.
+
+```qml
+property real target: 80
+Rectangle { id: box; width: root.target; Behavior on width { NumberAnimation { duration: 0 } } }
+Component.onCompleted: root.target = 40
+property real settled: box.width
+```
+
+Engine: 40. Ours: 80. The generated code read `target = cast(double) (40.0);` — the field written,
+nothing told. In QML an assignment IS a change notification; that is the entire reason anything bound
+downstream moves. The RECOMPUTE path has always emitted (see `storeInto`); the IMPERATIVE one never
+did, so a `Component.onCompleted` that sets a property changed nothing that reads it.
+
+Two things worth keeping. It needed the same fix in TWO places — the bare name and the qualified
+`root.target`, which are different branches — and the first alone moved nothing, the same
+half-a-fix shape that `instOf` had produced hours earlier. And the emission is guarded by
+`static if (__traits(hasMember, typeof(this), "<name>Changed"))`: the compiler does not know from
+there which properties carry a notify, and rather than guess or thread more state, D answers at
+compile time and emits nothing where there is nothing.
+
+`settled` reads 40, `data[0].width` reads 40. Application corpus 6 of 18 → **7**; Qt's five styles
+unchanged at 235.
