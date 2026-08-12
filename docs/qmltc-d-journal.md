@@ -6025,3 +6025,23 @@ compile time and emits nothing where there is nothing.
 
 `settled` reads 40, `data[0].width` reads 40. Application corpus 6 of 18 → **7**; Qt's five styles
 unchanged at 235.
+
+### Re-measuring a parked change, and being half wrong on the record
+
+When `wip/completion-order` was parked, the entry claimed its cost was COLLATERAL — that reversing
+completion exposed gaps rather than causing them. Twenty-nine commits later, with the id scope, the
+baseUrl rule, the instOf read and the notify-on-assignment all landed, that claim is testable. It
+was tested.
+
+**Half right.** Basic 52 → 53, Fusion 52 → 53, and both `-O1` gates report ZERO broken promises where
+each had a DelayButton — exactly the collateral the entry predicted, now visible because the
+neighbours are fixed.
+
+**Half wrong.** Universal −1 and Imagine −3 survive all of it. Total 233 against 235, and the gate
+goes red because Universal's DelayButton is now judged at `-O1` and is not in the known list. The
+cost is not only collateral; something in it is its own.
+
+So the entry is corrected rather than re-parked with the same words: closing the neighbouring gaps
+was NECESSARY AND IS NOT SUFFICIENT, and what remains is the third factor the entry already names —
+when the parent applies its geometry relative to the child's first layout. That is a better place to
+be than before, and the way to get here was to write the prediction down where it could be checked.
