@@ -7058,8 +7058,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // QQuickComboBox::setPopup, which cannot happen if the ListView does not exist
                    // yet (reproduced against the engine alone).
                    + "        " + dIdent(cb.field) + ".__qmltcKids();\n"
-                   // componentComplete IS ours to call, and only now: the child is in the tree.
-                   + "        componentComplete(" + dIdent(cb.field) + ");\n";
+                   // componentComplete IS ours to call — QUEUED, not called: Qt drains its
+                   // created-object stack with pop(), so siblings complete newest-first.
+                   + "        deferComplete(" + dIdent(cb.field) + ");\n";
         childWire += "        buildProp(this, \"" + cb.field + "\", {\n" + kidBlk + "        });\n";
         if (!kid.id.empty()) {
             for (auto &s : kid.scalars) {
@@ -7320,7 +7321,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // ...and NOT classBegin (the child did it); its own children come now, once it
                    // is appended and parented; componentComplete IS ours, and only after that.
                    + "        " + field + ".__qmltcKids();\n"
-                   + "        componentComplete(" + field + ");\n";
+                   + "        deferComplete(" + field + ");\n";
         // A BARE child with an id is just as addressable as one bound to a property:
         // `property alias source: dps.source` where dps is a default child is the dominant shape
         // in real QML (241 of the alias skips measured against Qt's own .qml). Registering its
@@ -9526,6 +9527,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // number of layouts. Measured by hand on the generated D before it was written here: with
         // the two assignments moved above the children, both the root's and the contentItem's
         // baselineOffset match the engine exactly.
+        // ...and the MARK first, so the drain below completes only what this object built. A
+        // document can build another, and the inner build must drain only its own, exactly as the
+        // engine gives each component its own creator.
+        if (!childWire.empty() || !dcWire.empty())
+            wire += "        size_t __cmark = completeMark();\n";
         wire += componentWire;   // ...the TEMPLATES first: a type builds children FROM them
         wire += dcWire;      // ...default children first, as the engine's `data` has them...
         wire += childWire;   // ...then the property-bound ones
@@ -9863,6 +9869,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // ...and anything Qt deferred is built HERE, last, in the order the meta-object gives —
         // after every property of this object is set and before it completes. See buildProp.
         if (!childWire.empty()) wire += "        runDeferred(this);\n";
+        if (!childWire.empty() || !dcWire.empty()) wire += "        drainComplete(__cmark);\n";
         if (!thisParentCompletes) wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         // THE SPLIT. `__qmltcWire` keeps what the object does to ITSELF; everything from the

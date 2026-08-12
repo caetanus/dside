@@ -1598,6 +1598,33 @@ T propAny(T, O)(O o, string name) {
     } else static assert(false, "propAny: no channel for " ~ T.stringof);
 }
 
+/// QT COMPLETES IN REVERSE CREATION ORDER. `QQmlObjectCreator::finalize` keeps every object it
+/// built on a STACK and drains it with `pop()`, so the object created LAST gets componentComplete
+/// FIRST, and the root — created first — gets it last. We completed each child the moment we created
+/// it, which is the opposite for every sibling but the first.
+///
+/// It is observable. Qt's DelayButton holds two ClippedText siblings in an ItemGroup; a Text freezes
+/// its `baselineOffset` at its FIRST layout and never recomputes it on a later resize. Completing
+/// the first child while the group is still 0 high lays it out at height 0 (ascent - height/2 =
+/// 5.34375) where the engine has the ascent itself (14.84375), and the second child — appended into
+/// a group that already has a height — gets the right one. Both sides freeze one child in each state
+/// and disagree about which.
+///
+/// `mark`/`drain` rather than one global list, because a document can build another: the inner build
+/// must drain only what IT created, exactly as the engine gives each component its own creator.
+private void*[] __qmltcPending;
+/// Where the current build's objects start. Take it before building, pass it to [drainComplete].
+size_t completeMark() { return __qmltcPending.length; }
+/// Queue `o` for completion instead of completing it now.
+void deferComplete(T)(T o) { __qmltcPending ~= qobjOf(o); }
+/// Complete everything queued since `mark`, newest first, and forget it.
+void drainComplete(size_t mark) {
+    for (size_t i = __qmltcPending.length; i > mark; --i)
+        qtd_parser_status(__qmltcPending[i - 1], 1);
+    __qmltcPending.length = mark;
+    __qmltcPending.assumeSafeAppend();
+}
+
 private extern(C) int qtd_deferred_index(void*, const(char)*);
 private struct __Deferred { void* owner; string prop; int rank; void delegate() build; }
 private __Deferred[] __qmltcDeferred;
@@ -1628,7 +1655,9 @@ private bool __forceDeferred(void* owner, string prop) {
         if (d.owner !is owner || d.prop != prop) continue;
         auto build = d.build;
         __qmltcDeferred = __qmltcDeferred[0 .. i] ~ __qmltcDeferred[i + 1 .. $];
+        auto m = completeMark();
         build();
+        drainComplete(m);
         return true;
     }
     return false;
@@ -1652,7 +1681,15 @@ void runDeferred(T)(T owner) {
     if (mine.length == 0) return;
     import std.algorithm : sort;
     mine.sort!((a, b) => a.rank < b.rank);
-    foreach (d; mine) d.build();
+    // EACH ONE COMPLETE BEFORE THE NEXT IS BUILT, which is what Qt's quickCompleteDeferred does and
+    // the whole reason for deferring: a contentItem measured here is measured at its natural size,
+    // and the owner stretches it only afterwards. Its own mark/drain, so the subtree it builds
+    // completes with it rather than waiting for the owner's drain — by then the owner has resized it.
+    foreach (d; mine) {
+        auto m = completeMark();
+        d.build();
+        drainComplete(m);
+    }
 }
 
 private extern(C) int qtd_connect_by_name(void*, const(char)*, void*, const(char)*);

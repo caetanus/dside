@@ -7,36 +7,9 @@
 #
 # One document per line: <Style>/<Name>  # reason
 
-Basic/DelayButton   # COMPLETION ORDER. Not child order (the first reading, disproved) and not
-                    # layout order (the second): the two ClippedText siblings are built in the
-                    # engine's order, get the right bindings, and agree on every property either
-                    # side ASSIGNS — visible, clipX, clipWidth, height, implicitHeight, y, text.
-                    # They exchange baselineOffset, which NEITHER side assigns: QQuickText freezes
-                    # it at the FIRST layout and never recomputes it on a later resize. Probed step
-                    # by step: dc0 completes while the group is still 0 high and lays out at
-                    # ascent - height/2 = 5.34375; dc1, appended into a group that already has a
-                    # height, gets the ascent itself, 14.84375. The engine is the mirror.
-                    # THE CAUSE IS KNOWN AND THE FIX IS WRITTEN: QQmlObjectCreator::finalize drains
-                    # its created-object stack with pop(), so parser-status objects complete in
-                    # REVERSE creation order, per level — we complete each child as we create it.
-                    # Reversing it reproduces the engine exactly on both styles.
-                    # WHY IT IS NOT LANDED: it removes an accident that was hiding two other gaps,
-                    # and costs more than it gains until they are closed (measured over the full
-                    # matrix: 231 compiled -> 227). A binding like `contentWidth:
-                    # contentItem.contentWidth` is never wired, because `contentItem` is declared as
-                    # an `Item` and Item has no contentWidth, so (1) the leaf connection needs the
-                    # notify resolved from the object rather than the static type and (2) the read
-                    # is not recorded as a deep read at all when the member is unknown on that type,
-                    # so nothing asks for the leaf.
-                    # BOTH ARE NOW LANDED — bindLeafProp and propAny, in the commit that closed the
-                    # 516 refused reads across Qt's five styles. The reversal was last measured
-                    # against a tree that had NEITHER of them, so the -4 it cost is a number about a
-                    # compiler that no longer exists: it has to be measured again before it can be
-                    # judged. Branch `wip/completion-order`.
-Fusion/DelayButton  # The SAME defect, the same two values exchanged — one cause, two styles,
-                    # because both DelayButtons are written the same way. Two lines rather than one
-                    # so the gate keeps naming each style it actually shows up in.
-
+# THIS FILE IS EMPTY, and the gate still fails on anything new — which is the only state it was ever
+# meant to reach.
+#
 # WHAT WAS HERE AND IS NOT ANY MORE. Judging -O1 over all five styles first found SEVEN documents,
 # and six of them came down to three rules the compiler was missing rather than to six quirks:
 #
@@ -49,3 +22,21 @@ Fusion/DelayButton  # The SAME defect, the same two values exchanged — one cau
 # Fusion's CheckIndicator, RadioIndicator, SliderGroove and ButtonPanel and Universal's
 # CheckIndicator all agree with the engine now. Naming them here would have hidden three real gaps
 # behind five well-documented excuses, which is the failure mode this file is one step away from.
+
+# ...and the TWO DELAYBUTTONS, Basic's and Fusion's, which this file carried longest. The reading
+# recorded here was right about the symptom and wrong about the cause. Completing in the engine's
+# order — reverse creation order, which is what QQmlObjectCreator::finalize does with pop() — is
+# NECESSARY and was never SUFFICIENT: on its own it cost four other documents, because it removed an
+# accident that was hiding a second difference.
+#
+# The second one is Q_CLASSINFO("DeferredPropertyNames", "background,contentItem,indicator"). Qt does
+# not build those children during the object pass at all; QQuickControl::componentComplete builds
+# them, completes each as it is built, and resizes them only afterwards. We built them eagerly, so a
+# control that had just been given its implicit height stretched a contentItem that had never laid
+# out, and a QQuickText freezes baselineOffset at its FIRST layout.
+#
+# Both together: Basic 52 -> 53, Fusion 52 -> 53, Universal unchanged with its own DelayButton now
+# agreeing, Imagine 41 -> 40, total 235 -> 236, and -O1 judging 110 documents instead of 108 with
+# NOTHING left in this file. The one document it costs is Imagine's TextField, same family and same
+# shape: data[0].baselineOffset 8.34375 where the engine has 5.34375 — the engine measured that Text
+# at height 0 and we measured it at 6.

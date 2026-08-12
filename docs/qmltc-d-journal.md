@@ -6246,3 +6246,55 @@ if it is not, the thunk runs immediately, which is today's behaviour unchanged; 
 is held and run at the owner's completion, in the order the classinfo names them, each child
 completed as it is built. One rule, no list, and a document that uses no deferred property compiles
 to the same code it does now.
+
+## Two causes, and each one alone made it worse
+
+The deferral was built the way the diagnosis said: `buildProp` wraps every property-bound child in a
+thunk and asks `qtd_deferred_index` whether the owner defers that name, and `runDeferred` builds
+what was held at the owner's completion. Two details were not in the diagnosis and both were found
+by measuring:
+
+**The rank is not the order the classinfo lists.** `Q_CLASSINFO("DeferredPropertyNames",
+"background,contentItem,indicator")` is one string, and Qt runs indicator first — because
+`QQuickAbstractButton::componentComplete` executes its own deferred property before delegating to
+`QQuickControl::componentComplete`, which does background then contentItem. So the rank is the
+distance of the class that DECLARES the property, then the position within that class's list. Qt's
+order, with no type's names written down anywhere.
+
+**Reading a deferred property builds it.** Qt's deferred pointer executes on the getter, and Qt's own
+QML leans on it: Basic's `DialogButtonBox` writes `contentWidth: contentItem.contentWidth`, evaluated
+while the contentItem is unbuilt, and under the engine that read is what creates it. Without that
+half the read found null, the binding aborted, and `contentWidth` kept its default of -1 where the
+engine has 0. It appeared as a regression this change caused, on a document that had been green for
+weeks — which is the only reason it was found.
+
+On its own the deferral changed NOTHING: 235 compiled and 108 judged, before and after. It fixes a
+difference that only the completion-order reversal exposes.
+
+### Together
+
+| | before | reversal | deferral | both |
+|---|---|---|---|---|
+| Basic | 52 | 53 | 52 | **53** |
+| Fusion | 52 | 53 | 52 | **53** |
+| Universal | 50 | 49 | 50 | **50** |
+| Imagine | 41 | 38 | 41 | **40** |
+| Material | 40 | 40 | 40 | **40** |
+| total | 235 | 233 | 235 | **236** |
+| `-O1` judged | 108 | — | 108 | **110** |
+| named broken promises | 2 | 1 | 2 | **0** |
+
+Each alone is a loss or a no-op; together they are the first net gain on this number in a long
+while, and `optlevels-known.txt` — the file of documents that compile at a certainty level and do
+not match — is **empty** for the first time since it was written.
+
+One document pays for it: Imagine's `TextField`, demoted on `data[0].baselineOffset 8.34375` where
+the engine has 5.34375. The arithmetic is the same as everywhere in this family — with ascent
+14.84375 and contentHeight 19, the engine measured that Text at height 0 and we measured it at 6 —
+so a third ordering difference lives inside that document. It is named in `expected-fails.json`
+rather than left inside a demoted count.
+
+The composition needed care that is worth writing down: a deferred child must complete INSIDE its
+own thunk, not be queued with its siblings. Queued, it completes after `runDeferred` returns — by
+which point the owner has already stretched it, which is the exact thing the deferral exists to
+prevent. The first attempt at the combination did queue it, and measured 230.
