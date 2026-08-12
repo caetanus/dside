@@ -9868,8 +9868,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // an already-completed QQmlDelegateModel, and Qt segfaults in QQuickRepeater::clear().
         // ...and anything Qt deferred is built HERE, last, in the order the meta-object gives —
         // after every property of this object is set and before it completes. See buildProp.
-        if (!childWire.empty()) wire += "        runDeferred(this);\n";
+        // THE ORDINARY CHILDREN COMPLETE FIRST, then what Qt deferred. The engine's finalize drains
+        // everything it CREATED — which never included a deferred child — and the owner's own
+        // componentComplete builds those afterwards. Built before the drain, Imagine's TextField gave
+        // its background's padding to the control while the PlaceholderText had still not measured
+        // itself, so that Text froze its baseline against height 6 where the engine has 0.
         if (!childWire.empty() || !dcWire.empty()) wire += "        drainComplete(__cmark);\n";
+        if (!childWire.empty()) wire += "        runDeferred(this);\n";
         if (!thisParentCompletes) wire += "        componentComplete(this);\n";
         wire += onCompletedBody;   // Component.onCompleted, last
         // THE SPLIT. `__qmltcWire` keeps what the object does to ITSELF; everything from the
