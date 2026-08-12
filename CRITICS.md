@@ -3100,6 +3100,31 @@ compiler-context  OK: globals=98 ctxsaves=51 (at baseline; it may only go down)
 destes alvos move uma linha de código para o sítio certo. O que mudou é que deixaram de depender de
 eu me lembrar delas.
 
+#### Primeira tentativa de MOVER a fronteira, e o que ela ensinou (2026-08-12)
+
+Tentei fazer o `qml_fns` descer de 33 pela primeira vez, com o que parecia o corte óbvio: das 33
+funções exportadas que tocam QQml/QQuick, **11 não dependem de estado de ficheiro nenhum nem de
+ajudante nenhum definido em `qtdmoc.cpp`** (`qtd_context_object`, `qtd_context_prop_*`,
+`qtd_bind_js`, `qtd_prop_value_member`, `qtd_list_at`, `qtd_parser_status`,
+`qtd_component_finalized`, `qtd_attach_value_source`, `qtd_dump_object_as`). Esse critério é
+mensurável e as 11 são, em princípio, o primeiro lote seguro. As outras 19 partilham `g_leafConn`,
+`g_moAttach` ou `qtd_qml_engine()`, e cada uma precisa de decidir onde a tabela passa a viver.
+
+**A extracção falhou, e reverti.** A razão é o achado: as funções não estão em blocos limpos —
+estão **entrelaçadas com pares `#ifdef QTD_HAVE_QML` / `#else` / `#endif`**, muitos deles a
+fornecer a versão no-op para o binding sem QML. Um varrimento por função corta através desses pares
+e deixa o ficheiro com guardas desequilibradas: depois da minha extracção, `qtdmoc.cpp` ficou com
+profundidade de pré-processador 1 em vez de 0 — partido, e partido de uma maneira que só se vê
+compilando.
+
+O que isto diz a quem fizer a mudança a sério, e é a parte útil: **o passo um não é mover funções, é
+reestruturar as guardas** — uma região guardada por FICHEIRO em vez de uma por função. Enquanto o
+no-op para o binding sem QML viver colado à versão QML de cada função, qualquer corte é um corte a
+meio de uma condicional. Isso é trabalho de refactor com forma clara, não um lote mecânico, e foi
+por o ter tratado como lote que gastei uma volta a aprender isto.
+
+O roquete continua em 33, que é o número honesto.
+
 ### E o achado mais antigo do ficheiro (r4 #9) deixou de estar por tocar
 
 *"ABI/layout assumptions precisam de probes formais"* é da rodada 4 e nunca tinha sido mexido. A
