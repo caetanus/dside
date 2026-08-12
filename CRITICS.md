@@ -2772,6 +2772,45 @@ testes estreitos para autorizar frases universais. A próxima maturidade não vi
 mais targets verdes; virá de provar que um verde não consegue esconder a regressão
 que ele afirma vigiar.
 
+## Resposta à rodada 5 refeita (escrita a 2026-08-12)
+
+Oito achados. Desta vez **corri cada alvo antes de escrever sobre ele** — foi ler o artefacto em vez
+de correr a coisa que me fez escrever uma acusação falsa sobre o `lupdate` há uma hora. **Sete
+fechados, um aberto.**
+
+- **#1 dependência de API privada tratada como risco de primeira classe: FECHADO.** É exactamente o
+  que a auditoria escreveu que "PySide-mature" significa, item a item: as APIs privadas estão
+  **isoladas atrás de seams `QT_VERSION`** (README:12), o risco está **assumido nos docs** com essas
+  palavras ("`QMetaObjectBuilder` is a Qt private API… treated as a compatibility risk, exercised on
+  the Qt versions in the test matrix (6.11, 5.15)"), e há **entradas de inventário dedicadas** —
+  quatro: `moc-private-metaobjectbuilder`, `qml-private-qqmlprivate`,
+  `qml-private-typedescreader`, `uic-private-widgets. O que falta é a **matriz de versões** (dois
+  minors Qt6), que é o mesmo aberto das rodadas 7 e 9 e está nomeado lá.
+- **#2 o manifest era do caminho object-method e não da API inteira: FECHADO.** A auditoria contou
+  493 drops FORA do manifest em QtWidgets e 425 em QML. Hoje o manifest tem **8429 linhas** e cada
+  símbolo traz um fate: `bound` 4479, `inherited` 1487, `shimmed` 1046, `unmapped-type` 725,
+  `signal` 501, `pure-virtual` 190. Os "drops" deixaram de estar num rodapé agregado — passaram a
+  ser fates com nome, dentro do ficheiro que o portão compara.
+- **#3 manifest e expected-fails sem enforcement: FECHADO, e corri os três.**
+  `manifest-gate OK [qtwidgets]: 8428 symbols (class+USR), no regression, manifest well-formed
+  (0 new bound)`; `expected-fails-lint OK: 24 entries valid (strict)`; `expected-fails-run OK: 23
+  probe target(s) executed, every documented risk still covered`. A lista de seis condições que a
+  auditoria disse nunca ter visto falhar está coberta por estes três, e o "um expected-fail passa
+  sem ser removido" foi visto a falhar **hoje**, a sério, quando a inversão da ordem de completação
+  começou a funcionar.
+- **#4 a política de callback error era incompleta: FECHADO.** Zero `catch (Exception) {}` vazios em
+  `generator-d/*.d` e `runtime/qtmoc/*.d`; catorze sítios encaminham para `qtdOnCallbackError`.
+- **#5 cleanup de metaobject parcial: FECHADO** — ver r6 #1, com o teste do caminho `QtdWidget` que
+  faltava.
+- **#6 `lupdate-d` fora do build de record: FECHADO** — `lupdate-check` é alvo do build e corre.
+- **#7 docs stale: FECHADO** — ver r11 #7.
+- **#8 build verde ainda não é report estruturado: FECHADO, e é o achado mais valioso que esta
+  auditoria produziu.** Está respondido na adenda no topo deste ficheiro, com as duas vezes de 11 de
+  Agosto e mais duas de hoje. Nenhuma delas foi a auditoria a apontar o caso concreto — foi o
+  DESENHO que ela impôs a apanhá-los.
+
+**A releitura de seis rodadas (5 a 11) fecha em 44 de 54.** Restam as rodadas 4 e anteriores.
+
 ## Rodada 5 refeita: QML entrou no jogo, agora a cobranca muda
 
 Esta rodada substitui a "Rodada 5" anterior. Ela estava factual e temporalmente
