@@ -683,6 +683,61 @@ porcentagem de documentos compilados pelo consumidor. Corrigir essa fronteira fo
 o binding se torna seguro fora do QML, e o `qmltc-d` passa a apoiar-se numa camada que pode ser
 distribuida com uma promessa real de ownership.
 
+## Resposta à rodada 11 (escrita a 2026-08-12)
+
+Esta rodada nunca teve resposta escrita aqui. Verifiquei os oito achados contra o código de hoje
+antes de escrever uma linha. **Seis fechados, dois abertos — e os dois abertos estão PIORES do que
+quando a auditoria os levantou.** Digo-o com o número, porque é o que dá peso ao resto.
+
+- **#1 a tabela de deep bindings colide owners: FECHADO.** `qtd_leaf_key` começa hoje por
+  `snprintf("%p|%p|", owner, recv)` — o owner ESTÁ na identidade, e o comentário no sítio diz
+  porquê, com o caso que o obrigou (`mid.indicator.width + outer.indicator.width` produzia duas
+  subscrições idênticas em tudo menos no owner). A limpeza que a auditoria pediu existe
+  (`qtd_leaf_watch` sobre owner e receiver) e a prova também: `tests/qmltc/leaf_lifetime.d` exige a
+  side-table de volta ao baseline depois de destruir a árvore, através de `qtd_leaf_table_size()`,
+  exportado exactamente para isso — uma sonda não pode provar a limpeza de fora, porque as entradas
+  são invisíveis.
+- **#2 o gate aprovava `values-differ`: FECHADO, pela via que a própria auditoria admitia.** Não
+  existe hoje um estado "COMPILED values-differ": um documento que falhe QUALQUER dos dois eixos é
+  **DEMOTED to -O0**, onde o motor corre o documento e ambos os eixos voltam a valer. O portão
+  continua a exigir `UNPLACED=0`, e isso passou a bastar porque a categoria que ele aprovava deixou
+  de existir. **Meio aberto e digo qual metade:** `unjudgeable` continua a ser contado e impresso
+  mas não gatilhado — são 45 documentos, e estão nomeados por natureza em `docs/qmltc-d.md`
+  ("The 45 unjudgeable": um delegate precisa de uma view, uma `Action` não se desenha), e
+  explicitamente **não** contados como passes. É inventário em prosa, não em ficheiro.
+- **#3 o gate preso à workstation: FECHADO quanto aos caminhos.** `o3.sh` deriva `ROOT` do próprio
+  ficheiro (`cd -- "$(dirname -- "$0")/../.."`), e `L`/`G` são argumentos com omissão relativa a
+  esse root; o Qt é descoberto por `qtpaths6`/`qtpaths`/`qmake6`/`qmake`, com o cuidado de um probe
+  ausente não abortar o grafo. E o canário que a auditoria pediu existe com esta forma: **um estilo
+  em falta é um portão VERMELHO, não um portão que desaparece** — Controls ausente é um skip
+  honesto, Controls presente com um estilo em falta falha. Fica aberto o que já estava nomeado no
+  fecho da rodada 12: **CI verde num runner real**, que não se prova desta máquina.
+- **#4 o build default do gerador era o build do qmltc-d: FECHADO.** Existe `binding-core`, que
+  agrega gerador, runtime, uic, qrc, moc, webengine e os seus portões sem o grafo do qmltc-d.
+- **#5 estado do compilador QML no runtime partilhado: ABERTO, E PIOR.** A auditoria escreveu
+  "`qtdmoc.cpp` já passa de duas mil linhas"; hoje tem **2533**, com **49** guardas `QTD_HAVE_QML`.
+  E o lado D ganhou dois globais mutáveis **hoje**: `__qmltcPending` (a pilha de completação, para
+  reproduzir a ordem inversa do motor) e `__qmltcDeferred` (as construções que o Qt difere). Ambos
+  são estado de um compilador QML a viver em `qtmoc.d`, que é o contrato geral de meta-object. A
+  fronteira `qmltc_runtime` que a auditoria recomendou continua por fazer e cada correcção destas
+  torna-a mais cara. Não tenho desculpa a dar: escolhi o avanço local outra vez, com o mesmo
+  argumento de sempre, e o argumento continua a ser o que a auditoria já classificou.
+- **#6 o compilador sem contexto explícito: ABERTO, E PIOR.** A auditoria contou ~10.465 linhas em
+  `tools/qmltc/qmltc_d.cpp`; hoje são **11.197**. A medição que a rodada 9 pedia foi feita e está no
+  fecho da rodada 12 — dois documentos locais com nomes colidentes provam que o estado **não**
+  atravessa —, o que torna o `CompilationContext` preventivo e não correctivo. Preventivo não é
+  desnecessário: o ficheiro cresceu 7% desde que isto foi escrito.
+- **#7 as fontes públicas descreviam o binding pré-wrapper: FECHADO.** O `README.md` diz hoje que o
+  flip está feito e que **não existe** `X_new` em lado nenhum; `docs/FEATURES.md` chama-lhe
+  INACEITÁVEL; `docs/test-suite.md` não fala de baselines raw.
+- **#8 o inventário era estado validado e não comportamento executado: FECHADO** na rodada 12
+  (`expected-fails-run`, hoje 23 alvos de sonda executados, 24 entradas).
+
+**O que esta rodada me ensinou, e que vale mais do que os seis fechos:** dois achados
+estruturais ficaram abertos durante duas rodadas e a métrica de ambos ANDOU PARA TRÁS enquanto eu
+fechava coisas locais. Um portão mede o que eu lhe mando medir; nenhum destes dois tem portão, e é
+por isso que só a auditoria os vê.
+
 ## Rodada 11: o gerador e seu consumidor mais valioso precisam de uma fronteira
 
 ### Enquadramento corrigido
