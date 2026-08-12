@@ -218,6 +218,17 @@
       "probe_targets": [
         "qmltc-o3-gate-app"
       ]
+    },
+    {
+      "id": "var-properties-are-invisible-to-the-differential",
+      "kind": "known_gap",
+      "area": "qmltc-d/differential",
+      "since": "2026-08-12",
+      "reason": "NEITHER SIDE dumps a `var` property, so nothing about one can be measured. Checked: ADynamicProp and AJsLogic both declare one, and no `.qall1` in the whole application corpus carries `items` or `config` — the oracle does not print them either. That is a blind spot in the differential itself, not a compiler gap, and it is the reason work on `var` cannot be judged today. Found by writing the support and then being unable to show it does anything: `property var items: [3,1,4,1,5]` compiles through the engine (the literal's own source handed to QJSEngine::evaluate, stored in the QVariant slot the property already has, counted as DELEGATION so -O1 and -O2 hand the document over) — the call is emitted with the right source and the value is stored, and no gate can see it. Reverted rather than landed, for the same reason two other changes were reverted this session: a change that cannot be shown to do anything must not read as a fix. Reading a var back (`items.length`) is also unsupported, so there is not even an indirect way to observe it.",
+      "remove_when": "the dump covers `var` properties on both sides — a QVariant renders as text through the same channel every other value already uses — and then `property var x: <JS literal>` can be landed with a measurement behind it",
+      "probe_targets": [
+        "qmltc-o3-gate-app"
+      ]
     }
   ]
 }

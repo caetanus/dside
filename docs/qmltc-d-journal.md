@@ -6045,3 +6045,23 @@ So the entry is corrected rather than re-parked with the same words: closing the
 was NECESSARY AND IS NOT SUFFICIENT, and what remains is the third factor the entry already names —
 when the parent applies its geometry relative to the child's first layout. That is a better place to
 be than before, and the way to get here was to write the prediction down where it could be checked.
+
+### A blind spot found by writing a feature and being unable to show it works
+
+`property var items: [3, 1, 4, 1, 5]` and `property var config: ({ … })` were refused as "not an
+object path", which they will never be — they are JavaScript values. The support is short and the
+mechanism was already there: the property's storage IS a QVariant slot, the engine already turns JS
+into one, so the literal's own SOURCE goes to `QJSEngine::evaluate` and the result is stored. Counted
+as DELEGATION, so `-O1` and `-O2` hand the whole document over rather than accept an untyped value —
+the ladder doing its job with no exception carved into it.
+
+It works: the call is emitted with the right source and the value is stored. And it cannot be shown
+to work, because **neither side dumps a `var` property.** Checked rather than assumed: ADynamicProp
+and AJsLogic both declare one and no `.qall1` in the application corpus carries `items` or `config`
+— the ORACLE does not print them either. Reading one back (`items.length`) is unsupported too, so
+there is not even an indirect route.
+
+So it was reverted, for the third time this session on the same principle: a change that cannot be
+shown to do anything must not read as a fix. What is worth keeping is the blind spot itself — the
+differential is silent about a whole property kind, which means any work on `var` is unjudgeable
+until the dump covers it. That is a harness gap, and it comes first.
