@@ -6683,6 +6683,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType), cls.c_str());
                 ++partial;
                 props.push_back({name, dt, "", false, {}});
+            // ...and a COLOUR whose binding does not compile still EXISTS. The engine does not
+            // need the expression to produce the right value here: Qt's Material RadioIndicator
+            // declares `readonly property color targetColor: !control.enabled ? ...` and standalone
+            // `control` is null, so the binding ABORTS and the property keeps QML's default for a
+            // colour — opaque black. Dropping the declaration meant every read of it got nothing:
+            // the inner dot took a Rectangle's own default of WHITE and the indicator drew as an
+            // empty ring where the engine draws a filled one. Same route as the compiled case
+            // above — the field carries the value type and every read crosses as text — minus the
+            // assignment, which is refused and counted as one.
+            } else if (!std::strcmp(dt, "QColor")) {
+                std::fprintf(stderr, "qmltc-d: %s: the initial binding of colour property '%s' in %s is "
+                             "not supported — the property is DECLARED, its initial value is not\n",
+                             inPath, qPrintable(pub->name.toString()), cls.c_str());
+                ++partial;
+                props.push_back({name, "QColor", "", false, {}});
+                g_metaTextProps.insert(name);
             } else {
                 std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — skipped (later phase)\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
