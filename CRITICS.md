@@ -1570,6 +1570,55 @@ fronteira mais forte, um probe cruzado e metadata de teste correta. A maturidade
 será medida não pela ausência de descobertas durante os 40% restantes, e sim pela
 capacidade do repositório de absorvê-las sem regressão lateral.
 
+## Resposta à rodada 8 (escrita a 2026-08-12)
+
+Dez achados, verificados um a um. **Oito fechados, um meio-fechado com número novo, um contido por
+decisão.** O código cita a rodada pelo número em cinco sítios diferentes, o que é a maneira mais
+barata de a correcção não se perder.
+
+- **#1 a CI chamava advisory o que `./build` tornava obrigatório: FECHADO.** `ci.yml` faz a
+  separação explícita — os portões obrigatórios correm no passo normal e há um passo advisory
+  `continue-on-error` à parte, condicionado, com o comentário a citar "r8 #1".
+- **#2 o metaobjeto anunciava a classe e o `qt_metacast` negava-a: FECHADO, e é o achado mais bem
+  fechado desta rodada.** O corpo compara agora o nome antes de delegar
+  (`if (n && mo && strcmp(n, mo->className()) == 0) return this;`), o comentário no sítio conta o
+  caso exacto que a auditoria correu (`qt_metacast("Dup")` a devolver null com
+  `className()=="Dup"`), e existe alvo permanente: `metacast-{ldc2,dmd}`.
+- **#3 a idempotência de `qmlRegisterType` colapsava tipos D diferentes: FECHADO**, com
+  `homocollide-{ldc2,dmd}` no grafo.
+- **#4 `@Slot` aceitava retorno que o metaobjeto descarta: FECHADO** — `qtmoc.d` tem hoje uma
+  secção "meta-method contract (critics r8 #4)" e a regra escrita: um método que devolve valor é um
+  INVOKABLE, não um slot, e é recusado como tal.
+- **#5 falha da factory QML produzia carrier sem backend: FECHADO** — o `qt_metacall` guarda o caso
+  ("a failed QML instance has no backing obj, r8 #5").
+- **#6 os side-tables eram data races fora da thread principal: CONTIDO POR DECISÃO, e a auditoria
+  concordou depois.** `g_ownerThread` fixa-se na primeira utilização e qualquer mutação de outra
+  thread **aborta alto** com a operação em causa — a secção chama-se literalmente "thread affinity
+  (critics r8 #6)". Continua a proibir workers, e isso está dito nas rodadas 9 e 10 com a
+  classificação que a própria auditoria lhe deu: dívida estrutural, não regressão.
+- **#7 o corpus pinado tinha fallback não pinado e asserção fraca: FECHADO, nas duas metades.** A CI
+  clona `6.8.0` **sem fallback** ("if the tag/clone fails, the JOB fails") e a conformidade exige a
+  contagem conhecida completa em vez de `n>0` — as duas com o número da rodada no comentário.
+- **#8 o report era uma segunda execução falível: FECHADO.** O report É hoje a execução de registo
+  (sai não-zero se algo falhou, para a CI poder gatilhar), marca a árvore como DIRTY quando há
+  ficheiros gerados/editados à solta, e regista *skip* em vez de um verde que não executou.
+- **#9 o grafo libsample escondia DAG mau com locks: METADE FECHADA, e a outra metade tem agora
+  número.** O que a auditoria listou como duplicado resolveu-se para os bindings: numa matriz
+  completa de hoje, `gen.stamp`, `libshims.a` e `libbinding_ldc2.a` são anunciados **zero** vezes
+  repetidas. `libsample.a` é anunciado **116 vezes** para 58 consumidores. Continuam dois `flock` no
+  grafo. A contenção segue correcta e o custo segue real — e a diferença face à rodada 8 é que
+  agora é um número em vez de "muitas vezes".
+- **#10 universais contraditórios na documentação: FECHADO, incluindo a parte do QRC.**
+  `docs/test-suite.md` diz hoje que alguns alvos são **deliberadamente** single-config e nomeia
+  quais; a tabela do moc lista `cannon_t1..t11` com o que t10 e t11 provam. E o QRC deixou de ser um
+  fixture ASCII: o teste serve um **PNG** e afirma os **bytes exactos** através do próprio
+  `QFile`/`QResource` do Qt — o que é mais forte do que o oráculo contra `rcc` que a auditoria
+  pediu, porque é o Qt a analisar o nosso blob, não uma comparação de ficheiros.
+
+**O que esta rodada mostra e as outras não mostravam:** quando um achado vira **alvo com nome**
+(`metacast-*`, `homocollide-*`), fecha e fica fechado. Os dois que não têm alvo — o DAG do libsample
+e a política de thread — são os dois que continuam a discutir-se cinco rodadas depois.
+
 ## Rodada 8: os gates aprenderam a falhar; o metaobjeto ainda mente
 
 Nesta rodada eu não reli apenas a resolução. Revisei os commits desde a rodada 7,
