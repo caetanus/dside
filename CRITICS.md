@@ -975,6 +975,46 @@ demais para continuar dependendo de paths locais, estado global implícito e um 
 fortalece os dois produtos: o primeiro ganha um contrato reutilizável; o segundo ganha um
 release reproduzível e uma promessa que seus gates realmente fazem cumprir.
 
+## Resposta à rodada 10 (escrita a 2026-08-12)
+
+Mesmo método: verificar antes de escrever. **Cinco fechados, um aberto e inalterado, um aberto e
+pior** — este último é o mesmo #6 da rodada 11, contado outra vez porque atravessou duas rodadas.
+
+- **#1 a fixture de ausência deliberada derrubava o build: FECHADO, e pela boa razão.** A auditoria
+  ofereceu duas saídas — tirar a fixture do glob, ou um alvo de recusa esperada — e nenhuma foi
+  usada, porque a terceira aconteceu: **`Component` aterrou**. `tests/qmltc/controls/CDelegate.qml`
+  é hoje o diferencial positivo que o próprio achado descrevia como destino final (os itens
+  existem, batem certo propriedade a propriedade, e uma ligação DENTRO de um item que lê o
+  documento envolvente tem o valor do motor), e `qmltcc-CDelegate-all-ldc2` sai zero. Verificado
+  agora, não recordado.
+- **#2 duas dependências profundas homónimas desligavam-se: FECHADO** — é o #1 da rodada 11, e a
+  prova está lá: owner na chave, limpeza nas duas pontas, `leaf_lifetime.d` a exigir a tabela de
+  volta ao valor de base.
+- **#3 as fontes públicas: FECHADO** (ver #7 da rodada 11).
+- **#4 o inventário aceitava um gap já resolvido: FECHADO, e a prova apareceu hoje por acidente.**
+  O `expected-fails-run` não valida prosa: executa a sonda de cada entrada. Hoje, quando a inversão
+  da ordem de completação passou a funcionar, o alvo falhou com esta frase —
+  *"`qmltc-optlevels-controls-Basic` FAILED — it is the probe for `completion-order-not-reversed`,
+  so that entry now describes a protection that is not there"*. É exactamente o mecanismo que a
+  auditoria pediu: uma entrada cujo risco deixou de existir passa a ser um vermelho, não um
+  comentário desactualizado.
+- **#5 a maior suíte podia desaparecer por capability: FECHADO** na rodada 12 (piso e canários da
+  suíte qmltc na CI), e o portão o3 herdou a mesma forma — um estilo em falta é vermelho.
+- **#6 o compilador cresceu e o contexto explícito não começou: ABERTO E PIOR.** Duas rodadas
+  depois: **11.197** linhas. Ver a resposta à rodada 11.
+- **#7 worker QObject fora do contrato: ABERTO E INALTERADO, e a auditoria já o tinha classificado
+  bem** — "dívida estrutural, não regressão". A política continua a ser a mesma: `g_ownerThread`
+  fixa-se na primeira utilização e qualquer mutação de outra thread **aborta alto** com a operação
+  em causa. Oito sítios com mutex em `qtdmoc.cpp`, o resto sob a política de uma thread. Não mexi,
+  e a razão é a que a auditoria própria dá: é uma contenção CORRECTA, e o que falta é o desenho de
+  concorrência, não um remendo. Fica dito que continua a proibir networking, timers e workers com
+  `@QObject` em D.
+
+**O que se repete entre as rodadas 10, 11 e 12:** os achados que fecho são os que têm um portão a
+segui-los. Os dois que não fecham — a fronteira do runtime e o contexto do compilador — são
+precisamente os dois que nenhum portão mede. Não é coincidência e não é falta de tempo: é o que a
+métrica escolhe por mim quando eu não escolho.
+
 ## Rodada 10: o binding virou wrapper; agora o estado declarado ficou para trás
 
 Esta rodada mantém a régua corrigida da rodada 9. O objeto é o projeto inteiro, e o
