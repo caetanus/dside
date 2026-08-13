@@ -228,6 +228,13 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
 // a stale `qtdmoc.cpp` and printed ALL PASS. Measured by the audit and reproduced here: the
 // libsample copies of qtdmoc.cpp and qtdmoc_qml.cpp hashed differently from the sources while the
 // normal path's matched. Two pipelines may stay (they build different things); ONE list may not.
+// The libsample generation stamp AS A TARGET, so something outside can be ordered after it. It is
+// the one product of that hand-written pipeline that the rest of the graph can name.
+Target[] libsampleGenStamp(string root) {
+    auto stamp = buildPath(root, ".build", "libsample", "gen.stamp");
+    return exists(stamp) ? [Target(stamp)] : [];
+}
+
 string[] qtdRuntimeSources(string root) {
     return ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp", "qtmoc/qtmoc.d",
             "holder/qtd_holder.cpp", "holder/holder.d"]

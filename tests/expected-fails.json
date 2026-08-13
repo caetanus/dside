@@ -136,12 +136,13 @@
       ]
     },
     {
-      "id": "ctor-throw-leaks-cpp-new",
+      "id": "ctor-throw-path-unexercised",
       "kind": "known_gap",
       "area": "gen/exception-safety",
-      "reason": "A generated ctor is `__cpp_new` then the C++ constructor then _register(). If the C++ constructor throws and the Lippincott layer turns it into a QtCppException, nothing owns the allocated block: the wrapper was never registered and no finalizer knows the pointer.",
-      "remove_when": "a scope guard frees the block unless construction and registration both complete",
-      "since": "2026-08-10"
+      "reason": "THE GUARD EXISTS; THE PATH IS UNTESTED — and the entry said the opposite until 2026-08-13 (critics r13 #6). It claimed that when a C++ constructor throws, nothing owns the __cpp_new block. The emitter produces exactly the scope guard that owns it, and `ctor-guard` walks 1190 constructors to say so on every build. An inventory that keeps a falsified explanation alive is worse than no inventory: it is the failure mode this file was written to prevent, and the linter could not see it because it validates schema and names, not truth.\n\nThe residual risk is real and different: no test makes a bound C++ constructor THROW and then checks that the block was freed. The structural gate proves the guard is EMITTED; nothing proves it RUNS. That needs a fixture type whose constructor throws on demand, through the Lippincott layer, with the allocation observed.",
+      "remove_when": "a test constructs a bound type whose C++ constructor throws, and observes that the __cpp_new block was freed — the guard proven to RUN, not only to be emitted",
+      "since": "2026-08-10",
+      "title": "the ctor scope guard is emitted and gated; the throwing path itself is never run"
     },
     {
       "id": "pointer-return-ownership-unknown",

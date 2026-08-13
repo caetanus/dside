@@ -883,16 +883,39 @@ template __qtdIsFn(T, string m) {
 /// way out so druntime does not keep a Thread for a stack that is gone.
 struct QtdAttached {
     private bool _mine;
+    /// False when the thread is NOT usable from D. The caller must not enter D.
+    bool ok = true;
     @disable this(this);
     ~this() nothrow @nogc { if (_mine) { import core.thread : thread_detachThis; thread_detachThis(); } }
 }
-QtdAttached qtdAttachThread() nothrow {
+/// FAIL CLOSED (critics r13 #7). Attaching a foreign thread to the druntime is the precondition for
+/// running D at all on it; swallowing the failure and calling the D virtual anyway keeps going in
+/// exactly the state the mechanism exists to prevent. `ok` is false when the thread is NOT usable,
+/// and every trampoline checks it before entering D.
+///
+/// The `forceFail` parameter is the test seam the audit asked for, and it is a PARAMETER rather than
+/// a global on purpose: a mutable module-level flag here would be counted by the runtime-boundary
+/// ratchet as compiler state, and moving a ruler to fit a new line is how a ruler stops meaning
+/// anything.
+QtdAttached qtdAttachThreadImpl(bool forceFail) nothrow {
     import core.thread : Thread, thread_attachThis;
     QtdAttached a;
     if (Thread.getThis() is null) {
-        try { thread_attachThis(); a._mine = true; } catch (Throwable) {}
+        if (forceFail) { a.ok = false; return a; }
+        try { thread_attachThis(); a._mine = true; }
+        catch (Throwable) { a.ok = false; }
     }
     return a;
+}
+QtdAttached qtdAttachThread() nothrow { return qtdAttachThreadImpl(false); }
+
+/// What a trampoline does when the thread could not be attached: report through the same callback
+/// error policy every other unrunnable callback goes through, so it is counted and hookable rather
+/// than silent. Nothing D-side runs after this.
+void qtdAttachFailed(string what) nothrow {
+    try { qtdOnCallbackError(new Exception(
+        "qtd: could not attach thread to the D runtime; refusing to enter D for " ~ what)); }
+    catch (Throwable) {}
 }
 
 string __ovTramp(T, string vn, size_t idx)() {
@@ -910,11 +933,16 @@ string __ovTramp(T, string vn, size_t idx)() {
     // callback error policy (counted/recorded/hooked), never silently swallowed.
     static if (is(R == void))
         return "extern(C) static void " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
-            ~ ") nothrow { auto __at = qtdAttachThread(); try { " ~ call
+            ~ ") nothrow { auto __at = qtdAttachThread();"
+            ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\"); return; }"
+            ~ " try { " ~ call
             ~ "; } catch (Exception e) { qtdOnCallbackError(e); } }\n";
     else
         return "extern(C) static " ~ R.stringof ~ " " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
-            ~ ") nothrow { auto __at = qtdAttachThread(); try { return " ~ call
+            ~ ") nothrow { auto __at = qtdAttachThread();"
+            ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\"); return "
+            ~ R.stringof ~ ".init; }"
+            ~ " try { return " ~ call
             ~ "; } catch (Exception e) { qtdOnCallbackError(e); return " ~ R.stringof ~ ".init; } }\n";
 }
 

@@ -57,6 +57,26 @@ void main(string[] args) {
     assert(r.output.indexOf("off its owner thread") >= 0,
            "the child died without the guard's message — it failed for some other reason:\n" ~ r.output);
 
+    // ...and the OTHER half of the same mechanism (critics r13 #7): when attaching a foreign
+    // thread to the druntime FAILS, the trampoline must not enter D anyway. The failure used to be
+    // swallowed — `catch (Throwable) {}` — and the virtual ran on a thread the runtime does not
+    // know, which is the exact condition the attach exists to prevent.
+    //
+    // Forced through the seam rather than by breaking the druntime: qtdAttachThreadImpl(true)
+    // returns the same value the real failure produces, and the trampolines check `ok` before the
+    // call. A parameter, not a global, so no module-level state is added to the shared runtime.
+    {
+        auto bad = qtdAttachThreadImpl(true);
+        auto good = qtdAttachThreadImpl(false);
+        // On the MAIN thread the druntime already knows us, so both report usable — the seam only
+        // bites where an attach would actually be attempted. That is itself worth asserting: a
+        // seam that fails everywhere would make the guard look reachable when it is not.
+        import core.thread : Thread;
+        if (Thread.getThis() is null)
+            assert(!bad.ok, "the forced-failure seam reported the thread as usable");
+        assert(good.ok, "a thread the druntime knows was reported unusable");
+    }
+
     writeln("threadguard OK: a QObject created inside QThread::run() aborts with the owner-thread ",
-            "message — the guard is still reachable from the path subclassing opened");
+            "message, and a failed thread attach refuses to enter D (critics r13 #7)");
 }

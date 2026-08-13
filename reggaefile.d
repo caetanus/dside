@@ -349,9 +349,15 @@ Build reggaeBuild() {
     //     green against the copy from before, and that is exactly what libsample did. The edge is
     //     the fix; this notices when the fix is undone, which a functional test cannot: it runs the
     //     wrong revision perfectly.
+    //
+    //     It runs AFTER the things that write the copies, and that edge is not decoration: on its
+    //     first full build it failed against libsample's copies simply because it got there first.
+    //     A gate that can be scheduled before the thing it inspects reports the previous state.
     {
         auto pv = buildPath(root, "tests", "runtime-provenance.sh");
-        if (exists(pv)) all ~= Target.phony("runtime-provenance", "sh " ~ pv, [Target(pv)]);
+        if (exists(pv))
+            all ~= Target.phony("runtime-provenance", "sh " ~ pv,
+                                [Target(pv), ex.gen, qml.gen] ~ libsampleGenStamp(root));
     }
 
     // --- ABI LAYOUT PROBE (critics r4 #9, the oldest finding untouched until 2026-08-12): the
