@@ -63,6 +63,70 @@ certo com o motor — está **vazio** pela primeira vez desde que existe. A fras
 tipo" já não é uma contagem sem comparação atrás: é 110 documentos comparados propriedade a
 propriedade, e o que não chega lá está nomeado.
 
+## Resposta à rodada 13 (escrita a 2026-08-13)
+
+Sete achados. **Todos atacados; seis fechados e um — o #6 — respondido com a distinção que ele
+próprio pede.** Verifiquei cada um antes de lhe tocar, e dois deles reproduziram-se exactamente como
+descritos.
+
+- **#1 CRÍTICO, o `libsample` verde contra uma cópia velha: FECHADO, e confirmei antes de corrigir.**
+  `md5sum` das cópias contra as fontes: `.build/libsample/gen/qtdmoc.cpp` e `qtdmoc_qml.cpp`
+  divergiam; as do caminho normal batiam certo. A causa é a que a auditoria aponta — duas pipelines,
+  uma só com a aresta. Agora há **uma lista** (`qtdRuntimeSources`) que as duas consomem.
+  E o portão de proveniência que ela pediu, pela razão que ela deu (*um teste funcional não detecta
+  que compilou a revisão errada*): `tests/runtime-provenance.sh` compara cada cópia verbatim com a
+  origem. **Corrido antes da correcção, falhou nos dois ficheiros exactos que a auditoria nomeou.**
+  Depois: 49 cópias byte a byte idênticas.
+  Um detalhe que só apareceu ao correr: na primeira matriz o portão falhou por ter sido escalonado
+  ANTES da regeneração. Um portão que corre antes daquilo que inspecciona reporta o estado anterior,
+  por isso ganhou as arestas que o ordenam depois dos geradores.
+- **#2 os probes não cobriam a unidade nova: FECHADO.** Os três compilam agora **cada** unidade com
+  objecto próprio — seis objectos, `probe-{noqml,qml5,qml6}-{qtdmoc,qtdmoc_qml}.o`. E a segunda
+  deriva que ela apanhou, o `if [ "$b" = qtdmoc ]` do caminho `libsample`, passou à mesma regra do
+  comum.
+- **#3 a fronteira avançou no ficheiro e não no produto: FECHADO, e era o achado mais bem visto da
+  rodada.** Medido: `qtdmoc_qml.o` estava nos archives de QtWidgets, Controls e libsample. Das duas
+  saídas que ela nomeou escolhi os **stubs finos**, porque versionar o lado D exigia guardar
+  dezassete pares declaração/wrapper no `qtmoc.d` partilhado, um dos quais (`qtd_parser_status`) é
+  alcançado a partir do `classBegin` — um caminho sem QML à vista.
+  A objecção habitual aos stubs é a deriva: duas listas que têm de concordar e uma delas editada à
+  mão. Por isso **não são escritos, são GERADOS** da própria unidade em cada build
+  (`tools/qmlstub.sh`): 16 no-ops, paridade de símbolos exacta, e um export novo aparece nos dois
+  lados ou em nenhum. O gerador de stubs errou duas vezes ao ser escrito — perdeu cinco assinaturas
+  em duas linhas, e colou uma DECLARAÇÃO à definição seguinte — e as duas só se viram por contar os
+  símbolos, o que é o argumento para o contar sempre.
+  E o canário que ela exigiu, nos **dois** sentidos: `tests/archive-composition.sh` falha se um
+  binding sem QtQml carregar o objecto QML **e** se um binding com QtQml não o carregar — porque
+  verificar só uma direcção deixa a fronteira fechar apagando a funcionalidade. Quem é quem vem do
+  próprio archive (referencia símbolos QQml/QQuick?), não de uma lista mantida à mão.
+  Estado: `qtwidgets`, `qtwidgets-wrap`, `qtwidgets-wrap-qt5`, `wraptest` → stub, sem objecto QML;
+  `qml`, `corpustypes` → unidade real. **A fronteira existe agora no artefacto.**
+- **#4 o índice reverso crescia sem limite: FECHADO.** A entrada passou a conhecer todos os índices
+  onde está (`QtdLeafEntry` com os **três** extremos — owner, recv e `cur`, o terceiro participante
+  que ela apanhou), e `qtd_leaf_drop` tira a chave de todos. `qtd_leaf_index_size()` expõe o índice
+  reverso que o teste não conseguia ver, e o teste ganhou churn de 200 owners contra um receptor
+  VIVO. A morte isolada de `cur` **não** é encenável nesta forma (o `cur` é o pai visual, e apagá-lo
+  leva o owner) e o teste di-lo em vez de o implicar.
+- **#5 o report classificava um gate no balde errado: FECHADO.** `ownership*` vinha antes de
+  `ownership-gate-*` na cascata; as regras específicas subiram, e há canário para `ownership-gate` e
+  `ctor-guard`. "Classificado" passou a significar a classe CERTA.
+- **#6 o inventário mantinha viva uma explicação já falsificada: FECHADO pela renomeação que ela
+  própria sugeriu.** `ctor-throw-leaks-cpp-new` → `ctor-throw-path-unexercised`, com o residual
+  verdadeiro: a guarda é **emitida** e gatilhada sobre 1190 construtores, e ninguém prova que
+  **corre**. A segunda metade do critério — dar direcção às sondas, para um known-gap poder produzir
+  unexpected-pass — continua por fazer e não a conto como feita.
+- **#7 falhar ao anexar a thread não impedia o callback: FECHADO.** `QtdAttached` tem `ok`, os dois
+  trampolins verificam-no antes de entrar em D, e a falha vai pela mesma política de erro de
+  callback que tudo o resto (`qtdAttachFailed`). O seam é um **parâmetro** e não um global — um flag
+  mutável de módulo aqui seria contado pelo roquete `runtime-boundary` como estado de compilador, e
+  mexer na régua para caber uma linha nova é como uma régua deixa de significar alguma coisa.
+
+**O que esta rodada provou sobre as anteriores:** o `runtime-boundary` que eu criei ontem para
+resolver um achado de cinco rodadas mede uma coisa mais estreita do que eu escrevi, e foi esta
+auditoria a nomeá-lo — *localização lexical, não dependência do artefacto*. Eu já tinha descoberto
+metade disso sozinho (a tabela de folhas saiu e o número não mexeu) e registei-o; faltava a
+conclusão, que é que o roquete precisava de um irmão a olhar para o artefacto. Agora tem.
+
 ## Rodada 13: a fronteira começou a mover-se; o grafo ainda consegue testar o runtime errado
 
 **Data da releitura:** 2026-08-12. **Base:** `8a3f80a`, com as alterações locais em

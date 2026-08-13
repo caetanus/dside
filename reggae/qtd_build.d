@@ -207,8 +207,27 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
     // headers. Shims are C++ -> identical for ldc2/dmd, so this target is shared.
     auto shimsLib = buildPath(bdir, "libshims.a");
-    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && for c in " ~ genDir ~ "/*.cpp; do "
-        ~ `b=$(basename "$c" .cpp); case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
+    // THE QML RUNTIME ONLY WHERE THERE IS QML (critics r13 #3). The unit moving to its own file was
+    // organisation; this is the product boundary. A binding without QtQml compiles GENERATED thin
+    // stubs instead — same exports, same ABI, no QML — so its archive never carries the QML object.
+    // The stubs come from the unit itself (tools/qmlstub.sh) so the two lists cannot drift apart.
+    auto stubGen = buildPath(root, "tools", "qmlstub.sh");
+    auto stubSrc = bdir ~ "/qtdmoc_qml_stub.cpp";
+    auto mkStub = hasQml ? "" :
+        ("sh " ~ stubGen ~ " " ~ genDir ~ "/qtdmoc_qml.cpp " ~ stubSrc ~ " >/dev/null && ");
+    // The build RECORDS its own decision, so the composition canary reads a fact instead of
+    // inferring one. The first version of that canary inferred "this binding has QML" from QQml
+    // symbols in the archive and failed `webengine`, which references QQmlProperty because its OWN
+    // bound API does — nothing to do with our runtime. An inference that has to be right about
+    // someone else's API is the wrong shape for a gate.
+    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && rm -f " ~ bdir ~ "/ocpp/qtdmoc_qml*.o && "
+        ~ "echo " ~ (hasQml ? "yes" : "no") ~ " > " ~ bdir ~ "/qml-enabled && "
+        ~ mkStub ~ "for c in " ~ genDir ~ "/*.cpp"
+        ~ (hasQml ? "" : " " ~ stubSrc) ~ "; do "
+        ~ `b=$(basename "$c" .cpp); `
+        // ...and the real unit is SKIPPED, not merely unlinked: it must not become an object at all.
+        ~ (hasQml ? "" : `if [ "$b" = qtdmoc_qml ]; then continue; fi; `)
+        ~ `case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
         ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
     auto shims = Target(shimsLib,
@@ -368,10 +387,15 @@ Target[] libsampleTargets(string root, string pyside) {
 
     // 3) shims (.cpp) -> libshims.a.
     auto shimsLib = buildPath(bdir, "libshims.a");
-    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && for c in " ~ gen ~ "/*.cpp; do "
-        // Same rule as the common builder (critics r13 #2): the QML unit needs the private flags
-        // too. It survives without them today only because nothing it uses needs them yet.
-        ~ `b=$(basename "$c" .cpp); case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
+    auto lsStub = bdir ~ "/qtdmoc_qml_stub.cpp";
+    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && rm -f " ~ bdir ~ "/ocpp/qtdmoc_qml*.o && "
+        ~ "echo no > " ~ bdir ~ "/qml-enabled && "          // libsample has no QtQml, by construction
+        ~ "sh " ~ buildPath(root, "tools", "qmlstub.sh") ~ " " ~ gen ~ "/qtdmoc_qml.cpp "
+        ~ lsStub ~ " >/dev/null && for c in " ~ gen ~ "/*.cpp " ~ lsStub ~ "; do "
+        // Same rule as the common builder (critics r13 #2/#3): private flags for both units, and
+        // libsample has no QtQml — it gets the generated stubs, never the QML object.
+        ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc_qml ]; then continue; fi; `
+        ~ `case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
         ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
     auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);

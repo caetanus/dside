@@ -360,6 +360,16 @@ Build reggaeBuild() {
                                 [Target(pv), ex.gen, qml.gen] ~ libsampleGenStamp(root));
     }
 
+    // --- ARCHIVE COMPOSITION CANARY (critics r13 #3): runtime-boundary counts QML types in a
+    //     SOURCE FILE, which the audit correctly called lexical location — it can reach zero with
+    //     the QML object still in every archive. This looks at the artefact, in both directions.
+    {
+        auto ac = buildPath(root, "tests", "archive-composition.sh");
+        if (exists(ac))
+            all ~= Target.phony("archive-composition", "sh " ~ ac,
+                                [Target(ac), ex.shims, qml.shims]);
+    }
+
     // --- ABI LAYOUT PROBE (critics r4 #9, the oldest finding untouched until 2026-08-12): the
     //     container bridge reads QList's FIELDS at offsets the generator hard-codes, and those got
     //     in as "verified empirically". This asserts the same layout against the installed Qt
