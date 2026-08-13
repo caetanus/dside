@@ -10,8 +10,12 @@
 // numbers, both counted from the source and both fail-closed on GROWTH:
 //
 //   * qml_fns  — `extern "C"` functions in runtime/qtmoc/qtdmoc.cpp whose body touches QQml/QQuick.
-//                Today 30 of 62: half of the shared runtime is QML. This is the number the audit
-//                is actually complaining about, and it cannot be gamed except by moving code out.
+//                33 of 62 when this was written; 23 after the first batch left. It cannot be gamed
+//                except by moving code out — but it is a PROXY, and the second batch proved how
+//                narrow a proxy it is: the leaf-binding table (`g_leafConn` and its five functions)
+//                is QML-only by PURPOSE and touches no QQml type at all, so moving it out — state
+//                included, which is the part the audit cared about — did not move this number by
+//                one. Read it as "QML TYPES still in the shared unit", not as "QML code".
 //   * d_state  — module-level MUTABLE globals in runtime/qtmoc/qtmoc.d whose names mark them as
 //                compiler state (`__`-prefixed). Today 3, two of which were added on 2026-08-12.
 //

@@ -931,108 +931,11 @@ extern "C" void* qtd_qml_create_object(const char* uri, const char* typeName) {
 #endif
 }
 
-// ---- dependencies reached THROUGH an object property ------------------------------------------
-// `x: (parent.width - width) / 2` depends on an object our constructor cannot see: a root's
-// `parent` (and HeaderView's `syncView`) is assigned by whoever instantiates it, AFTER the wire
-// runs, so a one-shot connect to propObj(this,"parent") connected to null and threw. QML re-binds
-// such a dependency when the property changes, and that is what these two do:
-//   qtd_connect_notify  - follow the PROPERTY (parentChanged -> re-evaluate the binding)
-//   qtd_bind_leaf       - (re)subscribe to the leaf signal on whatever object it now holds
-// The slot calls bind_leaf on every run, so a new parent is subscribed and the old one dropped.
-static std::unordered_map<std::string, QMetaObject::Connection> g_leafConn;
-static std::unordered_map<QObject*, std::vector<std::string>> g_leafByObj;
-static std::mutex g_leafMx;
 
-// The key carries the OWNER, and it must. It did not, and the receiving slot is emitted once per
-// BINDING (`__rc_<prop>()`), so an expression reading the same property name through two different
-// objects — `a.parent.width + b.parent.width` — registered both dependencies under one key. The
-// second call disconnected the first and BOTH returned success. A reactive dependency that stops
-// updating without saying so is the worst failure this runtime can have, because nothing observes
-// it: the frame is merely stale, never wrong-looking.
-static std::string qtd_leaf_key(void* owner, void* recv, const char* slot, const char* prop,
-                                const char* sig) {
-    char b[48]; std::snprintf(b, sizeof b, "%p|%p|", owner, recv);
-    return std::string(b) + slot + "|" + prop + "|" + sig;
-}
 
-// ...and the table must not outlive the objects it keys on. Qt invalidates the Connection when
-// either end dies, but the ENTRY survives until that exact key is reused — and with a dynamic tree
-// the addresses are recycled, so a stale entry is not merely a leak: it can be found by a later
-// object that lands on the same address. Both ends are watched; the first key an object registers
-// arms its watch.
-static void qtd_leaf_forget(QObject* o) {                    // g_leafMx HELD
-    auto it = g_leafByObj.find(o);
-    if (it == g_leafByObj.end()) return;
-    for (auto& k : it->second) g_leafConn.erase(k);
-    g_leafByObj.erase(it);
-}
 
-static void qtd_leaf_watch(QObject* o, const std::string& k) {   // g_leafMx HELD
-    auto& keys = g_leafByObj[o];
-    if (keys.empty())
-        QObject::connect(o, &QObject::destroyed, o, [o] {
-            std::lock_guard<std::mutex> g(g_leafMx);
-            qtd_leaf_forget(o);
-        });
-    if (std::find(keys.begin(), keys.end(), k) == keys.end()) keys.push_back(k);
-}
 
-extern "C" int qtd_bind_leaf(void* ownerV, const char* prop, const char* sig, void* recvV,
-                             const char* slot) {
-    QObject* owner = static_cast<QObject*>(ownerV);
-    QObject* recv  = static_cast<QObject*>(recvV);
-    if (!owner || !recv) return 0;
-    int pi = owner->metaObject()->indexOfProperty(prop);
-    if (pi < 0) return 0;
-    QObject* cur = qvariant_cast<QObject*>(owner->metaObject()->property(pi).read(owner));
-    std::string k = qtd_leaf_key(owner, recv, slot, prop, sig);
-    std::lock_guard<std::mutex> g(g_leafMx);
-    auto it = g_leafConn.find(k);
-    if (it != g_leafConn.end()) { QObject::disconnect(it->second); g_leafConn.erase(it); }
-    if (!cur) return 0;                       // not assigned yet: the notify connect will come back
-    std::string s = std::string("2") + sig, m = std::string("1") + slot;
-    auto c = QObject::connect(cur, s.c_str(), recv, m.c_str());
-    if (!c) return 0;
-    g_leafConn[k] = c;
-    qtd_leaf_watch(owner, k);
-    qtd_leaf_watch(recv, k);
-    return 1;
-}
 
-// THE SAME SUBSCRIPTION, WITH THE SIGNAL RESOLVED FROM THE OBJECT instead of named by the caller.
-// `background.topPadding` is written all over Qt's Imagine style, and `background` is declared as an
-// `Item` — which has no topPadding. The member belongs to the NinePatchImage that is actually there,
-// so no static table can name its notify, and the compiler refused the read outright rather than
-// wire something it could not see. The meta-object of the object in hand can name it, which is the
-// same channel the rest of this file already travels on.
-extern "C" int qtd_bind_leaf_prop(void* ownerV, const char* prop, const char* leafProp, void* recvV,
-                                  const char* slot) {
-    QObject* owner = static_cast<QObject*>(ownerV);
-    QObject* recv  = static_cast<QObject*>(recvV);
-    if (!owner || !recv) return 0;
-    int pi = owner->metaObject()->indexOfProperty(prop);
-    if (pi < 0) return 0;
-    QObject* cur = qvariant_cast<QObject*>(owner->metaObject()->property(pi).read(owner));
-    // The key is the PROPERTY, not the signal: the signal is whatever the object currently there
-    // answers with, and a re-subscription after that object is replaced must find the same entry.
-    std::string kk = std::string("#") + leafProp;
-    std::string k = qtd_leaf_key(owner, recv, slot, prop, kk.c_str());
-    std::lock_guard<std::mutex> g(g_leafMx);
-    auto it = g_leafConn.find(k);
-    if (it != g_leafConn.end()) { QObject::disconnect(it->second); g_leafConn.erase(it); }
-    if (!cur) return 0;                       // not assigned yet: the notify connect will come back
-    int li = cur->metaObject()->indexOfProperty(leafProp);
-    if (li < 0) return 0;                     // the object there does not have it either
-    QMetaMethod ns = cur->metaObject()->property(li).notifySignal();
-    if (!ns.isValid()) return 0;              // a constant property never changes; nothing to wire
-    std::string s = std::string("2") + ns.methodSignature().constData(), m = std::string("1") + slot;
-    auto c = QObject::connect(cur, s.c_str(), recv, m.c_str());
-    if (!c) return 0;
-    g_leafConn[k] = c;
-    qtd_leaf_watch(owner, k);
-    qtd_leaf_watch(recv, k);
-    return 1;
-}
 
 // QT DEFERS SOME CHILDREN, and says which in the META-OBJECT: Q_CLASSINFO("DeferredPropertyNames",
 // "background,contentItem,indicator"). Those objects are not built during the object pass at all —
@@ -1124,13 +1027,6 @@ extern "C" int qtd_prop_set_any(void* o, const char* n, const char* v) {
     return q->setProperty(n, val) ? 1 : 0;   // undeclared: QML creates it, and so do we
 }
 
-// How many leaf connections the table holds. A probe cannot prove the cleanup above from the
-// outside — the entries are invisible — so the count is exported for exactly that: build a tree,
-// destroy it, and require the table back at its baseline.
-extern "C" int qtd_leaf_table_size() {
-    std::lock_guard<std::mutex> g(g_leafMx);
-    return (int) g_leafConn.size();
-}
 
 extern "C" int qtd_connect_notify(void* ownerV, const char* prop, void* recvV, const char* slot) {
     QObject* owner = static_cast<QObject*>(ownerV);

@@ -63,6 +63,195 @@ certo com o motor — está **vazio** pela primeira vez desde que existe. A fras
 tipo" já não é uma contagem sem comparação atrás: é 110 documentos comparados propriedade a
 propriedade, e o que não chega lá está nomeado.
 
+## Rodada 13: a fronteira começou a mover-se; o grafo ainda consegue testar o runtime errado
+
+**Data da releitura:** 2026-08-12. **Base:** `8a3f80a`, com as alterações locais em
+`runtime/qtmoc/qtdmoc.cpp` e `runtime/qtmoc/qtdmoc_qml.cpp` avaliadas separadamente e não
+modificadas por esta auditoria.
+
+### Veredito para quem for assessar
+
+As duas semanas no `qmltc-d` não foram um desvio. O compilador serviu como consumidor hostil do
+binding e deixou melhorias que pertencem ao produto principal: constructor guard, ownership
+explícito no holder, attach de threads estrangeiras, consumidor fora do checkout, pacote dub,
+probes de ABI e finalmente a primeira extração real do runtime QML. O trabalho valeu pelos dois
+lados.
+
+Mas esta rodada encontrou a falha que muda a leitura do verde atual: **o caminho especial do
+`libsample` não depende das fontes de runtime que o gerador copia**. O caminho normal já foi
+corrigido precisamente contra esse falso verde; o corpus mais independente do wrapper ficou fora
+da correção. Hoje `binding-core` pode dizer que o generator e o runtime passaram enquanto os testes
+de `libsample` executam uma cópia anterior de ambos os `qtdmoc`.
+
+Estado curto:
+
+| área | estado desta rodada |
+|---|---|
+| trabalho do `qmltc-d` como pressão sobre o wrapper | investimento justificado |
+| freshness dos bindings normais | correto e medido |
+| freshness do `libsample` | **PIOR: falso verde reproduzido** |
+| extração `qtdmoc_qml.cpp` no `HEAD` | progresso real de organização |
+| fronteira de produto QML / binding | ainda não existe no grafo |
+| side-table de leaf bindings no diff local | cleanup incompleto e teste incapaz de vê-lo |
+| relatório estruturado | executa certo, classifica um gate errado |
+| inventário de expected-fails | contém uma afirmação já falsificada pelo próprio gate |
+
+### 1. CRÍTICO — `libsample` fica verde contra uma cópia velha do runtime
+
+O builder comum sabe que `emit.d` copia cinco fontes de runtime. Em
+`reggae/qtd_build.d:198-207`, essas fontes são inputs do `gen.stamp`; editar qualquer uma força
+regeneração. O caminho artesanal de `libsample`, porém, recria a mesma pipeline em
+`reggae/qtd_build.d:340-351` e faz `genT` depender apenas de `libsample.a` e `gend`:
+
+```d
+auto genT = Target(stamp,
+    guarded(..., [lsa, gend]),
+    [sampleLib, gendTarget(root)]);
+```
+
+Não é risco teórico. No checkout desta auditoria:
+
+- `runtime/qtmoc/qtdmoc.cpp` e `.build/libsample/gen/qtdmoc.cpp` tinham hashes diferentes;
+- `runtime/qtmoc/qtdmoc_qml.cpp` e a cópia de `libsample` também;
+- as fontes atuais eram mais novas que `.build/libsample/gen.stamp`;
+- `./build sample_cornercases-ldc2` imprimiu `ALL PASS`;
+- depois do alvo, hashes e timestamps das cópias antigas continuaram exatamente iguais.
+
+Isto atinge o wrapper generator, não o compilador QML. E atinge justamente o corpus que
+`reggaefile.d:503-507` chama de independente e indispensável ao `binding-core`.
+
+**Critério de resolução:** eliminar a segunda implementação da pipeline ou fazê-la consumir a
+mesma lista `runtimeSrc` do builder comum. Acrescentar um gate de proveniência/freshness que compare
+as cópias verbatim com suas origens; um teste funcional não detecta que compilou a revisão errada.
+
+### 2. ALTO — os probes `qtmoc-probe-*` não compilam a nova unidade que o nome agora promete cobrir
+
+`qtmocProbeTargets` escolhe uma única fonte em `reggaefile.d:780-792`:
+
+```d
+auto src = ... "qtdmoc.cpp";
+clang++ ... -c src
+```
+
+Depois de `8a3f80a`, parte do runtime está em `qtdmoc_qml.cpp`, mas `qtmoc-probe-noqml`,
+`qtmoc-probe-qml6` e `qtmoc-probe-qml5` continuam compilando apenas o arquivo antigo. Os três
+passaram nesta auditoria; esse verde não diz se a nova unidade compila isoladamente nas três
+configurações. A matriz de bindings ainda oferece cobertura indireta, mas o probe dedicado deixou
+de provar o contrato descrito no próprio comentário: “compile the unit in each configuration”.
+
+Há uma segunda deriva no caminho `libsample`: o loop especial em `reggae/qtd_build.d:347-350`
+aplica os flags privados somente quando `b == qtdmoc`, enquanto o builder comum já reconhece
+`qtdmoc|qtdmoc_qml`. Hoje a unidade QML cai no ramo sem QML e sobrevive; amanhã uma extração pode
+precisar dos mesmos flags e quebrar apenas depois de uma limpeza total.
+
+**Critério de resolução:** os três probes devem compilar **cada** unidade da fronteira com nomes de
+objeto distintos; o caminho especial deve desaparecer ou usar a mesma regra de flags do comum.
+
+### 3. ALTO — a fronteira avançou no arquivo, mas ainda não avançou no produto
+
+A extração de dez funções foi correta e difícil: o `HEAD` baixou `qml_fns` de 33 para 23 e os
+probes Qt5/Qt6 passaram. Isso merece crédito. Mas o grafo ainda inclui `qtdmoc_qml.cpp` em
+`runtimeSrc` para todo binding e compila todo `genDir/*.cpp`; QtWidgets e `libsample` continuam
+carregando a unidade QML. O teste `noqml_helpers` inclusive fixa como contrato que os símbolos QML
+existam e façam no-op sem QtQml.
+
+O ratchet `runtime-boundary` só lê `qtdmoc.cpp` e conta funções cujo corpo contém `QQml`/`QQuick`.
+Logo ele mede **localização lexical**, não a dependência do artefato. Pode cair até zero sem remover
+um byte do runtime QML de um binding não-QML.
+
+Não é pedido para desfazer o trabalho. É pedido para nomeá-lo certo: a rodada atual separou fonte;
+a fronteira de produto só fecha quando o build escolhe `qtdmoc-core` para todos e
+`qtdmoc-qml` apenas para bindings que precisam dele, com stubs finos ou versionamento D para os
+helpers opcionais.
+
+**Critério de resolução:** ratchet também sobre composição dos arquivos/archives. Um canário
+QtWidgets deve falhar se o objeto QML entrar no archive e um canário QML deve falhar se ele faltar.
+
+### 4. ALTO, NO DIFF LOCAL — o cleanup da leaf table deixa o índice reverso crescer sem limite
+
+As alterações locais movem `g_leafConn` e `g_leafByObj` para `qtdmoc_qml.cpp`. O desenho registra a
+mesma chave nos vetores do owner e do receiver. Quando um deles morre,
+`qtd_leaf_forget` apaga a conexão e **somente o vetor do objeto que morreu**
+(`qtdmoc_qml.cpp:448-452`). A mesma chave permanece no vetor do outro endpoint. Com um receiver
+longevo e owners transitórios, `g_leafByObj[receiver]` cresce para sempre.
+
+O probe passa porque `qtd_leaf_table_size()` retorna apenas `g_leafConn.size()` e o teste destrói o
+receiver no fim (`tests/qmltc/leaf_lifetime.d:47-53`). Ele prova que a tabela principal volta a
+zero, não que a side-table inteira volta ao baseline. Há ainda um terceiro participante: a conexão
+real é `cur -> recv`, mas só `owner` e `recv` são observados. Se `cur` morrer sem levar o owner e sem
+uma reavaliação, o Qt invalida a conexão e a entrada própria continua até outro evento.
+
+**Critério de resolução:** uma entrada deve conhecer e remover-se de todos os índices, ou os índices
+devem guardar tokens fracos com cleanup único. Expor/medir as duas tabelas e testar churn com um
+receiver vivo enquanto centenas de owners morrem; testar também a morte isolada de `cur`.
+
+### 5. MÉDIO — o report self-test aceita classificação semanticamente errada
+
+Em `tools/test-report.sh:35`, `ownership*` é classificado como `lifetime` antes de
+`ownership-gate-*` poder chegar à regra `gate` da linha 55. Medição desta rodada:
+
+```text
+ownership-gate-qtwidgets  lifetime  -  qt6  no  pass
+```
+
+Mesmo assim, `report-selftest` diz `1182 targets classified, 0 unclassified`. O invariante atual só
+impede cair em `other`; não impede cair no balde errado, e não há canário para ownership-gate.
+
+**Critério de resolução:** regras específicas antes das famílias amplas e um canário por família
+de gate. “Classificado” deve significar classe correta, não apenas classe não vazia.
+
+### 6. MÉDIO — `expected-fails.json` descreve como presente um leak que o gate diz removido
+
+`ctor-throw-leaks-cpp-new` ainda afirma que, se o construtor lançar, nada possui o bloco, e seu
+`remove_when` é “a scope guard frees the block”. O emissor já produz exatamente essa guarda e
+`ctor-guard` passou sobre **1190** construtores nesta rodada. O que falta é uma prova de runtime do
+caminho excepcional; isso é um risco diferente da ausência da guarda.
+
+O linter aceita a contradição porque valida esquema e nomes, e `expected-fails-run` só executa as
+entradas que têm `probe_targets`. Esta não tem. O inventário, portanto, continua capaz de manter
+para sempre uma explicação que o repositório já tornou falsa.
+
+**Critério de resolução:** retirar a entrada ou renomeá-la para o residual real
+(`ctor-throw-path-unexercised`), com razão e `remove_when` coerentes. Depois, dar direção aos probes:
+um known-gap deve conseguir produzir unexpected-pass, não apenas exigir que um teste protetor
+continue passando.
+
+### 7. MÉDIO — falhar ao anexar uma thread não impede o callback D nessa thread
+
+`qtdAttachThread()` captura `Throwable` de `thread_attachThis()` e não faz nada
+(`runtime/qtmoc/qtmoc.d:889-895`). O trampoline chama o virtual D logo em seguida
+(`:911-918`). Assim, o caminho de erro do mecanismo de segurança continua justamente na condição
+que o mecanismo existe para impedir: D executando numa thread desconhecida do druntime.
+
+O teste atual prova sucesso de attach e tem controle negativo para attach removido; não consegue
+forçar a falha do attach. Silêncio aqui não é fallback conservador.
+
+**Critério de resolução:** falhar fechado — reportar/abortar ou devolver estado que impeça o
+callback — e oferecer um seam de teste que force a falha antes de entrar no virtual.
+
+### O que foi efetivamente executado
+
+Passaram: `qtmoc-probe-{noqml,qml6,qml5}`, `runtime-boundary`,
+`leaf-lifetime-{ldc2,dmd}`, `expected-fails-lint`, `report-selftest`, os três
+`ownership-gate-*`, `ctor-guard`, `consumer-smoke-{ldc2,dmd}` e
+`sample_cornercases-ldc2`. O último é evidência do achado #1, não absolvição: passou sem atualizar
+as cópias divergentes.
+
+Árvore permaneceu suja apenas nos dois arquivos que já estavam modificados ao início; esta rodada
+acrescentou somente este relatório.
+
+### Prioridade brutal da rodada 13
+
+1. Corrigir freshness do `libsample` e pôr proveniência atrás das cópias de runtime.
+2. Fazer os probes compilarem as duas unidades em QtCore-only, Qt5 QML e Qt6 QML.
+3. Consertar o cleanup bidirecional da leaf table antes de commitar o segundo lote.
+4. Decidir se `qtdmoc_qml` é componente opcional ou apenas organização; fazer o ratchet medir a
+   decisão real.
+5. Corrigir o report e o expected-fails: ambos ainda passam contando uma história falsa.
+6. Fazer thread attach falhar fechado.
+7. Só então gastar a próxima rodada em aumentar o corpus do `qmltc-d`: ele já cumpriu o papel de
+   encontrar pressão; agora o wrapper precisa consolidar o que aprendeu.
+
 ## Resposta à rodada 12 (2026-08-10 / 11)
 
 Escrita aqui porque a auditoria é o sítio certo para a contestação.
@@ -3157,6 +3346,26 @@ Três coisas que a mudança exigiu e que valem por si:
 
 Matriz completa verde nas duas versões do Qt: `rc=0`, 248 documentos, `UNPLACED=0`. Baseline descida
 para 23. **É a primeira vez que esta fronteira anda para o lado certo em nove rodadas.**
+
+#### Segunda leva: a TABELA sai, e o roquete não mexe — o que diz do roquete
+
+A seguir foi a **tabela de folhas**: `g_leafConn`, `g_leafByObj`, `g_leafMx`, as duas ajudantes
+(`qtd_leaf_key`, `qtd_leaf_watch`/`qtd_leaf_forget`) e as três exportadas (`qtd_bind_leaf`,
+`qtd_bind_leaf_prop`, `qtd_leaf_table_size`). Isto não é extracção — é a decisão que a auditoria
+disse que cada tabela partilhada exige, e para esta a resposta é fácil quando se faz a pergunta:
+`g_leafConn` existe para uma ligação profunda de um documento compilado voltar a subscrever quando o
+objecto por trás de uma propriedade muda. **Nada fora do QML tem uma ligação profunda.** Medido
+antes de mexer: nenhuma função fora do grupo chama `qtd_leaf_forget`, `qtd_leaf_watch` ou
+`qtd_leaf_key`, portanto a tabela viaja com as suas funções e a unidade partilhada perde o ESTADO,
+não só o código. `qtdmoc.cpp` está em 2125 linhas contra as 2533 de manhã; a unidade QML tem 528 e
+18 funções exportadas.
+
+**E o `qml_fns` não mexeu: continua em 23.** Isso não é falha do movimento, é o limite do número —
+e fica dito no próprio `runtime_boundary.d`. A tabela de folhas é QML **por finalidade** e não toca
+em tipo `QQml` nenhum: usa `QObject::connect` e `QMetaMethod`. O roquete conta *tipos* QML na unidade
+partilhada, não *código* QML, e um proxy que não vê a saída de uma tabela inteira é um proxy que
+precisa de ser lido com esse nome. Corrigi o comentário da métrica em vez de inventar um número
+melhor a posteriori — mudar a régua depois de ver o resultado é como se perde a régua.
 
 ### E o achado mais antigo do ficheiro (r4 #9) deixou de estar por tocar
 
