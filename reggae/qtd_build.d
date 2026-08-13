@@ -207,33 +207,48 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
     // headers. Shims are C++ -> identical for ldc2/dmd, so this target is shared.
     auto shimsLib = buildPath(bdir, "libshims.a");
-    // THE QML RUNTIME ONLY WHERE THERE IS QML (critics r13 #3). The unit moving to its own file was
-    // organisation; this is the product boundary. A binding without QtQml compiles GENERATED thin
-    // stubs instead — same exports, same ABI, no QML — so its archive never carries the QML object.
-    // The stubs come from the unit itself (tools/qmlstub.sh) so the two lists cannot drift apart.
-    auto stubGen = buildPath(root, "tools", "qmlstub.sh");
-    auto stubSrc = bdir ~ "/qtdmoc_qml_stub.cpp";
-    auto mkStub = hasQml ? "" :
-        ("sh " ~ stubGen ~ " " ~ genDir ~ "/qtdmoc_qml.cpp " ~ stubSrc ~ " >/dev/null && ");
+    // THE QML RUNTIME ONLY WHERE THERE IS QML (critics r13 #3, corrected by r14 #1/#2/#3).
+    //
+    // A binding without QtQml must not carry the QML runtime. The first answer GENERATED thin stubs
+    // from the unit's signatures with a shell script, and the audit was right that it was the wrong
+    // shape: inferring a return value from a return TYPE turned `qtd_context_prop_qs` — which always
+    // returns `new QString()`, with or without QML — into one that returns nullptr, and the D side
+    // dereferences it. A textual parser also cannot promise ABI parity; it only ever promised n > 0.
+    //
+    // The stub is now the SAME SOURCE compiled in the configuration that defines it. Every function
+    // in qtdmoc_qml.cpp already carries its own `#else` body for the no-QML case — those bodies ARE
+    // the stubs, written by whoever wrote the function. Compiling the file without QTD_ENABLE_QML
+    // yields them, with the exports and the semantics right by construction rather than by a script
+    // that has to be right about C++. Only the OBJECT NAME differs, which is what the composition
+    // canary reads.
+    auto stubObj = hasQml ? "" : "_stub";
     // The build RECORDS its own decision, so the composition canary reads a fact instead of
     // inferring one. The first version of that canary inferred "this binding has QML" from QQml
     // symbols in the archive and failed `webengine`, which references QQmlProperty because its OWN
     // bound API does — nothing to do with our runtime. An inference that has to be right about
     // someone else's API is the wrong shape for a gate.
-    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && rm -f " ~ bdir ~ "/ocpp/qtdmoc_qml*.o && "
-        ~ "echo " ~ (hasQml ? "yes" : "no") ~ " > " ~ bdir ~ "/qml-enabled && "
-        ~ mkStub ~ "for c in " ~ genDir ~ "/*.cpp"
-        ~ (hasQml ? "" : " " ~ stubSrc) ~ "; do "
+    // The object directory is WIPED, not patched (critics r14 #3): `rm -f qtdmoc_qml*.o` left every
+    // other stale object in the glob, so a .cpp the generator stopped emitting kept its symbols in
+    // the archive for ever. The archive is rebuilt from exactly what this run compiled.
+    auto shimsCmd = "rm -rf " ~ bdir ~ "/ocpp && mkdir -p " ~ bdir ~ "/ocpp && rm -f " ~ shimsLib
+        ~ " && echo " ~ (hasQml ? "yes" : "no") ~ " > " ~ bdir ~ "/qml-enabled && "
+        ~ "for c in " ~ genDir ~ "/*.cpp; do "
         ~ `b=$(basename "$c" .cpp); `
-        // ...and the real unit is SKIPPED, not merely unlinked: it must not become an object at all.
-        ~ (hasQml ? "" : `if [ "$b" = qtdmoc_qml ]; then continue; fi; `)
-        ~ `case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
+        // ...and the QML unit lands under a DIFFERENT name when this binding has no QtQml, compiled
+        // from the same source with QTD_ENABLE_QML undefined: its own `#else` bodies are the stubs.
+        ~ `if [ "$b" = qtdmoc_qml ]; then b=qtdmoc_qml` ~ stubObj ~ `; fi; `
+        ~ `case "$b" in qtdmoc|qtdmoc_qml|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
         ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
     auto shims = Target(shimsLib,
         guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]),
         [gen]);
 
+    // REGISTERED, so the composition canary gets its list from the GRAPH instead of a glob over
+    // whatever happens to be in .build (critics r14 #4). A canary that walks existing artefacts
+    // proves something about the artefacts that exist, which is not the claim it prints.
+    _shimsRegistry ~= ShimsEntry(shimsLib, hasQml, shims);
+    _genRegistry ~= gen;
     return QtdBinding(gen, shims, root, genDir, bdir, mods, spec);
 }
 
@@ -247,18 +262,26 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
 // a stale `qtdmoc.cpp` and printed ALL PASS. Measured by the audit and reproduced here: the
 // libsample copies of qtdmoc.cpp and qtdmoc_qml.cpp hashed differently from the sources while the
 // normal path's matched. Two pipelines may stay (they build different things); ONE list may not.
-// The libsample generation stamp AS A TARGET, so something outside can be ordered after it. It is
-// the one product of that hand-written pipeline that the rest of the graph can name.
-Target[] libsampleGenStamp(string root) {
-    auto stamp = buildPath(root, ".build", "libsample", "gen.stamp");
-    return exists(stamp) ? [Target(stamp)] : [];
-}
+// EVERY GENERATOR THE PROVENANCE GATE MUST RUN AFTER, registered as they are created — never
+// inferred from what is on disk (critics r14 #5). The first version of this asked
+// `exists(gen.stamp)` at CONFIGURE time and returned nothing on a clean checkout, so the gate did
+// not order the libsample generation, ran without the copies, and passed. `exists(output)` deciding
+// the SHAPE of the graph is the bug: on the one run where a freshness gate matters most — the first
+// — it removes the very edge that makes it mean anything.
+__gshared Target[] _genRegistry;
+Target[] qtdGenRegistry() { return _genRegistry; }
 
 string[] qtdRuntimeSources(string root) {
     return ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp", "qtmoc/qtmoc.d",
             "holder/qtd_holder.cpp", "holder/holder.d"]
         .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
 }
+
+// Every archive the graph builds, with the QML decision that produced it. Registered by
+// qtdBinding/libsampleTargets as they are created (critics r14 #4).
+struct ShimsEntry { string archive; bool hasQml; Target target; }
+__gshared ShimsEntry[] _shimsRegistry;
+ShimsEntry[] qtdShimsRegistry() { return _shimsRegistry; }
 
 private __gshared Target[string] _libCache;
 Target qtdBindLib(QtdBinding b, string dc) {
@@ -387,18 +410,19 @@ Target[] libsampleTargets(string root, string pyside) {
 
     // 3) shims (.cpp) -> libshims.a.
     auto shimsLib = buildPath(bdir, "libshims.a");
-    auto lsStub = bdir ~ "/qtdmoc_qml_stub.cpp";
-    auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && rm -f " ~ bdir ~ "/ocpp/qtdmoc_qml*.o && "
-        ~ "echo no > " ~ bdir ~ "/qml-enabled && "          // libsample has no QtQml, by construction
-        ~ "sh " ~ buildPath(root, "tools", "qmlstub.sh") ~ " " ~ gen ~ "/qtdmoc_qml.cpp "
-        ~ lsStub ~ " >/dev/null && for c in " ~ gen ~ "/*.cpp " ~ lsStub ~ "; do "
-        // Same rule as the common builder (critics r13 #2/#3): private flags for both units, and
-        // libsample has no QtQml — it gets the generated stubs, never the QML object.
-        ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc_qml ]; then continue; fi; `
-        ~ `case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
+    // Same rule as the common builder (critics r13 #2/#3, r14 #1/#3): libsample has no QtQml, so
+    // the QML unit is compiled from the SAME source with QTD_ENABLE_QML undefined and lands as
+    // qtdmoc_qml_stub.o — its own `#else` bodies are the stubs. And ocpp is wiped, so an object the
+    // generator stopped emitting cannot survive in the archive.
+    auto shimsCmd = "rm -rf " ~ bdir ~ "/ocpp && mkdir -p " ~ bdir ~ "/ocpp && rm -f " ~ shimsLib
+        ~ " && echo no > " ~ bdir ~ "/qml-enabled && for c in " ~ gen ~ "/*.cpp; do "
+        ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc_qml ]; then b=qtdmoc_qml_stub; fi; `
+        ~ `case "$b" in qtdmoc|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
         ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
     auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);
+    _shimsRegistry ~= ShimsEntry(shimsLib, false, shimsT);   // libsample has no QtQml
+    _genRegistry ~= genT;
 
     Target[] outs;
     foreach (dc; ["ldc2", "dmd"]) {

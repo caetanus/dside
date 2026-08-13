@@ -360,7 +360,9 @@ void* qtd_str_to_qs(const char* p, int n) { return new QString(QString::fromUtf8
 void  qtd_qs_free(void* qs) { delete static_cast<QString*>(qs); }
 // ReadProperty metacall: a[0] points to an existing QString to assign the value INTO.
 void  qtd_qs_set(void* dest, const char* p, int n) { *static_cast<QString*>(dest) = QString::fromUtf8(p, n); }
-int   qtd_qs_utf8len(void* qs) { return (int) static_cast<QString*>(qs)->toUtf8().size(); }
+// ...and NULL is the empty string on this side too (critics r14 #1). D guards it as well; both
+// guard it because either one alone is a rule that lives in one place and is read in the other.
+int   qtd_qs_utf8len(void* qs) { return qs ? (int) static_cast<QString*>(qs)->toUtf8().size() : 0; }
 void  qtd_qs_utf8(void* qs, char* dst) {
     QByteArray b = static_cast<QString*>(qs)->toUtf8();
     memcpy(dst, b.constData(), b.size());

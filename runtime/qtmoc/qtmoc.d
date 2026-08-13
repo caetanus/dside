@@ -122,6 +122,19 @@ void qtdOnCallbackError(Throwable e) nothrow {
 
 // converts a QString* (meta-call arg) into a D string.
 string qsToD(void* qs) {
+    // A NULL QString IS THE EMPTY STRING, not a crash. Every C++ helper on this boundary hands over
+    // an OWNED `new QString`, and D reads it and frees it — 33 return sites against 17 read sites,
+    // and the ownership travels in a comment rather than in the type. The first stub attempt got it
+    // wrong in exactly the way that shape invites (critics r14 #1): it inferred "returns a pointer"
+    // and produced nullptr, where the real body always returns an empty QString. That specific bug
+    // is gone — the stubs are the same source compiled without QML now — but the CLASS is not, and
+    // one branch here closes it for all 33.
+    //
+    // The right fix is the one this makes cheap to defer and not cheap to forget: hand over a VALUE
+    // (length + utf8 into a caller buffer) instead of an owned pointer, so the boundary stops having
+    // an ownership convention at all. That is 33 C++ sites and 17 D sites, and it is the design this
+    // helper should eventually make unnecessary.
+    if (qs is null) return "";
     int n = qtd_qs_utf8len(qs);
     auto buf = new char[n];
     if (n) qtd_qs_utf8(qs, buf.ptr);

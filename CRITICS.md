@@ -63,6 +63,178 @@ certo com o motor — está **vazio** pela primeira vez desde que existe. A fras
 tipo" já não é uma contagem sem comparação atrás: é 110 documentos comparados propriedade a
 propriedade, e o que não chega lá está nomeado.
 
+## Rodada 14: a fronteira agora existe; os stubs mudaram a semântica e os canários falham aberto
+
+**Data:** 2026-08-13. **Base auditada:** `c2ba94e`, árvore limpa antes desta edição.
+
+### Veredito para assessoria
+
+A resposta à rodada 13 fez trabalho de produto, não cosmética. O falso verde do `libsample` foi
+reproduzido e corrigido; a unidade QML deixou de entrar nos archives sem QtQml; o cleanup da leaf
+table passou a conhecer os três endpoints; os probes compilam as duas unidades; e o inventário
+ganhou uma primeira sonda com direção de expected-fail. Os gates selecionados desta rodada ficaram
+verdes em Qt5/Qt6 e dmd/ldc2.
+
+Mas a mudança mais importante — substituir a unidade QML por stubs gerados — não preserva hoje o
+contrato que diz preservar. Um dos 16 stubs transforma retorno vazio válido em `nullptr`, e o lado D
+desreferencia esse ponteiro. Além disso, os novos canários são oportunistas: inspecionam o que
+por acaso já existe em `.build`, ignoram artefactos sem marker e não têm arestas para tudo que
+afirmam cobrir. A fronteira existe; a prova dela ainda não é release-grade.
+
+### 1. CRÍTICO — o stub de `qtd_context_prop_qs` transforma um no-op seguro em null dereference
+
+O comentário de `tools/qmlstub.sh` afirma que retornar zero reproduz exatamente os corpos sem
+`QTD_HAVE_QML`. Não reproduz. A implementação real em `runtime/qtmoc/qtdmoc_qml.cpp:104-112`
+sempre retorna `new QString()`, inclusive sem QML. O stub gerado retorna:
+
+```cpp
+extern "C" void* qtd_context_prop_qs(void* o, const char* name) { return nullptr; }
+```
+
+No lado D, `contextStr()` chama `qsToD(p)` e depois `qtd_qs_free(p)`
+(`runtime/qtmoc/qtmoc.d:1324-1327`). `qsToD` chama `qtd_qs_utf8len(qs)`, e a implementação C++
+faz `static_cast<QString*>(qs)->toUtf8()` sem teste de null (`qtdmoc.cpp:363`). Portanto o helper
+que antes devolvia string vazia num binding sem QtQml agora pode desreferenciar null.
+
+Isto não é API exótica inventada pela auditoria: `qtmoc.d` é copiado para todos os bindings e
+expõe `contextStr` publicamente. O teste `noqml_helpers` cobre cinco helpers, mas não este. A
+separação de produto regrediu a semântica da superfície partilhada.
+
+**Critério de resolução:** stubs não podem ser inferidos apenas pelo tipo de retorno. Preservar os
+corpos `#else` reais, ou manter uma especificação explícita por export com ownership/valor de
+fallback. Acrescentar `contextStr` ao probe sem QML e exigir string vazia sem crash em Qt5/Qt6 e
+dmd/ldc2.
+
+### 2. ALTO — “paridade exata” existe numa medição manual, não num gate
+
+Medi os objetos atuais com `nm`: unidade real e stub exportam os mesmos **16** símbolos. Isso é bom
+estado atual. O mecanismo, porém, só exige `n > 0` em `tools/qmlstub.sh:62-63`. Se uma mudança de
+formatação fizer o `awk` extrair 15 de 16, o gerador retorna sucesso. E
+`archive-composition.sh` só procura um membro chamado `qtdmoc_qml_stub.o`; um objeto com um único
+símbolo satisfaz o canário.
+
+O próprio histórico registrado diz que o parser já produziu 12 de 17 sem perceber. A nova versão
+melhora as formas conhecidas, mas continua sendo parsing de C++ por `awk` sem uma comparação de
+símbolos por trás. “Um export novo aparece nos dois lados ou em nenhum” não é o contrato que o gate
+implementa.
+
+**Critério de resolução:** compilar unidade real e stub e comparar os conjuntos `qtd_*` de símbolos
+exportados. Melhor ainda, gerar as duas implementações de uma única tabela declarativa; enquanto
+for extração textual, a comparação de ABI é obrigatória.
+
+### 3. ALTO — a correção de freshness esqueceu o próprio gerador de stubs
+
+Nos dois builders, `qmlstub.sh` participa do comando mas não das dependências nem da lista
+`newerThan` do `libshims.a`. No caminho comum, `stubGen` é calculado em
+`reggae/qtd_build.d:214`, usado em `mkStub`, e o target em `:233-235` depende só de `gen`. O caminho
+`libsample` repete a ausência em `:389-401`.
+
+Assim, editar o algoritmo que define a nova fronteira não recompila os archives existentes. O
+projeto acabou de corrigir exatamente essa classe de defeito para as fontes copiadas do runtime e
+a reintroduziu um nível abaixo.
+
+Há um segundo resíduo da mesma família: os comandos fazem `mkdir -p o/` e `ar rcs`, não limpam o
+diretório nem recriam o archive do zero. Só removem `qtdmoc_qml*.o`. Se o gerador deixar de emitir
+qualquer outro `.cpp`, seu `.o` antigo continua no glob e no archive. A superfície C++ pode manter
+símbolos que a geração atual já removeu.
+
+**Critério de resolução:** `qmlstub.sh` deve ser input do target e de freshness; construir objetos
+em diretório temporário limpo e substituir o archive atomicamente, ou apagar explicitamente todo
+`ocpp` e o archive sob o lock antes de recompilar.
+
+### 4. ALTO — `archive-composition` ignora exatamente os artefactos cuja prova está ausente
+
+O canário percorre `existing .build/*/libshims.a`. Se o marker `qml-enabled` não existe, imprime
+“rebuild its shims” e faz `continue` (`tests/archive-composition.sh:34-37`). Ausência da evidência
+não é falha. Basta haver outro archive com marker para `seen > 0` e o target sair verde. Conteúdo do
+marker diferente de `yes` e `no` também incrementa `seen` e não executa verificação nenhuma.
+
+O marker é side effect do comando, não output declarado do target. Apagá-lo não torna
+`libshims.a` stale, portanto pedir `archive-composition` não o recria. E o target tem arestas apenas
+para `ex.shims` e `qml.shims`, embora o script reporte “11 archives” e conclua “in no others”. Em
+build limpo ele pode correr depois de dois archives, dizer OK e nunca observar Qt5, wraptest,
+webengine, controls ou libsample.
+
+**Critério de resolução:** a lista de bindings vem do grafo, não de glob oportunista. Passar ao
+script cada par `(archive, qml-enabled esperado)` e depender de todos; marker ausente/inválido deve
+falhar. Idealmente o marker vira output declarado ou desaparece em favor do fato `hasQml` passado
+diretamente pelo reggaefile.
+
+### 5. ALTO — `runtime-provenance` ainda tem ordering incompleto, especialmente em build limpo
+
+O script compara toda cópia que encontra em `generated/*/*` e `.build/*/gen`, mas o target depende
+somente de `ex.gen`, `qml.gen` e, condicionalmente, do stamp do `libsample`. Não depende dos outros
+diretórios que inspeciona. Isso permite tanto corrida contra regeneração concorrente quanto uma
+conclusão sobre um subconjunto oportunista.
+
+O detalhe mais perigoso está em `libsampleGenStamp`: ele retorna o target **somente se o arquivo já
+existe no momento de configurar o grafo**. Num checkout limpo retorna `[]`; o portão não ordena a
+geração do `libsample`, roda sem a cópia e passa. A frase da resposta — “corre depois das coisas que
+escrevem as cópias” — continua falsa no cenário em que um gate de freshness mais importa.
+
+**Critério de resolução:** declarar sempre o produtor real, sem `exists(output)` decidir a forma do
+grafo, e passar ao gate a lista exata de outputs gerados por todos os bindings. Zero cópias ou
+subconjunto incompleto deve falhar quando o target promete a matriz, não virar sucesso vazio.
+
+### 6. CRÍTICO — a sonda de attach não força falha numa thread estrangeira, e o fallback usa GC nela
+
+`threadguard.d:69-77` chama `qtdAttachThreadImpl(true)` na thread principal. O próprio teste comenta
+que nessa thread `Thread.getThis()` não é null; portanto `forceFail` não entra no ramo e `bad.ok`
+fica **true**. O assert de `!bad.ok` é condicional à situação que não ocorre. Depois disso nenhum
+trampoline é chamado por esse seam. Mesmo assim o teste imprime que “a failed thread attach refuses
+to enter D”. A afirmação não foi exercitada.
+
+O caminho real de falha também não é conservador: antes de retornar, o trampoline chama
+`qtdAttachFailed`, ainda na thread que não pôde ser anexada. Essa função constrói `new Exception`,
+concatena strings e chama a política D que grava contador TLS e referência a `Throwable`
+(`qtmoc.d:915-918`). Ou seja, ao descobrir que não é seguro executar D naquela thread, o fallback
+faz alocação GC e toca estado D nela. “Nada D-side runs after this” é literalmente falso.
+
+**Critério de resolução:** o seam deve ser acionado dentro de uma thread realmente desconhecida e
+atravessar o trampoline, com uma flag/efeito que prove que o virtual não entrou. A falha real deve
+usar uma rota `nothrow @nogc` segura antes do attach — log/abort em libc ou callback C sem runtime D
+— não criar uma Exception no ambiente que acabou de ser declarado inseguro.
+
+### 7. MÉDIO — o primeiro `gap_probe` aceita qualquer falha como prova da falha certa
+
+`qmltc-pedantic-imagine-label` hoje falha pela razão esperada: uma delegação de `states` em
+`NinePatchImageSelector`; reproduzi o diagnóstico. O runner, contudo, descarta a saída e considera
+qualquer exit não-zero como “gap ainda aberto”. Ferramenta ausente, import quebrado, crash, mudança
+de CLI ou regressão anterior à análise do documento também viram sucesso esperado.
+
+Isto é o equivalente direcional de um expected-fail sem assinatura: agora detecta unexpected-pass,
+mas continua incapaz de distinguir a falha contratada de outra falha.
+
+**Critério de resolução:** cada `gap_probe` deve declarar exit e padrão/diagnóstico esperado. O
+runner precisa falhar se o target falhar por motivo diferente; não redirecionar a única evidência
+para `/dev/null` sem validá-la.
+
+### Evidência executada
+
+Passaram nesta releitura: `runtime-provenance`, `archive-composition`,
+`qtmoc-probe-{noqml,qml5,qml6}`, `report-selftest`, `expected-fails-lint`,
+`leaf-lifetime-{ldc2,dmd}` e `threadguard-{ldc2,dmd}-qt6`. A paridade atual de símbolos foi medida
+separadamente com `nm` (16/16). O alvo `qmltc-pedantic-imagine-label` foi executado e falhou hoje
+com o diagnóstico registrado.
+
+Esses verdes não contradizem os achados: #1 é uma chamada não coberta; #2, #4 e #5 são gates que
+aceitam subconjuntos; #3 é uma aresta ausente; #6 é um ramo que o teste não alcança; #7 aceita a
+falha observada e qualquer outra.
+
+### Prioridade brutal da rodada 14
+
+1. Corrigir o retorno/ownership dos stubs e adicionar probe runtime sem QML.
+2. Tornar a falha de thread realmente `@nogc` e testar pelo trampoline numa thread estrangeira.
+3. Comparar ABI real versus stub; presença de um `.o` não é paridade.
+4. Fazer composição e proveniência consumirem listas completas do grafo e falharem fechado.
+5. Colocar `qmlstub.sh` nas arestas e eliminar estado residual de `ocpp`/archives.
+6. Dar assinatura de falha aos `gap_probes`.
+
+O saldo das duas semanas continua positivo: o `qmltc-d` obrigou o binding a ganhar fronteira,
+ownership e testes que antes não existiam. A cobrança agora é coerente com esse ganho: uma
+fronteira nova é infraestrutura de binding e precisa preservar ABI, semântica e freshness como
+qualquer outra parte do wrapper generator.
+
 ## Resposta à rodada 13 (escrita a 2026-08-13)
 
 Sete achados. **Todos atacados; seis fechados e um — o #6 — respondido com a distinção que ele

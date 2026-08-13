@@ -367,32 +367,6 @@ Build reggaeBuild() {
             ~ buildPath(root, "runtime", "qtmoc", "qtmoc.d") ~ " " ~ rbBase, [rbb]);
     }
 
-    // --- RUNTIME PROVENANCE (critics r13 #1): the generator copies runtime sources verbatim into
-    //     every binding, which makes them build INPUTS. A missing edge does not fail — it goes
-    //     green against the copy from before, and that is exactly what libsample did. The edge is
-    //     the fix; this notices when the fix is undone, which a functional test cannot: it runs the
-    //     wrong revision perfectly.
-    //
-    //     It runs AFTER the things that write the copies, and that edge is not decoration: on its
-    //     first full build it failed against libsample's copies simply because it got there first.
-    //     A gate that can be scheduled before the thing it inspects reports the previous state.
-    {
-        auto pv = buildPath(root, "tests", "runtime-provenance.sh");
-        if (exists(pv))
-            all ~= Target.phony("runtime-provenance", "sh " ~ pv,
-                                [Target(pv), ex.gen, qml.gen] ~ libsampleGenStamp(root));
-    }
-
-    // --- ARCHIVE COMPOSITION CANARY (critics r13 #3): runtime-boundary counts QML types in a
-    //     SOURCE FILE, which the audit correctly called lexical location — it can reach zero with
-    //     the QML object still in every archive. This looks at the artefact, in both directions.
-    {
-        auto ac = buildPath(root, "tests", "archive-composition.sh");
-        if (exists(ac))
-            all ~= Target.phony("archive-composition", "sh " ~ ac,
-                                [Target(ac), ex.shims, qml.shims]);
-    }
-
     // --- ABI LAYOUT PROBE (critics r4 #9, the oldest finding untouched until 2026-08-12): the
     //     container bridge reads QList's FIELDS at offsets the generator hard-codes, and those got
     //     in as "verified empirically". This asserts the same layout against the installed Qt
@@ -578,6 +552,46 @@ Build reggaeBuild() {
     // On the Qt the baselines were recorded against, the gates run with everything else; on any
     // other minor they stay reachable by name but out of defaultTargets(), so the full matrix
     // never fails on SDK drift.
+    // THE GATES THAT NEED THE WHOLE GRAPH come last, after every binding has registered itself
+    // (critics r14 #4/#5). Declared earlier they saw a partial registry — libsample is created
+    // further down — and a gate that promises the matrix while holding a subset is the shape this
+    // audit has caught three times.
+    // --- RUNTIME PROVENANCE (critics r13 #1): the generator copies runtime sources verbatim into
+    //     every binding, which makes them build INPUTS. A missing edge does not fail — it goes
+    //     green against the copy from before, and that is exactly what libsample did. The edge is
+    //     the fix; this notices when the fix is undone, which a functional test cannot: it runs the
+    //     wrong revision perfectly.
+    //
+    //     It runs AFTER the things that write the copies, and that edge is not decoration: on its
+    //     first full build it failed against libsample's copies simply because it got there first.
+    //     A gate that can be scheduled before the thing it inspects reports the previous state.
+    {
+        auto pv = buildPath(root, "tests", "runtime-provenance.sh");
+        auto gens = qtdGenRegistry();
+        if (exists(pv) && gens.length)
+            all ~= Target.phony("runtime-provenance", "sh " ~ pv, Target(pv) ~ gens);
+    }
+
+    // --- ARCHIVE COMPOSITION CANARY (critics r13 #3): runtime-boundary counts QML types in a
+    //     SOURCE FILE, which the audit correctly called lexical location — it can reach zero with
+    //     the QML object still in every archive. This looks at the artefact, in both directions.
+    {
+        // The list comes from the GRAPH and the target depends on EVERY archive in it (critics
+        // r14 #4). The first version globbed `.build/*/libshims.a`, skipped anything without a
+        // marker, and depended on two archives while printing a conclusion about eleven — so on a
+        // clean build it could run after two, say OK, and never look at Qt5, wraptest, webengine,
+        // controls or libsample.
+        auto ac = buildPath(root, "tests", "archive-composition.sh");
+        auto reg = qtdShimsRegistry();
+        if (exists(ac) && reg.length) {
+            auto specFile = buildPath(root, ".build", "archive-composition.tsv");
+            writeIfChanged(specFile,
+                reg.map!(e => e.archive ~ "\t" ~ (e.hasQml ? "yes" : "no")).join("\n") ~ "\n");
+            all ~= Target.phony("archive-composition", "sh " ~ ac ~ " " ~ specFile,
+                                [Target(ac)] ~ reg.map!(e => e.target).array);
+        }
+    }
+
     import std.range : chain;
     // The optional gap probes, written where the linter can read them (see expected-fails-lint).
     writeIfChanged(buildPath(root, ".build", "gap-probes.txt"),
