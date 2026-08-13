@@ -5,8 +5,8 @@
 # because nothing made its growth visible.
 #
 # qml_fns: `extern "C"` functions in runtime/qtmoc/qtdmoc.cpp whose body touches QQml/QQuick.
-#          33 of 62 on 2026-08-12 — half the shared meta-object runtime is QML.
+#          23 of 52 on 2026-08-12 (was 33 of 62: ten moved to runtime/qtmoc/qtdmoc_qml.cpp) — half the shared meta-object runtime is QML.
 # d_state: module-level mutable globals of compiler state in runtime/qtmoc/qtmoc.d.
 #          3 on 2026-08-12, two of them added that same day (__qmltcPending, __qmltcDeferred).
-qml_fns 33
+qml_fns 23
 d_state 3

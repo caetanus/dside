@@ -402,6 +402,11 @@ void main(string[] args) {
         enum mocSrcDir = buildPath(dirName(dirName(__FILE_FULL_PATH__)), "runtime", "qtmoc");
         if (exists(buildPath(mocSrcDir, "qtdmoc.cpp"))) {
             std.file.copy(buildPath(mocSrcDir, "qtdmoc.cpp"), buildPath(outDir, "qtdmoc.cpp"));
+            // ...and the QML half, which lives in its own unit (critics r9 #2 / r11 #5). Copied
+            // unconditionally: every one of its functions keeps a no-op body without QtQml, so the
+            // ABI a binding links against does not change with the module list.
+            if (exists(buildPath(mocSrcDir, "qtdmoc_qml.cpp")))
+                std.file.copy(buildPath(mocSrcDir, "qtdmoc_qml.cpp"), buildPath(outDir, "qtdmoc_qml.cpp"));
             std.file.copy(buildPath(mocSrcDir, "qtmoc.d"),    buildPath(outDir, "qtmoc.d"));
             cxxGen["qtmoc"] = true;
         }

@@ -753,49 +753,6 @@ extern "C" void* qtd_ctx_fill_qs(void* o, const char* name) {
 #endif
     return new QString();
 }
-extern "C" void* qtd_context_object(void* o) {
-#ifdef QTD_HAVE_QML
-    if (!o) return nullptr;
-    // ...found by walking UP, which is what `contextProperty` does implicitly and what a delegate's
-    // CHILD needs: its own context nests inside the delegate root's and carries no object of its
-    // own, so asking only the nearest one would answer null and the notify would never connect.
-    for (QQmlContext* c = qmlContext(static_cast<QObject*>(o)); c; c = c->parentContext())
-        if (QObject* co = c->contextObject()) return co;
-    return nullptr;
-#else
-    (void) o; return nullptr;
-#endif
-}
-extern "C" int qtd_context_prop_int(void* o, const char* name) {
-#ifdef QTD_HAVE_QML
-    if (!o || !name) return 0;
-    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
-        return c->contextProperty(QString::fromUtf8(name)).toInt();
-    return 0;
-#else
-    (void) o; (void) name; return 0;
-#endif
-}
-extern "C" double qtd_context_prop_double(void* o, const char* name) {
-#ifdef QTD_HAVE_QML
-    if (!o || !name) return 0;
-    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
-        return c->contextProperty(QString::fromUtf8(name)).toDouble();
-    return 0;
-#else
-    (void) o; (void) name; return 0;
-#endif
-}
-extern "C" void* qtd_context_prop_qs(void* o, const char* name) {
-#ifdef QTD_HAVE_QML
-    if (o && name)
-        if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
-            return new QString(c->contextProperty(QString::fromUtf8(name)).toString());
-#else
-    (void) o; (void) name;
-#endif
-    return new QString();
-}
 
 // ---- an expression the compiler could not translate, left to the engine -------------------------
 // The last resort, and deliberately a NARROW one: the compiler emits this only for a binding it
@@ -863,65 +820,6 @@ extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url,
 #endif
 }
 
-extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
-                           const char** names, void** objs, int n) {
-#ifdef QTD_HAVE_QML
-    if (!o || !prop || !src) return 0;
-    QObject* obj = static_cast<QObject*>(o);
-    QQmlContext* base = qmlContext(obj);
-    // LOUD, not silent. A delegated binding that quietly does nothing is the worst outcome of the
-    // three: the property keeps its default and nothing anywhere says why. Measured exactly once,
-    // and that was enough -- a QtQml-only harness with no application object has no engine, so
-    // there was no context and the value simply stayed empty against the engine's.
-    if (!base) {
-        std::fprintf(stderr, "qtd_bind_js: '%s' on %s has no QQmlContext — binding not installed\n",
-                     prop, obj->metaObject()->className());
-        return 0;
-    }
-    QQmlContext* ctx = base;
-    if (n > 0) {
-        ctx = new QQmlContext(base, obj);   // owned by the object, like the engine's per-item one
-        for (int i = 0; i < n; ++i)
-            if (names[i])
-                ctx->setContextProperty(QString::fromUtf8(names[i]),
-                                        static_cast<QObject*>(objs[i]));
-    }
-    QString p = QString::fromUtf8(prop);
-    auto* e = new QQmlExpression(ctx, obj, QString::fromUtf8(src), obj);
-    // Read ONCE: this runs on every re-evaluation of every delegated binding.
-    static const bool trace = std::getenv("QTD_JS_TRACE") != nullptr;
-    // A delegated binding that THROWS leaves the property at its default and, counted as a
-    // delegation, looked like neither a refusal nor a defect. It is a defect: Qt's Material Button
-    // paints white instead of #d6d7d7 because `control.Material.buttonColor(…)` throws, and the
-    // census said "delegated" with no hint that anything was wrong. Reported ONCE per binding —
-    // the first evaluation is where the cause is, and a binding that recovers later says so by not
-    // repeating.
-    auto reported = std::make_shared<bool>(false);
-    auto eval = [e, obj, p, reported]() {
-        QVariant v = e->evaluate();
-        if (trace)
-            std::fprintf(stderr, "qtd_bind_js: %s = %s%s\n", qPrintable(p), qPrintable(v.toString()),
-                         e->hasError() ? qPrintable(" ERROR: " + e->error().toString()) : "");
-        if (e->hasError()) {
-            if (!*reported) {
-                *reported = true;
-                std::fprintf(stderr, "qtd_bind_js: delegated binding for '%s' on %s threw: %s\n",
-                             qPrintable(p), obj->metaObject()->className(),
-                             qPrintable(e->error().description()));
-            }
-            e->clearError();
-            return;
-        }
-        QQmlProperty(obj, p, qmlContext(obj)).write(v);
-    };
-    e->setNotifyOnValueChanged(true);
-    QObject::connect(e, &QQmlExpression::valueChanged, obj, eval);
-    eval();
-    return 1;
-#else
-    (void) o; (void) prop; (void) src; (void) names; (void) objs; (void) n; return 0;
-#endif
-}
 
 // ---- a Component (a delegate) ------------------------------------------------------------------
 // `delegate: Text {}` is a TEMPLATE: the type instantiates it itself, N times, whenever its model
@@ -1174,32 +1072,6 @@ extern "C" int qtd_deferred_index(void* o, const char* name) {
     return -1;
 }
 
-// A MEMBER OF A VALUE-TYPED PROPERTY: `color.a`, `font.pixelSize`, `size.width`. QColor is neither a
-// QObject nor a Q_GADGET, so no meta-object of its own answers for `a` — QML reaches it through a
-// VALUE TYPE, and QQmlProperty resolves a dotted path straight through it — the same route QML
-// itself takes, so the set of readable members is EXACTLY QML's. Nothing here knows what a colour
-// is, which is the point.
-//
-// `layer.enabled: control.enabled && color.a > 0 && !control.flat` is Qt's Material Button, and
-// `color.a` is the whole reason that line could not compile — so the background was never put in a
-// layer, and seven of Material's documents drew a shape the engine does not draw at all.
-extern "C" int qtd_prop_value_member(void* o, const char* prop, const char* member, double* out) {
-#ifdef QTD_HAVE_QML
-    if (!o || !prop || !member || !out) return 0;
-    QObject* q = static_cast<QObject*>(o);
-    // QQmlProperty resolves a DOTTED path through a value type — it is what QML itself uses for
-    // `color.a`, and it is public, where the value-type registry is not.
-    QQmlProperty p(q, QString::fromUtf8(prop) + QLatin1Char('.') + QString::fromUtf8(member));
-    if (!p.isValid()) return 0;
-    const QVariant got = p.read();
-    if (!got.isValid() || !got.canConvert<double>()) return 0;
-    *out = got.toDouble();
-    return 1;
-#else
-    (void) o; (void) prop; (void) member; (void) out;
-    return 0;
-#endif
-}
 
 // Does the object in hand declare this property at all? Asked before a read the compiler could not
 // check statically, so a name nothing answers to aborts the binding instead of quietly reading 0.
@@ -1357,20 +1229,6 @@ extern "C" void* qtd_invoke_str(void* o, const char* method, const char** args, 
     }
     return new QString();
 }
-// The Nth element of a list property, THROUGH the meta-object — the same walk the oracle does.
-// A default child is appended with qtd_list_append and Qt may reparent it (a Flickable moves visual
-// children into its content item), so the D field that holds it and `<prop>[N]` on the object are
-// not the same thing. Dumping the field under that label compared two different objects.
-extern "C" void* qtd_list_at(void* o, const char* prop, int i) {
-#ifdef QTD_HAVE_QML
-    if (!o) return nullptr;
-    QQmlListReference ref(static_cast<QObject*>(o), prop);
-    if (!ref.isValid() || !ref.canAt() || i < 0 || i >= ref.count()) return nullptr;
-    return ref.at(i);
-#else
-    (void) o; (void) prop; (void) i; return nullptr;
-#endif
-}
 extern "C" void qtd_attach_context(void* o);
 // An object whose context the ENGINE owns: it is about to be given one and ours must not take the
 // slot first. Measured on a Repeater's delegate: the document context attached in our constructor
@@ -1452,27 +1310,6 @@ extern "C" void qtd_attach_context(void* o) {
 #endif
 }
 
-// ---- QQmlParserStatus ---------------------------------------------------------
-// The engine calls classBegin() before setting a component's properties and componentComplete()
-// once the whole tree is built; a type that implements QQmlParserStatus does real initialisation
-// there (QQuickControl computes hoverEnabled in componentComplete). A compiler that only
-// constructs objects and assigns properties produces something that is built but NOT complete,
-// which differs from the engine in ways no individual assignment explains.
-//
-// dynamic_cast because QQmlParserStatus is a secondary base: the interface pointer needs the
-// correct offset, and a type that does not implement it must be left alone rather than called
-// through a wrong vtable.
-extern "C" void qtd_parser_status(void* o, int complete) {
-#ifdef QTD_HAVE_QML
-    if (!o) return;
-    if (auto* ps = dynamic_cast<QQmlParserStatus*>(static_cast<QObject*>(o))) {
-        if (complete) ps->componentComplete();
-        else ps->classBegin();
-    }
-#else
-    (void) o; (void) complete;
-#endif
-}
 
 // ---- declared list properties (`property list<QtObject> kids`) ----------------
 // The compiled side ALREADY appends through the meta-object list property —
@@ -1592,17 +1429,6 @@ public:
 Q_DECLARE_INTERFACE(QQmlFinalizerHook, QQmlFinalizerHook_iid)
 }
 #endif
-extern "C" void qtd_component_finalized(void* o) {
-#if defined(QTD_HAVE_QML) && QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
-    if (!o) return;
-    // qobject_cast, not dynamic_cast: the hook is reached through qt_metacast by IID, which is what
-    // makes the locally-declared interface work at all.
-    if (auto* fh = qobject_cast<QQmlFinalizerHook*>(static_cast<QObject*>(o)))
-        fh->componentFinalized();
-#else
-    (void) o;
-#endif
-}
 
 // ---- value-type ("gadget") grouped properties --------------------------------
 // `Q_PROPERTY(ValueTypeGroup vt ...)` where ValueTypeGroup is a Q_GADGET: `vt.count` in QML does
@@ -2117,136 +1943,6 @@ extern "C" void* qtd_color_shade(const char* s, double factor, int lighter) {
     (void)s; (void)factor; (void)lighter;
     return new QString();
 #endif
-}
-// Dumps EVERY property an object's meta-object declares, as `<path>.<name>\t<value>`. Both the
-// compiled side and the QQmlComponent oracle call THIS function, so the comparison covers what
-// the objects actually are rather than what the compiler chose to record — and no difference can
-// come from the two sides formatting a value differently, since there is only one formatter.
-// ...and the same dump with the `__class` decided by the CALLER. The walk below cannot tell our
-// generated class from a Qt one — both are just names, and ours is named after the document exactly
-// as the engine names a document-defined type — so for a NESTED child the compiler passes the C++
-// base it built the object on. An empty hint keeps the walk, which is what the root wants.
-extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls);
-extern "C" void qtd_dump_object(void* o, const char* path) { qtd_dump_object_as(o, path, nullptr); }
-
-// Dump ONE object named by a PATH from a root — `contentItem.effect.data[1]`, resolved segment by
-// segment through the meta-object. A document handed to the engine wholesale has no D fields to
-// walk, so the dump cannot be a chain of field accesses the way a compiled one is; the paths are
-// the same ones `--objpaths` already hands the oracle, so both sides walk the same tree by the same
-// names. LOUD when a segment does not resolve: a path silently skipped would read as agreement.
-extern "C" void qtd_dump_path(void* root, const char* path) {
-    if (!root || !path || !*path) return;
-    QByteArray p(path);
-    QObject* cur = static_cast<QObject*>(root);
-    int at = 0;
-    while (at < p.size() && cur) {
-        int dot = p.indexOf('.', at);
-        QByteArray seg = p.mid(at, dot < 0 ? -1 : dot - at);
-        at = dot < 0 ? p.size() : dot + 1;
-        int br = seg.indexOf('[');
-        if (br < 0) {
-            cur = static_cast<QObject*>(qtd_prop_get_obj(cur, seg.constData()));
-        } else {
-            QByteArray nm = seg.left(br);
-            int idx = seg.mid(br + 1, seg.size() - br - 2).toInt();
-            cur = static_cast<QObject*>(qtd_list_at(cur, nm.constData(), idx));
-        }
-    }
-    if (!cur) {
-        std::fprintf(stderr, "qtd_dump_path: '%s' resolves to nothing\n", path);
-        return;
-    }
-    qtd_dump_object_as(cur, (p + ".").constData(), "");
-}
-extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
-    if (!o) return;
-    QObject* q = static_cast<QObject*>(o);
-    const QMetaObject* mo = q->metaObject();
-    // The C++ class each object actually IS, so comparing two DIFFERENT objects shows up as one
-    // clear difference instead of a scattered set of property mismatches. Our objects are D
-    // subclasses whose own className is generated, so the chain is walked to the first Qt class —
-    // which is the bound base for ours and the class itself for the engine's, and therefore
-    // comparable. Qt's Flickable reparents visual children into its contentItem, so `data[0]` on a
-    // ListView is NOT the child the document wrote there: without this the two sides quietly
-    // compared a Rectangle against an internal content item.
-    {
-// ...skipping any class that declares no properties of its own. Qt puts pure enum-holders in the
-        // chain (QQuickDialogButtonBox's is DialogButtonBox_QMLTYPE < QPlatformDialogHelper <
-        // QQuickDialogButtonBox), and stopping at the first Qt name picked the holder instead of the type.
-        // A hint is where the walk STARTS, not what it answers: the engine applies the same
-        // "skip a class that declares no properties of its own" rule above whatever it found, and a
-        // QQuickMenuSeparator declares none — its answer is QQuickControl. Starting at the hinted
-        // class and then walking gives the engine's answer for the same object.
-        const QMetaObject* c = mo;
-        bool named = false;   // the caller pointed AT this class, so it is not one to skip past
-        if (cls && *cls)
-            for (const QMetaObject* k = mo; k; k = k->superClass())
-                if (std::strcmp(k->className(), cls) == 0) { c = k; named = true; break; }
-        auto qtdGenerated = [](const QMetaObject* k) {
-            for (int i = k->classInfoOffset(); i < k->classInfoCount(); ++i)
-                if (std::strcmp(k->classInfo(i).name(), "qtdGenerated") == 0) return true;
-            return false;
-        };
-        // The leading-Q test applies to the NAMED class too, and that is not a detail: the oracle
-        // runs this same walk over the ENGINE's chain, where a document type is `<Document>_QML_n`.
-        // `Locals.qml` produces `Locals_QML_0`, which fails the test there and answers QObject --
-        // so our `Locals` has to fail it here for the same reason, or the two sides disagree about
-        // a document whose name simply does not begin with Q. Being NAMED exempts a class only from
-        // being skipped for being ours, which is what an inline component needs and a document root
-        // must not have.
-        while (c && (c->className()[0] != 'Q' || (qtdGenerated(c) && !named)
-                     || c->propertyCount() <= c->propertyOffset())) { c = c->superClass(); named = false; }
-        // Qt generates a subclass per QML type (`QQuickRectangle_QML_2`); it IS that type, so the
-        // suffix is normalised away — otherwise every object the document declares would read as a
-        // type mismatch and the real ones would be lost in it.
-        QByteArray cn(c ? c->className() : mo->className());
-        int cut = cn.indexOf("_QML");
-        if (cut > 0) cn.truncate(cut);
-        std::printf("%s__class\t%s\n", path, cn.constData());
-    }
-    for (int i = 0; i < mo->propertyCount(); ++i) {
-        QMetaProperty mp = mo->property(i);
-        if (!mp.isReadable()) continue;
-        // A property whose metatype the type system does not know cannot be read into a QVariant
-        // safely: QMetaType::canConvert walks a null interface and the process dies there (gdb, on
-        // a `QQmlListProperty<QObject>` property added before its metatype was registered).
-        // Skipping is what every other untextable property here already does; crashing the dump is
-        // not one of the options.
-#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-        if (!mp.metaType().isValid()) continue;
-#endif
-        QVariant v = mp.read(q);
-        QString out;
-        if (mp.isEnumType()) {
-            const char* k = mp.enumerator().valueToKey(v.toInt());
-            out = k ? QString::fromUtf8(k) : QString::number(v.toInt());
-        } else if (v.canConvert<QObject *>()) {   // Qt5 has no QVariant::metaType()
-            // The ADDRESS differs between the two runs by construction; what is comparable is
-            // whether the slot is filled at all.
-            out = v.value<QObject*>() ? QStringLiteral("<object>") : QStringLiteral("<null>");
-#ifdef QTD_HAVE_QML
-        } else if (v.canConvert<QJSValue>()) {
-            // A QJSValue-typed property that HOLDS an object is an object slot like any other, and
-            // saying so is the difference between a comparison and a blank. `Rectangle.gradient` is
-            // one, and both sides printed empty for it whether it held a Gradient or null — which is
-            // precisely how `gradient: control.down ? null : buttonGradient` stayed a one-shot with
-            // nothing in the value differential to show for it.
-            QJSValue jv = v.value<QJSValue>();
-            // ONLY when it holds a QObject. A plain JS object has no text form worth comparing —
-            // `[object Object]` says nothing, and Text.fontInfo is one on the engine's side and
-            // nothing on ours, which would have added eleven differences that are a spelling, not
-            // a defect. Skipped, exactly as a list or a gadget is. A slot filled on one side and
-            // empty on the other still shows: the key is present for one and absent for the other.
-            if (!jv.toQObject()) continue;
-            out = QStringLiteral("<object>");
-#endif
-        } else if (v.canConvert<QString>()) {
-            out = v.toString();
-        } else {
-            continue;   // a list or an opaque gadget: not comparable as text, and not faked as one
-        }
-        std::printf("%s%s\t%s\n", path, mp.name(), out.toUtf8().constData());
-    }
 }
 // Reads an ENUM property as its KEY — the same spelling the SETTER already takes, so a value
 // read here compares against the key a `Qt.HighContrast` literal compiles to. QVariant::toString

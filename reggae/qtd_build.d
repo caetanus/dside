@@ -199,7 +199,8 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // build INPUTS. Without the edge, editing the runtime leaves every already-generated binding
     // on the old copy and the whole matrix goes green against code that is no longer in the tree —
     // which is exactly how a Qt5 build break stayed hidden.
-    auto runtimeSrc = ["qtmoc/qtdmoc.cpp", "qtmoc/qtmoc.d", "holder/qtd_holder.cpp", "holder/holder.d"]
+    auto runtimeSrc = ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp", "qtmoc/qtmoc.d",
+                       "holder/qtd_holder.cpp", "holder/holder.d"]
         .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
     auto gen = Target(stamp,
         guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, gend] ~ runtimeSrc),
@@ -209,7 +210,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // headers. Shims are C++ -> identical for ldc2/dmd, so this target is shared.
     auto shimsLib = buildPath(bdir, "libshims.a");
     auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && for c in " ~ genDir ~ "/*.cpp; do "
-        ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc ]; then EX="` ~ priv ~ `"; else EX=; fi; `
+        ~ `b=$(basename "$c" .cpp); case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
         ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
     auto shims = Target(shimsLib,

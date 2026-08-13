@@ -3125,6 +3125,39 @@ por o ter tratado como lote que gastei uma volta a aprender isto.
 
 O roquete continua em 33, que é o número honesto.
 
+#### E na volta seguinte: 33 → 23, com a conclusão acima corrigida
+
+A frase que escrevi acima — *"o passo um não é mover funções, é reestruturar as guardas"* — **estava
+errada, e verifiquei-a em vez de a repetir.** Das onze candidatas, **dez têm o guard DENTRO do
+corpo** (um `#ifdef`/`#else` interno que devolve o valor por omissão sem QtQml): são auto-contidas e
+movem-se inteiras. Uma única tinha a forma que partiu tudo — `qtd_attach_value_source`, escrita como
+**duas definições** com o `#else` a fornecer o no-op — e o meu varrimento levou metade. Não eram ~50
+condicionais a reorganizar: era uma função a excluir do lote.
+
+A regra de extracção passou a ter uma condição a mais e óbvia depois de vista: **um bloco só sai se
+estiver equilibrado no pré-processador por si só.** Com ela, `runtime/qtmoc/qtdmoc_qml.cpp` levou dez
+funções e o `qtdmoc.cpp` ficou a zero de profundidade.
+
+```
+runtime-boundary OK, AND IT SHRANK: qml_fns 23 (baseline 33)
+```
+
+Três coisas que a mudança exigiu e que valem por si:
+
+- **o gerador copia o novo ficheiro** — sem isso, cada binding ficava com a cópia antiga e a matriz
+  ficava verde contra código que já não está na árvore, que é literalmente o comentário que já
+  existia no `runtimeSrc` a avisar deste risco;
+- **a ABI não muda com a lista de módulos.** Todas as funções mantêm corpo no-op sem QtQml, por isso
+  um binding sem QML continua a resolver os mesmos símbolos. Compilado nas três configurações antes
+  de correr o build: Qt6+QML, Qt5+QML, e sem QML nenhum;
+- **o Qt5 partiu primeiro, e foi a regra da casa a apanhá-lo.** Eu tinha incluído um cabeçalho
+  privado (`qqmlfinalizer_p.h`) que só existe no Qt6; o original nem sequer o inclui — **declara a
+  interface localmente**, guardada por `QT_VERSION >= 6.2`, e a minha extracção levou a função sem a
+  declaração. Movida a declaração com ela, as duas versões passam.
+
+Matriz completa verde nas duas versões do Qt: `rc=0`, 248 documentos, `UNPLACED=0`. Baseline descida
+para 23. **É a primeira vez que esta fronteira anda para o lado certo em nove rodadas.**
+
 ### E o achado mais antigo do ficheiro (r4 #9) deixou de estar por tocar
 
 *"ABI/layout assumptions precisam de probes formais"* é da rodada 4 e nunca tinha sido mexido. A
