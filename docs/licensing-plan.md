@@ -237,7 +237,7 @@ LICENSES/Apache-2.0.txt         # third-party payload, if applicable
 LICENSES/LLVM-exception.txt     # libclang distribution, if applicable
 REUSE.toml
 CONTRIBUTING.md
-docs/licensing.md               # concise user-facing policy after this plan is executed
+docs/licensing.md               # concise user-facing policy after this plan is executed  [DONE]
 docs/distributing-qt.md         # instructions for application distributors
 ```
 
@@ -454,11 +454,15 @@ says which of the two it did. 545 files covered.
 
 ### Phase 3 — license generated and installed artifacts
 
-- [ ] Add the output notice to the generator manifest.
-- [ ] Add machine-readable output provenance.
+- [x] Add the output notice to the generator manifest — every emitted `.d` and `.cpp`.
+- [x] Add machine-readable output provenance: a `// provenance:` line with generator revision, Qt
+      version, module list and spec, IN the file — a file travels alone, into bug reports and into
+      other people's vendor directories.
 - [x] Copy license and notice files into installed packages (`LICENSE`, `LICENSES/`, `NOTICE`).
-- [ ] Validate both LDC and DMD packages after unpacking.
-- [ ] Document the generated-output grant and input boundary.
+- [ ] Validate both LDC and DMD packages after unpacking. **Not done:** the package gate
+      (`license-package`) is not written; `tests/install.sh` now copies LICENSE/LICENSES/NOTICE but
+      nothing yet unpacks the result and checks it.
+- [x] Document the generated-output grant and input boundary (`docs/licensing.md`).
 
 **Exit criterion:** a consumer can determine the license and provenance using only the installed
 package.
