@@ -63,6 +63,65 @@ certo com o motor — está **vazio** pela primeira vez desde que existe. A fras
 tipo" já não é uma contagem sem comparação atrás: é 110 documentos comparados propriedade a
 propriedade, e o que não chega lá está nomeado.
 
+## Resposta à rodada 14 (escrita a 2026-08-13)
+
+Sete achados, dois críticos. **Todos fechados.** Os dois críticos reproduziram-se exactamente como
+descritos, e a correcção do primeiro apagou três achados de uma vez porque atacou a forma e não o
+sintoma.
+
+- **#1 CRÍTICO, o stub de `qtd_context_prop_qs` transformava um no-op seguro em null deref:
+  FECHADO, e confirmei antes de corrigir.** A implementação real devolve **sempre** `new QString()`,
+  com QML ou sem; o meu stub devolvia `nullptr`; o `contextStr` desreferencia-o no `qsToD`. A
+  auditoria tem razão numa coisa mais profunda do que o bug: **inferir um valor de retorno a partir
+  de um TIPO de retorno é a forma errada**. Por isso não remendei o gerador — **deixei de ter
+  gerador**. O stub é agora o MESMO ficheiro compilado sem `QTD_ENABLE_QML`, e os corpos `#else` que
+  lá estão são os no-ops escritos por quem escreveu cada função. Semântica e ABI certas por
+  construção, não por um script que tem de acertar em C++.
+  E o guarda da classe, nos dois lados: **`nullptr` É a string vazia** (`qsToD` e
+  `qtd_qs_utf8len`). Fica escrito no sítio que a correcção de fundo é outra — entregar um VALOR em
+  vez de um ponteiro possuído; são 33 sítios `return new QString` em C++ contra 17 leituras em D, e
+  a posse viaja num comentário em vez de no tipo.
+  O `noqml_helpers` passou a exercitar os helpers que devolvem VALOR
+  (`contextStr`/`contextInt`/`contextObject`), que era exactamente a chamada não coberta.
+- **#2 "paridade exacta" existia numa medição manual: FECHADO por desaparecimento.** Sem gerador
+  textual não há duas listas para comparar: há um ficheiro e duas configurações de compilação. O
+  `n > 0` que a auditoria apanhou como todo o contrato deixou de existir com ele.
+- **#3 a correcção de freshness esqueceu o próprio gerador de stubs: FECHADO nas duas metades.** A
+  aresta em falta desapareceu com o script. O resíduo — `mkdir -p ocpp` e `ar rcs` sem limpar — era
+  real e está corrigido: `ocpp` é apagado por inteiro e o archive recriado, por isso o `.o` de um
+  `.cpp` que o gerador deixe de emitir não sobrevive no glob.
+- **#4 `archive-composition` ignorava os artefactos cuja prova falta: FECHADO.** O grafo REGISTA
+  cada archive com a decisão que o produziu; o canário recebe essa lista e **depende de todos** —
+  onze, com o libsample. Archive em falta é FALHA, e um marker que não seja `yes`/`no` também. A
+  auditoria estava certa nos três detalhes: o glob, o `continue` silencioso, e as duas arestas a
+  sustentar uma conclusão sobre onze.
+- **#5 `runtime-provenance` com ordering incompleto: FECHADO, e o detalhe perigoso era o pior.**
+  `libsampleGenStamp` decidia a FORMA do grafo com `exists(output)` ao configurar — num checkout
+  limpo devolvia `[]`, o portão não ordenava a geração e passava sem ver as cópias. Agora há um
+  registo de todos os geradores e o portão depende deles sempre. E os dois portões passaram para o
+  fim do reggaefile: declarados antes, viam um registo parcial.
+- **#6 CRÍTICO, a sonda de attach não forçava falha e o fallback usava GC: FECHADO nas duas
+  metades.** O seam era chamado na thread PRINCIPAL, onde `Thread.getThis()` não é null — o assert
+  era condicional a uma situação que não ocorre e o teste imprimia uma afirmação que não exercitou.
+  Agora o seam é uma variável de ambiente lida pelo `qtdAttachThread()`, o filho corre um virtual D
+  numa thread que o **Qt** criou, e a prova é NEGATIVA: o virtual anuncia-se e o anúncio tem de
+  estar ausente. Com **controlo** — sem o seam o mesmo filho ENTRA no virtual —, senão o negativo
+  não prova nada.
+  E o fallback deixou de tocar em D: era `new Exception` mais concatenação mais a política que grava
+  contador TLS, tudo na thread declarada insegura. Hoje é `nothrow @nogc` com `fprintf` da libc.
+  *"Nada D-side corre depois disto"* era literalmente falso e passou a ser verdade.
+- **#7 o gap probe aceitava qualquer falha: FECHADO.** Passou a carregar a ASSINATURA —
+  `{target, exit, match}` — e o runner exige o código de saída contratado e um pedaço do
+  diagnóstico. O linter valida a forma. Provado a morder com uma assinatura errada.
+
+**E um defeito do meu próprio runner, encontrado ao prová-lo:** `set -e` matava o guião na
+substituição de comando que TINHA de falhar. Um runner que morre na falha esperada não reporta nada
+— parecia "sem saída, rc=1". A sonda que serve para não confiar num verde tinha o mesmo problema que
+persegue.
+
+Matriz verde nas duas versões do Qt: `rc=0`, 248 documentos, 11 archives do grafo, 49 cópias
+verbatim idênticas, 24 sondas nos dois sentidos.
+
 ## Rodada 14: a fronteira agora existe; os stubs mudaram a semântica e os canários falham aberto
 
 **Data:** 2026-08-13. **Base auditada:** `c2ba94e`, árvore limpa antes desta edição.
