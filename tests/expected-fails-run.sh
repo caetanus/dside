@@ -29,7 +29,13 @@ d = json.load(open(sys.argv[1]))
 l = d["entries"] if isinstance(d, dict) and "entries" in d else d
 for e in l:
     for t in e.get("probe_targets", []):
-        print("%s\t%s" % (e["id"], t))
+        print("keep\t%s\t%s" % (e["id"], t))
+    # ...and the OTHER direction (critics r13 #6): a known_gap may name a target that must FAIL
+    # today. When it starts passing, the gap is closed and the entry describes a world that no
+    # longer exists — an UNEXPECTED PASS, which is the only way an inventory notices its own good
+    # news. Without it the runner can only ever say "the protections still hold".
+    for t in e.get("gap_probes", []):
+        print("gap\t%s\t%s" % (e["id"], t))
 PY
 )
 
@@ -39,10 +45,15 @@ if [ -z "$targets" ]; then
 fi
 
 n=0; bad=0
-echo "$targets" | while IFS="	" read -r id tgt; do
+echo "$targets" | while IFS="	" read -r dir id tgt; do
   [ -n "$tgt" ] || continue
   n=$((n + 1))
-  if ! "$BUILD" "$tgt" >/dev/null 2>&1; then
+  if [ "$dir" = gap ]; then
+    if "$BUILD" "$tgt" >/dev/null 2>&1; then
+      printf 'expected-fails-run: %s PASSES — it is the GAP probe for `%s`, which claims this does not work. Remove the entry or narrow it.\n' "$tgt" "$id" >&2
+      bad=$((bad + 1))
+    fi
+  elif ! "$BUILD" "$tgt" >/dev/null 2>&1; then
     printf 'expected-fails-run: %s FAILED — it is the probe for `%s`, so that entry now describes a protection that is not there\n' \
            "$tgt" "$id" >&2
     bad=$((bad + 1))
@@ -54,4 +65,4 @@ done
 read -r n bad < "${TMPDIR:-/tmp}/qtd-efr.$$" || { n=0; bad=0; }
 rm -f "${TMPDIR:-/tmp}/qtd-efr.$$"
 [ "${bad:-0}" -eq 0 ] || exit 1
-echo "expected-fails-run OK: $n probe target(s) executed, every documented risk still covered"
+echo "expected-fails-run OK: $n probe target(s) executed, every documented risk still covered, and every documented gap still open"

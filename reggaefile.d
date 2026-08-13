@@ -48,6 +48,10 @@ string qtInstallQml() {
 Build reggaeBuild() {
     immutable root = getcwd();
     Target[] all;
+    // Targets that must FAIL while a documented gap is open (critics r13 #6). They are OPTIONAL:
+    // expected-fails-run names them and expects the failure, and a failing target in the default
+    // build would report the gap as a regression — right fact, wrong channel.
+    Target[] gapProbes;
 
     string t(string dir, string f) { return buildPath(root, "tests", dir, f); }
     bool haveQt5() { return execute(["pkg-config", "--exists", "Qt5Widgets"]).status == 0; }
@@ -240,6 +244,25 @@ Build reggaeBuild() {
                     [Target(qmlFile), qmltcTool(root, ctrl), ctrl.gen]);
             }
         }
+        // ...and a GAP PROBE (critics r13 #6): a target that must FAIL while a documented gap is
+        // open. Qt's Imagine Label delegates `states: [ {...} ]` on a NinePatchImageSelector — a type
+        // of the style's impl module, absent from our registry — so `--pedantic` exits 4. When that
+        // type is generated, this passes, and expected-fails-run reports the entry as describing a
+        // world that no longer exists. Until now the inventory could only notice bad news.
+        {
+            auto imagineDir = buildPath(qtInstallQml(), "QtQuick", "Controls", "Imagine");
+            auto lbl = buildPath(imagineDir, "Label.qml");
+            // OPTIONAL: a gap probe MUST fail while the gap is open, so it cannot be part of the
+            // default build — it is run by expected-fails-run, which expects the failure. Putting
+            // it in `all` turned `./build` red, which is the gate reporting the gap as a
+            // regression: right fact, wrong channel.
+            if (exists(lbl))
+                gapProbes ~= Target.phony("qmltc-pedantic-imagine-label",
+                    buildPath(ctrl.bdir, "qmltc-d") ~ " --pedantic --dump " ~ lbl ~ " ILabel"
+                    ~ " --qmlmap " ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " -I " ~ imagineDir
+                    ~ " > /dev/null", [qmltcTool(root, ctrl), ctrl.gen]);
+        }
+
         // ...and the same compiler pointed at QML NOBODY HERE WROTE: Qt's own Basic style files,
         // generated, linked and CONSTRUCTED. Six defects lived where compile-clean cannot see —
         // they all build and then die (or silently build the wrong object) at construction.
@@ -413,8 +436,13 @@ Build reggaeBuild() {
         auto efList = buildPath(root, ".build", "build-list.txt");
         auto efb = Target(efBin, "dmd -of=$out " ~ efD, [Target(efD)]);
         // deps=[efb] -> $in is the checker; capture ./build --list, then validate against it.
+        // ...and the GAP PROBES with it. They are optional targets, so `--list` does not show them
+        // — the linter called the first one dangling, which is the linter being right about the
+        // list it was given and the list being incomplete. The reggaefile knows them, so it says so.
+        auto gpList = buildPath(root, ".build", "gap-probes.txt");
         all ~= Target.phony("expected-fails-lint",
             "sh -c \"" ~ buildPath(root, "build") ~ " --list > " ~ efList ~ " 2>/dev/null; "
+            ~ "cat " ~ gpList ~ " >> " ~ efList ~ " 2>/dev/null; "
             ~ "$in " ~ efJson ~ " " ~ efList ~ "\"", [efb]);
     }
 
@@ -551,12 +579,17 @@ Build reggaeBuild() {
     // other minor they stay reachable by name but out of defaultTargets(), so the full matrix
     // never fails on SDK drift.
     import std.range : chain;
+    // The optional gap probes, written where the linter can read them (see expected-fails-lint).
+    writeIfChanged(buildPath(root, ".build", "gap-probes.txt"),
+                   gapProbes.map!(t => "- " ~ t.rawOutputs[0]).join("\n") ~ "\n");
     if (gatesEnforceable)
         return Build(chain(all.map!(t => createTopLevelTarget(t)),
                            manifestGates.map!(t => createTopLevelTarget(t)),
+                           gapProbes.map!(t => optional(t)),
                            aggregates.map!(t => optional(t))));
     return Build(chain(all.map!(t => createTopLevelTarget(t)),
                        manifestGates.map!(t => optional(t)),
+                       gapProbes.map!(t => optional(t)),
                        aggregates.map!(t => optional(t))));
 }
 

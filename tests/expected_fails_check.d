@@ -49,6 +49,22 @@ void main(string[] args) {
             auto k = e["kind"].str;
             if (!KINDS.canFind(k))
                 errs ~= id ~ ": kind `" ~ k ~ "` is not one of " ~ KINDS.to!string;
+            // `gap_probes` is the OTHER direction (critics r13 #6): targets that must FAIL while the
+            // gap is open, so the runner can report an UNEXPECTED PASS when it closes. Only a
+            // known_gap may carry them — a `risk` claiming something must keep failing would be an
+            // inventory of wishes.
+            if ("gap_probes" in e.object) {
+                if (k != "known_gap")
+                    errs ~= id ~ ": `gap_probes` belongs to kind=known_gap, not `" ~ k ~ "`";
+                if (e["gap_probes"].type != JSONType.array || e["gap_probes"].array.length == 0)
+                    errs ~= id ~ ": `gap_probes` must be a non-empty array";
+                else foreach (gp; e["gap_probes"].array) {
+                    nProbe++;
+                    if (gp.type != JSONType.string || gp.str !in targets)
+                        errs ~= id ~ ": gap_probe `" ~ (gp.type == JSONType.string ? gp.str : "?")
+                            ~ "` is not a real build target (dangling)";
+                }
+            }
             else if (k == "risk") {
                 nRisk++;
                 if ("probe_targets" !in e.object || e["probe_targets"].type != JSONType.array

@@ -139,7 +139,7 @@
       "id": "ctor-throw-path-unexercised",
       "kind": "known_gap",
       "area": "gen/exception-safety",
-      "reason": "THE GUARD EXISTS; THE PATH IS UNTESTED — and the entry said the opposite until 2026-08-13 (critics r13 #6). It claimed that when a C++ constructor throws, nothing owns the __cpp_new block. The emitter produces exactly the scope guard that owns it, and `ctor-guard` walks 1190 constructors to say so on every build. An inventory that keeps a falsified explanation alive is worse than no inventory: it is the failure mode this file was written to prevent, and the linter could not see it because it validates schema and names, not truth.\n\nThe residual risk is real and different: no test makes a bound C++ constructor THROW and then checks that the block was freed. The structural gate proves the guard is EMITTED; nothing proves it RUNS. That needs a fixture type whose constructor throws on demand, through the Lippincott layer, with the allocation observed.",
+      "reason": "THE GUARD EXISTS; THE PATH IS UNTESTED — and the entry said the opposite until 2026-08-13 (critics r13 #6). It claimed that when a C++ constructor throws, nothing owns the __cpp_new block. The emitter produces exactly the scope guard that owns it, and `ctor-guard` walks 1190 constructors to say so on every build. An inventory that keeps a falsified explanation alive is worse than no inventory: it is the failure mode this file was written to prevent, and the linter could not see it because it validates schema and names, not truth.\n\nThe residual risk is real and different: no test makes a bound C++ constructor THROW and then checks that the block was freed. The structural gate proves the guard is EMITTED; nothing proves it RUNS. That needs a fixture type whose constructor throws on demand, through the Lippincott layer, with the allocation observed.\\n\\nDIRECTION (critics r13 #6, second half): this entry has no gap probe because the thing it describes is a MISSING TEST, and a missing test cannot be probed — there is no target that fails today and would pass when the path is exercised, because the target IS the work. Said here rather than left as an empty field: `gap_probes` is for a gap the build can already see, and this one is invisible until someone writes it.",
       "remove_when": "a test constructs a bound type whose C++ constructor throws, and observes that the __cpp_new block was freed — the guard proven to RUN, not only to be emitted",
       "since": "2026-08-10",
       "title": "the ctor scope guard is emitted and gated; the throwing path itself is never run"
@@ -249,6 +249,18 @@
       "since": "2026-08-12",
       "reason": "Material's SliderHandle renders as a filled pink circle under the engine and as nothing under ours, and BOTH sides dump `data[0].color #00000000` — transparent. So the pixel that differs is not any value the census reads, which is the opposite of every other document in this file.\n\nThe document explains why it is delicate: `readonly property var control: parent`, and both colours are `root.control ? <Material colour> : \"transparent\"`. Standalone the item has no parent, so `control` is null and both colours ARE transparent — which is what both sides dump. The engine's frame is pink anyway, so under the o3 gate's render its item has a parent that ours does not, and the value dumped is not the value drawn.\n\nThat makes this a question about the RENDER CONTEXT the two harnesses give the object, not about the compiler: both `color` bindings are already DELEGATED to the engine here, so the expression is the engine's own. Named rather than left inside a demoted count, because a difference the value axis cannot see is exactly the kind this project keeps being surprised by.",
       "remove_when": "Material's SliderHandle renders identically, which means the object is drawn in the same parent context on both sides — or the difference is shown to be a real value one after all"
+    },
+    {
+      "id": "imagine-style-impl-types-are-not-in-the-registry",
+      "title": "the Imagine style's impl types are absent, so every one of its documents delegates",
+      "kind": "known_gap",
+      "area": "generator/registry",
+      "since": "2026-08-13",
+      "reason": "`NinePatchImageSelector` and the rest of QtQuick.Controls.Imagine.impl are not in the binding, so every Imagine document builds those objects through the ENGINE and delegates their `states: [ {...} ]` binding. Measured 2026-08-12: after the dynamic leaf read landed, Imagine's documents report `0 skipped, 0 weakly typed` and exactly one delegation each — that one. It is why `-O1` compiles NOTHING in that style and why the level judge excludes it as vacuous.\\n\\nThis is a GENERATION question, not a compiler one: compiling `states` would buy nothing while the objects themselves are engine-built, because -O1 refuses on that axis first. Recorded here with a gap probe so the day it stops being true is a red line rather than a discovery.",
+      "remove_when": "`qmltc-pedantic-imagine-label` passes — Imagine's Label compiles with ZERO delegations, which means the style's impl types are typeable",
+      "gap_probes": [
+        "qmltc-pedantic-imagine-label"
+      ]
     }
   ]
 }
