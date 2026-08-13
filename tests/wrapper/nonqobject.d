@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A NON-QObject THAT THE BINDING OWNS — the three states CRITICS round 12 #2 asks for.
 //
 // `QTreeWidgetItem` is not a QObject: no parent(), no destroyed(), nothing to ask afterwards. It is

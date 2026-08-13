@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // critics r8 #3: qmlRegisterType must give a type REAL identity. Two DISTINCT D types that happen
 // to share T.stringof ("Dup", from different modules) registered under the SAME uri/name/version
 // is a CONFLICT (throws) — not a silent "already registered" that drops the second type. And

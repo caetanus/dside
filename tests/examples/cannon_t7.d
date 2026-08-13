@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // moc/CTFE with QString args: a D @QObject emits textChanged(QString), connected
 // to the REAL setText(QString) slot of a built-in QLabel. Proves QString (UTF-8)
 // marshaling crossing a custom-signal D -> Qt-slot via the runtime meta-object.

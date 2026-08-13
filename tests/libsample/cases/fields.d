@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import sample.modelindex, sample.oddbool, sample.intwrapper;
 import std.stdio;
 void main() {

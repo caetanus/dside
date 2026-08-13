@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qtd_holder.cpp — C support for the D wrapper lifetime layer. QtCore-only.
 //
 // The identity map lives HERE (C++ side) on purpose: the D GC does not scan C++

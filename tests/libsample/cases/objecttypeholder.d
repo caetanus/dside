@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // composition: value class that owns an ObjectType* internally; const char* ctor;
 // virtual method returning Str by value from the aggregated member.
 import sample.objecttypeholder, sample.str;

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The operators were invoked and their results thrown away, so `a + b` merely COMPILING was the
 // whole test: an opBinary that returned a default-constructed Expression, or that swapped its
 // operands, still printed OK. Expression::toString() is std::string and is not bound, but the

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Container QList<T> round-trip, Qt5/Qt6 AGNOSTIC. The QList layout differs
 // COMPLETELY between versions (Qt6: QArrayDataPointer {d,ptr,size}; Qt5:
 // QListData {Data* d} with elements inline in the array + free via QListData::dispose).

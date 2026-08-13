@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qmltc-d — compile a .qml document into D (our analog of Qt's qmltc, which emits C++).
 // Frontend = Qt's OWN QQmlJS parser (one unified QML+JS AST, dual-Qt, no new toolchain dep);
 // backend emits a D @QObject class that uses the qtmoc runtime, so instantiating the generated

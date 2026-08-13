@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import qt.webengine.qwebengineurlscheme, qt.webengine.qstring;
 import cxxrt, std.stdio;
 void main() {

@@ -1,12 +1,13 @@
 {
-	"name": "qt-dlang-gen",
-	"description": "Pure-D Qt bindings via extern(C++): a libclang-based generator plus a reggae-driven interop build (C+++D). No hand-written C shim.",
-	"targetType": "none",
-	"subPackages": [
-		"./generator-d",
-		"./runtime"
-	],
-	"dependencies": {
-		"reggae": "~>0.5.24"
-	}
+    "name": "qt-dlang-gen",
+    "license": "BSL-1.0",
+    "description": "Pure-D Qt bindings via extern(C++): a libclang-based generator plus a reggae-driven interop build (C+++D). No hand-written C shim.",
+    "targetType": "none",
+    "subPackages": [
+        "./generator-d",
+        "./runtime"
+    ],
+    "dependencies": {
+        "reggae": "~>0.5.24"
+    }
 }

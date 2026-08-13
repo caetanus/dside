@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A POINTER QT HANDED BACK IS NOT OURS TO DELETE.
 //
 // `QThread.currentThread()` compiles to `QThread.wrap(__QThread_1())`, and the current thread has

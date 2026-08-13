@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # THE LEVELS MUST AGREE. -O is a degree of CERTAINTY, not of speed:
 #
 #   -O1  statically typed translation only

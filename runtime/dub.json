@@ -1,7 +1,14 @@
 {
-	"name": "runtime",
-	"description": "Live D runtime for the extern(C++) bindings: the GC/lifetime wrapper (holder) and the CTFE moc layer (qtmoc). The C++ companions (qtd_holder.cpp, qtdmoc.cpp) are compiled by reggae alongside each binding, so this is a source library.",
-	"targetType": "sourceLibrary",
-	"sourcePaths": ["holder", "qtmoc"],
-	"importPaths": ["holder", "qtmoc"]
+    "name": "runtime",
+    "license": "BSL-1.0",
+    "description": "Live D runtime for the extern(C++) bindings: the GC/lifetime wrapper (holder) and the CTFE moc layer (qtmoc). The C++ companions (qtd_holder.cpp, qtdmoc.cpp) are compiled by reggae alongside each binding, so this is a source library.",
+    "targetType": "sourceLibrary",
+    "sourcePaths": [
+        "holder",
+        "qtmoc"
+    ],
+    "importPaths": [
+        "holder",
+        "qtmoc"
+    ]
 }

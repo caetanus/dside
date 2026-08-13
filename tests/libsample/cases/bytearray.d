@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import sample.bytearray; import std.stdio;
 void main() {
     auto b = ByteArray("abc\0".ptr);

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 """Classify qmltc-d's refusals into CATEGORIES, from .diag files.
 
 CRITICS' thesis applied to the compiler's own output: a refusal is a STATE, not a line of

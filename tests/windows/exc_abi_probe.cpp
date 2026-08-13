@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // exc_abi_probe.cpp — Windows/MSVC-x64 de-risk probe for the exception + guard layer.
 // See docs/windows-roadmap.md "Tier 2.5". This is the SAME experiment that was proven on
 // Linux (ldc AND dmd); re-run it on a Windows box before trusting exceptions on MSVC.

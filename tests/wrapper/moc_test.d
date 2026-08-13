@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qpaintevent, qt.widgets.qtvirt;
 import qtmoc, cxxrt, std.stdio;
 pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(void* self, ref int, char**, int);

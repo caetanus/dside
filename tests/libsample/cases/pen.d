@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Pen records WHICH ctor built it (m_ctor / ctorType()), which is exactly what an overload-
 // resolution test needs: previously both Pen() and Pen(Color) were constructed and neither was
 // checked, so binding Pen(Color) to the default ctor would have passed.

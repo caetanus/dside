@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Does Qt recognise a D subclass of a BOUND type as that type? qobject_cast walks the META-OBJECT
 // chain (qt_metacast), not C++ RTTI, so a CTFE-built meta-object whose superClass does not reach the
 // C++ base would make every `qobject_cast<QQuickX*>` Qt performs on our objects fail — and Qt uses

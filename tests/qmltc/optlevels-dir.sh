@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # THE CERTAINTY LEVELS, OVER QT'S OWN CORPUS — where until now there was only a COUNT.
 #
 # The README says -O1 compiles 111 of Qt's 329 Controls documents and that nothing crosses untyped

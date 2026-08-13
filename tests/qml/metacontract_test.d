@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // critics r8 #4: the meta-method contract is enforced at COMPILE TIME, so a declaration whose
 // semantics the runtime can't honor never builds (instead of compiling and then lying). This
 // target's proof IS that it compiles: each `static assert` fails the build if the rule regresses.

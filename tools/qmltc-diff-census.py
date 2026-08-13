@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 """Compare the compiled dump against the engine's, and SEPARATE the two kinds of difference.
 
 A property that differs in VALUE is a defect. A path that exists on one side and not on the

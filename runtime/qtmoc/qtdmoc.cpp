@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Generic meta-object runtime for QObjects defined in D (without moc).
 // A single QtdMocObject trampoline builds its QMetaObject at runtime
 // via QMetaObjectBuilder from signatures the D side provides (extracted

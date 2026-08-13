@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 module homonym_b;   // defines `Dup` too — different signal/slot/property names => different shape
 import qtmoc;
 __gshared int b_hit = -1;

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // RUNTIME BOUNDARY RATCHET (critics r9 #2 / r11 #5).
 //
 // The audit has said for five rounds that a QML COMPILER's state and lifecycle live inside the

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // lupdate-d — a D-aware lupdate (CRITICS/PySide side-car): parse D source with libdparse and
 // extract translatable strings from tr("...") / [QCoreApplication.]translate("Ctx","src") calls
 // into a Qt .ts file. Qt's own lupdate can't read D; dparse gives us the AST so we don't guess

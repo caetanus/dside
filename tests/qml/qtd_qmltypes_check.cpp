@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Authoritative .qmltypes validator: parse a .qmltypes with QQmlJSTypeDescriptionReader —
 // the SAME reader qmllint/qmltyperegistrar use — and report parse errors + the discovered
 // type shape. Exit 0 iff it parses cleanly and Backend has the expected members.

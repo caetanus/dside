@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Side-table lifetime: creating a moc object registers it in g_moAttach (C++) and _reg (D);
 // destroying the QtdMocObject must drop BOTH (round-5 #5 — cleanup for the non-QML path too,
 // not only QML-created instances). Proves the destructor closes the side-table.

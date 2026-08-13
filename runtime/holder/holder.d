@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // holder.d — the D wrapper lifetime layer.
 //
 // Design (parenting-pins):

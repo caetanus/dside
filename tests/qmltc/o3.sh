@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # -O3 IS A PIPELINE, not a compiler flag: "compile everything that BEHAVES THE SAME".
 #
 # The compiler cannot decide that alone — it does not render and it does not run — so the check is

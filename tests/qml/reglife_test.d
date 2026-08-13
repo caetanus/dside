@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The moc registry (_reg) is a permanent GC root: an entry keeps its D object alive until the
 // C++ carrier is destroyed. A compiled QML document NESTS objects, so if those were parentless
 // every document would leak one carrier + one pinned D object per nested object, for the life of

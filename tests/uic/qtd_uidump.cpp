@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qtd_uidump.cpp — test-only oracle harness for the CTFE uic.
 //
 // Two entry points, both returning a canonical serialization of a widget tree so the D

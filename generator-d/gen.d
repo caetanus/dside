@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // gen.d — shared front-end for the binding generator, in D on the libclang C API
 // (native, no Python cindex). Discovery, the shiboken typesystem rules (loadRules),
 // name/keyword helpers, and AST utilities used by the extern(C++) emitter (emit_cxx.d).

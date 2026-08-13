@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qmlcachegen AOT: register.qml is compiled ahead of time to bytecode and linked in
 // (register_qml unit + qmlcache_loader hook). Crucially NO .qml source is shipped — there
 // is no qrcRegister here — so the engine can only serve qrc:/register.qml from the linked

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # The VALUE differential over a Controls style: every property of every object our side can name,
 # compared against the engine's answer for the same object paths. Usage:
 #   bash tests/qmltc/values_corpus.sh <scratchdir> <style> <outdir-under-scratch>

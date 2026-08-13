@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # The BEHAVIOUR half of the render criterion: click the middle of each document and compare the
 # FRAME afterwards, byte for byte. The plain render compares a document at rest and the value
 # differential compares it after a MUTATION written from outside; neither sees what a control looks

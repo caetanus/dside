@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The CTFE .rcc must not only make paths RESOLVE — it must serve the right BYTES. Checking
 // QFile.exists alone passed an .rcc whose payload was empty, truncated, or offset by one: every
 // name was in the tree and nothing read it. So each resource is opened, read in full, and

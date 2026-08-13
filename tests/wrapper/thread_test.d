@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `new QThread` IS A QThread — one object, with a trampoline whose run() lands in D.
 //
 // Qt creates the OS thread; the trampoline attaches it to druntime on the way in, so inside run()

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // CRITICS round-4 #6 — "pure silence has to end". A @Slot invoked by Qt must be nothrow
 // (a D exception can't cross the C++ frame), but swallowing it silently hides bugs. The policy
 // (qtmoc.qtdOnCallbackError) records it instead: a count + last-error + optional hook. This test

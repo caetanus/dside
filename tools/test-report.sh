@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # Structured test report (critics r6 #4). Emits a TSV over the reggae targets with EXPLICIT
 # environment metadata (commit, dirty, platform, exact Qt5/Qt6 + dmd/ldc2 + tool versions) and,
 # per target: category, compiler, qt, optional-capability, status (pass|fail|skip), duration, and
@@ -55,7 +57,7 @@ category() {
     # ...and the ratchets/probes that answer the long-lived structural findings (r4 #9, r9 #2,
     # r11 #5/#6). They are gates: they fail the build, they take no compiler and no Qt version of
     # their own except abi-layout-qt5, which the qtaxis below marks.
-    qtmoc-probe-*|report-selftest|runtime-boundary|compiler-context|abi-layout|abi-layout-qt5|runtime-provenance|archive-composition) echo gate ;;
+    qtmoc-probe-*|report-selftest|runtime-boundary|compiler-context|abi-layout|abi-layout-qt5|runtime-provenance|archive-composition|license-coverage|license-no-gpl-product) echo gate ;;
     tr-*|lupdate-check) echo i18n ;;
     manifest-gate-*|registry-gate-*|expected-fails-lint|expected-fails-run|ctor-guard|ownership-gate-*) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;

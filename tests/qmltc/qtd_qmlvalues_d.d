@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Differential ORACLE for .qml files rooted in a D-defined QML type.
 //
 // It is the SAME oracle as the C++ one — qtd_qmlvalues.cpp's walk/format/dump, reached through

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Generates App.qmltypes from D @QObject types via CTFE — the D-side equivalent of
 // qmltyperegistrar's type-description output. Emits the same type shape that
 // qmlRegisterType!Backend registers at runtime, so qmllint/Creator/qmltc can see it.

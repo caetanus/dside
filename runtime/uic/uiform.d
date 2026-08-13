@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // uiform.d — a compile-time (CTFE) `uic`: turn a Qt Designer `.ui` into a TYPED D
 // struct with named-widget fields + `setupUi`, generated at compile time. No external
 // tool, no build step — same philosophy as the CTFE moc (`runtime/qtmoc`).

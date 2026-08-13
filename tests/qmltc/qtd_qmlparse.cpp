@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qtd_qmlparse — the first brick of qmltc-d. Proves QQmlJS::Parser (Qt's OWN QML/JS parser,
 // the exact grammar QML uses) hands us ONE unified AST for a whole .qml: the object tree
 // (UiObjectDefinition / UiPublicMember / UiScriptBinding) AND the JS binding expressions as a

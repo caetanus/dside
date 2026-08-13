@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qrc.d — a compile-time (CTFE) rcc: turn a .qrc + its files (embedded via D's import())
 // into the Qt resource blob and register it, so `:/prefix/alias` paths resolve. No rcc
 // tool — same philosophy as the CTFE moc/uic.

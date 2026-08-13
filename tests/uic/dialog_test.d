@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // dialog_test.d — the CTFE uic against a REAL corpus .ui (PySide's shared-memory
 // dialog.ui, a QGridLayout form). Proves grid layout + typed access end to end. Headless.
 import qt.widgets.qapplication, qt.widgets.qdialog, qt.widgets.qstring;

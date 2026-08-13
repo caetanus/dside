@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // WATCH ONE BLOCK. A freed C++ block is not observable from D, and the two cheaper substitutes are
 // both false discriminators — this file exists because each was tried and passed against a
 // deliberately broken binding:

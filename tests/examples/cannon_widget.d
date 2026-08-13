@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // merge moc+trampoline: a QWidget subclassed IN D that overrides paintEvent AND
 // has its own signals/slots (the CannonField pattern from the tutorial). `mixin QtdWidget!
 // QWidget` wires both: virtual overrides -> D methods (via the qtvirt trampoline)

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import cxxrt : make;
 // function pointer as a parameter (FIXED): void (*)(void*) now maps to `void*`, so
 // callFunctionPointer(int, fp) binds and can be invoked with a real D callback passed

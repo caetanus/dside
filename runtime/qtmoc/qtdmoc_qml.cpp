@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // QMLTC RUNTIME (critics r9 #2 / r11 #5) — the first code across the boundary the audit has asked
 // for since round 9.
 //

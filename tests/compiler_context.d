@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // COMPILER CONTEXT RATCHET (critics r4 #3 / r9 #4 / r10 #6 / r11 #6).
 //
 // Twin of tests/runtime_boundary.d, for the other finding that survived five rounds without a

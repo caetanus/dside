@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widgets.qmainwindow;
 import cxxrt, uiform, qrc, std.stdio, std.string;
 import std.algorithm : splitter, canFind, all;

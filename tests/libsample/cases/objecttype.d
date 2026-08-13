@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import cxxrt : make;
 import sample.objecttype, sample.str; import std.stdio; import std.string : fromStringz;
 void main() {

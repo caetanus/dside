@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import holder, core.memory, std.stdio;
 extern(C) nothrow @nogc { void* ht_make(); void ht_setparent(void*,void*); void ht_delete(void*); void* ht_app(); void ht_process(); }
 class QObj : QtdObject { this(void* c) @nogc nothrow { super(c, true); } }

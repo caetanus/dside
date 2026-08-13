@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Adversarial qmlRegisterType (critics r6 #7): the happy-path test registered a SINGLE type and
 // the "N types coexist" claim pointed at a throwaway probe. Here TWO DISTINCT D types are
 // registered and BOTH instantiated from one .qml — proving distinct runtime metaobjects coexist

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // exc_abi_probe.d — D side of the Windows/MSVC-x64 exception+guard de-risk probe.
 // See exc_abi_probe.cpp for what this proves and how to build/run it.
 //

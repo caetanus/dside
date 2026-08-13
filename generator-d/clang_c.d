@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // clang_c.d — minimal D bindings to the libclang C API (stable ABI).
 // Only the subset the generator needs. Native calls => no Python cindex overhead.
 module clang_c;

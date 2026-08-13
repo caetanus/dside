@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // QtdWidget lifetime (critics r6 #1): the attached-subclass path (mixin QtdWidget!Base ->
 // generated Qtd_<Base> trampoline + qtd_moc_attach) must ALSO clear the side-tables on
 // destruction — the round-5 "all paths" claim was false; only ~QtdMocObject (newQObject) did.

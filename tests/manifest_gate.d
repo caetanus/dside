@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Manifest gate: diff a freshly generated coverage-manifest.tsv against a checked-in baseline and
 // FAIL on regression — the manifest as a contract. FAIL-CLOSED (critics r7 #4): a malformed line, a
 // duplicate class+USR key (in EITHER file), or a fate outside the fixed enum is a hard failure, not

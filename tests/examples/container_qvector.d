@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Container return that is QVector<QRgb> on Qt5 (distinct QArrayData layout) and
 // QList<uint> on Qt6 — QImage::colorTable(). On Qt5 this used to be read with the wrong
 // (QListData) layout -> garbage length -> OOM; now the generator emits a separate Qt5

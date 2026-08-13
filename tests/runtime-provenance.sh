@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # RUNTIME PROVENANCE GATE (critics r13 #1).
 #
 # The generator COPIES a handful of runtime sources verbatim into every binding it generates. That

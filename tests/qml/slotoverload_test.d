@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Qt supports OVERLOADED slots: toggle(), toggle(int) and toggle(bool) are three distinct
 // meta-object entries told apart by their full signature, and moc emits all three. The D runtime
 // keys slots by function SYMBOL rather than by name so it does the same — keying by name would

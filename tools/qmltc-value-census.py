@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 """Bucket the VALUE differential (`--dumpall` vs the oracle) by what each difference MEANS.
 
 The comparison script only counts differing lines, and a count cannot tell a wrong value from a

@@ -1,8 +1,13 @@
 {
-  "name": "lupdate",
-  "description": "D-aware lupdate: extract tr()/translate() strings via dparse -> .ts",
-  "targetType": "executable",
-  "targetName": "lupdate-d",
-  "sourceFiles": ["lupdate.d"],
-  "dependencies": { "libdparse": "0.25.1" }
+    "name": "lupdate",
+    "license": "BSL-1.0",
+    "description": "D-aware lupdate: extract tr()/translate() strings via dparse -> .ts",
+    "targetType": "executable",
+    "targetName": "lupdate-d",
+    "sourceFiles": [
+        "lupdate.d"
+    ],
+    "dependencies": {
+        "libdparse": "0.25.1"
+    }
 }

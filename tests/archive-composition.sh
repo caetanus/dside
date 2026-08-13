@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # ARCHIVE COMPOSITION CANARY (critics r13 #3).
 #
 # `runtime-boundary` counts QML types in a source file. That is LEXICAL LOCATION, and the audit was

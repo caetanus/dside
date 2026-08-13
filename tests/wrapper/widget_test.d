@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qpushbutton;
 import qt.widgets.qtimer, qt.widgets.qstring, qt.widgets.qsize;
 import holder, cxxrt, core.memory, std.stdio;

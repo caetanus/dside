@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 set -u
 set -o pipefail   # else `| sort` hides our binary dying
 # Style and outdir are parameters for the same reason values_corpus.sh and render_corpus.sh take

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // emit_cxx.d — the extern(C++) emitter. Output is 100% D: a class declaration
 // mangles straight to the Qt symbols, so there is NO C shim and NO wrapper body
 // to compile. Binding a class you never import costs nothing (à la carte).

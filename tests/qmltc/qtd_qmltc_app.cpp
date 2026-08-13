@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A visual QtQuick type (QQuickText etc.) touches the font database the moment a property like
 // `text` is set (updateLayout -> QFontMetrics), which fatals unless a QGuiApplication exists to
 // bring up the platform integration. The qmltc-d differential ORACLE already builds one; the

@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # Every QML type the registry can NAME must also be TYPEABLE.
 #
 # `qmlmap.tsv` says which C++ class a QML name is; `qmlprops.tsv` says what its properties are. A

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // PySide cannon/t5.py — QSlider.valueChanged -> QLCDNumber.display (built-in
 // signal -> built-in slot, expressed as a typed D delegate).
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qpushbutton, qt.widgets.qfont;

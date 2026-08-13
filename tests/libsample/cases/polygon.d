@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Polygon's ctors each seed m_points differently, and contains() reads that back — so the point
 // actually stored is observable. Building two polygons and printing OK proved only that nothing
 // crashed; a ctor that dropped its argument passed.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // PySide widgets/tutorials/cannon/t2.py — QFont + the clicked(bool) signal (a
 // signal WITH an argument, now marshaled to the D delegate).
 import qt.widgets.qapplication, qt.widgets.qpushbutton, qt.widgets.qfont;

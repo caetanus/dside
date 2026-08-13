@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // uic_test.d — the CTFE `.ui` -> typed Ui struct, now via the generic engine: the mixin
 // generates the imports it needs, a `struct Ui_LoginForm` with typed named-widget fields,
 // setupUi (objectName/resize/box-layout assembly + generic set<Prop> for geometry,

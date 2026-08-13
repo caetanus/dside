@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The render side of the differential: draw a .qml through the ENGINE, and compare two frames.
 //
 // `qmlrender <file.qml> <out.png>`      — render the interpreted version

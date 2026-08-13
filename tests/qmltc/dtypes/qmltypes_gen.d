@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Writes the app's D QML types as a `.qmltypes` registry — the CTFE document from apptypes.d,
 // which qmltc-d then reads to compile a .qml against those types. Qt's own reader validates the
 // same file (qmltypes-check-*), so the registry is not a private side-format.

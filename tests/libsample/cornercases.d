@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import cxxrt : make;
 // Corner-case regression tests for the extern(C++) generator, run against
 // shiboken's libsample (a C++ library purpose-built to stress bindings).

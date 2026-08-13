@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A bound value type as a @Property. The meta-object records a property by TYPE NAME and Qt
 // resolves it through QMetaType::fromName, so no per-type support is needed to REGISTER one.
 //

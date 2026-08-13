@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 module metacast_test;   // critics r8 #2: the metaobject must not lie about the object it represents
 import qtmoc;
 import core.stdc.stdio : printf;

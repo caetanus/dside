@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // PySide cannon t8: the custom LCDRange widget (QSlider + QLCDNumber) that re-emits
 // its OWN valueChanged(int). No subclass trampoline: LCDRange is a D @QObject class
 // (for its signal) that COMPOSES a root QWidget with the children. Proves the chain:

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // uicheck.d — differential oracle harness: for each .ui, the tree WE build (uiForm +
 // setupUi) must serialize identically to the tree QUiLoader.load() builds (Qt's own uic).
 // The dump + the oracle load live in qtd_uidump.cpp; we just diff the two strings.

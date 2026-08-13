@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // emit.d — the generator driver: parse the spec, discover classes, drive the
 // extern(C++) emitter (emit_cxx.d), write the .d/.cpp files, and report coverage.
 module emit;

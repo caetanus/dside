@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // GAP 1 (fixed): Reference only has `explicit Reference(int=-1)` INLINE (no linkable
 // symbol in the lib). An out-of-line C++ shim (qtdctor: placement-new) now provides the
 // ctor, so make!Reference(...) constructs. Reference is polymorphic (virtual ~), so this

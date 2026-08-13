@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import cxxrt : make;
 // raw array marshaling: pass a D int[] as int* to C++.
 import sample.arraymodifytest;

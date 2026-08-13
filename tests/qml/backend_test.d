@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // QML <-> D via the moc: a D @QObject backend exposed to a qrc-embedded .qml. Proves the
 // direction the project targets — QML frontend, D backend objects via the runtime meta-object.
 import qt.qml.qcoreapplication, qt.qml.qqmlapplicationengine, qt.qml.qqmlcontext;

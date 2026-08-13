@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // critics r8 #5: a QML factory whose D constructor THROWS must become an observable creation
 // FAILURE with complete cleanup — not a silent carrier with a null backing object (which would
 // later dispatch a slot/property into null and crash). The D factory catches the throw and records

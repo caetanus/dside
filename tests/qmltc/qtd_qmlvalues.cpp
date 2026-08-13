@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qmltc-d differential ORACLE (analog of tests/uic/qtd_uidump.cpp for uic). Loads a .qml with the
 // REAL QML engine (QQmlComponent), instantiates the root object, and prints each QML-declared
 // scalar property as `name\tvalue`, SORTED by name. qmltc-d --dump prints the same lines from the

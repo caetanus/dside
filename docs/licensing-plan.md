@@ -1,7 +1,13 @@
 # Licensing plan
 
-Status: **proposal — not yet implemented**  
+Status: **adopted — implementation in progress**  
+Adopted: **2026-08-13**, by the copyright holder, who asked for this plan to be applied.  
 Last reviewed: **2026-08-13**
+
+Progress against the phases is tracked in the checkboxes below; each is ticked only when its exit
+criterion is met and verifiable, not when the work is started. Two phases cannot be completed by
+implementation alone and say so where they appear: Phase 1 needs decisions about test corpora that
+belong to the copyright holder, and Phase 7 is a review by counsel.
 
 This document is the licensing and distribution plan for `qt-dlang-gen`, its generated Qt bindings
 for D, its runtime, and its tools. It records the intended result, the work required before the
@@ -34,8 +40,8 @@ The supported open-source distribution model is:
 5. exact notices, corresponding sources, and replacement rights supplied by the distributor of a
    Windows application that bundles Qt.
 
-This decision is proposed, not effective, until the copyright holder adopts it by adding the
-license files and license declarations described below.
+This decision was adopted on 2026-08-13. What follows is the record of what has been implemented
+against it, and what has not.
 
 Here and everywhere in this plan, **BSL-1.0 means Boost Software License 1.0**. It does not mean the
 unrelated Business Source License, whose SPDX identifier is `BUSL-1.1`.
@@ -412,10 +418,11 @@ The following gates must be mandatory for a release:
 
 ### Phase 0 — adopt the decision
 
-- [ ] Confirm BSL-1.0 as the project license.
+- [x] Confirm BSL-1.0 as the project license.
 - [ ] Confirm ownership of all project-authored commits.
-- [ ] Decide whether documentation is also BSL-1.0; this plan recommends yes.
-- [ ] Record the decision in a dated commit.
+- [x] Decide whether documentation is also BSL-1.0; this plan recommends yes. **Yes** — docs are
+      covered by REUSE.toml.
+- [x] Record the decision in a dated commit.
 
 **Exit criterion:** the copyright holder has explicitly approved the license and scope.
 
@@ -431,19 +438,25 @@ The following gates must be mandatory for a release:
 
 ### Phase 2 — establish license metadata
 
-- [ ] Add `LICENSE`, required `LICENSES/` texts, and `REUSE.toml`.
-- [ ] Add SPDX coverage to all project-authored files.
-- [ ] Preserve upstream headers unchanged.
-- [ ] Add BSL-1.0 to every DUB manifest.
-- [ ] Add DCO-based contribution instructions.
+- [x] Add `LICENSE`, required `LICENSES/` texts, and `REUSE.toml`. Only BSL-1.0 is present: the
+      plan says to add a license text only when something actually needs it, and the GPL-3.0-only
+      material is covered by an SPDX expression, not by a copy of the text it never ships with.
+- [x] Add SPDX coverage to all project-authored files. 148 headers added; the rest is REUSE.toml.
+- [x] Preserve upstream headers unchanged. 102 third-party files untouched, and `license-coverage`
+      fails if one of them ever acquires ours.
+- [x] Add BSL-1.0 to every DUB manifest, including the one `tests/install.sh` writes.
+- [x] Add DCO-based contribution instructions (`CONTRIBUTING.md`).
 
-**Exit criterion:** `reuse lint` passes from a clean checkout.
+**Exit criterion:** `reuse lint` passes from a clean checkout. **Not met as stated:** `reuse` is not
+installed here. `license-coverage` defers to it when present and otherwise runs the narrower check —
+every tracked file covered by a header or by REUSE.toml, and no third-party file carrying ours — and
+says which of the two it did. 545 files covered.
 
 ### Phase 3 — license generated and installed artifacts
 
 - [ ] Add the output notice to the generator manifest.
 - [ ] Add machine-readable output provenance.
-- [ ] Copy license and notice files into installed packages.
+- [x] Copy license and notice files into installed packages (`LICENSE`, `LICENSES/`, `NOTICE`).
 - [ ] Validate both LDC and DMD packages after unpacking.
 - [ ] Document the generated-output grant and input boundary.
 
@@ -454,7 +467,8 @@ package.
 
 - [ ] Move and mark the Qt Qml Compiler validator as a GPL test island.
 - [ ] Remove it from default product/release aggregates.
-- [ ] Add dependency and binary-import deny gates.
+- [x] Add dependency and binary-import deny gates (`license-no-gpl-product`): product specs and the
+      undefined symbols of every archive. Proven to bite by adding Qt6Mqtt to a spec.
 - [ ] Ensure GPL test CI jobs retain no downloadable executable artifacts.
 
 **Exit criterion:** product package inspection finds no GPL-only linked component.

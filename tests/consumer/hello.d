@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A CONSUMER: an application that is not part of this repository's test graph.
 //
 // Everything else here is built by reggae, from inside the checkout, with paths the build knows.

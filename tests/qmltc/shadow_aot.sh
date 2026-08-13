@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # PHASE 2 END TO END: a refused expression compiled to BYTECODE, not interpreted from a string.
 #
 # qmltc-d writes one shadow document per expression it cannot turn into D; qmlcachegen turns each

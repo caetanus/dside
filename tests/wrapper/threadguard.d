@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // THE DOOR I OPENED HAS TO STAY LOCKED.
 //
 // The meta-object runtime keeps unsynchronised side tables and pins an OWNER THREAD at first use;

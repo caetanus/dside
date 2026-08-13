@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Fixture for the lupdate-d extraction golden test. Exercises every form the runtime tr()
 // produces, so the .ts lupdate-d emits from THIS file must match the golden checked in beside it.
 module fixture;

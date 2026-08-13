@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import sample.abstract_; import std.stdio;
 void main() {
     // Abstract is pure-virtual -> not instantiable (expected); tests the enums.

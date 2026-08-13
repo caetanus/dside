@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qtmoc — signals/slots for QObjects defined in D, WITHOUT moc: the meta-object is
 // built at runtime (QMetaObjectBuilder, see qtdmoc.cpp) and, via
 // CTFE + __traits, we generate the signatures, the signal emit and the slot

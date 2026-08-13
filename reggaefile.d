@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // reggaefile.d — the qt-dlang-gen build graph (run with reggae).
 //
 //   reggae -b binary . --reggaefile-import-path reggae
@@ -552,6 +554,21 @@ Build reggaeBuild() {
     // On the Qt the baselines were recorded against, the gates run with everything else; on any
     // other minor they stay reachable by name but out of defaultTargets(), so the full matrix
     // never fails on SDK drift.
+    // --- LICENSING GATES (docs/licensing-plan.md). The plan's own words: a release manager must be
+    //     able to answer yes to every question in its checklist, and prose cannot answer any of
+    //     them. These two answer the ones that are mechanical today; the rest of the plan's gates
+    //     need artefacts this build does not yet produce (a Windows bundle, an SBOM) and are named
+    //     in the plan rather than stubbed here.
+    {
+        auto lc = buildPath(root, "tests", "license-coverage.sh");
+        if (exists(lc)) all ~= Target.phony("license-coverage", "sh " ~ lc, [Target(lc)]);
+        auto lg = buildPath(root, "tests", "license-no-gpl-product.sh");
+        auto reg2 = qtdShimsRegistry();
+        if (exists(lg))
+            all ~= Target.phony("license-no-gpl-product", "sh " ~ lg,
+                                Target(lg) ~ reg2.map!(e => e.target).array);
+    }
+
     // THE GATES THAT NEED THE WHOLE GRAPH come last, after every binding has registered itself
     // (critics r14 #4/#5). Declared earlier they saw a partial registry — libsample is created
     // further down — and a gate that promises the matrix while holding a subset is the shape this

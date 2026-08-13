@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # EVERY wrapper ctor that allocates must free on failure.
 #
 # Between `__cpp_new` and `_register()` nothing owns the block: the wrapper is not in the identity

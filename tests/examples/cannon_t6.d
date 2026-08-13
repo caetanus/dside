@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // moc/CTFE: a QObject DEFINED IN D emits its OWN signal, connected to the REAL
 // display(int) slot of a built-in QLCDNumber. This is the key trick of PySide's t6
 // (LCDRange emits valueChanged) without moc: the Thermostat meta-object is built

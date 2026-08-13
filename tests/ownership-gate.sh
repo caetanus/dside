@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # THE AUDITED LIST HAS TO STAY AUDITED.
 #
 # A class in the spec's `disposable` list is one the binding will DELETE when it still owns it. That

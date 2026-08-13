@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # The RENDER half of the criterion, over one of Qt's own Controls styles: put each document in a
 # window and compare the PNGs byte for byte. A property dump can match while the frame does not —
 # and a document with no Item root (a Popup) renders on NEITHER side, which this reports rather than

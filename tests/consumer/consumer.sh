@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # CAN SOMEBODY ELSE USE THIS? Every other target in the matrix builds from inside the checkout,
 # with paths reggae already knows — which proves the binding compiles and proves nothing about
 # consuming it. CRITICS round 12 #6: "um exemplo consumidor em diretorio temporario deve depender

@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # Compile-clean is not the bar: "renders and behaves like the interpreted version" is, and the
 # first step of that is that the object can be BUILT AT ALL. This gate takes Qt's own shipped
 # QtQuick/Controls/Basic/*.qml -- QML nobody here wrote -- generates, links and CONSTRUCTS each

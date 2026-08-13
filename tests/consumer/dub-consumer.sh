@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # A CONSUMER THAT NAMES A DEPENDENCY, not a path into somebody else's build tree.
 #
 # The sibling `consumer.sh` proves the application can be built outside the checkout; this proves

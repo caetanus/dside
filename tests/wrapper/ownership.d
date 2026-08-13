@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // CRITICS #5 — ownership invariants: where a binding dies in production.
 // The GC wrapper's whole reason to exist is that a C++-destroyed object must NOT dangle.
 // This isolates that contract (wraptest covers identity/pins/orphan-GC; this covers

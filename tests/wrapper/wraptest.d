@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import qt.core.qobject, qt.core.qtimer;
 import holder, core.memory, std.stdio, std.conv;
 static void makeOrphans(void*[] ocs) { foreach (i; 0 .. ocs.length) { auto o = new QObject(); ocs[i] = o.ptr(); } }

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Q_PROPERTY in the runtime meta-object: a D @QObject exposes @Property int value with
 // a notify signal. Writing the property (via QVariant/setProperty) sets the D field
 // AND emits the notify, which here is connected to the REAL display(int) slot of a QLCDNumber.

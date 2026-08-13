@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The transpiler-support helpers in the shared moc runtime (QQmlContext attach, module bootstrap,
 // default-property append) are QML features living in a unit that EVERY binding compiles — the
 // QtWidgets and libsample ones included. Their bodies are guarded; their SYMBOLS are deliberately

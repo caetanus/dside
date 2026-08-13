@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // PySide widgets/tutorials/cannon/t3.py — a QWidget window with a child QPushButton.
 import qt.widgets.qapplication, qt.widgets.qpushbutton, qt.widgets.qwidget, qt.widgets.qfont;
 import qt.widgets.qsize, qt.widgets.qrect, qt.widgets.qtimer, qt.widgets.qstring;

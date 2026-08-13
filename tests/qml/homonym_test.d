@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Real homonyms (critics r7 #3): two D classes with the SAME T.stringof ("Dup") from different
 // modules, registered as distinct QML elements and BOTH instantiated. Proves buildMo keys the full
 // SHAPE (name alone would collide -> BetaDup would inherit AlphaDup's metaobject and misfire).

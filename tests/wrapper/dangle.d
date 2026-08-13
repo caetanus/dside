@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A PROBE THAT ASSERTS A GAP IS STILL THERE. Read the failure message before "fixing" this.
 //
 // `nonqobject-qt-owned-dangles` in tests/expected-fails.json: when Qt destroys an object it owns

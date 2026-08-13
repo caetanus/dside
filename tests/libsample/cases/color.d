@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Constructing a Color used to be the whole test: it never observed the result, so a ctor that
 // bound to the wrong overload — or did nothing at all — still printed OK. Color::m_null starts
 // true and BOTH real ctors clear it, which makes isNull() the observable that distinguishes a

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // PySide example widgets/tutorials/cannon/t1.py — "smuggled" to D against the
 // generated Qt bindings. A real QApplication + QPushButton, run headless
 // (QT_QPA_PLATFORM=offscreen) with a single-shot QTimer to quit the loop.

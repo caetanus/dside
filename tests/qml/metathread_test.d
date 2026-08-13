@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 module metathread_test;   // critics r8 #6: the single-thread contract is enforced, not assumed
 import qtmoc;
 import core.thread : Thread;

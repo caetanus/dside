@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Runtime translation, the way it should read: no _new, no hand-built app — just install a
 // translator and use a free UFCS tr(). Proves the runtime end of the loop
 // (lupdate-d -> .ts -> lrelease -> .qm -> tr()). Given a .qm path (argv[1], built by lrelease)

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // qtd_build.d — shared reggae helpers for building qt-dlang-gen bindings and apps.
 //
 // The generator (`gend`) is a pure code generator: it emits a nested-layout binding

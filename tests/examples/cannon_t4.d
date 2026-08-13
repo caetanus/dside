@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // PySide cannon/t4.py — MyWidget(QWidget) container. MyWidget overrides nothing,
 // so a QWidget with children is behaviorally identical (composition).
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qpushbutton, qt.widgets.qfont;

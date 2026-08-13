@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // ABI LAYOUT PROBE (critics r4 #9 — the oldest finding still untouched until 2026-08-12).
 //
 // The container bridge does not call Qt to read a QList: the generated D struct reads the FIELDS at

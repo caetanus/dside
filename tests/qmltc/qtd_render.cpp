@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Render a QQuickItem WE built ourselves — no QQmlEngine, no component — and write the frame.
 //
 // This exists because the differential's bar is not "the property values match": it is "renders

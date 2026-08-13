@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // @Property string in the runtime meta-object — the FOCUSED test that was missing (CRITICS #8).
 // A D @QObject exposes @Property string with notify. Writing via setProperty and READING via
 // property() both go through qt_metacall (WriteProperty/ReadProperty -> callProp), isolating

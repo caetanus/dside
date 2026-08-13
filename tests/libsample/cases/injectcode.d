@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // overload resolution on methods returning const char*; private std::string member
 // used only internally (never crosses the boundary by value).
 import sample.injectcode;

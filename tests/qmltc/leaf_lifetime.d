@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // THE LEAF TABLE MUST COME BACK TO ITS BASELINE. `qtd_bind_leaf` keeps the dynamic connection in a
 // side table keyed on owner|receiver|slot|property|signal. Qt invalidates the QMetaObject::Connection
 // when either end dies, but the ENTRY is the runtime's own and nothing in Qt removes it: it used to

@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # EXECUTE THE INVENTORY, don't just validate its shape.
 #
 # `expected-fails-lint` checks schema, unique ids, known kinds and that every named probe target

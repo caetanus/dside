@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // App-defined QML types written in D — the point being that QML does not care which language
 // produced a type, only that it has a meta-object. These are plain `@QObject` classes: qtmoc
 // builds their QMetaObject by CTFE and `qmlRegisterType!T` exports them as QML elements, exactly

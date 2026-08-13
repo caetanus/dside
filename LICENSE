@@ -1,0 +1,47 @@
+Copyright (c) 2026 Marcelo A Caetano
+
+This project is licensed under the Boost Software License 1.0 (BSL-1.0), whose
+full text is in LICENSES/BSL-1.0.txt.
+
+SCOPE
+-----
+
+BSL-1.0 applies to material authored for this project: the binding generator,
+the D and C++ runtime, the generated D bindings and generated C++ shims and
+trampolines, the project tools (qmltc-d, uic-d, qrc-d, lupdate-d and the
+others), and the original tests, examples, build logic and documentation.
+
+It applies EXCEPT where a file's own SPDX-License-Identifier says otherwise, or
+where THIRD-PARTY.md records different terms for a path. Those statements win
+over this one.
+
+WHAT THIS FILE DOES NOT DO
+--------------------------
+
+It does not relicense Qt, Qt test data, libclang, DUB dependencies, or any
+other third-party work. Each keeps its upstream license, and using this project
+does not by itself satisfy those licenses.
+
+In particular: the bindings this project generates are bindings TO Qt. Whoever
+distributes an application built with them must comply with the terms of every
+Qt module that application links, which for the open-source Qt distribution is
+normally LGPLv3 and for a defined set of modules is GPL-only. docs/licensing.md
+states the project's distribution policy and docs/distributing-qt.md is written
+for application distributors.
+
+GENERATED OUTPUT
+----------------
+
+For files this project generates, the copyright holder grants BSL-1.0 for the
+generator-authored portions — templates, boilerplate and emitted structure. That
+grant does not change the license or ownership of the user's input (specs,
+headers, QML, .ui files), and it grants no rights in the third-party APIs the
+output refers to. Each generated file carries this statement in its own header.
+
+THIRD-PARTY MATERIAL PRESENT IN THIS REPOSITORY
+-----------------------------------------------
+
+See THIRD-PARTY.md for the inventory, and REUSE.toml for the machine-readable
+per-path license expressions. Some of it is GPL-3.0-only and is used only by
+tests; it is excluded from every installed and released artifact, and a build
+gate enforces that exclusion rather than a promise in prose.

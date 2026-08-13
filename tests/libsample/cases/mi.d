@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import sample.mderived1, sample.base1, sample.base2;
 import cxxrt : make;   // make!T(...) — the one factory spelling (cxxrt dispatches to T.__make)
 import std.stdio;

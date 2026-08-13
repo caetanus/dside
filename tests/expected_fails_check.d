@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // expected-fails LINTER (critics r7 #4/#5). This is a strict schema linter, NOT an expected-fail
 // RUNNER — it does not execute probes, evaluate remove_when, or detect unexpected pass/fail (that
 // is a tracked follow-up). What it DOES, fail-closed: the schema value, the kind enum, and the
