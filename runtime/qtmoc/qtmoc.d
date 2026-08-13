@@ -920,15 +920,27 @@ QtdAttached qtdAttachThreadImpl(bool forceFail) nothrow {
     }
     return a;
 }
-QtdAttached qtdAttachThread() nothrow { return qtdAttachThreadImpl(false); }
+/// The seam, reachable from a REAL foreign thread (critics r14 #6). The first version took the
+/// forced failure only as a parameter, so nothing could drive the TRAMPOLINE's branch — the test
+/// called the impl directly on the main thread, where `Thread.getThis()` is not null, so the forced
+/// branch was never entered and the assertion was conditional on a situation that did not occur.
+/// An environment variable is readable from the thread Qt created, costs a `getenv` per callback,
+/// and adds no module-level state.
+QtdAttached qtdAttachThread() nothrow {
+    import core.stdc.stdlib : getenv;
+    return qtdAttachThreadImpl(getenv("QTD_FORCE_ATTACH_FAIL") !is null);
+}
 
-/// What a trampoline does when the thread could not be attached: report through the same callback
-/// error policy every other unrunnable callback goes through, so it is counted and hookable rather
-/// than silent. Nothing D-side runs after this.
-void qtdAttachFailed(string what) nothrow {
-    try { qtdOnCallbackError(new Exception(
-        "qtd: could not attach thread to the D runtime; refusing to enter D for " ~ what)); }
-    catch (Throwable) {}
+/// What a trampoline does when the thread could not be attached — and it must touch NOTHING of D
+/// (critics r14 #6). The first version built a `new Exception`, concatenated strings and called the
+/// callback-error policy, which writes a TLS counter and keeps a `Throwable`: that is GC allocation
+/// and D state on the very thread just declared unsafe, so "nothing D-side runs after this" was
+/// literally false. libc only, `nothrow @nogc`, and the message is written a piece at a time so no
+/// string is built.
+void qtdAttachFailed(const(char)* what) nothrow @nogc {
+    import core.stdc.stdio : fprintf, stderr;
+    fprintf(stderr, "qtd FATAL-SAFE: could not attach this thread to the D runtime; refusing to "
+                    ~ "enter D for %s\n", what);
 }
 
 string __ovTramp(T, string vn, size_t idx)() {
@@ -947,13 +959,13 @@ string __ovTramp(T, string vn, size_t idx)() {
     static if (is(R == void))
         return "extern(C) static void " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
             ~ ") nothrow { auto __at = qtdAttachThread();"
-            ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\"); return; }"
+            ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\".ptr); return; }"
             ~ " try { " ~ call
             ~ "; } catch (Exception e) { qtdOnCallbackError(e); } }\n";
     else
         return "extern(C) static " ~ R.stringof ~ " " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
             ~ ") nothrow { auto __at = qtdAttachThread();"
-            ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\"); return "
+            ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\".ptr); return "
             ~ R.stringof ~ ".init; }"
             ~ " try { return " ~ call
             ~ "; } catch (Exception e) { qtdOnCallbackError(e); return " ~ R.stringof ~ ".init; } }\n";

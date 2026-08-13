@@ -25,6 +25,17 @@ extern (C) int qtd_moc_owner_check() nothrow;
 
 @QObject class Offender { @Property("vChanged") int v; Signal!() vChanged; }
 
+// A second worker for the ATTACH-FAILURE path (critics r14 #6). Its `run()` must NOT be entered
+// when the runtime cannot attach the thread — so it announces itself, and the parent requires the
+// announcement to be ABSENT.
+@QObject class NeverRuns {
+    mixin QtdWidget!QThread;
+    void run() {
+        import core.stdc.stdio : printf;
+        printf("VIRTUAL ENTERED\n");
+    }
+}
+
 @QObject class Worker {
     mixin QtdWidget!QThread;
     void run() {
@@ -39,6 +50,16 @@ void main(string[] args) {
     __gshared int argc = 1; __gshared char*[2] argv = [cast(char*) "tg\0".ptr, null];
     auto raw = __cpp_new(__QApplication_size); __qapp_ctor(raw, argc, argv.ptr, 0);
     cast(void) QApplication.wrap(raw);
+
+    // The forced-failure child: same trampoline, same Qt-created thread, with the attach refused.
+    if (args.length > 1 && args[1] == "--child-attachfail") {
+        auto w = new NeverRuns();
+        auto t = QThread.wrap(w.__qtdObj());
+        t.start(QThread.Priority.InheritPriority);
+        t.wait(30_000);
+        writeln("CHILD-ATTACHFAIL DONE");
+        return;
+    }
 
     if (args.length > 1 && args[1] == "--child") {
         auto w = new Worker();
@@ -57,26 +78,31 @@ void main(string[] args) {
     assert(r.output.indexOf("off its owner thread") >= 0,
            "the child died without the guard's message — it failed for some other reason:\n" ~ r.output);
 
-    // ...and the OTHER half of the same mechanism (critics r13 #7): when attaching a foreign
-    // thread to the druntime FAILS, the trampoline must not enter D anyway. The failure used to be
-    // swallowed — `catch (Throwable) {}` — and the virtual ran on a thread the runtime does not
-    // know, which is the exact condition the attach exists to prevent.
+    // ...and the OTHER half of the same mechanism, THROUGH THE TRAMPOLINE ON A REAL FOREIGN
+    // THREAD (critics r13 #7, corrected by r14 #6). The first version of this called
+    // qtdAttachThreadImpl(true) on the MAIN thread, where `Thread.getThis()` is not null — so the
+    // forced branch was never entered, the assertion was conditional on a situation that does not
+    // occur, and the test printed a claim it had not exercised.
     //
-    // Forced through the seam rather than by breaking the druntime: qtdAttachThreadImpl(true)
-    // returns the same value the real failure produces, and the trampolines check `ok` before the
-    // call. A parameter, not a global, so no module-level state is added to the shared runtime.
+    // Now the seam is an environment variable, the child runs a D virtual on a thread QT created,
+    // and the proof is NEGATIVE: the virtual announces itself, and the announcement must be absent.
     {
-        auto bad = qtdAttachThreadImpl(true);
-        auto good = qtdAttachThreadImpl(false);
-        // On the MAIN thread the druntime already knows us, so both report usable — the seam only
-        // bites where an attach would actually be attempted. That is itself worth asserting: a
-        // seam that fails everywhere would make the guard look reachable when it is not.
-        import core.thread : Thread;
-        if (Thread.getThis() is null)
-            assert(!bad.ok, "the forced-failure seam reported the thread as usable");
-        assert(good.ok, "a thread the druntime knows was reported unusable");
+        auto r2 = execute([thisExePath(), "--child-attachfail"],
+                          ["QT_QPA_PLATFORM": "offscreen", "QTD_FORCE_ATTACH_FAIL": "1"]);
+        assert(r2.output.indexOf("VIRTUAL ENTERED") < 0,
+               "the attach failed and the trampoline entered D anyway:\n" ~ r2.output);
+        assert(r2.output.indexOf("CHILD-ATTACHFAIL DONE") >= 0,
+               "the child did not finish — the refusal was not graceful:\n" ~ r2.output);
+        assert(r2.output.indexOf("FATAL-SAFE") >= 0,
+               "the refusal was silent; it must say so through libc, without touching D:\n" ~ r2.output);
+        // ...and the control: without the seam, the same child DOES enter the virtual. Otherwise
+        // this test passes for a thread that never started.
+        auto r3 = execute([thisExePath(), "--child-attachfail"], ["QT_QPA_PLATFORM": "offscreen"]);
+        assert(r3.output.indexOf("VIRTUAL ENTERED") >= 0,
+               "the control run did not enter the virtual, so the negative proves nothing:\n" ~ r3.output);
     }
 
     writeln("threadguard OK: a QObject created inside QThread::run() aborts with the owner-thread ",
-            "message, and a failed thread attach refuses to enter D (critics r13 #7)");
+            "message, and a failed thread attach refuses to enter D on a REAL foreign thread, " ~
+            "proven by the virtual NOT announcing itself (critics r14 #6)");
 }

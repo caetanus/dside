@@ -256,10 +256,14 @@
       "kind": "known_gap",
       "area": "generator/registry",
       "since": "2026-08-13",
-      "reason": "`NinePatchImageSelector` and the rest of QtQuick.Controls.Imagine.impl are not in the binding, so every Imagine document builds those objects through the ENGINE and delegates their `states: [ {...} ]` binding. Measured 2026-08-12: after the dynamic leaf read landed, Imagine's documents report `0 skipped, 0 weakly typed` and exactly one delegation each — that one. It is why `-O1` compiles NOTHING in that style and why the level judge excludes it as vacuous.\\n\\nThis is a GENERATION question, not a compiler one: compiling `states` would buy nothing while the objects themselves are engine-built, because -O1 refuses on that axis first. Recorded here with a gap probe so the day it stops being true is a red line rather than a discovery.",
+      "reason": "`NinePatchImageSelector` and the rest of QtQuick.Controls.Imagine.impl are not in the binding, so every Imagine document builds those objects through the ENGINE and delegates their `states: [ {...} ]` binding. Measured 2026-08-12: after the dynamic leaf read landed, Imagine's documents report `0 skipped, 0 weakly typed` and exactly one delegation each — that one. It is why `-O1` compiles NOTHING in that style and why the level judge excludes it as vacuous.\\n\\nThis is a GENERATION question, not a compiler one: compiling `states` would buy nothing while the objects themselves are engine-built, because -O1 refuses on that axis first. Recorded here with a gap probe so the day it stops being true is a red line rather than a discovery.\n\nO gap probe carrega a ASSINATURA da falha (critics r14 #7): exit e um pedaço do diagnóstico. Sem ela, ferramenta ausente, import partido, crash ou mudança de CLI liam-se todos como \"o buraco continua aberto\" — um expected-fail sem assinatura, que é o que este ficheiro existe para deixar de ser.",
       "remove_when": "`qmltc-pedantic-imagine-label` passes — Imagine's Label compiles with ZERO delegations, which means the style's impl types are typeable",
       "gap_probes": [
-        "qmltc-pedantic-imagine-label"
+        {
+          "target": "qmltc-pedantic-imagine-label",
+          "exit": 1,
+          "match": "delegated to the engine"
+        }
       ]
     }
   ]

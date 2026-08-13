@@ -29,13 +29,17 @@ d = json.load(open(sys.argv[1]))
 l = d["entries"] if isinstance(d, dict) and "entries" in d else d
 for e in l:
     for t in e.get("probe_targets", []):
-        print("keep\t%s\t%s" % (e["id"], t))
+        print("keep\t%s\t%s\t\t" % (e["id"], t))
     # ...and the OTHER direction (critics r13 #6): a known_gap may name a target that must FAIL
     # today. When it starts passing, the gap is closed and the entry describes a world that no
     # longer exists — an UNEXPECTED PASS, which is the only way an inventory notices its own good
     # news. Without it the runner can only ever say "the protections still hold".
     for t in e.get("gap_probes", []):
-        print("gap\t%s\t%s" % (e["id"], t))
+        # A gap probe carries its FAILURE SIGNATURE (critics r14 #7): the exit code it must produce
+        # and a string its diagnostic must contain. Without it, a missing tool, a broken import, a
+        # crash or a CLI change all read as "the gap is still open" — an expected-fail with no
+        # signature, which is the thing this file exists to stop being.
+        print("gap\t%s\t%s\t%s\t%s" % (e["id"], t["target"], t["exit"], t["match"]))
 PY
 )
 
@@ -45,12 +49,22 @@ if [ -z "$targets" ]; then
 fi
 
 n=0; bad=0
-echo "$targets" | while IFS="	" read -r dir id tgt; do
+echo "$targets" | while IFS="	" read -r dir id tgt want_exit want_match; do
   [ -n "$tgt" ] || continue
   n=$((n + 1))
   if [ "$dir" = gap ]; then
-    if "$BUILD" "$tgt" >/dev/null 2>&1; then
+    # `set -e` would kill the script on the very failure this branch exists to inspect, so the
+    # substitution is part of an `||` list. The first version aborted silently here — a runner that
+    # dies on the expected failure reports nothing at all, which looked like "no output, rc=1".
+    out=$("$BUILD" "$tgt" 2>&1) && rc=0 || rc=$?
+    if [ "$rc" -eq 0 ]; then
       printf 'expected-fails-run: %s PASSES — it is the GAP probe for `%s`, which claims this does not work. Remove the entry or narrow it.\n' "$tgt" "$id" >&2
+      bad=$((bad + 1))
+    elif [ "$rc" != "$want_exit" ]; then
+      printf 'expected-fails-run: %s failed with exit %s, and `%s` contracts exit %s. It failed for the wrong reason.\n' "$tgt" "$rc" "$id" "$want_exit" >&2
+      bad=$((bad + 1))
+    elif ! printf '%s' "$out" | grep -qF -- "$want_match"; then
+      printf 'expected-fails-run: %s failed as contracted but its diagnostic does not contain `%s` — `%s` describes a different failure.\n' "$tgt" "$want_match" "$id" >&2
       bad=$((bad + 1))
     fi
   elif ! "$BUILD" "$tgt" >/dev/null 2>&1; then

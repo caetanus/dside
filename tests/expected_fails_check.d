@@ -58,11 +58,27 @@ void main(string[] args) {
                     errs ~= id ~ ": `gap_probes` belongs to kind=known_gap, not `" ~ k ~ "`";
                 if (e["gap_probes"].type != JSONType.array || e["gap_probes"].array.length == 0)
                     errs ~= id ~ ": `gap_probes` must be a non-empty array";
+                // Each gap probe is an OBJECT with its failure signature (critics r14 #7):
+                // {target, exit, match}. A bare target name would be an expected-fail that accepts
+                // any failure, which is the shape the audit called out.
                 else foreach (gp; e["gap_probes"].array) {
                     nProbe++;
-                    if (gp.type != JSONType.string || gp.str !in targets)
-                        errs ~= id ~ ": gap_probe `" ~ (gp.type == JSONType.string ? gp.str : "?")
+                    if (gp.type != JSONType.object) {
+                        errs ~= id ~ ": each gap_probe must be an object {target, exit, match}";
+                        continue;
+                    }
+                    foreach (f; ["target", "exit", "match"])
+                        if (f !in gp.object) errs ~= id ~ ": gap_probe is missing `" ~ f ~ "`";
+                    if ("target" in gp.object
+                            && (gp["target"].type != JSONType.string || gp["target"].str !in targets))
+                        errs ~= id ~ ": gap_probe target `"
+                            ~ (gp["target"].type == JSONType.string ? gp["target"].str : "?")
                             ~ "` is not a real build target (dangling)";
+                    if ("exit" in gp.object && gp["exit"].type != JSONType.integer)
+                        errs ~= id ~ ": gap_probe `exit` must be an integer";
+                    if ("match" in gp.object
+                            && (gp["match"].type != JSONType.string || gp["match"].str.length == 0))
+                        errs ~= id ~ ": gap_probe `match` must be a non-empty string";
                 }
             }
             else if (k == "risk") {
