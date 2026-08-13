@@ -38,6 +38,7 @@
 #include <unordered_map>
 #include <vector>
 #include <mutex>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -422,7 +423,20 @@ extern "C" void qtd_dump_object_as(void* o, const char* path, const char* cls) {
 //   qtd_connect_notify  - follow the PROPERTY (parentChanged -> re-evaluate the binding)
 //   qtd_bind_leaf       - (re)subscribe to the leaf signal on whatever object it now holds
 // The slot calls bind_leaf on every run, so a new parent is subscribed and the old one dropped.
-static std::unordered_map<std::string, QMetaObject::Connection> g_leafConn;
+// An entry knows EVERY index it sits in (critics r13 #4). It used to be `key -> Connection` with a
+// separate reverse index per object, and `qtd_leaf_forget(o)` dropped the key from o's vector only
+// — the same key stayed in the OTHER endpoint's vector for ever. With a long-lived receiver and
+// transient owners, that vector grows without bound, and the probe could not see it because
+// `qtd_leaf_table_size()` reported the main table alone.
+//
+// Three endpoints, not two: the real connection is `cur -> recv`, and `cur` (the object the
+// property currently holds) can die on its own. Qt invalidates the Connection and the entry used to
+// survive until some other event touched it.
+struct QtdLeafEntry {
+    QMetaObject::Connection c;
+    QObject* ends[3];        // owner, recv, cur — any of them may be null
+};
+static std::unordered_map<std::string, QtdLeafEntry> g_leafConn;
 
 static std::unordered_map<QObject*, std::vector<std::string>> g_leafByObj;
 
@@ -445,14 +459,43 @@ static std::string qtd_leaf_key(void* owner, void* recv, const char* slot, const
 // the addresses are recycled, so a stale entry is not merely a leak: it can be found by a later
 // object that lands on the same address. Both ends are watched; the first key an object registers
 // arms its watch.
+static void qtd_leaf_watch(QObject* o, const std::string& k);   // below
+
+// Drop ONE key from every index that holds it, then the entry. This is the half that was missing.
+static void qtd_leaf_drop(const std::string& k) {             // g_leafMx HELD
+    auto e = g_leafConn.find(k);
+    if (e == g_leafConn.end()) return;
+    for (QObject* o : e->second.ends) {
+        if (!o) continue;
+        auto it = g_leafByObj.find(o);
+        if (it == g_leafByObj.end()) continue;
+        auto& v = it->second;
+        v.erase(std::remove(v.begin(), v.end(), k), v.end());
+        if (v.empty()) g_leafByObj.erase(it);
+    }
+    g_leafConn.erase(k);
+}
+
 static void qtd_leaf_forget(QObject* o) {                    // g_leafMx HELD
     auto it = g_leafByObj.find(o);
     if (it == g_leafByObj.end()) return;
-    for (auto& k : it->second) g_leafConn.erase(k);
-    g_leafByObj.erase(it);
+    const std::vector<std::string> keys = it->second;   // by value: drop mutates the map
+    for (auto& k : keys) qtd_leaf_drop(k);
+    g_leafByObj.erase(o);                               // no-op if drop already emptied it
+}
+
+// How many entries the REVERSE index holds, summed over objects. The main table returning to its
+// baseline says nothing about this one — which is exactly how the one-sided cleanup stayed
+// invisible — so the probe gets to see both.
+extern "C" int qtd_leaf_index_size() {
+    std::lock_guard<std::mutex> g(g_leafMx);
+    size_t n = 0;
+    for (auto& kv : g_leafByObj) n += kv.second.size();
+    return (int) n;
 }
 
 static void qtd_leaf_watch(QObject* o, const std::string& k) {   // g_leafMx HELD
+    if (!o) return;                                          // `cur` may be null
     auto& keys = g_leafByObj[o];
     if (keys.empty())
         QObject::connect(o, &QObject::destroyed, o, [o] {
@@ -472,15 +515,18 @@ extern "C" int qtd_bind_leaf(void* ownerV, const char* prop, const char* sig, vo
     QObject* cur = qvariant_cast<QObject*>(owner->metaObject()->property(pi).read(owner));
     std::string k = qtd_leaf_key(owner, recv, slot, prop, sig);
     std::lock_guard<std::mutex> g(g_leafMx);
-    auto it = g_leafConn.find(k);
-    if (it != g_leafConn.end()) { QObject::disconnect(it->second); g_leafConn.erase(it); }
+    if (auto it = g_leafConn.find(k); it != g_leafConn.end()) {
+        QObject::disconnect(it->second.c);
+        qtd_leaf_drop(k);                       // every index, not just this one
+    }
     if (!cur) return 0;                       // not assigned yet: the notify connect will come back
     std::string s = std::string("2") + sig, m = std::string("1") + slot;
     auto c = QObject::connect(cur, s.c_str(), recv, m.c_str());
     if (!c) return 0;
-    g_leafConn[k] = c;
+    g_leafConn[k] = QtdLeafEntry{c, {owner, recv, cur}};
     qtd_leaf_watch(owner, k);
     qtd_leaf_watch(recv, k);
+    qtd_leaf_watch(cur, k);                     // the connection's real sender (critics r13 #4)
     return 1;
 }
 
@@ -503,8 +549,10 @@ extern "C" int qtd_bind_leaf_prop(void* ownerV, const char* prop, const char* le
     std::string kk = std::string("#") + leafProp;
     std::string k = qtd_leaf_key(owner, recv, slot, prop, kk.c_str());
     std::lock_guard<std::mutex> g(g_leafMx);
-    auto it = g_leafConn.find(k);
-    if (it != g_leafConn.end()) { QObject::disconnect(it->second); g_leafConn.erase(it); }
+    if (auto it = g_leafConn.find(k); it != g_leafConn.end()) {
+        QObject::disconnect(it->second.c);
+        qtd_leaf_drop(k);                       // every index, not just this one
+    }
     if (!cur) return 0;                       // not assigned yet: the notify connect will come back
     int li = cur->metaObject()->indexOfProperty(leafProp);
     if (li < 0) return 0;                     // the object there does not have it either
@@ -513,9 +561,10 @@ extern "C" int qtd_bind_leaf_prop(void* ownerV, const char* prop, const char* le
     std::string s = std::string("2") + ns.methodSignature().constData(), m = std::string("1") + slot;
     auto c = QObject::connect(cur, s.c_str(), recv, m.c_str());
     if (!c) return 0;
-    g_leafConn[k] = c;
+    g_leafConn[k] = QtdLeafEntry{c, {owner, recv, cur}};
     qtd_leaf_watch(owner, k);
     qtd_leaf_watch(recv, k);
+    qtd_leaf_watch(cur, k);                     // the connection's real sender (critics r13 #4)
     return 1;
 }
 

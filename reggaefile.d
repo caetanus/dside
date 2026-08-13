@@ -344,6 +344,16 @@ Build reggaeBuild() {
             ~ buildPath(root, "runtime", "qtmoc", "qtmoc.d") ~ " " ~ rbBase, [rbb]);
     }
 
+    // --- RUNTIME PROVENANCE (critics r13 #1): the generator copies runtime sources verbatim into
+    //     every binding, which makes them build INPUTS. A missing edge does not fail — it goes
+    //     green against the copy from before, and that is exactly what libsample did. The edge is
+    //     the fix; this notices when the fix is undone, which a functional test cannot: it runs the
+    //     wrong revision perfectly.
+    {
+        auto pv = buildPath(root, "tests", "runtime-provenance.sh");
+        if (exists(pv)) all ~= Target.phony("runtime-provenance", "sh " ~ pv, [Target(pv)]);
+    }
+
     // --- ABI LAYOUT PROBE (critics r4 #9, the oldest finding untouched until 2026-08-12): the
     //     container bridge reads QList's FIELDS at offsets the generator hard-codes, and those got
     //     in as "verified empirically". This asserts the same layout against the installed Qt
@@ -778,8 +788,14 @@ Target qmltcTool(string root, QtdBinding bind) {
 // These probes compile the unit in each configuration the project actually ships, so a
 // feature-isolation slip fails HERE rather than in an unrelated binding.
 Target[] qtmocProbeTargets(string root) {
-    auto src = buildPath(root, "runtime", "qtmoc", "qtdmoc.cpp");
-    if (!exists(src)) return [];
+    // EVERY unit of the boundary, not just the one that was there first (critics r13 #2). After the
+    // QML half moved to qtdmoc_qml.cpp these probes kept compiling qtdmoc.cpp alone and kept
+    // passing — a green that says nothing about whether the NEW unit builds in each configuration,
+    // which is the contract the comment below claims. Each unit gets its own object file so a
+    // failure names the file.
+    auto units = ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp"]
+        .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
+    if (units.length == 0) return [];
     Target[] ts;
     auto mk = (string name, string[] mods, bool qml, string qmlMod) {
         if (!mods.all!(m => execute(["pkg-config", "--exists", m]).status == 0)) return;
@@ -787,9 +803,13 @@ Target[] qtmocProbeTargets(string root) {
         auto flags = cf ~ " -std=c++17 -fPIC " ~ mocPrivateFlags(cf).join(" ")
                    ~ (qml ? " " ~ modulePrivateFlags(pkgCflags([qmlMod]), "QtQml").join(" ")
                             ~ " -DQTD_ENABLE_QML" : "");
-        auto obj = buildPath(root, ".build", "probe-" ~ name ~ ".o");
-        ts ~= Target.phony("qtmoc-probe-" ~ name,
-                           "clang++ " ~ flags ~ " -c " ~ src ~ " -o " ~ obj, [Target(src)]);
+        string cmd; Target[] deps;
+        foreach (u; units) {
+            auto obj = buildPath(root, ".build", "probe-" ~ name ~ "-" ~ baseName(u, ".cpp") ~ ".o");
+            cmd ~= (cmd.length ? " && " : "") ~ "clang++ " ~ flags ~ " -c " ~ u ~ " -o " ~ obj;
+            deps ~= Target(u);
+        }
+        ts ~= Target.phony("qtmoc-probe-" ~ name, cmd, deps);
     };
     // No QtQml in sight: the configuration that broke.
     mk("noqml", ["Qt6Core"], false, "");

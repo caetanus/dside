@@ -199,9 +199,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // build INPUTS. Without the edge, editing the runtime leaves every already-generated binding
     // on the old copy and the whole matrix goes green against code that is no longer in the tree —
     // which is exactly how a Qt5 build break stayed hidden.
-    auto runtimeSrc = ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp", "qtmoc/qtmoc.d",
-                       "holder/qtd_holder.cpp", "holder/holder.d"]
-        .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
+    auto runtimeSrc = qtdRuntimeSources(root);
     auto gen = Target(stamp,
         guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, gend] ~ runtimeSrc),
         [Target(specPath), gendTarget(root)] ~ runtimeSrc.map!(f => Target(f)).array);
@@ -222,6 +220,20 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
 
 // Per-compiler binding archive: compile every generated .d module to its own object
 // (ldc2 needs -oq for fully-qualified object names; dmd names by module), archive them.
+// THE RUNTIME SOURCES THE GENERATOR COPIES VERBATIM, in ONE place (critics r13 #1).
+//
+// They are build INPUTS: edit one and every binding must regenerate, or the matrix goes green
+// against code that is no longer in the tree. The common builder had that edge; the libsample
+// pipeline is a second, hand-written copy of the same steps and did NOT — so `sample_*` ran against
+// a stale `qtdmoc.cpp` and printed ALL PASS. Measured by the audit and reproduced here: the
+// libsample copies of qtdmoc.cpp and qtdmoc_qml.cpp hashed differently from the sources while the
+// normal path's matched. Two pipelines may stay (they build different things); ONE list may not.
+string[] qtdRuntimeSources(string root) {
+    return ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp", "qtmoc/qtmoc.d",
+            "holder/qtd_holder.cpp", "holder/holder.d"]
+        .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
+}
+
 private __gshared Target[string] _libCache;
 Target qtdBindLib(QtdBinding b, string dc) {
     auto key = b.bdir ~ "|" ~ dc;
@@ -340,12 +352,19 @@ Target[] libsampleTargets(string root, string pyside) {
     // 2) generate the "sample" binding.
     auto stamp = buildPath(bdir, "gen.stamp");
     auto genCmd = "rm -rf " ~ gen ~ " && " ~ gend ~ " " ~ specPath ~ " >/dev/null 2>&1 && touch " ~ stamp;
-    auto genT = Target(stamp, guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, gend]), [sampleLib, gendTarget(root)]);
+    // ...with the runtime sources as inputs, exactly as the common builder has them (critics r13
+    // #1): without this edge, editing the runtime leaves libsample testing the copy from before.
+    auto lsRuntime = qtdRuntimeSources(root);
+    auto genT = Target(stamp,
+        guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, gend] ~ lsRuntime),
+        [sampleLib, gendTarget(root)] ~ lsRuntime.map!(f => Target(f)).array);
 
     // 3) shims (.cpp) -> libshims.a.
     auto shimsLib = buildPath(bdir, "libshims.a");
     auto shimsCmd = "mkdir -p " ~ bdir ~ "/ocpp && for c in " ~ gen ~ "/*.cpp; do "
-        ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc ]; then EX="` ~ priv ~ `"; else EX=; fi; `
+        // Same rule as the common builder (critics r13 #2): the QML unit needs the private flags
+        // too. It survives without them today only because nothing it uses needs them yet.
+        ~ `b=$(basename "$c" .cpp); case "$b" in qtdmoc|qtdmoc_qml) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
         ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
     auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);

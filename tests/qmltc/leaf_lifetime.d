@@ -11,6 +11,11 @@ import qt.controls.qquickitem;
 import std.stdio : writeln;
 
 extern (C) int qtd_leaf_table_size();
+// The REVERSE index, exported for this test alone (critics r13 #4). The main table returning to
+// baseline says nothing about it: the cleanup used to drop a key from the vector of the object that
+// died and leave it in the other endpoint's, so a long-lived receiver accumulated for ever while
+// `qtd_leaf_table_size()` looked perfect.
+extern (C) int qtd_leaf_index_size();
 extern (C) void qtd_qobject_delete(void* o) nothrow;
 
 @QObject class Sink {
@@ -52,5 +57,33 @@ void main() {   // no QGuiApplication: nothing here needs a scene, a window or a
     assert(qtd_leaf_table_size() == base,
            "the leaf table did not return to its baseline after the tree was destroyed");
 
-    writeln("leaf lifetime OK: two owners are two entries, and destroying both ends empties the table");
+    assert(qtd_leaf_index_size() == 0,
+           "the REVERSE index kept entries after every object died");
+
+    // CHURN, which is the shape that made the one-sided cleanup matter: one receiver outliving
+    // hundreds of owners. Each dead owner must take its key out of the receiver's vector too.
+    auto keeper = newQObject!Sink();
+    immutable b2 = qtd_leaf_table_size(), i2 = qtd_leaf_index_size();
+    foreach (n; 0 .. 200) {
+        auto own = new QQuickItem();
+        auto sub = new QQuickItem(own);
+        bindLeaf(sub, "parent", "widthChanged()", keeper, "ping()");
+        qtd_qobject_delete(qobjOf(own));       // takes `sub` with it, as Qt does
+    }
+    assert(qtd_leaf_table_size() == b2,
+           "200 dead owners left entries in the leaf table");
+    assert(qtd_leaf_index_size() == i2,
+           "200 dead owners left keys in the LIVE receiver's index — the one-sided cleanup is back");
+
+    qtd_qobject_delete(qobjOf(keeper));
+    assert(qtd_leaf_table_size() == base && qtd_leaf_index_size() == 0,
+           "neither table came back to baseline");
+
+    // NOT TESTED HERE, and said rather than implied: the connection's real sender is the object the
+    // property HOLDS (`cur`), and it can die while owner and receiver live. The runtime watches it
+    // — it is the third endpoint of QtdLeafEntry — but this shape cannot stage that death: `cur` is
+    // the visual parent, so deleting it deletes the owner with it. Reaching it needs an item whose
+    // QObject parent and visual parent are different objects, which is a fixture, not an assert.
+    writeln("leaf lifetime OK: two owners are two entries; both tables empty after churn of 200 "
+            ~ "owners against a LIVE receiver (critics r13 #4)");
 }

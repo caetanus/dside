@@ -32,6 +32,11 @@ fi
 category() {
   case "$1" in
     sample_*) echo libsample ;;
+    # ...but a GATE named after a family goes to `gate`, and it has to be said BEFORE the family
+    # (critics r13 #5): `ownership*` used to swallow `ownership-gate-*`, so the report filed a
+    # governance gate under `lifetime` and the self-test still said "0 unclassified". Classified
+    # must mean the RIGHT class, not merely a non-empty one — hence the canary below.
+    manifest-gate-*|registry-gate-*|ownership-gate-*|expected-fails-lint|expected-fails-run|ctor-guard) echo gate ;;
     wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*|noqml_helpers*) echo lifetime ;;
     cannon*) echo moc ;;
     uic-*|dialog-*|tabs-*|mainwin-*|hello-*|egroup-*|combo-*|spacer-*|icon-*|uicheck*|corpus-check*) echo uic ;;
@@ -50,7 +55,7 @@ category() {
     # ...and the ratchets/probes that answer the long-lived structural findings (r4 #9, r9 #2,
     # r11 #5/#6). They are gates: they fail the build, they take no compiler and no Qt version of
     # their own except abi-layout-qt5, which the qtaxis below marks.
-    qtmoc-probe-*|report-selftest|runtime-boundary|compiler-context|abi-layout|abi-layout-qt5) echo gate ;;
+    qtmoc-probe-*|report-selftest|runtime-boundary|compiler-context|abi-layout|abi-layout-qt5|runtime-provenance) echo gate ;;
     tr-*|lupdate-check) echo i18n ;;
     manifest-gate-*|registry-gate-*|expected-fails-lint|expected-fails-run|ctor-guard|ownership-gate-*) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
@@ -105,8 +110,11 @@ if [ "$selftest" = yes ]; then
   ck qtmoc-probe-noqml               gate      qt6 -
   ck qtmoc-probe-qml5                gate      qt5 -
   ck manifest-gate-qml               gate      -   -
+  ck ownership-gate-qtwidgets        gate      qt6 -
+  ck ctor-guard                      gate      qt6 -
   ck report-selftest                 gate      -   -
   ck runtime-boundary                gate      qt6 -
+  ck runtime-provenance              gate      qt6 -
   ck compiler-context                gate      qt6 -
   ck abi-layout                      gate      qt6 -
   ck abi-layout-qt5                  gate      qt5 -
