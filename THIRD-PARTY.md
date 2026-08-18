@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # Third-party material
 
 What of this repository is not ours, stated as precisely as the repository allows. Written because
@@ -25,16 +29,20 @@ going quietly green over an absent corpus.
 
 ## Vendored, and it declares its licence
 
-**`tests/qmltc/cpptypes/` — 42 files.** Verbatim copies of the app-defined C++ QML types from Qt's
-own `qmltc` test corpus (`qtdeclarative/tests/auto/qml/qmltc/QmltcTests/cpptypes/`), as that
-directory's own README says. Every header states:
+**`tests/qmltc/cpptypes/` — 42 files, and NOT one population.** Counted file by file on 2026-08-14,
+because the previous version of this entry called all 42 verbatim Qt copies and that was false in a
+direction worth naming: it attributed twenty-two files written in this repository to The Qt Company,
+and licensed our own work as GPL-3.0-only.
 
-```
-// Copyright (C) 2021 The Qt Company Ltd.
-// SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
-```
+| what | how many | terms |
+|---|---:|---|
+| upstream C++ types from `qtdeclarative/tests/auto/qml/qmltc/QmltcTests/cpptypes/` | 19 | `LicenseRef-Qt-Commercial OR GPL-3.0-only`, as each file's own header states (10 dated 2021, 7 dated 2022, 1 dated 2024, 1 with the expression and no copyright line) |
+| `C*.qml` and `C*.set` — this project's fixtures, written here to drive those types | 22 | BSL-1.0, stated in each file |
+| `singletontype.cpp` — three lines implementing a class Qt's header declares | 1 | **BSL-1.0, written here** on 2026-08-14. It carried `NOASSERTION` until then; the qtdeclarative sources were not available to hash against, so round 17's second sanctioned route was taken — an implementation of our own, with the reasoning in the file itself. The body is the only one the declaration admits: a constructor forwarding its parent to QObject |
 
-**GPL-3.0-only**, not LGPL.
+The 19 upstream files are **GPL-3.0-only**, not LGPL, and `LICENSES/GPL-3.0-only.txt` now travels
+with the repository — an SPDX identifier points at a licence, it is not a copy of one, and GPLv3 §4
+asks for the copy.
 
 **They do not reach the product.** Measured: `tests/install.sh` packages `source/` — the generated
 QtWidgets binding — and `lib/` — its two archives. The binding built from these headers is a
@@ -80,7 +88,12 @@ to them. Replacing them keeps the coverage and gives up the independence.
 Fetching is not free either. `tests/qmltc/cpptypes/` feeds a whole differential family — moc →
 qmltyperegistrar → `.qmltypes`, then a generated binding over those headers — and fetching it means
 the build needs `qtdeclarative`'s **source**, not just an installed Qt, on any machine that wants
-that coverage. The `.ui` corpus has the same shape and the additional problem that we would first
-have to know which upstream tree each file comes from.
+that coverage. The `.ui` corpus NO LONGER has that problem: on 2026-08-14 all 60 files were matched byte-for-byte
+against `tests/auto/uic/baseline/` in `github.com:qt/qt` at `0a2f2382541424726168804be2c90b91381608c6`
+(v4.8.7-3), and each carries a `.license` sidecar recording repository, revision, path, SHA-256 and
+the date of the check. Fetching them at test time instead of vendoring them remains possible and is
+now a convenience question rather than a licensing one.
 
-Tracked as `no-licence-so-nothing-is-publishable` in `tests/expected-fails.json`.
+The expected-fail this section used to cite (`no-licence-so-nothing-is-publishable`) was removed when
+`license-publishable` went green; the entry that is live today is
+`qt5-parity-release-not-audited`.

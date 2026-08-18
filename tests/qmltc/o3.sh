@@ -78,7 +78,50 @@ build_at() {  # build_at <levelflag> <tag> <name> <file>  -> $D/<name>_<tag>.png
 # `values unmeasurable` is NOT an accepted outcome: a level that cannot be measured has not been
 # proven, and the level below it can be. It demotes like a disagreement.
 judge() {
-  cmp -s "$D/${2}_$1.png" "$D/$2.eng.png" || return 1
+  # HOW MUCH it differs, recorded next to the verdict. `cmp -s` answers yes/no, and the state file
+  # said "the frame differs" for eight pixels out of 640 (Fusion's SwitchIndicator, an anti-aliased
+  # rounded corner) and for 9336 out of 19200 (ALayouts, half the image) alike. The verdict is right
+  # in both cases — neither matches — but two orders of magnitude apart is the difference between a
+  # frontier and a broken feature, and deciding what to work on next needed that number badly enough
+  # that it was extracted by hand, twice, on 2026-08-14.
+  if ! cmp -s "$D/${2}_$1.png" "$D/$2.eng.png"; then
+    px=$(python3 - "$D/${2}_$1.png" "$D/$2.eng.png" <<'PXDIFF' 2>/dev/null || true
+import sys, zlib, struct
+def load(p):
+    d = open(p, 'rb').read(); i = 8; idat = b''
+    while i < len(d):
+        ln = struct.unpack('>I', d[i:i+4])[0]; typ = d[i+4:i+8]
+        if typ == b'IHDR': w, h, bd, ct = struct.unpack('>IIBB', d[i+8:i+18])
+        elif typ == b'IDAT': idat += d[i+8:i+8+ln]
+        i += 12 + ln
+    raw = zlib.decompress(idat); bpp = {0:1,2:3,3:1,4:2,6:4}[ct] * bd // 8
+    rows = []; prev = bytearray(w*bpp); pos = 0
+    for _ in range(h):
+        f = raw[pos]; pos += 1; line = bytearray(raw[pos:pos+w*bpp]); pos += w*bpp
+        for x in range(len(line)):
+            a = line[x-bpp] if x >= bpp else 0; b = prev[x]; c = prev[x-bpp] if x >= bpp else 0
+            if f == 1: line[x] = (line[x]+a) & 255
+            elif f == 2: line[x] = (line[x]+b) & 255
+            elif f == 3: line[x] = (line[x]+(a+b)//2) & 255
+            elif f == 4:
+                p_ = a+b-c; pa, pb, pc = abs(p_-a), abs(p_-b), abs(p_-c)
+                line[x] = (line[x] + (a if (pa<=pb and pa<=pc) else (b if pb<=pc else c))) & 255
+        rows.append(bytes(line)); prev = line
+    return w, h, bpp, rows
+try:
+    w, h, bpp, A = load(sys.argv[1]); w2, h2, _, B = load(sys.argv[2])
+    if (w, h) != (w2, h2): print("geometry %dx%d vs %dx%d" % (w, h, w2, h2))
+    else:
+        n = sum(1 for y in range(h) for x in range(w)
+                if A[y][x*bpp:(x+1)*bpp] != B[y][x*bpp:(x+1)*bpp])
+        print("%d/%d px (%.1f%%)" % (n, w*h, 100.0*n/(w*h)))
+except Exception:
+    pass
+PXDIFF
+)
+    [ -n "$px" ] && FRAMEDIFF=" — $px" || FRAMEDIFF=""
+    return 1
+  fi
   "$L/qmltc-d" --objpaths "$3" "I$2" --qmlmap "$G/qmlmap.tsv" -I "$B" > "$D/$2.objs" 2>/dev/null
   rm -rf "$D/cen"; mkdir -p "$D/cen"
   timeout "$TMO" "$D/${2}_$1.bin" --dumpall 2>/dev/null | sort > "$D/cen/$2.dall.s" || return 2
@@ -156,7 +199,7 @@ for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
            echo "$n COMPILED ($flaky path(s) the engine does not reproduce, dropped)" >> "$OUT"
          else echo "$n COMPILED" >> "$OUT"; fi
          continue ;;
-      1) why="the frame differs" ;;
+      1) why="the frame differs${FRAMEDIFF:-}" ;;
       2) why="the values cannot be measured" ;;
       *) why="$(( r - 2 )) value(s) differ" ;;
     esac
@@ -166,7 +209,25 @@ for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
     # behind "does not build or run" for the whole life of this gate.
     why="it CRASHES"
   else
-    why="it does not build or run"
+    # WHICH KIND of "does not build" — because the two are different facts for whoever reads the
+    # number. Ten of these are SpinBox/DoubleSpinBox across all five styles and three are the
+    # calendar family, and none of them is a defect in what we emit: `QQuickSpinBox` cannot be
+    # bound at all (QQuickAbstractSpinBox is a template whose inline handleComponentComplete calls
+    # QQuickIndicatorButtonPrivate::executeIndicator, which libQt6QuickTemplates2 does not export),
+    # and QQuickCalendar/QQuickCalendarModel carry no export macro. Both are recorded in
+    # generator/spec_cxx_controls.json, measured 2026-08-02.
+    #
+    # The compiler already SAYS so — `root type 'X' is not a bound Qt type … skipped` — and this
+    # gate collapsed that into the same sentence as a genuine build failure. Reading "15 do not
+    # build" then invites work on the compiler, which is the wrong conclusion; it was mine, on
+    # 2026-08-14, until I read the spec. A number that cannot be decomposed produces exactly that.
+    unbound=$(sed -n "s/.*root type '\([^']*\)' is not a bound Qt type.*/\1/p" \
+                  "$D/${n}_ox.diag" 2>/dev/null | head -1)
+    if [ -n "$unbound" ]; then
+      why="its root type $unbound is not bindable (see the exclusion reasons in the spec)"
+    else
+      why="it does not build or run"
+    fi
   fi
   # ...it did not behave the same, so it does not get into -O3. Down to the floor, judged the same
   # way — Qt builds the document there, so both axes are the engine's by construction, and a
@@ -177,6 +238,14 @@ for f in $(find "$B" -name '*.qml' -not -path '*/node_modules/*' | sort); do
   echo "$n UNPLACED (no level matches the engine; at -Ox $why)" >> "$OUT"
 done
 echo DONE >> "$OUT"
+# ...and RECORDED, not only printed. The README and docs/qmltc-d.md carried these figures
+# transcribed by hand, and on 2026-08-14 all four were wrong: the `-O3` column counted documents
+# HANDLED (329) under a heading that says "compiles", the second table was three documents stale,
+# the prose disagreed with the table beside it, and `-O1` read 111 where the gate reports 110. The
+# numbers now leave one place, and `docs-numbers` compares the tables against this file.
+printf '%s\t%s\t%s\t%s\t%s\n' "$ST" \
+  "$(grep -c ' COMPILED' "$OUT")" "$(grep -c ' DEMOTED' "$OUT")" \
+  "$(grep -c ' UNPLACED' "$OUT")" "$(grep -c ' UNJUDGEABLE' "$OUT")" > "$SP/counts_$ST.tsv"
 printf '%-10s compiled=%s demoted=%s UNPLACED=%s unjudgeable=%s\n' "$ST" \
   "$(grep -c ' COMPILED' "$OUT")" "$(grep -c ' DEMOTED' "$OUT")" \
   "$(grep -c ' UNPLACED' "$OUT")" "$(grep -c ' UNJUDGEABLE' "$OUT")"

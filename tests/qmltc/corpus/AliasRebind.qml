@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Assigning THROUGH an alias reassigns the alias's TARGET — including installing a binding with
 // Qt.binding, or dropping one with a plain value. The selector lives on the target property.
 import QtQml 2.15

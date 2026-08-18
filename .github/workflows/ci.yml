@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # CI (critics r5 #5 / r7 #1 / r8 #1). Runs generate -> build -> test on Linux across dmd AND ldc2
 # with distro Qt5 AND Qt6, and enforces the Qt-version-INDEPENDENT gates. The manifest gates are
 # ADVISORY here (see below) — an honest limitation, not a hidden one.
@@ -94,6 +96,34 @@ jobs:
             ./build --list 2>/dev/null | grep -qE "^- qmltc-o3-gate-${g}\$" \
               || { echo "::error::missing o3 gate: qmltc-o3-gate-$g"; exit 1; }
           done
+          # THE C++ CORPUS FAMILY, BY NAME AND BY COUNT (round 17 #3). `qmltcCppTypeTargets` used to
+          # hardcode `/usr/lib/qt6/moc`; Ubuntu installs it under `libexec/`, both `exists()` checks
+          # failed and the function returned an empty list — 182 targets, the only ones that compile
+          # Qt's own C++ QML types, silently ceased to exist. The floor above counts `^- qmltc` and
+          # would have been satisfied by the other families, so absence of capability read as green.
+          # Measured on the reference machine: 182 targets in this family.
+          c=$(./build --list 2>/dev/null | grep -c '^- qmltcc-' || true)
+          echo "qmltcc (C++ corpus) targets: $c"
+          test "$c" -ge 100 || { echo "::error::qmltc C++ corpus family missing or truncated: $c < 100 (moc/qmltyperegistrar not found?)"; exit 1; }
+          ./build --list 2>/dev/null | grep -qE '^- qmltcc-CBasic-ldc2$' \
+            || { echo "::error::missing qmltcc canary: qmltcc-CBasic-ldc2"; exit 1; }
+
+          # THE LICENSING GATES, for the same reason the others are here: each was written because
+          # something went green without it, and a gate that is not asserted present can vanish the
+          # way the C++ corpus did.
+          # `license-no-gpl-product` is deliberately NOT in this list. Its matrix is keyed by exact
+          # Qt release and it refuses to judge one it does not record, so on a runner whose distro Qt
+          # is not in the matrix it becomes optional — and optional targets do not appear in
+          # `--list`. Requiring it here would fail the floor for the one reason the design already
+          # accounts for. It runs in the advisory step below, where its verdict is visible.
+          for g in license-coverage license-publishable license-snapshot license-package \
+                   license-package-mutations license-coverage-mutations license-snapshot-mutations \
+                   license-no-gpl-product-mutations \
+                   license-generated-output license-generated-output-mutations; do
+            ./build --list 2>/dev/null | grep -qE "^- ${g}\$" \
+              || { echo "::error::missing licensing gate: $g"; exit 1; }
+          done
+
           # ...and the lifetime/packaging gates added since, for the same reason: each of them was
           # written because something silently went green without it.
           for g in borrowed-ldc2 nonqobject-ldc2 threadguard-ldc2-qt6 ctor-guard \
@@ -121,6 +151,13 @@ jobs:
           ./build manifest-gate-qtwidgets
           ./build manifest-gate-qml
           ./build manifest-gate-controls
+          # ...and the Qt module licence gate, for a DIFFERENT reason worth stating plainly: it is
+          # not that its answer would be noisy here, it is that it cannot answer at all. The matrix
+          # is keyed by exact release and refuses to apply another release's rows; on this runner it
+          # will say so and fail. That failure is the honest report of a real gap — no licensing
+          # verification of Qt modules happens on a Qt this project has not audited — and closing it
+          # means installing a Qt the matrix records, or auditing the runner's Qt and recording it.
+          ./build license-no-gpl-product
 
       - name: Upload report + coverage artifacts
         if: always()

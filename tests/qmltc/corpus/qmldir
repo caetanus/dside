@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
 # Lets the ENGINE resolve the singleton by name (`import "."`). qmltc-d resolves it from the
 # sibling .qml directly; this file is what the oracle side needs.
 singleton SingletonFixture 1.0 SingletonFixture.qml

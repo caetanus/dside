@@ -249,7 +249,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // REGISTERED, so the composition canary gets its list from the GRAPH instead of a glob over
     // whatever happens to be in .build (critics r14 #4). A canary that walks existing artefacts
     // proves something about the artefacts that exist, which is not the claim it prints.
-    _shimsRegistry ~= ShimsEntry(shimsLib, hasQml, shims);
+    _shimsRegistry ~= ShimsEntry(shimsLib, hasQml, shims, mods, qtdExpandLinkMods(mods), qtdQtRelease(mods));
     _genRegistry ~= gen;
     return QtdBinding(gen, shims, root, genDir, bdir, mods, spec);
 }
@@ -281,7 +281,51 @@ string[] qtdRuntimeSources(string root) {
 
 // Every archive the graph builds, with the QML decision that produced it. Registered by
 // qtdBinding/libsampleTargets as they are created (critics r14 #4).
-struct ShimsEntry { string archive; bool hasQml; Target target; }
+// `mods` is the LINK MANIFEST, and it is here because round 15 #3 was right about what the
+// product gate was doing: it grepped archives for `QQmlJS*`/`QQmlSA*`, which is the signature of
+// ONE incident (the Qt Qml Compiler validator) and not a way to identify a module. Nothing detected
+// the other entries at all, and a GPL-only module used through inline or template code leaves no
+// undefined symbol to grep for. The graph already knows which pkg-config modules built each
+// archive; recording that is the difference between checking a dependency and recognising a name.
+// `mods` is what the SPEC asked for; `linkMods` is what the linker actually receives, and `qtRel`
+// is the Qt release that produced this artifact. Round 18 #1 and #2 measured why the first is not
+// enough: `Qt6WebEngineCore` is one name on the compile line and NINE libraries on the link line —
+// `pkg-config --libs` adds Quick, OpenGL, Gui, WebChannel, Qml, Network, Positioning and Core — and
+// two of those (Qt6WebChannel, Qt6Positioning) are in no matrix row, so a module that arrived by
+// ordinary dependency resolution was invisible to a gate whose whole premise is "unknown is
+// refused". And the release matters per artifact, not per run: this machine builds Qt5 archives with
+// 5.15.19 while the matrix records 5.15.17, and the gate certified them after verifying only the
+// Qt6 release it happened to query first.
+struct ShimsEntry { string archive; bool hasQml; Target target; string[] mods; string[] linkMods; string qtRel; }
+
+// The Qt* libraries a link against `mods` really pulls in, deduplicated. Asked of pkg-config rather
+// than derived from the names, because transitive dependencies are exactly what a name does not say.
+string[] qtdExpandLinkMods(string[] mods) {
+    bool[string] seen;
+    foreach (m; mods) {
+        seen[m] = true;
+        try {
+            auto r = execute(["pkg-config", "--libs"] ~ mods);
+            if (r.status != 0) continue;
+            foreach (tok; r.output.split) {
+                if (!tok.startsWith("-l")) continue;
+                auto lib = tok[2 .. $];
+                if (lib.startsWith("Qt")) seen[lib] = true;
+            }
+        } catch (Exception) { /* pkg-config absent: the spec list is all we can record */ }
+    }
+    return seen.keys.sort.array;
+}
+
+// ...and the release, per family, so a manifest line says which Qt produced that artifact.
+string qtdQtRelease(string[] mods) {
+    auto fam = mods.any!(m => m.startsWith("Qt5")) ? "Qt5Core" : "Qt6Core";
+    try {
+        auto r = execute(["pkg-config", "--modversion", fam]);
+        if (r.status == 0) return r.output.strip;
+    } catch (Exception) { }
+    return "";
+}
 __gshared ShimsEntry[] _shimsRegistry;
 ShimsEntry[] qtdShimsRegistry() { return _shimsRegistry; }
 
@@ -423,7 +467,7 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
         ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
     auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);
-    _shimsRegistry ~= ShimsEntry(shimsLib, false, shimsT);   // libsample has no QtQml
+    _shimsRegistry ~= ShimsEntry(shimsLib, false, shimsT, ["Qt6Core"], qtdExpandLinkMods(["Qt6Core"]), qtdQtRelease(["Qt6Core"]));   // libsample: no QtQml, QtCore only
     _genRegistry ~= genT;
 
     Target[] outs;

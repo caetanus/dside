@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // AN APPLICATION USING QT'S CONTROLS, rather than one of Qt's styles defining them. The compiler
 // meets `Button`/`Label`/`Slider` as public types with a style already resolved behind them —
 // which is the position every real app is in and the exact inverse of the styles corpus.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // DOIS DOCUMENTOS LOCAIS NO MESMO PROCESSO, com os mesmos nomes por dentro.
 //
 // O compilador guarda o documento actual, a pilha de fontes, a cadeia exterior, os aliases e o

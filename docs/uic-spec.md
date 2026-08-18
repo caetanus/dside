@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # CTFE uic — the `.ui` spec and implementation status
 
 Status (honest): `runtime/uic/uiform.d` (`mixin(uiForm(import("x.ui")))`) builds a tree that

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The Component acceptance test. `delegate:` is a TEMPLATE the type instantiates itself, so the
 // bar is not "delegate is non-null" — it is that the items EXIST, match the engine property for
 // property, and that a binding INSIDE one which reads the enclosing document has the engine's

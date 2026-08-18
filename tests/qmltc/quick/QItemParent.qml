@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // A visual child needs an ITEM parent, not just a QObject one. QQuickItem tracks visual parentage
 // through parentItem; setQtParent alone leaves it null, and an item with no parentItem is not in a

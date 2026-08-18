@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A role whose NAME is only known at run time -- `model[control.textRole]`, which is how Qt's own
 // ComboBox and SearchField write their delegate label. The key is computed here too (`root.key`),
 // read through the enclosing document exactly as those do.

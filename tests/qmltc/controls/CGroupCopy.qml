@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 import QtQuick.Templates as T
 // A VALUE-typed source written into an OBJECT group: `border.color: control.palette.dark` is how

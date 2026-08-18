@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Several Controls at once, each configured and read back. A Control's properties come from a
 // deep C++ chain (Control -> Item), so these compare members no document assigns as well.
 import QtQuick.Templates

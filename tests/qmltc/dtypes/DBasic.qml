@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A .qml rooted in an APP-DEFINED type written in D (apptypes.Backend, exported by
 // qmlRegisterType). Sets inherited properties and derives a new one from them.
 import AppTypes 1.0

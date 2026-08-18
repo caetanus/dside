@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // An ENUM (here a FLAGS) member read as a NUMBER, which QML does freely -- `Qt.AlignRight` IS 2.
 // Two halves were missing and each hid the other:
 //

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 import QtQuick.Templates as T
 // BEHAVIOUR on a real Control, not a synthetic MouseArea: a Button has to emit `clicked` and

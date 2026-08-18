@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // BEHAVIOUR, not appearance: a handler for a signal the BOUND TYPE declares (`clicked` on a
 // MouseArea). This is the majority shape in real QML — 226 of the 373 handlers in the QML Qt

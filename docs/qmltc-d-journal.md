@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # qmltc-d — the engineering journal
 
 **This is the HISTORY, not the reference.** Every defect this compiler has had, how it was found

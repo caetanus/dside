@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A `default property alias`: an alias is a REFERENCE, so a bare child of a user of this type
 // lands on the alias TARGET — which is what the engine (and the dump) reaches it through.
 import QtQml 2.15

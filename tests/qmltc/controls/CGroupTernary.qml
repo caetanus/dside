@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 import QtQuick.Templates as T
 // A ternary BETWEEN two value reads written into an OBJECT-GROUP member. A base property already

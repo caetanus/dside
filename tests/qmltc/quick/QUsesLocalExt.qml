@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // (b) cross-file with USE-SITE EXTENSION: the local Greeter type is extended at the use site with
 // an extra property + a binding that reads the local type's own property (hello). The compiled

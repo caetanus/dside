@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 import QtQuick.Templates as T
 // A null OBJECT copied into a `QVariant` property is QML's `null`, not "a pointer of this class

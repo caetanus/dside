@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // Comparing an ENUM property to an enum member (`control.checkState === Qt.Checked` in Qt's own
 // Controls). The numeric value is not knowable here, but an enum property read as a STRING gives

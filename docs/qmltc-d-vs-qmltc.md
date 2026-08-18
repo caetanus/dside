@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # qmltc-d vs Qt's `qmltc`
 
 Both compile QML documents ahead of time: Qt's `qmltc` to C++, ours to D. This page is the

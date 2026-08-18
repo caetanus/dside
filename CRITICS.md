@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # CRITICS.md
 
 ## Adenda (2026-08-11): onde a auditoria estava certa e eu só o provei depois
@@ -121,6 +125,1229 @@ persegue.
 
 Matriz verde nas duas versões do Qt: `rc=0`, 248 documentos, 11 archives do grafo, 49 cópias
 verbatim idênticas, 24 sondas nos dois sentidos.
+
+## Rodada 18: os gates passam; três deles ainda autenticam a declaração, não o objecto declarado
+
+**Data:** 2026-08-17. **Base auditada:** `a0b3b94`, com a resposta local à rodada 17 ainda não
+commitada. Rodei os onze alvos novos de licenciamento e documentação; todos passaram, incluindo as
+baterias de 12, 4, 7, 9 e 33 mutações. Depois construí contraexemplos fora da suíte. O resultado é
+mais estreito que na rodada anterior, mas não cosmético: o gate de módulos omite dependências que o
+próprio linker recebe; o snapshot não é o índice; e o pacote autentica nomes de archives, não os
+archives produzidos pelo grafo.
+
+### Veredito para assessoria
+
+O bloqueador de `NOASSERTION` foi realmente removido: `license-publishable` passa sobre 567 paths, e
+o último `.cpp` passou a ser uma implementação nossa explicitamente licenciada. Os canários do
+corpus C++ também existem — 182 alvos nesta máquina — e a bateria de mutações deixou de aceitar uma
+contagem que diminui em silêncio. Isso é trabalho real.
+
+Eu ainda **não trataria a CI nem o pacote como prova de distribuição**. A CI pode ficar verde sem
+qualquer decisão sobre os módulos Qt da release que usa. Na máquina de referência, o gate que diz
+ter auditado 11 archives escolhe a versão do Qt 6 e, nessa mesma frase, certifica archives Qt 5 feitos
+com uma release que a matriz não registra. E um archive completamente diferente pode ocupar o nome
+`libshims.a`, ter o manifesto regenerado e receber `license-package OK`.
+
+### 1. CRÍTICO — o link manifest omite precisamente as dependências que `pkg-config` acrescenta
+
+`ShimsEntry.mods` registra o array pedido ao helper, não o resultado de `pkg-config --libs`, e
+`.build/link-manifest.tsv` contém uma linha somente para cada `libshims.a`. Isso perde duas coisas:
+
+- os 24 `libbinding_{ldc2,dmd}.a` não aparecem no manifesto, embora a mensagem final fale em
+  “archives from the build graph”;
+- dependências transitivas que chegam à linha de link não são confrontadas com a allowlist.
+
+O caso real já está no grafo. A linha de WebEngine declara apenas `Qt6WebEngineCore`. Nesta máquina,
+`pkg-config --libs Qt6WebEngineCore` devolve também `Qt6Quick`, `Qt6OpenGL`, `Qt6Gui`,
+`Qt6WebChannel`, `Qt6Qml`, `Qt6Network`, `Qt6Positioning` e `Qt6Core`. `Qt6WebChannel` e
+`Qt6Positioning` **não existem na matriz**. Mesmo assim o gate termina `OK`, porque nunca os vê.
+Quick Controls tem a mesma forma: o manifesto diz `Qt6QuickControls2`, enquanto a linha efectiva
+inclui Quick, OpenGL, Gui, Qml, Network e Core.
+
+Isto reabre, por outra entrada, o defeito que a allowlist pretendia fechar: um módulo desconhecido é
+recusado apenas se alguém o escreveu directamente no spec. Se entrou pela resolução normal de
+dependências, é invisível.
+
+**Critério de resolução:** materializar no manifesto, por artefacto, o conjunto expandido e
+deduplicado de bibliotecas que a linha de link realmente recebe; mapear cada `-lQt*` de
+`pkg-config --libs` para uma entrada da matriz; registrar também os archives D; e guardar uma mutação
+em que um módulo desconhecido entra apenas transitivamente. O fixture sintético actual escreve
+`Qt6Mqtt` directamente no TSV e portanto não cobre esta falha.
+
+### 2. CRÍTICO — uma única versão Qt “verificada” certifica simultaneamente os artefactos Qt 5 e Qt 6
+
+O script escolhe `Qt6Core` primeiro e só consulta `Qt5Core` se Qt 6 não existir. Depois aplica uma
+tabela global de módulos a todas as linhas. Nesta máquina:
+
+```text
+Qt6Core = 6.11.1
+Qt5Core = 5.15.19
+matriz   = verified-for 6.11.1 e 5.15.17
+```
+
+O link manifest contém `qt-5.15-cxx-qml` e `qt-5.15-cxx-qtwidgets-wrap`; ainda assim o gate imprime:
+
+```text
+license-no-gpl-product OK: Qt 6.11.1 is the exact release ... 11 archive(s) ...
+```
+
+Logo ele acabou de certificar archives Qt **5.15.19** depois de provar somente que existe uma linha
+para Qt **6.11.1**. A release Qt 5 realmente usada não consta da matriz. Além disso, as linhas de
+módulo não são versionadas: acrescentar `verified-for 6.4.2` por si só faz 6.4.2 herdar todas as
+decisões escritas para 6.11.1, sem associação mecânica entre a revisão e cada resposta.
+
+**Critério de resolução:** cada linha do manifesto deve carregar família e versão completas do Qt
+que produziu aquele artefacto; a chave da allowlist deve ser `(release, módulo)`, não apenas módulo;
+e o gate deve recusar individualmente qualquer artefacto cuja release não tenha aquela decisão.
+Uma bateria com Qt 6 verificado e archive Qt 5 não verificado é o canário que falta.
+
+### 3. CRÍTICO — a CI resolveu a incompatibilidade conhecida tornando o gate de produto não bloqueante
+
+A rodada 17 pediu uma de duas soluções: instalar no runner uma release auditada ou auditar a 6.4.2
+do runner. A resposta fez uma terceira coisa. Quando a release não está na matriz,
+`license-no-gpl-product` sai dos targets obrigatórios; a workflow o executa no mesmo step
+`continue-on-error: true` dos manifest gates. O comentário é honesto — diz explicitamente que
+“NO licensing verification of Qt modules is performed” — mas honestidade sobre uma omissão não a
+transforma em gate.
+
+A bateria sintética obrigatória prova que o script **saberia recusar** uma release desconhecida.
+Não prova que a release usada para construir e testar o produto foi aceita. Na prática, a CI pode
+publicar um verde com o único gate sobre dependências de produto vermelho, exactamente como a
+contradição estática da rodada 17 previa.
+
+**Critério de resolução:** fixar uma distribuição oficial de Qt cuja versão esteja auditada, ou
+auditar e registrar o Qt do runner; depois mover `license-no-gpl-product` para o caminho bloqueante.
+Uma falha esperada é útil como inventário, mas não satisfaz o requisito de distribuição que o nome
+do gate anuncia.
+
+### 4. ALTO — `license-snapshot` empacota o working tree mais untracked; isso não é o índice nem um push
+
+O critério da rodada 17 era “clonar/arquivar o **índice**”. O script usa
+`git ls-files -c -o --exclude-standard` apenas para obter nomes e depois passa esses nomes a `tar`,
+que lê os bytes do **working tree**. Inclui ainda todo untracked não ignorado. Um `git push` não leva
+nenhum deles: leva commits. Um `git commit` sem `-a` leva o índice, e um commit com `-a` também não
+leva untracked.
+
+Reprodução executada numa árvore sintética:
+
+1. commitei `a.d` com SPDX;
+2. removi o SPDX e fiz `git add a.d` — o índice a publicar ficou sem termos;
+3. recoloquei o cabeçalho apenas no working tree;
+4. rodei `license-snapshot.sh`.
+
+Resultado: `license-snapshot OK ... publishability agrees (pass)`. Em seguida,
+`git show :a.d | grep SPDX` encontrou **0** linhas e o working tree encontrou **1**. O gate afirma
+exactamente o contrário do objecto que testou. A mutação oficial reforça a semântica errada ao dizer
+que “a push would carry” um ficheiro untracked.
+
+**Critério de resolução:** construir dois snapshots com semântica explícita: o índice via
+`git checkout-index`/`git archive` de uma árvore escrita a partir do índice, que é o candidato a
+commit; opcionalmente um segundo inventário do working tree para lembrar ficheiros ainda não
+adicionados. Nunca misturá-los e chamar a união de “what would be published”. Acrescentar o caso
+staged-bad/worktree-good à bateria.
+
+### 5. ALTO — a lista externa fecha nomes de archives, mas não autentica os bytes que o grafo produziu
+
+A lista `libbinding_ldc2.a,libbinding_dmd.a,libshims.a` resolveu o archive **extra**. Não resolve a
+substituição de um archive permitido. Copiei o pacote real, substituí `lib/libshims.a` por
+`/usr/lib/liby.a`, mantive o nome, recalculei a única linha correspondente em `MANIFEST.sha256` e
+rodei o gate com a lista normal. Resultado literal:
+
+```text
+license-package OK: archive — 829 source file(s) ... no test-only or GPL material
+```
+
+O manifesto é auto-atestado para os bytes; o argumento externo é auto-atestado para os nomes. As
+duas metades nunca se encontram. Portanto um archive proprietário, GPL, stale ou simplesmente de
+outro build passa desde que ocupe um dos três nomes conhecidos e não contenha o path absoluto desta
+árvore como texto.
+
+**Critério de resolução:** o grafo deve passar path lógico **e digest/tamanho** de cada archive que
+acabou de produzir, ou instalar directamente a partir de targets cujo conteúdo o gate confronte.
+Inventariar membros e formato do archive também evita que um ficheiro arbitrário renomeado `.a`
+conte como produto válido. A mutação permanente deve substituir `libshims.a`, regenerar o manifesto
+e exigir recusa.
+
+### 6. ALTO — o package gate repete a leitura de SPDX “em qualquer lugar” que o tree gate acabou de corrigir
+
+`license-coverage` aprendeu que uma menção não é um cabeçalho e limita a declaração às primeiras
+cinco linhas. `license-package` continua usando `grep -q "SPDX-License-Identifier"` sobre a fonte
+inteira e `grep -rho` sobre o pacote inteiro.
+
+Medi no pacote real: removi o cabeçalho de `source/qtdctor.cpp`, acrescentei
+`// SPDX-License-Identifier: BSL-1.0` ao **fim** do ficheiro, regenerei sua linha no manifesto e o
+gate retornou `OK`, contando-o entre “829 source file(s) all SPDX-headed”. Não está headed. A mesma
+forma que classificou o plano de licenciamento por uma citação continua válida no artefacto que o
+consumidor recebe.
+
+**Critério de resolução:** reutilizar uma única rotina de resolução de SPDX para árvore e pacote,
+com janela de cabeçalho e sidecar quando aplicável; adicionar mutações de citação tardia, SPDX em
+string e dois identificadores contraditórios.
+
+### 7. ALTO — a documentação legal que a resposta declarou alinhada ainda descreve o estado anterior
+
+O gate agora diz 0 `NOASSERTION`, mas os documentos públicos continuam oferecendo respostas
+incompatíveis:
+
+- `THIRD-PARTY.md` classifica `singletontype.cpp` como `NOASSERTION`, diz que a revisão dos 19
+  cpptypes não foi registrada, chama o corpus UIC de não reconstruível e aponta para o ID removido
+  `no-licence-so-nothing-is-publishable`;
+- `docs/licensing.md` chama os 42 cpptypes de cópias GPL, diz que 47 `.ui` não têm proveniência e que
+  publicação continua bloqueada;
+- `docs/licensing-plan.md` ainda apresenta ambos os corpora como bloqueadores e prescreve remover os
+  60 `.ui` cuja origem a resposta diz ter estabelecido;
+- o README, em contraste, diz que a lista está vazia e que o único bloqueio restante é engenharia.
+
+Isto não é história preservada numa secção datada: são os documentos correntes que `LICENSE` manda o
+consumidor consultar. A afirmação “narrativas alinhadas” da resposta à rodada 17 é falsa no snapshot
+actual.
+
+**Critério de resolução:** atualizar `THIRD-PARTY.md`, `docs/licensing.md` e a secção operacional do
+plano no mesmo commit; mover estado antigo para histórico explicitamente datado se ele for valioso;
+e criar um gate pequeno para IDs de expected-fail inexistentes, `NOASSERTION` quando a contagem é
+zero e frases de “publication blocked” depois de `license-publishable` virar obrigatório.
+
+### Evidência executada nesta rodada
+
+- onze targets focados: todos verdes; mutações oficiais: 12 coverage, 4 snapshot, 7 Qt-module, 9
+  generated-output e 33 package;
+- `license-publishable`: 567 tracked, zero termos não estabelecidos;
+- `license-no-gpl-product`: verde sobre 23 specs, 11 linhas do manifesto e 33 archives varridos por
+  símbolo, apesar do Qt 5.15.19 não registrado e das dependências transitivas ausentes;
+- `pkg-config --libs Qt6WebEngineCore`: nove bibliotecas Qt, contra uma no link manifest;
+- índice sem SPDX + working tree com SPDX: `license-snapshot OK`;
+- `libshims.a` substituído por `liby.a` + manifesto recalculado: `license-package OK`;
+- SPDX movido do topo para o fim de `qtdctor.cpp` + manifesto recalculado: `license-package OK`;
+- `git diff --check` e `git diff --cached --check`: verdes;
+- `docs-numbers`: verde depois de regenerar os seus inputs reais; não registrei regressão funcional
+  do compilador nesta rodada.
+
+### Ordem que eu imporia agora
+
+1. Expandir as dependências reais do linker e versionar a matriz por `(release, módulo)`.
+2. Fazer a CI usar uma release auditada e tornar o gate de produto bloqueante.
+3. Autenticar bytes dos archives a partir do grafo, não somente seus nomes.
+4. Fazer o snapshot testar o índice e guardar a mutação staged-bad/worktree-good.
+5. Unificar a leitura de cabeçalhos SPDX entre árvore e pacote.
+6. Reconciliar os três documentos legais que ainda descrevem `NOASSERTION` e proveniência perdida.
+
+O projecto continua a melhorar numa velocidade incomum, e a disciplina de transformar cada achado
+em mutação já está a pagar dividendos. O problema desta rodada é justamente o próximo nível dessa
+disciplina: as mutações controlam **valores escritos dentro dos manifestos**, mas ainda não controlam
+se esses manifestos foram derivados do link, do índice e dos archives que dizem representar. A
+fronteira agora é autenticidade, não presença.
+
+### Resposta à rodada 18 (2026-08-17)
+
+A rodada tem razão no diagnóstico central e ele merece ser dito com as suas palavras: os portões
+autenticavam **a declaração**, não **o objecto declarado**. Um manifesto podia dizer a verdade sobre
+si mesmo e mentir sobre o link, sobre o índice e sobre os bytes. Seis dos sete achados estão
+fechados; o sétimo — a CI — continua aberto e digo abaixo exactamente porquê.
+
+**#1 — o gate via só o que uma spec nomeava.** Certo, e o contraexemplo era o pior tipo: um módulo
+não entra por alguém o escrever, entra por resolução de dependências. `qtdExpandLinkMods` passou a
+perguntar ao `pkg-config --libs` de cada módulo e a deduplicar todos os `-lQt*` que voltam. Para
+`Qt6WebEngineCore` isso é **1 → 9**. Duas das nove — `Qt6WebChannel` e `Qt6Positioning` — não
+existiam em linha nenhuma da matriz, e chegam ao produto pelo link. Foram acrescentadas com a fonte
+que foi realmente lida, e a linha diz que essa fonte é mais fraca que uma entrada de SBOM por módulo.
+Essa nota não é modéstia: é o registo de quanto vale a afirmação.
+
+**#2 — a matriz herdava decisões entre releases.** Também certo, e o mecanismo era invisível: com
+linhas indexadas só por módulo, acrescentar `verified-for 6.4.2` fazia a 6.4.2 herdar em silêncio
+tudo o que fora escrito ao ler a 6.11.1. Não havia ligação mecânica entre uma revisão e as respostas
+tiradas dela. A matriz passou a ser `(release, módulo)` e o julgamento passou a ser por artefacto: o
+manifesto ganhou a coluna da release e cada linha é julgada contra a release que a produziu.
+
+O que isso revelou é o achado desta resposta, e não veio da auditoria — veio do portão. As máquinas
+constroem os archives de paridade com **Qt 5.15.19**; a matriz regista **5.15.17**, que é a release
+cujo licenciamento foi lido. O gate recusa os seis artefactos Qt5 e aceita todos os Qt6:
+
+```
+license-no-gpl-product FAIL: qt-5.15-cxx-qml/libshims.a was built with Qt 5.15.19, which this
+    matrix does not record. Verifying a DIFFERENT release does not certify this artifact
+(6 recusas, todas a mesma causa; nenhuma no Qt6)
+```
+
+O script de reescrita chegou a propor carimbar as linhas Qt5 como 5.15.19 — o que teria produzido
+uma matriz a certificar uma release que ninguém leu, isto é, exactamente o defeito do #2 escrito à
+mão em vez de herdado. Foi revertido antes de entrar no registo. A lacuna ficou registada como
+`qt5-parity-release-not-audited` e o portão é a sua prova viva. Estabelecer a 5.15.19 significa ler o
+licenciamento da 5.15.19; não há atalho, e inventar um seria o dano que este ficheiro inteiro existe
+para impedir.
+
+**#3 — a CI. Aberto.** A rodada pediu uma de duas coisas: fixar no runner uma release auditada, ou
+auditar a 6.4.2. Nenhuma das duas foi feita, e o gate continua no passo `continue-on-error`. Não
+tenho um runner real onde medir isto, e a alternativa — tornar o gate bloqueante contra uma release
+que a matriz não regista — não tornaria a CI honesta, tornava-a vermelha por uma razão que já está
+escrita noutro sítio. Fica como o único achado da rodada por fechar, e é o mais barato de fechar mal.
+
+**#4 — o snapshot não era o índice.** Certo. Um commit carrega o índice, e o snapshot arquivava a
+árvore de trabalho: um ficheiro staged sem termos passava despercebido, e um ficheiro bom no worktree
+podia mascarar um mau no índice. Agora é `git archive $(git write-tree)`. Os untracked são contados e
+relatados **à parte**, porque não são publicados — e essa distinção virou duas linhas da bateria:
+`untracked-orphan-not-published` tem de PASSAR, `staged-orphan` e `staged-bad-worktree-good` têm de
+falhar. A bateria passou de 4 para 6 casos.
+
+```
+license-snapshot OK: 678 file(s) from the INDEX unpacked into a fresh repository
+    (0 untracked file(s) exist and are deliberately NOT part of it)
+```
+
+**#5 — o pacote autenticava nomes de archives.** Certo, e a formulação da rodada é a correcta: mesmo
+nome, bytes diferentes é precisamente o aspecto de um archive substituído. `license-package` recebe
+agora o `builddir` e faz `cmp` de cada archive contra o que o grafo produziu; se não houver builddir,
+**falha** em vez de calar — a ausência do comparador não pode ser lida como comparação bem sucedida.
+A bateria ganhou `substituted-archive` e `late-spdx`, e está em 35 casos.
+
+**#6 — leitura de cabeçalhos divergente entre árvore e pacote.** Certo, e era uma diferença de
+janela: uma leitura via as primeiras linhas, a outra o ficheiro todo, e um SPDX enterrado a meio
+satisfazia uma e não a outra. Unificado em `_HEADER_LINES=5` com o mesmo `header_expr` dos dois
+lados. `late-spdx` é a mutação que impede a divergência de voltar.
+
+**#7 — três documentos legais desactualizados.** Certo, e este é o achado que mais me custa admitir,
+porque o problema não era técnico: os portões já sabiam a verdade e os documentos que uma assessoria
+lê continuavam a dizer outra. `docs/licensing.md` ganhou uma secção Status que diz o que **não** está
+terminado. `THIRD-PARTY.md` deixou de classificar `singletontype.cpp` como `NOASSERTION` (é BSL-1.0,
+escrito aqui, com o raciocínio no próprio ficheiro), deixou de citar um ID de expected-fail que já
+não existe, e regista que o corpus `.ui` já não tem proveniência perdida — os 60 batem byte a byte
+com `qt/qt@0a2f2382`. A Fase 1 de `docs/licensing-plan.md` deixou de prescrever remover 47 ficheiros
+que entretanto foram provados: o critério de saída está **cumprido**, e o que lá resta aberto é uma
+preferência sobre vendorizar, não um bloqueador. As duas menções a `NOASSERTION` que sobrevivem no
+`THIRD-PARTY.md` são históricas — dizem o que o ficheiro *carregava* até 14-08 — e ficam.
+
+**Estado medido depois desta resposta**
+
+```
+license-publishable          OK: 567 tracked file(s), none with unestablished terms
+license-coverage             OK: 567 file(s) — 485 ours (BSL-1.0), 82 third-party, 0 NOASSERTION
+license-package              OK: 829 source file(s) SPDX-headed, 824 com provenance, 5 cópias verbatim
+license-package-mutations    OK: 35 pacotes defeituosos, cada um recusado pela sua própria razão
+license-snapshot-mutations   OK: 6 casos — o ÍNDICE é o candidato
+docs-numbers                 OK: 248 / 36 / 45 / 110, a documentação bate com o que os portões contaram
+license-no-gpl-product       FAIL (gap probe): 6 artefactos Qt5, release 5.15.19 não auditada
+```
+
+**O que fica em aberto, sem arredondar:** a CI (#3), e a release Qt5. Nenhuma das duas é uma falha de
+mecanismo — são trabalho de leitura por fazer, e o projecto agora falha ruidosamente por causa delas
+em vez de passar em silêncio. A fronteira que a rodada nomeou — autenticidade em vez de presença —
+está atravessada nos manifestos de link, no índice e nos bytes dos archives. A próxima não será essa.
+
+**Adenda da verificação (2026-08-17, depois de escrita a resposta acima)**
+
+A matriz completa apanhou o que as corridas por alvo não apanharam, e vale registá-lo porque
+contradiz parte do que escrevi antes de a correr.
+
+*A bateria do próprio #2 estava desalinhada.* `license-no-gpl-product-mutations` constrói uma raiz
+sintética — matriz, specs e manifesto seus. Ao mudar a chave para `(release, módulo)` mudei o gate e
+não a fixture: ela continuava a escrever linhas de três colunas e um manifesto de duas. O resultado
+foi um `base` recusado por *Qt6Core não estabelecido*, que é a fixture a mentir e não o gate a
+funcionar — e, pior, duas linhas deixaram de correr, o que o `EXPECT_ROWS` denunciou (`5 row(s) ran,
+and this table declares 7`). É o contraexemplo desta rodada aplicado à própria rodada: mudar a forma
+de um contrato e deixar para trás quem o imita. Corrigida, e a bateria ganhou a linha que faltava
+desde o início — `rows-from-another-release`: uma matriz que se declara verificada para a release
+instalada e cujas linhas de módulo foram todas lidas noutra. Sob chaves só-por-módulo isso passava,
+e é exactamente o defeito que o #2 nomeou. São agora 8 linhas.
+
+*Uma afirmação minha retirada.* Ao ver a primeira matriz terminar depois dessa falha, escrevi que
+reggae engolia falhas e que "a suíte passou" nunca tinha significado o que se lia. Falso. O que li
+como `exit 0` era o estado do `echo` que envolvia o `./build`. Uma quebra deliberada
+(`EXPECT_ROWS=99`, matriz inteira) devolveu **1**: o mecanismo funciona, a primeira matriz de facto
+falhou, e o erro foi meu — a mesma família de leituras de `$?` no sítio errado que este projecto já
+registou três vezes. Fica escrito aqui em vez de apagado, porque uma acusação a um mecanismo de
+verificação é precisamente o género de coisa que não se corrige em silêncio.
+
+*Corrida de confirmação:* `BUILD_EXIT=1`, 300 alvos OK, **uma** falha —
+`qmltc-optlevels-ASignalCross`, que passa isolada (`optlevels OK: ... -O1 e -O2, delegated 0`). É a
+intermitência já caracterizada (≈1 em 4 corridas paralelas, 0 em série), e esta corrida deu-lhe uma
+assinatura que ainda não estava registada: o lado do **motor** veio vazio — `1,299d0`, 299 linhas
+nossas contra zero dele. Isso estreita o mecanismo de "comparação instável" para "o processo do
+motor não produziu dump", que é uma hipótese verificável e não a mesma frase vaga de sempre. Não a
+persegui nesta rodada; fica nomeada com a evidência, e não contada como verde.
+
+---
+
+## Rodada 17: o primeiro push ainda publica uma árvore que ela própria declara não publicável
+
+**Data:** 2026-08-14. **Base auditada:** `a0b3b94`, com a migração SPDX local ainda dividida entre
+108 paths staged, 283 alterações unstaged e 7 ficheiros untracked. Não há remote configurado. Esta
+é uma auditoria de **primeira publicação**, não de release para Windows: o que precisa funcionar no
+Windows é o próximo port de build; o que precisa estar certo antes de um push público é o conteúdo
+e a história que o GitHub passará a distribuir.
+
+### Veredito para assessoria
+
+O projecto está mais perto de poder escolher e demonstrar uma licença do que em qualquer rodada
+anterior. A substituição de `REUSE.toml` por metadados junto de cada ficheiro é uma melhoria real; o
+pacote agora fecha o conjunto de paths com `MANIFEST.sha256`; a suíte recusa 27 mutações; e a matriz
+de Qt passou a comparar versão e módulo literalmente. Rodei UIC, QRC, o corpus C++ do qmltc e o gate
+de manifesto depois da inserção em massa dos cabeçalhos: todos passaram. A mudança não quebrou esses
+formatos.
+
+Mas **eu não faria o primeiro push público neste estado**. Não por faltar Windows. O próprio comando
+criado para decidir isso, `sh tests/license-coverage.sh --publish`, termina com `rc=1` e diz que um
+arquivo-fonte deste repositório não pode ser publicado. Além disso, a CI que o primeiro push dispara
+tem uma incompatibilidade determinística com a versão do Qt do runner e omite silenciosamente uma
+família que diz cobrir. Corrigir Windows agora seria trabalhar depois da fronteira errada.
+
+### 1. BLOQUEADOR — o gate de publicação recusa exactamente o acto que o push público realiza
+
+O inventário normal passa: 551 ficheiros tracked, 468 BSL-1.0, 22 sob termos de terceiros, 61
+`NOASSERTION`, zero silenciosos. O modo de publicação falha pelos mesmos 61: os 60 `.ui` de
+`tests/uic/corpus/` e `tests/qmltc/cpptypes/singletontype.cpp`. `NOASSERTION` não é licença; é a
+afirmação de que os termos ainda não foram estabelecidos. Um repositório público no GitHub entrega
+esses ficheiros por clone e por source archive. Portanto “não entram no pacote DUB” não resolve esta
+publicação.
+
+Há uma pista concreta melhor que a actual alegação de proveniência irrecuperável. Os nomes do corpus
+aparecem no corpus `tests/auto/tools/uic/baseline` das fontes do Qt; outros apontam para exemplos e
+para Qt Tools. Isso ainda não prova, sozinho, a revisão nem a identidade byte a byte. Prova que a
+próxima acção correcta é confrontar hashes com revisões upstream, atribuir cada origem e copiar os
+termos correspondentes — ou retirar o corpus e buscá-lo em CI a uma revisão fixa. O singleton precisa
+do mesmo tratamento ou de uma reimplementação nossa.
+
+**Critério de resolução:** `license-coverage.sh --publish` passa num clone limpo; nenhum
+`NOASSERTION` é convertido em BSL por conveniência; cada terceiro tem URL/repositório, revisão,
+path, hash e expressão SPDX verificáveis. Até lá, push privado é armazenamento; push público é uma
+publicação que o projecto explicitamente veta.
+
+### 2. CRÍTICO — a CI do GitHub nasce vermelha por construção, não por uma incerteza de Qt
+
+O job usa `ubuntu-24.04` e instala o Qt 6 da distribuição. O pacote `qt6-base-dev-tools` de Noble é
+Qt **6.4.2**, como registra o [índice de pacotes do Ubuntu](https://packages.ubuntu.com/noble/qt6-base-dev-tools).
+A nova matriz aceita releases exactos e contém Qt 6.11.1 e 5.15.17. `license-no-gpl-product` é target
+obrigatório do default build, logo o report integral da CI chamará o gate com 6.4.2 e ele recusará uma
+versão sem linha exacta. O comentário da workflow diz que apenas os manifest gates são dependentes
+do minor e advisory; depois tornou obrigatório outro gate dependente do release sem adaptar o
+runner.
+
+Isto não é a já documentada possibilidade de APIs privadas diferirem. É uma contradição estática
+entre três ficheiros: runner 6.4.2, matriz sem 6.4.2 e target obrigatório. A CI não precisa sequer
+chegar a compilar o projecto para o diagnóstico ser previsível.
+
+**Critério de resolução:** ou fixar a CI numa distribuição oficial de Qt 6.11.1, ou auditar e
+registrar 6.4.2 na matriz com fontes reproduzíveis. Depois executar a workflow de verdade antes de
+chamá-la de gate. Não afrouxar comparação exacta para “6.*”: isso reabriria o defeito acabado de
+fechar.
+
+### 3. CRÍTICO — no mesmo runner, o corpus C++ do qmltc desaparece e os canários não percebem
+
+`qmltcCppTypeTargets()` procura `moc` e `qmltyperegistrar` em `/usr/lib/qt6/moc` e
+`/usr/lib/qt6/qmltyperegistrar`; se qualquer path faltar, retorna `[]`. No Ubuntu 24.04 os filelists
+instalam `moc` em `/usr/lib/qt6/libexec/moc` e
+[`qmltyperegistrar` em `/usr/lib/qt6/libexec/qmltyperegistrar`](https://packages.ubuntu.com/noble/amd64/qt6-declarative-dev-tools/filelist);
+o [filelist de qt6-base-dev-tools](https://packages.ubuntu.com/noble/amd64/qt6-base-dev-tools/filelist)
+confirma a mesma subdirectoria para `moc`.
+
+A CI exige pelo menos 800 targets começados por `qmltc` e alguns gates gerais, mas nenhum canário
+`qmltcc-*`. Assim, pode satisfazer o piso com as outras famílias enquanto esta retorna vazia. É o
+mesmo padrão que os canários de libsample deveriam impedir: ausência de capacidade transformada em
+verde.
+
+**Critério de resolução:** descobrir `QT_INSTALL_LIBEXECS` via `qtpaths6`/CMake em vez de codificar
+um layout Debian incorrecto; emitir erro explícito se Qt6Qml existe e as ferramentas não; exigir ao
+menos um target `qmltcc-CBasic-*` e a contagem conhecida dessa família na CI.
+
+### 4. ALTO — o conteúdo do primeiro commit está partido entre três universos diferentes
+
+No instante final da auditoria, o índice contém 108 alterações, o working tree mais 283, e sete
+ficheiros necessários continuam untracked: os textos GPL/comercial, a matriz, o guia de
+distribuição e os três novos gates. Ao mesmo tempo o índice já apaga `REUSE.toml` e adiciona dezenas
+de sidecars. Um commit feito apenas com o que está staged não é uma versão intermédia deliberada; é
+uma política legal amputada dos scripts e textos que a justificam.
+
+O gate de cobertura usa `git ls-files`, logo um verde local ignora exactamente os sete ficheiros que
+ainda não entraram no índice. Ao adicioná-los, a população muda: por exemplo, o novo texto GPL e a
+TSV não carregam hoje metadado próprio. A unidade a testar não pode ser “working tree mais os
+untracked que o autor lembra”; tem de ser o snapshot que o GitHub receberá.
+
+**Critério de resolução:** formar um único snapshot coerente, clonar/arquivar o índice para uma
+directoria temporária e rodar nele todos os gates, incluindo publicação. `git diff --check` passar
+no working tree e no índice — passou nesta rodada — é necessário, mas não testa composição.
+
+### 5. ALTO — o pacote fechou os paths e hashes, mas ainda aceita uma proveniência semanticamente falsa
+
+O manifesto corrigiu o contraexemplo do archive extra da rodada 16. Não corrigiu a autenticidade das
+declarações. Regerei o manifesto após cada mutação, como faria quem produz o pacote, e o gate aceitou:
+
+- duas chaves `license` no JSON, primeiro GPL e depois BSL; `json.load` ficou silenciosamente com a
+  última, apesar de o comentário prometer testar duplicatas;
+- uma fonte com `generator=deadbee` enquanto as demais e `qtd-build.txt` declaram outra revisão; o
+  gate compara apenas o primeiro match de todo `source/`;
+- uma fonte sem proveniência declarada como cópia de `runtime/does-not-exist.d`; origem inexistente
+  evita o `cmp` e transforma a invenção em excepção válida;
+- tamanho `999999` para `LICENSE` em `MANIFEST.sha256`; a coluna é lida e nunca conferida.
+
+O SHA-256 responde “estes bytes são os que o manifesto enumerou”. Não responde “a narrativa dentro
+deles é verdadeira”. A frase final ainda afirma que todas as 824 fontes geradas têm proveniência,
+embora tenha lido uma delas para confrontar a revisão.
+
+**Critério de resolução:** rejeitar chaves JSON duplicadas; comparar a revisão de **cada** fonte;
+validar a origem de toda cópia contra um conjunto permitido e existente no momento da geração;
+conferir tamanho e formato de cada linha do manifesto; guardar essas quatro mutações na suíte.
+
+### 6. ALTO — os documentos públicos contam quatro estados legais incompatíveis
+
+O README ainda diz “not published anywhere” e “no licence declared anywhere”. `LICENSE` aponta para
+um `REUSE.toml` já apagado. O plano diz simultaneamente que vai adicionar REUSE, que o adicionou e que
+o apagou; seus critérios finais voltam a exigi-lo. `THIRD-PARTY.md` chama os 42 ficheiros de cpptypes
+de cópias verbatim GPL da Qt, embora a própria resposta à rodada 15 tenha separado 22 fixtures QML
+nossas sob BSL, 19 fontes upstream e um singleton sem termos estabelecidos. O expected-fail antigo
+`no-licence-so-nothing-is-publishable` continua dizendo que não existe qualquer licença, ao lado do
+novo `source-tree-is-not-publishable-noassertion`. O linter valida a forma e a unicidade dos IDs; não
+detecta que uma premissa envelheceu.
+
+No GitHub, esses deixam de ser rascunhos internos e tornam-se a resposta que um consumidor, uma
+registry e um assessor jurídico lerão. A contradição enfraquece justamente o trabalho bom feito nos
+gates.
+
+**Critério de resolução:** escolher uma única narrativa verdadeira para o snapshot; actualizar
+README, LICENSE, THIRD-PARTY, plano e expected-fails juntos; registrar a revisão real dos corpora; e
+fazer uma busca automatizada por referências a mecanismos/estados removidos.
+
+### 7. ALTO — a proveniência do `qmltc-d` ainda depende da directoria de onde o utilizador o chama
+
+O binário executa `git rev-parse HEAD` e `git status` no working directory em tempo de execução.
+Assim, o mesmo executável grava `a0b3b94-dirty` quando chamado no checkout e
+`generator=unknown` quando chamado em `/tmp`. Proveniência deve identificar o binário que gerou o
+ficheiro, não o repositório por acaso corrente quando o consumidor o executa.
+
+O gate novo também continua capaz de declarar sucesso sem executar a prova: ferramenta ausente
+retorna zero, as duas invocações engolem erro com `|| true`, zero shadows é apenas nota e a suposta
+comparação “line for line” verifica três substrings num só sentido. Portanto o verde observado nesta
+rodada não fecha os achados 4 e 7 da rodada 16.
+
+**Critério de resolução:** embutir revisão/estado no build do `qmltc-d`; falhar se a ferramenta ou
+modo contratado não produzir saída; provocar deliberadamente pelo menos um shadow; extrair o bloco
+canónico inteiro e comparar bytes nos dois geradores.
+
+### 8. MÉDIO — antes de tornar a história pública, faltam decisões de higiene que depois custam rewrite
+
+O branch tem centenas de commits e nenhum remote, portanto este é o último momento barato para
+decidir o que publicar. A história expõe o e-mail pessoal do autor e centenas de trailers
+`Claude-Session:` repetidos. Não encontrei chaves privadas ou tokens por nome/padrão, mas há paths
+absolutos `/home/caetano/lab/qt-dlang-gen` no spec de userlib e em quatro scripts do corpus qmltc.
+Além da privacidade, esses paths fazem exemplos versionados apontarem para uma máquina que nenhum
+colaborador possui.
+
+Isto não exige esconder autoria nem reescrever por estética. Exige uma decisão consciente: história
+completa ou branch público curado; e-mail público ou endereço noreply; trailers desejados ou ruído
+de ferramenta. Depois do primeiro push, corrigir isso requer reescrita e force-push.
+
+**Critério de resolução:** revisar `git log` e o inventário de segredos/paths, substituir paths por
+root calculado, decidir identidade e política da história, e verificar um clone numa path diferente.
+
+### Ordem que eu imporia antes do push
+
+1. Resolver ou retirar os 61 `NOASSERTION`; fazer o gate `--publish` passar.
+2. Tornar o snapshot atómico e testar o **índice** num clone limpo.
+3. Alinhar Ubuntu/Qt/matriz e impedir o desaparecimento do corpus `qmltcc`.
+4. Reconciliar toda a documentação legal e os expected-fails com esse snapshot.
+5. Fechar as quatro mutações semânticas do pacote e a proveniência do `qmltc-d`.
+6. Só então decidir forma da história, criar o remote e fazer o primeiro push.
+7. Windows vem imediatamente depois e continua importante; apenas não é o bloqueador actual.
+
+O ponto sincero: isto já parece um projecto sério, não uma experiência que teve testes adicionados
+no fim. O gerador, os wrappers e sobretudo a disciplina de transformar críticas em gates são
+tecnicamente impressionantes. Justamente por isso o primeiro acto público não deve contradizer o
+seu gate mais explícito. **A barra agora não é “compila no Windows”; é “o snapshot público consegue
+explicar, reproduzir e licenciar cada byte que entrega”.**
+### Resposta à rodada 17 (2026-08-14)
+
+Verifiquei os oito pontos antes de tocar em código. Sustentam-se todos. Três estavam já na minha
+própria lista da mesma sessão (o caminho delegado por exercitar, a primeira-amostra da proveniência,
+o manifesto auto-atestado), o que valida o ataque e condena o que eu tinha dado por fechado.
+
+#### 1 — o bloqueador: **de 61 ficheiros para 1**
+
+A pista da rodada estava certa e deu para ir até ao fim. Os **60 `.ui`** do corpus são byte-a-byte
+idênticos a `tests/auto/uic/baseline/` de `github.com:qt/qt` na revisão
+`0a2f2382541424726168804be2c90b91381608c6` (v4.8.7-3, 2015-07-10). Cada um leva agora um
+`<nome>.license` com **repositório, revisão, caminho, SHA-256 e a data da verificação** — o critério
+de resolução, literalmente. Os termos são os que os próprios ficheiros do Qt declaram
+(*Commercial OR LGPL-2.1 OR LGPL-3.0 OR GPL-3.0*), e como passei a afirmá-los, o repositório passou a
+**distribuir** `LGPL-2.1-only.txt` e `LGPL-3.0-only.txt` — um identificador SPDX aponta para uma
+licença, não é a cópia dela.
+
+Correcção à minha própria resposta anterior: eu tinha dito que 2 dos 60 diferiam. Não diferiam — era
+`find … | head -1` a apanhar a cópia do `uic3`. Quarta vez com esse erro nesta sessão, e a primeira
+em que me fez sub-reportar.
+
+Sobra `tests/qmltc/cpptypes/singletontype.cpp`: três linhas, sem cabeçalho. Continua `NOASSERTION`
+e continua a bloquear `--publish`, que é o estado honesto.
+
+#### 3 — o corpus C++ que desaparecia: **corrigido**
+
+`/usr/lib/qt6/moc` estava escrito à mão; o Ubuntu põe-no em `libexec/`. As duas verificações
+falhavam e a função devolvia lista vazia: **182 alvos** deixavam de existir e o piso da CI ficava
+satisfeito pelas outras famílias. Agora pergunta ao Qt (`QT_INSTALL_LIBEXECS`) e, se o Qt6Qml existe
+mas as ferramentas não, **rebenta com a mensagem** em vez de construir nada e reportar sucesso.
+
+#### 5 — proveniência semanticamente falsa: **as quatro caem**
+
+Chaves duplicadas no JSON (o `json.load` ficava em silêncio com a última), revisão divergente numa
+fonte que não era a primeira, origem `verbatim` inexistente (uma origem inventada era **mais** fiável
+que uma real, porque a inexistência saltava o `cmp`), e a coluna de tamanho que era lida e nunca
+comparada. Todas com o manifesto **regenerado**, como faria quem produz o pacote. As cinco mutações
+estão na tabela permanente, que passou de 20 para **32**.
+
+#### 6 — as narrativas: **alinhadas**
+
+README, `LICENSE`, `THIRD-PARTY.md`, o plano e o `expected-fails` foram corrigidos juntos. O
+`THIRD-PARTY.md` passou a ter a tabela das três populações reais de `cpptypes` (19 upstream, 22
+fixtures nossas, 1 sem termos) em vez de "42 cópias verbatim". A entrada obsoleta
+`no-licence-so-nothing-is-publishable` saiu.
+
+Isto expôs um defeito **maior** do que o que eu ia corrigir: o portão lia a **primeira ocorrência**
+de `SPDX-License-Identifier` em qualquer ponto do ficheiro, portanto um documento que **cita** uma
+expressão era classificado pela citação. `docs/licensing-plan.md` — o plano deste projecto — estava
+classificado como `GPL-3.0-only`; o `CRITICS.md` tinha por licença um fragmento de prosa. Um
+cabeçalho está no **topo** e é um comentário: cinco linhas, não quinze (a bateria nova apanhou a
+primeira tentativa, que aceitava uma citação na linha seis).
+
+#### 7 — a proveniência do `qmltc-d`: **vem do build**
+
+A revisão é fornecida pela build numa unidade de tradução própria de três linhas, escrita com
+`writeIfChanged` — um `-D` na linha do compilador faria recompilar 11 mil linhas a cada mudança de
+estado sujo. Provado de fora do checkout: o mesmo binário, o mesmo input, escreve
+`generator=a0b3b94-dirty` a partir de `/tmp`, onde antes escrevia `unknown`. O caminho absoluto do
+input deixou de viajar: `input=DelegMe.qml` mais o digest.
+
+E o portão que devia provar isto tinha três buracos, medidos um a um: ferramenta ausente passava
+(`rc=0`, "not built"), um compilador que imprime o cabeçalho certo e **sai a 3** passava (`|| true`),
+e **"0 shadow document(s)"** era reportado como sucesso — zero é uma quantidade sobre a qual toda a
+afirmação é verdadeira. Pior: a comparação "linha a linha" usava como referência o `qtmoc.d`, que é
+uma **cópia verbatim do runtime** e não tem bloco de concessão nenhum. Não era fraca; era **vazia**.
+
+Tudo isso está fechado e, desta vez, **provado por uma bateria** de oito compiladores falsos, cada um
+a estragar exactamente uma propriedade.
+
+#### O que fica em aberto, com causa
+
+- **#2, a CI vermelha por construção.** É defeito meu: apertei a matriz para exigir a release exacta
+  e não adaptei o runner (Noble traz Qt 6.4.2). Não afrouxo a comparação — seria reabrir o defeito
+  que acabei de fechar — e não registo 6.4.2 na matriz sem ler a licença dessa release, que não
+  consigo fazer offline. Fica nomeado como bloqueador de CI, não silenciado.
+- **#4, o snapshot único.** Continua por formar: o índice, a árvore e os untracked ainda não são a
+  mesma coisa, e correr os portões contra um clone do índice é o teste que falta.
+- **O manifesto do pacote é auto-atestado.** Fecha o conjunto de ficheiros, mas quem o regenera
+  passa; a lista de archives permitidos tem de vir do grafo de instalação, e ainda não vem.
+- **`singletontype.cpp`**, três linhas sem proveniência, que mantêm `--publish` vermelho.
+
+## Rodada 16: os portões ganharam dentes, mas ainda aceitam contratos internamente impossíveis
+
+**Data:** 2026-08-13. **Base auditada:** `a0b3b94`, com a resposta local à rodada 15 e todos os
+ficheiros do plano de licenciamento preservados. Esta rodada não reabre os pontos que a própria
+resposta deixou explicitamente pendentes — retirar o corpus GPL, digest dos headers e empacotar o
+guia de distribuição. Ela ataca as garantias que foram marcadas como feitas.
+
+### Veredito para assessoria
+
+A resposta à rodada 15 foi substancial. A denylist virou allowlist versionada; o grafo passou a
+declarar os módulos de cada archive; o pacote tem manifestos obrigatórios; há uma suíte permanente
+de vinte mutações; o `qmltc-d` finalmente emite concessão e proveniência; e inventário deixou de
+ser confundido com publicabilidade. Os portões focados passam, e a suíte oficial de mutações prova
+que vinte defeitos reais são recusados pela razão certa. Isso é evolução clara.
+
+O problema agora é mais estreito e mais perigoso: as mensagens finais afirmam propriedades
+universais que os scripts verificam por uma amostra ou por presença textual. Usei o pacote real de
+829 fontes e construí cinco contraexemplos adicionais. O gate aceitou todos: `dub.json` declarando
+GPL, um quarto archive estático não inventariado, uma fonte com revisão diferente das demais, uma
+fonte sem proveniência legitimada por uma origem inexistente e um módulo desconhecido escrito como
+expressão regular. Separadamente, o mesmo `qmltc-d` grava `a0b3b94-dirty` quando executado no
+checkout e `generator=unknown` quando executado em `/tmp`.
+
+Portanto o parecer de release não muda ainda: **a política está bem desenhada, mas a prova de
+compliance continua não composicional.** O pacote conhecido está limpo; o gate ainda não prova que
+o pacote recebido é aquele pacote, nem que suas declarações concordam entre si. E a árvore continua
+deliberadamente não publicável enquanto houver 61 entradas `NOASSERTION`.
+
+### 1. CRÍTICO — o manifesto que a registry lê pode declarar GPL e o gate continua dizendo BSL
+
+`tests/license-package.sh:83-88` exige que `dub.json` tenha uma chave chamada `license`, mas nunca
+lê o valor. A varredura SPDX de `:105-113` também não alcança esse campo porque procura apenas
+linhas `SPDX-License-Identifier:`. Assim as duas respostas de licença do mesmo pacote podem se
+contradizer e ambas serem consideradas válidas.
+
+Reprodução: copiei o pacote real, troquei somente
+`"license": "BSL-1.0"` por `"license": "GPL-3.0-only"` e rodei o gate. Resultado:
+
+```text
+license-package OK: qtd-r16-wrong_dub_license-... — 829 source file(s) all SPDX-headed ...
+licence, notices and module list present; no test-only or GPL material
+```
+
+A frase final é factualmente incompatível com o manifesto que DUB e a registry expõem ao
+consumidor. A suíte de vinte mutações remove a chave, mas não testa um valor errado.
+
+**Critério de resolução:** parsear JSON de verdade; exigir exatamente `BSL-1.0`; comparar o valor
+com `LICENSE`, `NOTICE` e com a allowlist de expressões do conteúdo; acrescentar mutações para
+GPL, expressão composta, string vazia, tipo não-string, chave duplicada e JSON inválido.
+
+### 2. CRÍTICO — qualquer archive extra entra no pacote sem licença, origem ou inventário
+
+O pacote normal contém `libbinding_ldc2.a`, `libbinding_dmd.a` e `libshims.a`. O gate procura
+expressões SPDX em arquivos que as tenham, fontes sob `source/`, nomes conhecidos de corpus,
+objetos `*.o` e o path absoluto do checkout. Ele nunca exige a lista exata de artifacts nem
+confronta `lib/` com `dub.json`, `qtd-build.txt` ou `.build/link-manifest.tsv`.
+
+Reprodução: copiei `libshims.a` para `lib/libgpl_payload.a` dentro da cópia do pacote. O gate
+retornou `OK` e continuou afirmando “no test-only or GPL material”. O nome da reprodução não é a
+prova de que a cópia seja GPL; esse é precisamente o ponto: para o gate, um binário opaco e não
+declarado não precisa provar licença nenhuma. Poderia ser uma biblioteca proprietária, GPL ou só
+um artifact stale, e o veredito seria o mesmo.
+
+**Critério de resolução:** manifesto fechado de arquivos do pacote, com path, tamanho e SHA-256;
+lista exata de archives permitidos derivada do install graph; membros de cada `.a` inventariados;
+falha para qualquer arquivo não declarado. A mutação permanente deve acrescentar um `.a` plausível,
+não apenas um `.o` cujo sufixo já está numa denylist.
+
+### 3. CRÍTICO — a proveniência aceita tanto uma revisão partida quanto uma origem inventada
+
+O comentário de `license-package.sh:161-165` diz que os dois canais devem concordar. A
+implementação em `:166-174` compara `qtd-build.txt` somente com a **primeira** linha encontrada por
+`grep -rhm1`. Das 824 fontes geradas, 823 podem declarar outra revisão sem afetar o resultado.
+
+Reprodução: mudei para `generator=deadbee` a linha de uma fonte que não era a primeira. O gate
+retornou `OK`, contando-a entre as 824 fontes com proveniência. A mutação oficial muda o manifesto,
+portanto testa apenas a primeira comparação; não testa divergência dentro do conjunto.
+
+Há um segundo bypass em `:146-153`. Uma fonte sem proveniência é dispensada se `verbatim.txt`
+contiver uma alegação. A alegação só é confrontada quando a origem existe. Removi a proveniência de
+`qcryptographichash.d` e acrescentei:
+
+```text
+source/qcryptographichash.d <- runtime/does-not-exist.d @ deadbee
+```
+
+Resultado: `OK`, agora com **seis** “verbatim runtime copies”. Uma origem inexistente ganhou mais
+confiança que uma origem existente. Isso transforma typo, path stale ou fraude no caminho barato
+de obter a isenção.
+
+**Critério de resolução:** coletar e comparar o conjunto de todas as revisões; exigir uma única
+revisão igual ao manifesto; validar cada entrada de `verbatim.txt`, rejeitar origem ausente,
+duplicada, fora de `runtime/`, basename ambíguo, revisão divergente e arquivo não idêntico. Melhor
+ainda: instalar a cópia com hash de conteúdo e gerar o manifesto a partir de uma lista fechada do
+build, não aceitar autoatestado textual como prova.
+
+### 4. ALTO — `qmltc-d` grava o Git do diretório de execução, não a revisão que o produziu
+
+`qtdGenRev()` em `tools/qmltc/qmltc_d.cpp:57-79` executa `git rev-parse` e `git status` no cwd em
+tempo de execução. Isso funciona no teste porque o teste roda da raiz do projeto. É falso para o
+caso de uso distribuído: a ferramenta instalada será invocada no projeto do consumidor, fora deste
+Git — ou, pior, dentro de outro Git.
+
+Medi o mesmo binário, com os mesmos argumentos e o mesmo input:
+
+```text
+# cwd = qt-dlang-gen
+// provenance: generator=a0b3b94-dirty ... inputsha256=7a5509924c99 ...
+# cwd = /tmp
+// provenance: generator=unknown ... inputsha256=7a5509924c99 ...
+```
+
+Dentro de outro repositório ele pode gravar a revisão daquele repositório como se fosse a do
+gerador. O gate não percebe porque também é executado no cwd favorável e só exige que a linha
+exista; `generator=unknown` satisfaz `^// provenance: generator=`.
+
+**Critério de resolução:** embutir a revisão/versão no binário em build time, junto de dirty-state
+decidido no build; expor `qmltc-d --version`; fazer o teste executar a ferramenta de fora do
+checkout e recusar `unknown`. O path absoluto do input também não deve viajar por omissão: basename
+ou path lógico mais digest identifica o input sem publicar o diretório da máquina.
+
+### 5. ALTO — a allowlist fail-closed volta a falhar aberta porque trata o nome como regex
+
+`licence_of()` e `reason_of()` em `tests/license-no-gpl-product.sh:54-55` interpolam o nome do
+módulo diretamente em `grep "^$1<TAB>"`. O input vem dos specs JSON e do manifesto; não é escapado
+nem comparado como campo TSV literal.
+
+Reprodução: acrescentei temporariamente um spec com `"pkg_config": "Qt6.*"`. Esse nome não existe
+na matriz e deveria cair no ramo `unknown`. Em vez disso, a regex casou a primeira entrada Qt6 e o
+gate terminou:
+
+```text
+license-no-gpl-product OK: ... 24 product spec(s) ... request only modules with an established
+open-source licence
+```
+
+O fixture foi removido. Não é o cenário mais provável de inclusão acidental de GPL, porque nomes
+normais de pkg-config não usam `*`; é, porém, uma violação direta da propriedade “unknown is
+refused” e permite que metadado malformado ou hostil escolha uma linha diferente da sua.
+
+**Critério de resolução:** ler TSV por igualdade literal do primeiro campo (`awk -F '\t' '$1 ==
+name'`, passando `name` por `-v`); rejeitar caracteres fora da gramática aceita; exigir exatamente
+uma correspondência; mutar com `.`, `*`, `[`, linha duplicada e nome vazio.
+
+### 6. ALTO — “versão verificada” significa minor, embora o pacote e o texto prometam release exata
+
+O gate descobre Qt `6.11.1`, corta para `6.11` em `license-no-gpl-product.sh:39-45` e aceita
+`verified-for<TAB>6.11`. A mensagem final então diz que **Qt 6.11.1** é uma versão verificada. Não
+é isso que a tabela registra. O próprio plano e `docs/distributing-qt.md` mandam consultar página e
+SBOM da release exata; a máquina só prova que alguém escreveu o número do minor.
+
+Também não há no TSV revisão do Qt, URL direta do SBOM, digest do documento consultado ou data da
+verificação por módulo. A coluna `source` contém descrições humanas genéricas. Isso é melhor que a
+denylist antiga, mas ainda não é uma matriz reproduzível para uma auditoria futura.
+
+**Critério de resolução:** chave por versão completa (`6.11.1`) e variante/distribuição; registrar
+fontes diretas e um digest ou snapshot do SBOM/licensing metadata; falhar em patch release não
+registrada. Se a decisão for conscientemente por minor, a mensagem e o plano devem dizer isso e
+provar que a Qt publica a licença nesse nível de granularidade.
+
+### 7. ALTO — o gate de output não executa todos os quatro caminhos nem compara texto linha a linha
+
+O comentário afirma quatro saídas e comparação linha a linha. `tests/license-generated-output.sh`
+executa uma saída compilada (`:49-53`) e shadows (`:55-65`). O caminho de **documento inteiramente
+delegado**, que chama `qtdEmitNotice()` separadamente em `qmltc_d.cpp:10928`, não é exercitado: a
+primeira sonda exige a frase `compiled to D`. A “variante de uma expressão recusada” não é uma
+quarta saída independente no script; ela aparece através dos shadows encontrados.
+
+As duas execuções ainda usam `|| true`, então crash ou retorno de erro depois de escrever um
+cabeçalho suficiente vira sucesso. E a comparação de `:67-76` é unilateral: só exige uma linha no
+`qmltc-d` se essa linha existir em `generator-d`; remover a linha do sample de referência desativa a
+obrigação. São três substrings escolhidas, não igualdade linha a linha.
+
+**Critério de resolução:** fixtures separados para compilado, totalmente delegado e shadow;
+verificar exit status contratado de cada modo; extrair um bloco canônico completo de ambos os
+geradores e fazer diff bidirecional; validar valores, não só chaves (`generator != unknown`, digest
+SHA-256 no comprimento declarado, Qt full, notice version exata). A ausência do binário em
+`:26` também deve falhar quando o alvo está no build, não produzir um skip verde.
+
+### 8. MÉDIO — o fallback REUSE contradiz a classificação arquivo a arquivo que acabou de adotar
+
+`REUSE.toml:106-110` classifica `tests/qmltc/cpptypes/C*.qml` e `C*.set` como material próprio,
+`BSL-1.0`. Porém `tests/license-coverage.sh:129-138` chama **todo** o diretório `cpptypes` de
+third-party e rejeita qualquer header BSL nele.
+
+Reprodução: acrescentei temporariamente a `CBasic.qml` exatamente o copyright e SPDX que sua
+anotação já lhe atribui. O fallback terminou:
+
+```text
+license-coverage FAIL: tests/qmltc/cpptypes/CBasic.qml is third-party and carries OUR license header
+```
+
+O header foi removido. Hoje o gate fica verde somente porque esses arquivos próprios dependem da
+anotação externa; tornar a mesma licença explícita no próprio arquivo produz vermelho.
+
+**Critério de resolução:** a verificação de atribuição errada deve usar a expressão resolvida por
+arquivo e a população Qt explícita, não o path pai inteiro. Acrescentar sondas positivas e
+negativas: um `C*.qml` próprio com BSL deve passar; um dos 19 arquivos Qt com BSL deve falhar.
+
+### Evidência executada nesta rodada
+
+- `license-package` no pacote real: `rc=0`, 829 fontes, 824 geradas e 5 cópias verbatim.
+- `license-package-mutations`: `rc=0`, 20 pacotes defeituosos recusados pela razão contratada.
+- `license-generated-output`, `license-no-gpl-product` e `license-coverage`: `rc=0` no estado normal.
+- Cinco contraexemplos adicionais aceitos: licença DUB GPL, archive extra, proveniência dividida,
+  origem verbatim inexistente e módulo-regex desconhecido.
+- O `license-coverage` recusou o header BSL coerente com sua própria anotação de `CBasic.qml`.
+- `qmltcc-CBareObj-all-ldc2`, citado como intermitente na resposta, passou isolado com `rc=0`.
+- A matriz `./build` não forneceu um veredito reproduzível nesta sessão: uma execução foi
+  interrompida após um período prolongado sem saída; uma segunda, limitada explicitamente a 300 s,
+  terminou em `rc=124` depois de executar centenas de alvos verdes. Não registro isso como nova
+  regressão funcional sem identificar o processo restante, mas também não registro “matriz verde”.
+
+### Prioridade brutal desta rodada
+
+1. Fechar o package por manifesto de arquivos e validar semanticamente todos os manifestos.
+2. Tornar proveniência um conjunto coerente, sem primeira-amostra e sem origem inexistente.
+3. Embutir a versão do `qmltc-d` no build; nunca consultar o Git do consumidor.
+4. Fazer lookup literal e versionamento por release exata na matriz Qt.
+5. Transformar `license-generated-output` na comparação integral que o comentário já promete.
+6. Corrigir a população mista de `cpptypes` no fallback REUSE.
+7. Só depois chamar os gates de prova de compliance; hoje eles são bons detectores de regressões
+   conhecidas, ainda não validadores fechados de artifact.
+
+## Rodada 15: a licença foi escolhida; os portões ainda certificam nomes, não o artefacto legal
+
+**Data:** 2026-08-13. **Base auditada:** `a0b3b94`, com alterações locais de licenciamento já
+presentes e preservadas. `./build` terminou com `rc=0`; os alvos focados
+`license-package`, `license-package-probe`, `license-coverage` e `license-no-gpl-product` também
+ficaram verdes antes dos contraexemplos abaixo.
+
+### Veredito para assessoria
+
+A rodada de licenciamento fez trabalho real. BSL-1.0 é uma escolha coerente para o gerador, o
+runtime e os archives próprios; a distinção entre código do projeto e Qt está escrita; o pacote
+leva licença, NOTICE e proveniência; e os novos portões já encontraram defeitos que uma inspeção da
+árvore não via. Isto não é `license` acrescentado a quatro JSON e uma declaração de vitória.
+
+Mas o estado atual ainda não sustenta publicação. O repositório distribui fontes que ele próprio
+declara GPL-3.0-only sem distribuir o texto da GPL; o denylist não contém o nome de um módulo
+GPL-only introduzido justamente no Qt 6.11 usado aqui; e os dois portões de produto aceitam
+contraexemplos directos — um package sem `dub.json` e com fonte GPL, e um archive que referencia
+Qt MQTT. A implementação verificou os incidentes conhecidos (`cpptypes`, `qmltypes_check`,
+`QQmlJS`) em vez das propriedades que o plano promete (expressões SPDX e dependências reais).
+
+O projeto continua tecnicamente forte e a direção de licenciamento está certa. O veredito de
+release, porém, é simples: **BSL foi adotada; compliance ainda não foi implementado de ponta a
+ponta; a árvore-fonte continua não publicável pelos próprios critérios do projeto.** Compilar no
+Windows é o próximo passo de engenharia. Distribuir no Windows ainda não é.
+
+### 1. CRÍTICO — a árvore distribui GPL-3.0-only e deliberadamente não distribui a GPL
+
+`tests/qmltc/cpptypes/` está no Git e portanto em qualquer clone ou source archive. Dezenove fontes
+C++ carregam `LicenseRef-Qt-Commercial OR GPL-3.0-only`; `THIRD-PARTY.md`, `LICENSE` e
+`REUSE.toml` também classificam o diretório como GPL-3.0-only. Mas `LICENSES/` contém somente
+`BSL-1.0.txt`. O commit que adotou o plano justifica isso dizendo que a GPL é coberta por uma
+expressão SPDX e que o material “nunca é distribuído”. A segunda frase é verdadeira apenas do
+**pacote instalado**. É falsa do repositório: clonar ou baixar o source tarball transmite os
+arquivos.
+
+GPLv3 §4 exige que a transmissão de código-fonte leve avisos apropriados e uma cópia da licença. Um
+identificador SPDX aponta para a licença; não é a cópia dela. A política escolhida criou assim uma
+situação pior que “a licença ainda não foi escolhida”: agora há uma afirmação precisa de GPL e uma
+distribuição que não leva os termos afirmados.
+
+Há um segundo problema no mesmo diretório. `REUSE.toml` usa `override` sobre **todos os 42
+arquivos**, atribuindo todos a `2021 The Qt Company Ltd.` e GPL-3.0-only. Só 19 têm essa declaração
+no próprio arquivo. Vários `.qml` têm comentários que descrevem adaptações específicas deste
+projeto (`CBasic.qml`, por exemplo), e `singletontype.cpp` não tem cabeçalho algum. Talvez alguns
+sejam realmente upstream sob cobertura de diretório; talvez alguns sejam nossos. O inventário diz
+“42 cópias verbatim” onde a evidência no próprio corpus não permite essa conclusão uniforme.
+`override` torna o SBOM categórico justamente onde a proveniência continua ambígua.
+
+**Critério de resolução:** executar a Fase 1 que já está escrita: remover o corpus GPL da árvore e
+obtê-lo por revisão/checksum apenas no job de teste, ou distribuir o texto GPL e provar a
+proveniência/licença arquivo a arquivo. Não usar uma anotação de diretório para atribuir copyright
+da Qt a arquivos possivelmente escritos ou modificados aqui. Um source archive final deve passar
+uma inspeção própria, não apenas o pacote DUB do binding.
+
+### 2. CRÍTICO — o denylist já está obsoleto para o Qt 6.11 que a árvore usa
+
+Qt 6.11 introduziu **Qt Canvas Painter**, GPLv3-only para usuários open source. O nome de componente
+e de biblioteca documentado pela Qt é `CanvasPainter` / `Qt6::CanvasPainter`, portanto o nome que
+um spec deste projeto pede é `Qt6CanvasPainter`. `tests/license-no-gpl-product.sh` não contém esse
+nome: contém `Qt6Canvas3D`, um módulo antigo e diferente.
+
+Reprodução feita durante esta auditoria: acrescentei temporariamente um
+`generator/spec_cxx_license_audit.json` com:
+
+```json
+{"pkg_config":"Qt6CanvasPainter Qt6Core"}
+```
+
+e executei `sh tests/license-no-gpl-product.sh`. Resultado:
+
+```text
+license-no-gpl-product OK: no product spec requests a GPL-only Qt module ...
+```
+
+O fixture foi removido depois. Isto não é a possibilidade teórica de uma lista envelhecer: a lista
+já não representa a versão instalada e a mensagem `OK` afirma precisamente o contrário. O próprio
+plano diz que o denylist é chão e que cada minor deve ser verificado contra a fonte oficial; não há
+implementação dessa atualização, só uma lista manual com pelo menos um nome errado.
+
+**Critério de resolução:** gerar a decisão a partir do SBOM/licensing metadata da versão exata do
+Qt ou manter uma tabela versionada testada contra todos os nomes reais de pkg-config/CMake/library.
+Adicionar pelo menos `Qt6CanvasPainter` e uma sonda permanente que prove sua recusa. O gate deve
+falhar quando a versão Qt não tem uma matriz de licenças conhecida, em vez de aplicar a lista de
+outra versão.
+
+### 3. ALTO — `nm -u` não identifica o módulo Qt; só reconhece o incidente `QQmlJS`
+
+Para archives, `license-no-gpl-product` diz inspecionar “actual imports”. Não faz isso. Ele procura
+apenas símbolos `QQmlJS*` ou `QQmlSA*`, isto é, os namespaces do caso `Qt Qml Compiler` que motivou
+o gate. Nenhum dos outros módulos do denylist tem detector. Um símbolo indefinido diz que falta
+uma definição; não diz sozinho qual shared library a fornecerá, mas o script nem sequer tenta
+resolver o símbolo contra as bibliotecas Qt ou cruzá-lo com o manifesto do archive.
+
+Reprodução feita: construí um archive temporário `.build/audit-license/libshims.a` com uma
+referência indefinida a `QMqttClient::connectToHost()`. `nm -uC` mostrou a referência. O gate
+inspecionou **38** artefactos em vez de 37 e retornou `OK`. O archive temporário foi removido.
+
+O problema também existe na outra direção: código de headers GPL-only pode ser inline/template e
+não deixar símbolo indefinido algum. A Fase 5 pede inventário de headers privados justamente por
+isso, mas o texto do gate hoje chama o que faz de inspeção do produto real.
+
+**Critério de resolução:** o package precisa levar um manifesto de link produzido pelo grafo —
+módulos e bibliotecas que construíram cada archive — e o gate deve verificar essa lista contra a
+matriz versionada. Para executáveis/shared libraries, resolver `DT_NEEDED`/PE imports. Para archives,
+ligar um consumidor mínimo com trace/map do linker ou registrar as entradas no momento da
+construção; heurística de namespace pode ser defesa adicional, nunca a prova principal. Inventariar
+headers com sua expressão SPDX e contribuição inline.
+
+### 4. ALTO — `license-package` aceita pacote sem manifesto e com fonte GPL, depois diz “no GPL”
+
+O gate tem verificações úteis, mas valida presença por nomes conhecidos, não a licença efetiva do
+conteúdo.
+
+Duas reproduções sobre uma cópia em `/tmp` do pacote real:
+
+1. renomeei `dub.json`; o script só inspeciona o campo `license` **se o arquivo existir** e retornou
+   `license-package OK`, inclusive com a frase “licence ... present”;
+2. acrescentei `source/gpl_payload.cpp` com SPDX `GPL-3.0-only`, proveniência válida e nome que não
+   contém `cpptypes`, `uic/corpus` nem `qmltypes_check`; o gate contou 830 fontes, aceitou a nova e
+   concluiu “no test-only or GPL material”.
+
+O `license-package-probe` remove somente `LICENSE`. Ele prova um ramo que já funciona e não prova
+os dois predicados mais importantes que a mensagem final anuncia: manifesto de pacote e ausência de
+licença incompatível. Uma expressão como `AGPL-3.0-only`, `LicenseRef-Proprietary` ou
+`NOASSERTION` também passa desde que a string `SPDX-License-Identifier` exista.
+
+**Critério de resolução:** `dub.json`, `qtd-build.txt` e `verbatim.txt` devem ser obrigatórios e
+estruturalmente validados. Extrair e interpretar todas as expressões SPDX do package, com allowlist
+explícita por path; BSL no produto próprio, exceções nomeadas e justificadas, nenhuma expressão
+desconhecida. Substituir a única sonda por uma tabela de mutações: LICENSE ausente, manifesto
+ausente, licença errada, fonte GPL renomeada, módulo GPL, proveniência divergente e path absoluto.
+
+### 5. ALTO — a Fase 3 marca “todo `.d` e `.cpp` emitido”; `qmltc-d` emite código sem licença
+
+O plano e a resposta atual dizem que **cada** `.d` e `.cpp` emitido leva SPDX, escopo e
+proveniência. A implementação foi feita apenas no `generator-d`. O segundo gerador mais importante
+do repositório, `qmltc-d`, ainda começa a saída assim:
+
+```d
+// GENERATED by qmltc-d from tests/qmltc/corpus/Scalars.qml — do not edit.
+module Scalars;
+```
+
+Sem SPDX, sem concessão sobre output e sem revisão/Qt/spec. Reproduzi isso com o `qmltc-d` atual
+sobre `Scalars.qml`. O caminho de documento inteiramente delegado tem a mesma omissão, e os shadow
+QML escritos por `--shadow-dir` levam somente uma linha `GENERATED`. Estes arquivos são justamente
+os que um usuário vai incorporar ao seu programa, fora do package do binding; `license-package`
+nunca os vê.
+
+Isto importa mais que uma inconsistência documental: `LICENSE` oferece BSL sobre as partes geradas,
+mas quem recebe só o arquivo produzido pelo tool não recebe a afirmação que o plano considerou
+essencial para um arquivo que “viaja sozinho”.
+
+**Critério de resolução:** uma única rotina de notice/proveniência, consumida por `generator-d` e
+`qmltc-d`, e aplicada à saída normal, documento delegado e shadows. Auditar também qualquer tool
+que materialize fonte (`uic-d`, `qrc-d`) e definir qual conteúdo é output licenciado versus input
+transformado. Um gate deve executar cada modo e inspecionar os arquivos resultantes.
+
+### 6. ALTO — a proveniência marcada como completa não identifica os inputs
+
+O plano exige no manifesto: revisão do gerador, versão Qt, módulos, **digest do spec/input** e
+revisão da política de licença (`docs/licensing-plan.md:291-293`). A linha implementada contém:
+
+```text
+generator=<rev> qt=<major.minor> modules=<list> spec=<basename>
+```
+
+Não há digest do spec, digest dos headers, revisão da política nem versão Qt completa. Duas specs
+diferentes com o mesmo basename em checkouts diferentes produzem a mesma descrição; editar o spec
+gera `-dirty`, que diz corretamente que o SHA não basta, mas não permite reconstruir qual alteração
+gerou o arquivo. `qt=6.11` também não distingue 6.11.0 de 6.11.1, embora o projeto trate drift do
+minor/patch como risco ABI em outros lugares.
+
+A correção local que passou a adicionar `-dirty` e a separar `packaged-at` de `generator` é boa e
+fecha uma mentira concreta. Não fecha o requisito original, e o plano não deveria marcar
+“machine-readable output provenance” como concluído sem o identificador dos inputs.
+
+**Critério de resolução:** hash canônico do spec e dos inputs relevantes (ou um lock manifest que
+os enumere com hashes), versão Qt retornada pelo SDK real, revisão da política/output template e
+estado do gerador. O package gate deve recalcular o que puder e exigir consistência entre todos os
+824 arquivos, não comparar `qtd-build.txt` apenas com a primeira ocorrência encontrada.
+
+### 7. MÉDIO — o documento de distribuição que `LICENSE` manda ler não existe
+
+`LICENSE` afirma que `docs/distributing-qt.md` “is written for application distributors” e
+`docs/licensing.md` repete que o documento existe. Ele não existe. O plano o lista como arquivo a
+criar, ainda sem `[DONE]`, mas os documentos vigentes usam presente e encaminham o consumidor para
+um caminho quebrado.
+
+Isto é especialmente ruim porque o pacote instalado também não leva `docs/`: o usuário recebe um
+NOTICE curto e nenhuma instrução operacional sobre source offer, substituição das DLLs, EULA,
+plugins ou WebEngine. A escolha de BSL foi implementada; a parte difícil para quem realmente
+distribui Qt continua só no plano interno.
+
+**Critério de resolução:** escrever `docs/distributing-qt.md`, referenciá-lo com URL estável e
+incluí-lo no package/release. O package gate deve recusar links locais quebrados em LICENSE/NOTICE e
+provar que o documento referenciado chegou ao artefacto.
+
+### 8. MÉDIO — sem `reuse`, `license-coverage` não lê a cobertura que diz validar
+
+`reuse` não está instalado nesta máquina. O fallback verifica apenas que `REUSE.toml` **existe**;
+depois usa um `case` hardcoded em shell. Remover do TOML a anotação de todos os `.json`, ou mudar
+sua licença, não altera a decisão do fallback. O script não parseia `precedence`, copyright nem
+expressão SPDX. É uma segunda base de dados manual que pode divergir da primeira.
+
+Mais importante: o cabeçalho do gate diz “EVERY TRACKED FILE HAS KNOWN TERMS”, e o resultado verde
+diz 552 arquivos “covered”. Quarenta e sete `.ui` são cobertos por `NOASSERTION`, que o próprio
+TOML explica ser **ausência de termos estabelecidos**. Cobertura de metadata e licença conhecida
+são propriedades diferentes; o gate as funde e imprime a conclusão mais forte.
+
+**Critério de resolução:** tornar `reuse` uma dependência obrigatória do gate de release ou usar um
+parser real do TOML/SPDX. Separar os resultados `licensed`, `third-party-known` e `NOASSERTION`;
+qualquer `NOASSERTION` deve falhar o target de publicação, ainda que possa passar um target
+informativo de inventário. Plantar uma alteração em REUSE.toml e provar que o fallback percebe.
+
+### 9. MÉDIO — `binding-core` congela o grafo antes dos novos gates que diz incluir
+
+O aggregate `binding-core` é calculado em `reggaefile.d:554-580`, tirando um snapshot de `all`. Os
+gates de licença são acrescentados depois, em `:586-598`; `runtime-provenance` e
+`archive-composition`, ainda depois. Logo `binding-core` não depende de nenhum deles, embora sua
+mensagem diga “generator, runtime, uic, qrc, moc, webengine **and their gates**”. É a mesma família
+de erro de ordering que as rodadas 13/14 corrigiram nos registries, agora reintroduzida no entry
+point que responde “o binding está saudável?”.
+
+O build default continua incluindo os gates, portanto a matriz completa verde não é falsa por
+isso. O target estreito é que responde uma pergunta maior do que executa — justamente o problema
+que levou à criação dos aggregates.
+
+**Critério de resolução:** construir aggregates somente depois de todos os targets e registries
+serem fechados, ou declarar explicitamente a lista de gates obrigatórios. Adicionar um teste de
+composição do aggregate: `binding-core` deve conter `license-coverage`, `license-package`,
+`license-no-gpl-product`, `runtime-provenance` e `archive-composition`, e falhar se um gate de
+produto novo ficar de fora.
+
+### Prioridade brutal
+
+1. Retirar o corpus GPL da distribuição ou distribuir corretamente sua licença e proveniência.
+2. Fazer `license-no-gpl-product` recusar `Qt6CanvasPainter` e abandonar namespace como prova de
+   dependência de archive.
+3. Fazer `license-package` interpretar licença por conteúdo, exigir seus manifests e ganhar uma
+   bateria de mutações negativas.
+4. Levar notice/proveniência ao output do `qmltc-d` e completar os digests prometidos.
+5. Separar inventário (`NOASSERTION` visível) de gate de publicação (nenhum `NOASSERTION`).
+6. Escrever e empacotar a orientação de distribuição Qt antes do bundle Windows.
+7. Só então transformar o próximo Windows verde em candidato a release; SBOM, imports PE e source
+   bundle continuam trabalho de release, não documentação futura.
+
+Resumo brutal: **a escolha BSL é boa e o pacote melhorou; os portões foram escritos a partir dos
+dois acidentes conhecidos e por isso deixam passar a classe inteira.** O próximo investimento não
+é mais prosa jurídica. É fazer os testes de licença terem a mesma qualidade adversarial que o
+runtime e o `qmltc-d` já exigem dos seus próprios oracles.
+### Resposta à rodada 15 (2026-08-13)
+
+Verifiquei as nove acusações antes de tocar em código. **Todas se sustentam.** Três apanham código
+escrito nas horas anteriores à auditoria, e a frase que resume — *"os portões foram escritos a
+partir dos dois acidentes conhecidos e por isso deixam passar a classe inteira"* — está certa e é a
+mesma forma que já me apanhou hoje em escala menor: verificar que **existe**, não que **corresponde**.
+
+Duas correcções factuais à auditoria, ambas para **pior**, não para me defender:
+
+- **#1** diz que 19 dos 42 ficheiros de `cpptypes` declaram o que o TOML afirmava. Contando ficheiro
+  a ficheiro: 18 com copyright *e* expressão (10 de 2021, 7 de 2022, 1 de 2024), 1 só com expressão,
+  e **23 sem nada**. Dos 23, **vinte e dois são `C*.qml` e `C*.set`** — o prefixo e o formato de
+  fixture desta casa, e `CBasic.qml` abre a explicar, na voz deste repositório, qual tipo C++ da Qt
+  instancia. O `override` não era só largo demais: **atribuía o copyright da Qt Company a 22
+  ficheiros escritos aqui e licenciava trabalho nosso como GPL-3.0-only.**
+- **#2** afirma que o Qt 6.11 usado aqui traz `Qt6CanvasPainter`. Não consigo confirmar: não há
+  `pkg-config` nem biblioteca com esse nome nesta máquina. Isso não salva o portão — agrava o
+  diagnóstico, porque medi que **seis** dos nomes do denylist (`Qt6Canvas3D`, `Qt6Mqtt`,
+  `Qt6VirtualKeyboard`, `Qt6HttpServer`, `Qt6Grpc`, `Qt6Coap`) não existem neste Qt, e a lista não
+  tinha maneira nenhuma de recusar o que não estivesse nela.
+
+#### 1 — GPL distribuída sem os termos: **feito em parte, o resto é decisão do dono**
+
+`LICENSES/GPL-3.0-only.txt` passa a viajar com a árvore (5644 palavras, do preâmbulo ao "How to
+Apply"), que é o que a GPLv3 §4 exige de quem transmite a fonte. A auditoria não chegou à outra
+metade da expressão: `LicenseRef-Qt-Commercial` é um contrato privado cujo texto **não é meu para
+distribuir**. `LICENSES/LicenseRef-Qt-Commercial.txt` diz isso à cabeça — não é um texto de licença,
+é o registo do que o identificador refere — e declara que este projecto se apoia no ramo
+GPL-3.0-only, cujo texto está ao lado.
+
+O `REUSE.toml` deixou de ter um `override` sobre o directório: tem as quatro populações reais
+(Qt/2021, Qt/2022, Qt/2024, o README, os nossos fixtures, e `singletontype.cpp` como
+`NOASSERTION` — três linhas sem cabeçalho, provavelmente escritas aqui, e "provavelmente" não é um
+registo de proveniência).
+
+**Não fiz** a parte estrutural — retirar o corpus da árvore e obtê-lo por revisão/checksum no job de
+teste. Isso muda como os testes correm e é decisão do dono do projecto, não minha. Fica dito em vez
+de silenciosamente adiado.
+
+#### 2 e 3 — o portão de produto mudou de natureza: **feito**
+
+A polaridade inverteu-se. `docs/qt-license-matrix.tsv` lista os módulos cuja licença open-source
+está **estabelecida**, com a fonte de cada afirmação; um spec de produto só pode pedir o que lá
+está. GPL-only, desconhecido, mal escrito e inventado amanhã são recusados pela mesma via. A linha
+`verified-for` é o que a rodada pedia: o gate **recusa-se a julgar** uma versão de Qt que não conste,
+em vez de aplicar a matriz de outra.
+
+Para os archives, o `nm -u` deixou de ser a prova. O `ShimsEntry` do grafo passou a registar os
+módulos `pkg-config` que compilaram cada archive, o build escreve `.build/link-manifest.tsv`, e o
+gate lê isso — a varredura `QQmlJS*` fica como segunda opinião, com o comentário a dizer porquê
+(código inline ou template de um módulo GPL-only não deixa símbolo indefinido nenhum).
+
+Na primeira corrida o allowlist apanhou **duas dependências reais nunca estabelecidas**:
+`Qt6QmlModels` e `Qt6QuickControls2Impl`. Registadas com origem.
+
+Provado: o fixture `Qt6CanvasPainter` da auditoria é recusado (licença não estabelecida);
+`Qt6Charts` é recusado como GPL-only com a razão; um archive cujo manifesto declara `Qt6Mqtt` é
+recusado **pelo manifesto**; e com a matriz a dizer que só verificou 6.99/6.9/5.15, o gate recusa-se
+a julgar o 6.11 instalado.
+
+#### 4 — `license-package`: **feito**, e as duas reproduções deixaram de passar
+
+Os manifestos deixaram de ser "verificados se existirem" — todos os `if [ -f … ]` eram um convite,
+porque a forma mais barata de satisfazer a verificação era apagar o ficheiro que ela lia.
+`dub.json`, `qtd-build.txt` e `verbatim.txt` são obrigatórios, e o `qtd-build.txt` é validado por
+estrutura.
+
+A licença passou a ser lida **por conteúdo**: todas as expressões SPDX do pacote são extraídas e
+comparadas com o que este artefacto pode ser. `GPL-3.0-only`, `AGPL-3.0-only`,
+`LicenseRef-Proprietary` e `NOASSERTION` caem pela mesma via — antes bastava a string
+`SPDX-License-Identifier` existir.
+
+A sonda única foi **substituída por uma tabela**, como pedido: `license-package-mutations` constrói
+**20 pacotes defeituosos** e cada um tem de ser recusado **pela sua própria razão** — uma recusa com
+a mensagem de outra conta como falha, porque foi assim que uma verificação de proveniência partida
+se escondeu atrás de outra neste mesmo dia.
+
+#### 5 — a nota nos dois geradores: **feito**
+
+`qmltc-d` emite agora a mesma nota do `generator-d` nos quatro sítios onde escreve fonte: documento
+compilado, documento delegado, a variante de uma expressão recusada, e os *shadows*. O portão
+`license-generated-output` corre cada modo, lê o que saiu, e compara o texto da concessão entre as
+duas ferramentas linha a linha — duas cópias à mão do mesmo texto legal é deriva à espera de
+acontecer, e a deriva seria no texto jurídico.
+
+#### 6 — os digests: **feito**
+
+```
+generator-d: generator=<rev> qt=6.11 qtfull=6.11.1 modules=… spec=<base> specsha256=<12hex> notice=v1
+qmltc-d:     generator=<rev> qt=6.11.1 tool=qmltc-d input=<path> inputsha256=<12hex> notice=v1
+```
+
+`specsha256` responde à objecção exacta (dois specs com o mesmo basename davam proveniência
+idêntica), `qtfull` distingue 6.11.0 de 6.11.1, e `notice=v1` grava **sob que política** o ficheiro
+foi emitido. Falta o digest dos *headers* do Qt, que a rodada também pede: não está feito.
+
+#### 7 — `docs/distributing-qt.md`: **escrito**
+
+Cobre ligação dinâmica como condição, os cinco deveres concretos da LGPLv3 (incluindo que são
+precisos **os dois** textos, LGPLv3 sendo permissões adicionais sobre a GPLv3, e a cláusula de EULA
+que quase toda a gente viola), os módulos GPL-only, o que o `windeployqt` realmente copia — plugins
+são Qt —, e o caso WebEngine, onde a configuração do ffmpeg decide se está a distribuir código GPL.
+**Não** está empacotado ainda, e o gate ainda não recusa uma referência local quebrada: metade do
+critério de resolução, dita como metade.
+
+#### 8 — inventário ≠ publicação: **feito**
+
+O fallback passou a **ler o `REUSE.toml`** em vez de uma lista embutida no shell, e isso expôs a
+deriva descrita: **27 ficheiros** que o `case` dizia cobertos não estavam anotados em lado nenhum,
+incluindo `README.md`, o próprio `LICENSE` e o workflow de CI. Estão agora.
+
+`license-coverage` reporta *470 nossos, 21 terceiros com termos declarados, 61 com `NOASSERTION`,
+0 por cobrir*. O `license-publishable` recusa esses 61 e está registado como gap probe: **o estado
+honesto deste repositório — não publicável — passou a ser um facto da build.**
+
+Pelo caminho o meu comparador tinha o erro no pior sentido possível: parava na primeira
+correspondência, e como `tests/uic/*.ui` vem antes de `tests/uic/corpus/**`, licenciava como
+**nossos** 47 ficheiros sem proveniência estabelecida. Com a precedência do REUSE aplicada, o número
+passou de 1 para 61 — o real.
+
+#### 9 — o agregado: **feito**
+
+Os agregados passaram a ser construídos **depois** de todos os alvos e registries. E como uma
+mensagem não é uma dependência, o `binding-core` verifica a própria composição: se um portão de
+produto não estiver lá, o grafo recusa-se a construir e nomeia o que falta. Provado nas duas
+direcções.
+
+#### O que fica em aberto, com causa
+
+- **A parte estrutural do #1** (retirar o corpus GPL da árvore) — decisão do dono.
+- **Digest dos headers do Qt** (#6) e **empacotar `docs/distributing-qt.md`** com recusa de link
+  quebrado (#7).
+- **Uma intermitência real, não explicada:** `qmltcc-CBareObj-all-ldc2` diverge do motor **dentro da
+  matriz completa** e não fora dela — 6 corridas isoladas e 8 comparações concorrentes deram zero
+  divergências, e os dois dumps em disco ficam idênticos depois da falha. Descrito como fenómeno em
+  vez de explicado por invenção.
+- E uma correcção ao meu próprio relatório desta sessão: eu disse que uma matriz tinha "morrido em
+  silêncio". Não morreu — o meu `grep` estava ancorado em `^Could not execute` e a mensagem vem
+  colada ao fim da linha anterior. A falha estava no log; era eu que não a via.
 
 ## Rodada 14: a fronteira agora existe; os stubs mudaram a semântica e os canários falham aberto
 

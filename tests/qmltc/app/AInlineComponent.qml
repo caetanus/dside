@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // An INLINE COMPONENT (`component Foo: ...`), Qt 5.15+ syntax that gives a document its own local
 // type without a second file. Applications reach for it constantly; the styles corpus has none.
 import QtQuick

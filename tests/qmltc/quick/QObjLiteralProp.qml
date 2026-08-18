@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A declared property whose value is an object LITERAL. The child was built, parented and held in
 // the field -- everything worked except being able to READ through it: the literal path recorded no
 // type for the property, so it was not a path head and `probe.width` had nothing to resolve against.

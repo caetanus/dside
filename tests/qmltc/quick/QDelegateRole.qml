@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A model role read by NAME. Every Qt Control that shows a model writes its label this way --
 // `text: model[control.textRole]` on a ComboBox delegate, `control.model[control.headerView.
 // textRole]` on a HeaderView, `model.day` on a MonthGrid -- and all of them were refused with

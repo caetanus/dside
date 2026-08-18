@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The other half of Rebind.qml: assigning a value drops the declarative binding, so a later
 // change to its dependency must NOT revive it.
 import QtQml 2.15

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 import QtQuick.Templates as T
 // A BINDING THAT DEREFERENCES NULL WRITES NOTHING, and an unset `color` is OPAQUE BLACK.

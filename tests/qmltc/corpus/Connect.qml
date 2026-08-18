@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A Connections element attaches handlers to a target's signals from OUTSIDE the target's own
 // declaration — the handlers live in a separate element, but the wiring must behave exactly like
 // an inline `onPing:`. A QtObject root has no default property, so Connections is held by a

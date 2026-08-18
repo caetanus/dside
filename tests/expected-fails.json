@@ -178,17 +178,6 @@
       "title": "one document still freezes a baseline against the wrong height"
     },
     {
-      "id": "no-licence-so-nothing-is-publishable",
-      "kind": "known_gap",
-      "area": "packaging/legal",
-      "since": "2026-08-11",
-      "reason": "The repository declares no licence anywhere: no LICENSE file, no `license` field in any dub.json (the root one, generator-d's, or the one tests/install.sh writes into the installed package), and no statement in the README or docs. The dub registry requires the field, and publishing code without a licence is not a defect to be fixed by whoever finds it — it is the author's decision. Worth naming because the audit's round-12 closing list records #6 as \"falta publicar, que é escolher ONDE, não construir o quê\", and that is not the whole picture: a piece of the WHAT is missing too. Asked and deliberately deferred on 2026-08-11 — the answer was to keep it unpublished for now, so this is a decision on hold and not an oversight. AND THE CHOICE IS NOT FREE, which is why it stayed open: THIRD-PARTY.md inventories what of this repository is not ours. Qt's 329 Controls documents and PySide's libsample are READ AT BUILD TIME from an installed Qt and a clone outside the tree — checked, not assumed: none of the 176 tracked .qml carries a Qt copyright header and no libsample source is tracked. But `tests/qmltc/cpptypes/` is 42 verbatim files from Qt's qmltc test corpus whose headers state `LicenseRef-Qt-Commercial OR GPL-3.0-only`, and `tests/uic/corpus/` is 60 .ui files with NO licence header, NO recorded upstream revision and filenames spanning Qt examples and Qt Designer's own source, which do not share a licence. 0 of the 60 exist in the installed Qt, so provenance cannot be settled locally.",
-      "remove_when": "the two vendored corpora are resolved — attributed and compatible, or fetched at build time the way libsample already is — and then a licence is chosen, a LICENSE file exists, and the field is set in the root dub.json, generator-d/dub.json and the package tests/install.sh writes. THIRD-PARTY.md carries the inventory and the cost of the fetch-instead-of-commit remedy.",
-      "probe_targets": [
-        "dub-consumer-ldc2"
-      ]
-    },
-    {
       "id": "anchor-line-dependency-has-no-notify",
       "kind": "known_gap",
       "area": "qmltc-d/anchors",
@@ -263,6 +252,37 @@
           "target": "qmltc-pedantic-imagine-label",
           "exit": 1,
           "match": "delegated to the engine"
+        }
+      ]
+    },
+    {
+      "id": "matrix-intermittency-under-concurrency",
+      "title": "the full matrix fails intermittently under concurrency; the affected target moves",
+      "kind": "risk",
+      "area": "build/concurrency",
+      "since": "2026-08-14",
+      "reason": "Observed on 2026-08-14 in FOUR documents across three gates, each with a different signature: `qmltcc-CBareObj-all-ldc2` and `CDefaultProp` disagreeing on dumped values, `qmltc-optlevels-ATile` reporting `-O1 does not link`, `qmltc-optlevels-ASignalCross` reporting `-O1 and -O2 disagree`, and `qmltc-optlevels-AStates` reporting `-O1 disagrees with the engine`. Every one passes in isolation (measured 6/6, 3/3 and 3/3 on the first three) and a full `./build --single` run finished green (rc=0, ~65 min against ~20 parallel).\n\nTHE LIST OF TARGETS BELOW IS ILLUSTRATIVE, NOT EXHAUSTIVE. The first version of this entry named three; the next parallel run produced a fourth. What identifies this risk is the CONDITION — a failure that appears only in the full parallel matrix, never in isolation, and never with `--single` — not the particular document that happened to lose the race.\n\nWhat that eliminates: a deterministic defect in the compiler, the oracle or the comparator, which would fail identically on one thread. What it does not establish: the cause. The probable mechanism is already documented in this repository, in the comment on `qmltcTool`: `guarded` stops two WRITERS from colliding but does not stop a target from executing or reading `qmltc-d`, `libbinding_*.a`, `qtd_render.o` or `qtd_qmltc_app.o` while another relinks them. Each gate then reports the symptom in its own vocabulary, which is why one incident looks like four.\n\nMEASURED SERIALLY, TWICE. `./build --single` finished green (rc=0, ~65 min against ~20 parallel) but did not reach the nested `./build` calls inside expected-fails-run, so that phase stayed parallel. Repeated as `QTD_BUILD_FLAGS=--single ./build --single`, which does cover them: green again, ~75 min. So there is no deterministic instance anywhere in the matrix — not in the ~1150 top-level targets and not in the 26 nested probes.\n\nCost, for whoever repeats this: serialising the top level is ~3x and is cheap enough for routine diagnosis; serialising the nested probes as well is ~4x and is a one-off experiment, not a practice — the 26 probes each pay their own build startup with nothing shared.\n\nOne green serial run has modest power on its own; two, at both levels, is what this entry rests on.\n\nHOW OFTEN: five red runs in roughly nineteen full parallel runs of this session — about 1 in 4 — against 0 in 2 serial ones. That rate matters for whoever attacks the cause: an instrumented run has a good chance of catching the incident live, where 1 in 50 would mean automating dozens of runs first. The fifth occurrence was `AStates` reporting `-O1 does not link`, the SAME signature as `ATile` and AFTER the dependency fix below — so that fix did not cover every artifact the link consumes. An earlier version of this entry said the archives and `qmltc-d` were still undeclared. THAT WAS WRONG — read the target: `[tool, Target(script), Target(e), bind.gen, qtdBindLib(bind, \"ldc2\"), bind.shims]`. They are all dependencies already.\n\nAnd that is the point. DECLARING A DEPENDENCY DOES NOT PROTECT A READER. In this backend a dependency means \"build it before me if it is stale\", not \"do not rewrite it while I run\": another target that depends on the same archive can trigger its rebuild DURING this link, and `guarded` only stops two writers from colliding — the reader holds no lock at all. So the dependency fix below was a real defect fixed (proven by deletion) and could never have cured this: the intermittency was never about missing edges, it is about the absence of reader/writer exclusion on shared artifacts.\n\nOne real defect was found and fixed while chasing this — `qmltc-optlevels-*` linked against `qtd_render.o`/`qtd_qmltc_app.o` without declaring them, testing with `[ -f ]` and linking whatever was on disk. Fixed and proven by deletion, and it did NOT stop the intermittency: ASignalCross and AStates failed afterwards with different signatures.",
+      "remove_when": "the shared-artifact reader/writer race is either proven and fixed, or ruled out by instrumenting the backend to record when a node is re-scheduled",
+      "probe_targets": [
+        "qmltc-optlevels-ATile",
+        "qmltc-optlevels-ASignalCross",
+        "qmltc-optlevels-AStates",
+        "qmltcc-CBareObj-all-ldc2"
+      ]
+    },
+    {
+      "id": "qt5-parity-release-not-audited",
+      "title": "the Qt5 parity artifacts are built with 5.15.19 and the licence matrix records 5.15.17",
+      "kind": "known_gap",
+      "area": "licensing/qt-matrix",
+      "since": "2026-08-17",
+      "reason": "Round 18 #2: the product gate verified whichever Qt release it queried first (Qt6) and then applied a module-only allowlist to every line of the link manifest — including two archives built with Qt 5.15.19, a release nobody had read. The matrix is now keyed by (release, module) and every artifact is judged against the release that produced it, so those two archives and the four Qt5 specs are refused by name.\n\nThat refusal is CORRECT and is why this entry exists rather than a new matrix row. The rows for Qt5 say 5.15.17 because that is the release whose licensing was actually read; writing 5.15.19 on them would have been inventing the record, and it was nearly done automatically by a rewrite script before being caught.\n\nTwo honest resolutions, both requiring a decision this build cannot make: read Qt's licensing for 5.15.19 and record it, or stop building Qt5 parity artifacts. Note that the Qt5 archives are NOT installed — the package is built from the Qt6 qtwidgets binding — so the exposure is a test artifact, not a shipped one; that is a reason to fix it calmly, not a reason to call it verified.",
+      "remove_when": "5.15.19 is read and recorded in docs/qt-license-matrix.tsv, or the Qt5 parity build is retired",
+      "gap_probes": [
+        {
+          "target": "license-no-gpl-product",
+          "exit": 1,
+          "match": "was built with Qt 5.15.19"
         }
       ]
     }

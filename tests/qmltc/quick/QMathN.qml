@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // Math.max/min with THREE arguments (Qt's Controls use it) and with two. std.algorithm's max/min
 // are variadic, imported under a private alias so a QML property named `max` cannot collide. The

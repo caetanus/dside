@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `undefined` is not a VALUE in QML: it RESETS the property to its default. The whole-value form
 // (`x: undefined`) has compiled for a long time; inside a TERNARY it was refused -- and the refusal
 // named the declared TYPE, `Qt::Alignment`, which sent the census looking at flags support that was

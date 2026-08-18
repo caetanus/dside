@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `Qt.platform.pluginName` — the third QML global with no QObject behind it, after the colour
 // helpers and `Qt.styleHints`. Nothing in the meta channel reaches it, so the runtime returns what
 // the engine returns there: QGuiApplication::platformName().

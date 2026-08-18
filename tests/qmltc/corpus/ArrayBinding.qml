@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `listProp: [ Type{}, Type{} ]` — an array binding fills a list<> property. Each element is an
 // ordinary child object; the engine reaches it at its INDEX in that property, so that is the
 // dump label.

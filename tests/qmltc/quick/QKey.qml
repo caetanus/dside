@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // KEYBOARD is its own axis, and the machinery under test is the FOCUS CHAIN plus the bound type's own
 // C++ key handling — not a QML handler (`Keys.onPressed` with an arrow function is not compiled yet, so

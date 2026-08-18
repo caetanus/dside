@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // Enum-typed properties written as a KEY STRING: the meta-object converts through QMetaEnum on
 // write, so the numeric value never has to be known by the generator — the same generic channel a

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // TypeWithSpecialProperties from the corpus: MEMBER properties (int/QString) and a
 // READ/WRITE/NOTIFY one, feeding derived bindings.
 import QmltcTests

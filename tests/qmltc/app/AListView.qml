@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A LIST VIEW over a model with a delegate that reads BOTH the row and the enclosing document.
 // A Repeater builds everything at once; a ListView creates and recycles, which is a different
 // lifetime for the same delegate and the one applications actually use.

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQml 2.15
 // Headless round-trip: binds to a D @Property, and on change calls a D @Slot.
 QtObject {

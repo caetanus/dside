@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // (b) cross-file ROOT: a local Item-derived type (LocalBase) as the root, extended at the use site
 // with a base prop (width) and a property reading the local type's own `base`. Compiled class must

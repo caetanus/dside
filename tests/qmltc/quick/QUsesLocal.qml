@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // (b) cross-file: an Item root with a LOCAL type (Greeter, defined in Greeter.qml) as a default
 // child. qmltc-d must resolve Greeter -> Greeter.qml and compile it as its own D class.

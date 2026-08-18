@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // QtQuick.Layouts — um MÓDULO diferente, e o que quase toda a aplicação usa para dispor coisas.
 // Nenhum dos cinco estilos do Qt o importa; `anchors` é o que eles usam. As propriedades anexadas
 // `Layout.*` são um segundo mecanismo por cima disso.

@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # The application-shaped corpus
 
 Qt's own Controls are a narrow, disciplined dialect: `T.Something` roots, declared properties,

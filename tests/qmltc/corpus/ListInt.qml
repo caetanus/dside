@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A list<> of a VALUE type (not QtObject): the elements are ints living in the property itself,
 // reached by index, and length is readable. Distinct from ListHolder's list<QtObject>, whose
 // elements are separate objects the engine reaches through the list reference.

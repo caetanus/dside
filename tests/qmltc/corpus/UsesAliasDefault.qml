@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The bare child lands on `someObject`, the target of the base type's default-property alias.
 import QtQml 2.15
 AliasHolder {

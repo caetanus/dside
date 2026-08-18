@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // (b) object-typed property: `property QtObject o: QtObject { ... }` — a child object bound to a
 // declared QtObject property, with its own scalars read via the dotted path.

@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # Windows support — roadmap
 
 Status: **not started** (Linux is the only verified platform). This is a design

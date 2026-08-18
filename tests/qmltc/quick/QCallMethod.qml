@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Calling a METHOD on an object the document names, and asking whether an object HAS a member —
 // the two shapes Qt's own editing Actions are built from (`onTriggered: editor.undo()`,
 // `editor.remove(a, b)`, `editor.hasOwnProperty("cut")`).

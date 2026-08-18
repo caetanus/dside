@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A BASE property bound to an object literal that carries an `id`. Three kinds of child can hold
 // one -- a DEFAULT child, a DECLARED property's, and a BASE property's -- and only the first two
 // were pre-scanned, so `contentItem: Item { id: kid }` followed by any read of `kid.<prop>` was

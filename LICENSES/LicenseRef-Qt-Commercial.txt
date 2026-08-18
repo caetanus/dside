@@ -1,0 +1,24 @@
+LicenseRef-Qt-Commercial
+========================
+
+This is NOT a licence text. It is the record of what this identifier refers to, which is the
+correct thing to put here when the referenced text is not ours to distribute.
+
+Files in this repository that carry
+
+    SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
+
+come from Qt's own source tree, where The Qt Company offers them under a disjunction: either a
+commercial licence agreement with The Qt Company, or the GNU General Public License version 3.
+
+The commercial agreement is a private contract between The Qt Company and its licensees. Its text
+is not published, this project holds no such agreement, and nothing here grants any right under it.
+
+**This project relies on the GPL-3.0-only branch of that disjunction**, and the full text of that
+branch is distributed with this repository, in `LICENSES/GPL-3.0-only.txt`, as GPLv3 §4 requires of
+anyone conveying the source. A recipient who holds a commercial Qt agreement may of course rely on
+that branch instead; that is between them and The Qt Company.
+
+Where this material lives, and why it is here at all, is recorded in `THIRD-PARTY.md`. It is test
+material: it is never linked into a product artifact, and `license-package` refuses a package that
+contains it.

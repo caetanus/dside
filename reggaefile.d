@@ -30,7 +30,14 @@ private __gshared bool _qtQmlAsked;
 string qtInstallQml() {
     if (_qtQmlAsked) return _qtQmlDir;
     _qtQmlAsked = true;
-    foreach (probe; [["qtpaths6", "--query"], ["qtpaths", "--query"], ["qmake6", "-query"],
+    // THE EXPLICITLY-6 TOOLS FIRST. This asked `qtpaths` — which carries no version in its name —
+    // before `qmake6`, and on this machine the unsuffixed family is Qt 5: `qmake -query QT_VERSION`
+    // answers 5.15.19 while `qmake6` answers 6.11.1. Where `qtpaths` exists and belongs to Qt5, a
+    // Qt6 build would have taken Qt5's QML directory and judged Qt6 bindings against Qt5's Controls
+    // corpus — a wrong answer that looks like a working build. Measured 2026-08-14; here neither
+    // `qtpaths` nor `qtpaths6` is installed at all, so the literal fallback below is what actually
+    // answers, which is worth knowing about a line described as a last resort.
+    foreach (probe; [["qtpaths6", "--query"], ["qmake6", "-query"], ["qtpaths", "--query"],
                      ["qmake", "-query"]]) {
         // ...and a probe that is not INSTALLED must not abort the build graph: `execute` throws
         // rather than returning non-zero when the executable is missing, which is how the first
@@ -54,6 +61,8 @@ Build reggaeBuild() {
     // expected-fails-run names them and expects the failure, and a failing target in the default
     // build would report the gap as a regression — right fact, wrong channel.
     Target[] gapProbes;
+    Target[] docsNumberSources;   // the o3/optlevels targets, for the documentation gate
+    string docsNumberBdir;
 
     string t(string dir, string f) { return buildPath(root, "tests", dir, f); }
     bool haveQt5() { return execute(["pkg-config", "--exists", "Qt5Widgets"]).status == 0; }
@@ -269,8 +278,14 @@ Build reggaeBuild() {
         // generated, linked and CONSTRUCTED. Six defects lived where compile-clean cannot see —
         // they all build and then die (or silently build the wrong object) at construction.
         all ~= qmltcControlsRuntimeTargets(root, ctrl);
-        all ~= o3GateTargets(root, ctrl);   // every judgeable document renders like the engine
-        all ~= optLevelTargets(root, ctrl); // ...and the levels agree with it and with each other
+        // captured, because `docs-numbers` compares the documentation against what THESE targets
+        // counted and must therefore depend on them
+        auto o3T = o3GateTargets(root, ctrl);       // every judgeable document renders like the engine
+        auto olT = optLevelTargets(root, ctrl);     // ...and the levels agree with it and each other
+        docsNumberSources = o3T ~ olT;
+        docsNumberBdir = ctrl.bdir;
+        all ~= o3T;
+        all ~= olT;
         // ...and over QT'S OWN corpus, where the certainty levels had only a COUNT. The README said
         // -O1 compiles 111 of 329 and that nothing crosses untyped there; the first half was
         // measured and the second was not, because the o3 gate judges -Ox — DIFFERENT CODE — and
@@ -289,7 +304,12 @@ Build reggaeBuild() {
             foreach (style; ["Basic", "Fusion", "Universal", "Material"]) {
                 auto styleDir = buildPath(qtInstallQml(), "QtQuick", "Controls", style);
                 if (!exists(od) || !exists(styleDir)) continue;
-                all ~= Target.phony("qmltc-optlevels-controls-" ~ style,
+                // captured for `docs-numbers`: the -O1 column comes from THESE targets, and the
+                // deletion test proved the point — with only the o3 edges declared, the counts
+                // regenerated and the optlevels files did not, so the gate read 0 for every style
+                // and accused the documentation of saying 39. A dependency that covers half of what
+                // a gate reads is how a check comes to describe a mixture of two builds.
+                auto olStyle = Target.phony("qmltc-optlevels-controls-" ~ style,
                     "sh " ~ od ~ " " ~ buildPath(ctrl.bdir, "qmltc-d") ~ " "
                     ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " " ~ styleDir ~ " "
                     ~ buildPath(ctrl.bdir, "optlevels-" ~ style) ~ " " ~ ctrl.bdir ~ " "
@@ -297,6 +317,8 @@ Build reggaeBuild() {
                     [Target(od), Target(buildPath(root, "tests", "qmltc", "optlevels.sh")),
                      Target(buildPath(root, "tests", "qmltc", "optlevels-known.txt")),
                      qmltcTool(root, ctrl), ctrl.gen, qtdBindLib(ctrl, "ldc2"), ctrl.shims]);
+                all ~= olStyle;
+                docsNumberSources ~= olStyle;
             }
         }
         // ...and the LEAF TABLE's identity and lifetime, which no document can observe: the count
@@ -457,10 +479,44 @@ Build reggaeBuild() {
             // a build-graph one — the same shape the uidump object memoisation exists for.
             auto instCmd = "sh " ~ ins ~ " " ~ ex.genDir ~ " " ~ ex.bdir ~ " " ~ prefix
                 ~ " qtd-qtwidgets " ~ pkgLibs(ex.mods).replace("-L-l", "-l") ~ " && touch " ~ stamp;
+            // `ins` belongs in the guard's newerThan list, not only in the dependency list. Reggae
+            // reruns the command when the script changes, but the guard's own `-nt` test then
+            // decides whether to do anything — and with gen.stamp as its only reference, an edit to
+            // install.sh alone exits 0 and leaves the package as it was. Measured: install.sh grew
+            // the LICENSE/NOTICE copies at 17:36, a build ran at 19:32, and the package on disk was
+            // still the one from two days before. A guard that can't see the script it runs is a
+            // guard for a different question.
             auto inst = Target(stamp,
                 guarded(prefix ~ ".lock", instCmd, stamp,
-                        [ex.genDir ~ "/gen.stamp"]),
+                        [ex.genDir ~ "/gen.stamp", ins]),
                 [Target(ins), ex.gen] ~ DCS.map!(dc => qtdBindLib(ex, dc)).array ~ [ex.shims]);
+            // THE PACKAGE, not the tree. Every other licensing gate reads what is committed; this
+            // one reads what a consumer receives, because a spotless repository can still ship a
+            // package with no licence in it — which is precisely what this found on first run.
+            auto lpk = buildPath(root, "tests", "license-package.sh");
+            if (exists(lpk)) {
+                // The archives the install actually copies, named by the graph. Without this the
+                // package's own manifest is the only authority on what belongs in lib/, and a
+                // regenerated manifest makes any addition consistent — measured: an opaque .a plus
+                // a rebuilt MANIFEST.sha256 passed.
+                auto arch = (DCS.map!(dc => "libbinding_" ~ dc ~ ".a").array ~ "libshims.a").join(",");
+                all ~= Target.phony("license-package", "sh " ~ lpk ~ " " ~ prefix ~ " " ~ arch
+                                    ~ " " ~ ex.bdir, [Target(lpk), inst]);
+                // ...and a package that IS defective, so the gate's bite is a build step rather
+                // than something I remember doing once. Nine violations were planted by hand to
+                // prove this gate and then deleted; the proof lived in a transcript. This one
+                // copies the real package, removes its LICENSE, and must be refused.
+                // ...and the TABLE OF MUTATIONS that replaces the single probe (round 15 #4). The
+                // probe deleted LICENSE, which proved a branch that already worked, while the same
+                // gate accepted a renamed dub.json and a GPL-licensed source. Twenty defective
+                // packages are now built and each must be refused FOR ITS OWN REASON — a refusal
+                // with somebody else's message counts as a failure, because that is exactly how a
+                // broken provenance check hid behind an unrelated one here two hours ago.
+                auto lpm = buildPath(root, "tests", "license-package-mutations.sh");
+                if (exists(lpm))
+                    all ~= Target.phony("license-package-mutations", "sh " ~ lpm ~ " " ~ prefix ~ " " ~ arch
+                                        ~ " " ~ ex.bdir, [Target(lpm), Target(lpk), inst]);
+            }
             foreach (dc; DCS)
                 all ~= Target.phony("dub-consumer-" ~ dc,
                     "sh " ~ dcs ~ " " ~ prefix ~ " qtd-qtwidgets " ~ dc,
@@ -522,8 +578,15 @@ Build reggaeBuild() {
     //     ask whether the GENERATOR is healthy. These name the questions people actually have.
     //     Every aggregate is a subset of `all` and none of them is a default target, so the full
     //     build is unchanged: this adds names, not work.
+    // NOTE: the aggregates are BUILT AT THE END of this function, not here. They are a snapshot of
+    // `all`, and taking that snapshot at this point is what round 15 #9 caught: every licensing
+    // gate, `runtime-provenance` and `archive-composition` are appended AFTER, so `binding-core`
+    // answered "is the binding healthy, gates included?" without depending on five of the gates it
+    // named. Same ordering family as the registries rounds 13/14 fixed, reintroduced in the entry
+    // point that answers the broadest question.
     Target[] aggregates;
-    {
+
+    void buildAggregates() {
         bool isQmltc(string n) {
             return n.startsWith("qmltc") || n.startsWith("shadowaot-") || n.startsWith("leaf-lifetime");
         }
@@ -539,12 +602,59 @@ Build reggaeBuild() {
         auto qmlAll = pick(n => isQmltc(n));
         auto smoke  = pick(n => n.startsWith("qmltc-") && !n.canFind("-o3-gate-")
                              && !n.startsWith("qmltc-controls-runtime"));
-        // ...and OPTIONAL, not part of the default build. A node reached by two top-level targets
+        // THE DOCUMENTED NUMBERS AGAINST THE MEASURED ONES. Four coverage figures in README.md and
+    // docs/qmltc-d.md were wrong on 2026-08-14 — the `-O3` column counted documents HANDLED under a
+    // heading that says "compiles", one table was three documents stale, a paragraph disagreed with
+    // the table beside it, and `-O1` had drifted by one. All four were typed by hand from a run that
+    // later changed, so the o3 and optlevels gates now record what they counted and this compares
+    // the documents against those files.
+    {
+        // ...and it DEPENDS on the gates whose output it reads, instead of hoping the files are
+        // there. Without the edges it would pass by reading counts left by an earlier run — a green
+        // that describes the previous build, which is precisely what runtime-provenance and
+        // archive-composition were corrected for in rounds 13 and 14.
+        //
+        // The build directory is DERIVED, not typed. It read `.build/qt-6.11-cxx-controls`, a fact
+        // about this machine wearing the clothes of a fact about the project: on a Qt 6.9 checkout
+        // the directory is named differently, the gate would find no counts, and it would report
+        // "fewer than five styles" — accusing the o3 gate of not having run. Third instance of a
+        // hardcoded path in this audit, after `/usr/lib/qt6/moc` (182 targets silently gone) and the
+        // absolute `generated-from` inside the shipped package.
+        auto dn = buildPath(root, "tests", "docs-numbers.sh");
+        if (exists(dn) && docsNumberSources.length)
+            all ~= Target.phony("docs-numbers", "sh " ~ dn ~ " " ~ docsNumberBdir,
+                                Target(dn) ~ docsNumberSources);
+    }
+
+    // ...and OPTIONAL, not part of the default build. A node reached by two top-level targets
         // is executed once per reaching target in this backend, so adding these to `all` made the
         // full build run every member TWICE (visible as .reggae/objs/binding-core.objs/…). They are
         // entry points for asking a narrower question, which is the opposite of extra work.
+        // ...and the aggregate CHECKS ITS OWN COMPOSITION. `binding-core` says "and their gates";
+        // round 15 #9 measured that it contained none of the five product gates, because it was a
+        // snapshot taken before they existed. A message is not a dependency, so the required list
+        // is named here and a missing one is a build error rather than a weaker promise silently
+        // kept. Adding a product gate means adding it here — that is the point.
+        // `license-no-gpl-product` is NOT in this list any more, and the reason is worth the line:
+        // it is a gap probe while the Qt5 parity archives are built with an unrecorded release
+        // (see `qt5-parity-release-not-audited`), and a probe that must FAIL cannot be a member of
+        // an aggregate that must pass. The composition check caught the contradiction the moment it
+        // was created, which is what it is for — but the answer is to state the new shape here, not
+        // to soften the check. When 5.15.19 is recorded the gate becomes mandatory again and this
+        // list gets it back.
+        static immutable string[] mustContain = [
+            "license-coverage", "license-package",
+            "runtime-provenance", "archive-composition",
+        ];
+        auto haveNames = core.map!(t => t.rawOutputs.length ? t.rawOutputs[0] : "").array;
+        auto missing = mustContain.filter!(g => !haveNames.canFind(g)).array;
+        if (core.length && missing.length)
+            throw new Exception("binding-core claims to include the product gates and is missing: "
+                                ~ missing.join(", ") ~ ". Either the gate was not registered before "
+                                ~ "the aggregates are built, or it no longer exists.");
         if (core.length)   aggregates ~= Target.phony("binding-core",
-            "echo 'binding-core OK: generator, runtime, uic, qrc, moc, webengine and their gates'", core);
+            "echo 'binding-core OK: generator, runtime, uic, qrc, moc, webengine and their gates ("
+            ~ mustContain.join(", ") ~ ")'", core);
         if (smoke.length)  aggregates ~= Target.phony("qmltc-smoke",
             "echo 'qmltc-smoke OK: the compiler over its own corpora, without Qt Controls'", smoke);
         if (qmlAll.length) aggregates ~= Target.phony("qmltc-corpus",
@@ -561,12 +671,100 @@ Build reggaeBuild() {
     //     in the plan rather than stubbed here.
     {
         auto lc = buildPath(root, "tests", "license-coverage.sh");
-        if (exists(lc)) all ~= Target.phony("license-coverage", "sh " ~ lc, [Target(lc)]);
+        if (exists(lc)) {
+            all ~= Target.phony("license-coverage", "sh " ~ lc, [Target(lc)]);
+            // INVENTORY AND PUBLICATION ARE DIFFERENT QUESTIONS (round 15 #8). The inventory may
+            // pass with files whose terms are not established; a source archive may not. This
+            // target answers the second one and is EXPECTED TO FAIL — 61 files carry NOASSERTION
+            // today (the 60-file .ui corpus and one three-line .cpp), and Phase 1 of the licensing
+            // plan is the work that empties it. Recorded as a gap probe so the state is a build
+            // fact rather than a sentence in a document nobody runs.
+            // NO LONGER A GAP PROBE. It was one while 61 files carried NOASSERTION — the honest
+            // state, recorded as a build fact. On 2026-08-14 that list reached zero: 60 `.ui` files
+            // by provenance established against qt/qt@0a2f238254, and `singletontype.cpp` by being
+            // written here against Qt's declaration. A probe that must FAIL cannot stay pointed at
+            // a target that now passes, so it is an ordinary gate and the expected-fails entry that
+            // documented the gap is gone.
+            all ~= Target.phony("license-publishable", "sh " ~ lc ~ " --publish", [Target(lc)]);
+            // ...and the tree gate is attacked the way the package gate is. It decides the terms of
+            // 551 files and it produced two defects in one afternoon — a quoted expression read as
+            // a declaration (this project's own plan came out GPL-3.0-only) and a sidecar that
+            // existed only on the author's machine. Both were found by asking what the gate ANSWERS
+            // for a specific file, which is what a table of synthetic trees does every build.
+            auto lcm = buildPath(root, "tests", "license-coverage-mutations.sh");
+            if (exists(lcm))
+                all ~= Target.phony("license-coverage-mutations", "sh " ~ lcm, [Target(lcm), Target(lc)]);
+            // ...and the same gates run against WHAT WOULD BE PUBLISHED, not against this working
+            // tree. `license-coverage` asks git which files exist, so it answers about one machine's
+            // index: measured on 2026-08-14 the tree was green while five untracked files carried no
+            // terms at all — the GPL, LGPL-2.1, LGPL-3.0 and Qt-Commercial records and the licence
+            // matrix, every one of them load-bearing for the policy. This unpacks tracked plus
+            // untracked-not-ignored files into a fresh repository and re-runs the gates there.
+            auto lsnap = buildPath(root, "tests", "license-snapshot.sh");
+            if (exists(lsnap))
+                all ~= Target.phony("license-snapshot", "sh " ~ lsnap,
+                                    [Target(lsnap), Target(lc), Target(lcm)]);
+            // ...and the battery for the gate that checks the other gates. Its three rows are the
+            // three ways "here" and "what would be published" come apart, and none of them is
+            // visible to license-coverage run in a working tree — which is the whole reason the
+            // snapshot gate exists, and the reason its own proof could not live in a transcript.
+            auto lsm = buildPath(root, "tests", "license-snapshot-mutations.sh");
+            if (exists(lsm) && exists(lsnap))
+                all ~= Target.phony("license-snapshot-mutations", "sh " ~ lsm,
+                                    [Target(lsm), Target(lsnap), Target(lc), Target(lcm)]);
+        }
         auto lg = buildPath(root, "tests", "license-no-gpl-product.sh");
         auto reg2 = qtdShimsRegistry();
-        if (exists(lg))
-            all ~= Target.phony("license-no-gpl-product", "sh " ~ lg,
-                                Target(lg) ~ reg2.map!(e => e.target).array);
+        // MANDATORY ONLY WHERE IT CAN ANSWER (round 17 #2). The matrix is keyed by exact Qt release
+        // and REFUSES to judge one it does not record — correct, and it makes this gate red by
+        // construction on a runner whose distro Qt is 6.4.2. The two honest ways out are to install
+        // a Qt the matrix covers or to audit that release and record it; loosening the comparison
+        // back to a minor would reopen the defect round 16 #6 was raised to close.
+        //
+        // Until one of those happens the gate follows the SAME rule the manifest gates already
+        // follow here: mandatory when the installed release is one the matrix speaks about,
+        // reachable by name and advisory otherwise. What that costs is stated rather than hidden —
+        // on such a runner NO licensing verification of Qt modules is performed, and the workflow's
+        // advisory step is where it runs and where its failure is visible.
+        auto qtRel = () {
+            auto r = execute(["pkg-config", "--modversion", "Qt6Core"]);
+            return r.status == 0 ? r.output.strip : "";
+        }();
+        auto matrixPath = buildPath(root, "docs", "qt-license-matrix.tsv");
+        bool relRecorded = qtRel.length && exists(matrixPath)
+            && readText(matrixPath).split("\n").any!(l => l.startsWith("verified-for\t" ~ qtRel));
+        if (exists(lg) && reg2.length) {
+            // THE LINK MANIFEST, from the graph (round 15 #3). The gate used to identify a module by
+            // grepping an archive for a namespace — the signature of one incident, blind to every
+            // other module and to anything inline or templated. What actually determines the
+            // dependency is which pkg-config modules were on the compile line, and the graph is
+            // where that is known. Written here so the gate reads a recorded fact rather than
+            // inferring one from symbols.
+            auto lm = buildPath(root, ".build", "link-manifest.tsv");
+            // THREE columns now: artifact, the RELEASE that produced it, and the EXPANDED link
+            // line. Round 18 #1/#2: one name on the compile line is nine libraries on the link
+            // line, and a single global release certified artifacts from two different Qt versions.
+            writeIfChanged(lm, reg2.map!(e => e.archive ~ "\t" ~ (e.qtRel.length ? e.qtRel : "unknown")
+                                              ~ "\t" ~ e.linkMods.join(",")).join("\n") ~ "\n");
+            auto gpl = Target.phony("license-no-gpl-product", "sh " ~ lg ~ " " ~ lm,
+                                    [Target(lg), Target(matrixPath)] ~ reg2.map!(e => e.target).array);
+            // A GAP PROBE while an artifact's release is unrecorded (round 18 #2/#3). The gate
+            // refuses the Qt5 parity archives because they are built with 5.15.19 and the matrix
+            // records 5.15.17 — the correct answer, and one that must be VISIBLE rather than
+            // absorbed. Round 18 #3 was right that making it non-blocking on an unknown release was
+            // a third answer to a two-answer question; a probe that must fail, with its signature
+            // in expected-fails.json, is the project's own way of keeping an honest red.
+            if (relRecorded) gapProbes ~= gpl; else manifestGates ~= gpl;
+            // ...and the battery that proves it refuses. Unlike the gate itself this is NOT
+            // release-dependent: it builds its own matrix, its own specs and its own link manifest,
+            // so it answers the same on every machine — including the question "what happens when
+            // the installed release is not recorded?", which cannot be asked of the real matrix
+            // without lying in it.
+            auto lgm2 = buildPath(root, "tests", "license-no-gpl-product-mutations.sh");
+            if (exists(lgm2))
+                all ~= Target.phony("license-no-gpl-product-mutations", "sh " ~ lgm2,
+                                    [Target(lgm2), Target(lg)]);
+        }
     }
 
     // THE GATES THAT NEED THE WHOLE GRAPH come last, after every binding has registered itself
@@ -610,6 +808,9 @@ Build reggaeBuild() {
     }
 
     import std.range : chain;
+    // HERE — after every target, gate and registry is closed. See the note where `aggregates` is
+    // declared: this is the fix for round 15 #9.
+    buildAggregates();
     // The optional gap probes, written where the linter can read them (see expected-fails-lint).
     writeIfChanged(buildPath(root, ".build", "gap-probes.txt"),
                    gapProbes.map!(t => "- " ~ t.rawOutputs[0]).join("\n") ~ "\n");
@@ -824,6 +1025,14 @@ Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
 // The qmltc-d binary, built ONCE per binding: both the corpus differential and the
 // D-app-type differential depend on it, and two Targets writing the same output would be a
 // duplicated (racing) build node.
+// THE SHARED HELPER OBJECTS, memoised. `qtd_qmltc_app.o` and `qtd_render.o` live in the binding's
+// build dir and are linked by BOTH the qmltc differentials and the optlevels gate — but only the
+// former declared them. The latter tested for the file with `[ -f ]` and linked against whatever it
+// found, so while another target rewrote the object it linked against a partial file and reported
+// `-O1 does not link`, a message that names nothing about concurrency. Measured 2026-08-14: ATile
+// failed inside the matrix and passed 3/3 in isolation, which is the third time this session that a
+// file expected-to-be-there rather than declared produced a phantom failure.
+private Target[string] _qmltcAppObjs, _qmltcRenderObjs;
 private Target[string] _qmltcTools;
 Target qmltcTool(string root, QtdBinding bind) {
     if (auto p = bind.bdir in _qmltcTools) return *p;
@@ -841,9 +1050,31 @@ Target qmltcTool(string root, QtdBinding bind) {
     // Shared by every qmltc differential target -> guard it (see `guarded`): a concurrent
     // re-schedule of this one node otherwise links over a binary another target is executing.
     auto toolBin = buildPath(bind.bdir, "qmltc-d");
+    // THE REVISION COMES FROM THE BUILD, in its own translation unit (round 16 #4). The tool used to
+    // run `git rev-parse` in the CURRENT DIRECTORY at emission time, which is right only when it is
+    // run from this checkout: measured, the same binary with the same input wrote
+    // `generator=a0b3b94-dirty` here and `generator=unknown` from /tmp — and inside somebody else's
+    // repository it would have written THEIR revision as if it were ours.
+    //
+    // It is a separate 3-line file rather than a -D on the tool's own compile line because the tool
+    // is 11k lines: with writeIfChanged, a dirty-state flip recompiles three lines and relinks,
+    // instead of rebuilding the compiler on every edit.
+    auto revCpp = buildPath(bind.bdir, "qtd_gen_rev.cpp");
+    auto revObj = buildPath(bind.bdir, "qtd_gen_rev.o");
+    auto rv = () {
+        auto r = execute(["git", "-C", root, "rev-parse", "--short", "HEAD"]);
+        if (r.status != 0) return "unknown";
+        auto d = execute(["git", "-C", root, "status", "--porcelain", "--untracked-files=no"]);
+        return r.output.strip ~ (d.status == 0 && d.output.strip.length ? "-dirty" : "");
+    }();
+    writeIfChanged(revCpp, "// GENERATED by the build: the revision that produced this binary.\n"
+        ~ "extern \"C\" const char *qtd_gen_rev(void) { return \"" ~ rv ~ "\"; }\n");
+    auto revO = Target(revObj, "clang++ -std=c++17 -fPIC -O2 -c " ~ revCpp ~ " -o " ~ revObj,
+                       [Target(revCpp)]);
     auto t = Target(toolBin, guarded(toolBin ~ ".lock",
-        "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " -o " ~ toolBin ~ " " ~ toolLibs, toolBin, [toolCpp]),
-        [Target(toolCpp)]);
+        "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " " ~ revObj ~ " -o " ~ toolBin ~ " " ~ toolLibs,
+        toolBin, [toolCpp, revObj]),
+        [Target(toolCpp), revO]);
     _qmltcTools[bind.bdir] = t;
     return t;
 }
@@ -979,9 +1210,17 @@ Target[] optLevelTargets(string root, QtdBinding bind) {
         auto cmd = "sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
                  ~ " " ~ e ~ " I" ~ name ~ " " ~ outDir ~ " " ~ bind.bdir ~ " " ~ bind.genDir
                  ~ " ldc2 " ~ pkgLibs(bind.mods);
+        // ...AND the two helper objects this script links against. It tested for them with `[ -f ]`
+        // and linked whatever was on disk: while another target rewrote `qtd_render.o`, this link
+        // consumed a partial file and failed with `-O1 does not link`, a message that names nothing
+        // about concurrency. ATile failed that way inside the matrix on 2026-08-14 and passed 3/3
+        // in isolation. A file a gate expects to find is not a dependency; this makes it one.
+        Target[] helpers;
+        if (auto p = bind.bdir in _qmltcAppObjs) helpers ~= *p;
+        if (auto p = bind.bdir in _qmltcRenderObjs) helpers ~= *p;
         ts ~= Target.phony("qmltc-optlevels-" ~ name, cmd,
                            [tool, Target(script), Target(e), bind.gen,
-                            qtdBindLib(bind, "ldc2"), bind.shims]);
+                            qtdBindLib(bind, "ldc2"), bind.shims] ~ helpers);
     }
     return ts;
 }
@@ -1053,8 +1292,14 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     // provides qtd_qmltc_init_gui_app() the generated main calls for such roots.
     auto appCpp = buildPath(here, "qtd_qmltc_app.cpp");
     auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
-    auto appHelper = Target(appObj, guarded(appObj ~ ".lock",
-        "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o " ~ appObj, appObj, [appCpp]), [Target(appCpp)]);
+    auto appHelper = () {
+        if (auto p = bind.bdir in _qmltcAppObjs) return *p;
+        auto t = Target(appObj, guarded(appObj ~ ".lock",
+            "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o " ~ appObj, appObj, [appCpp]),
+            [Target(appCpp)]);
+        _qmltcAppObjs[bind.bdir] = t;
+        return t;
+    }();
     // Files whose render is MEANINGFUL — they have area and more than one colour, so the frame
     // comparison can actually fail. The list is explicit rather than "every file": most of this
     // corpus was written for a PROPERTY differential and its roots have no visual size, which
@@ -1111,6 +1356,12 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
     string renderLink;
     if (hasQuick) {
         auto rFlags = pkgCflags(bind.mods ~ ["Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
+        // memoised for the same reason as the app helper: the optlevels gate links against this
+        // object and must depend on the SAME node, not on a second definition of it.
+        if (bind.bdir !in _qmltcRenderObjs)
+            _qmltcRenderObjs[bind.bdir] = Target(renderObj, guarded(renderObj ~ ".lock",
+                "clang++ " ~ rFlags ~ " -c " ~ renderCpp ~ " -o " ~ renderObj, renderObj, [renderCpp]),
+                [Target(renderCpp)]);
         renderDep ~= Target(renderObj, guarded(renderObj ~ ".lock",
             "clang++ " ~ rFlags ~ " -c " ~ renderCpp ~ " -o " ~ renderObj, renderObj, [renderCpp]),
             [Target(renderCpp)]);
@@ -1304,7 +1555,13 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             auto setFile = buildPath(corpusDir, name ~ ".set");
             if (exists(setFile)) {
                 // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
-                auto setArgs = readText(setFile).strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
+                // COMMENT LINES ARE DROPPED FIRST: every token in this file becomes an argument to
+                // the fixture, so until now the format could not carry its own licence header — and
+                // a format that cannot answer for itself is exactly what forces a path map to
+                // exist. The map produced four of this audit's licensing defects.
+                auto setArgs = readText(setFile).split("\n")
+                    .filter!(l => !l.strip.startsWith("#")).join(" ")
+                    .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 auto cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
                     ~ " && diff " ~ a ~ ".set " ~ b ~ ".set'";
@@ -1378,6 +1635,32 @@ Target[] shadowAotTargets(string root, QtdBinding quick) {
         ts ~= Target.phony("shadowaot-" ~ dc, cmd,
                            [Target(script), Target(qmlFile), qtdBindLib(quick, dc), quick.shims]);
     }
+    // ...and the OUTPUT NOTICE, on the same fixture and for the same reason it was chosen here:
+    // QJsDelegated is the one document that exercises every mode the compiler can write source in —
+    // a compiled document AND shadows. Round 15 #5 found the notice implemented in generator-d only,
+    // and a gate that ran one mode would have missed the shadows, which are written by a different
+    // call in a different function and were the last to be fixed.
+    auto lgo = buildPath(root, "tests", "license-generated-output.sh");
+    // A GENERATED file, not a copied one. This passed `qtmoc.d`, which the generator COPIES from
+    // runtime/ verbatim: it carries its own hand-written header and no output-grant block at all.
+    // So the drift check between the two generators had an EMPTY reference, and the old one-sided
+    // comparison ("require in qmltc-d every chosen line that appears in the sample") was therefore
+    // vacuously true — it compared nothing. Round 16 #7 called the comparison weak; with this
+    // reference it was absent.
+    auto sampleGen = buildPath(quick.genDir, "qt", "quick", "qquickitem.d");
+    // ...and the battery that proves that gate bites (its three known-good answers were measured by
+    // hand and then existed only in a transcript — the mistake this audit has charged twice).
+    auto lgm = buildPath(root, "tests", "license-generated-output-mutations.sh");
+    if (exists(lgm) && exists(lgo))
+        ts ~= Target.phony("license-generated-output-mutations",
+            "sh " ~ lgm ~ " " ~ tool ~ " " ~ qmlFile ~ " " ~ qmlmap ~ " "
+            ~ buildPath(root, "tests", "qmltc", "quick") ~ " " ~ sampleGen,
+            [Target(lgm), Target(lgo), Target(qmlFile), quick.gen, qmltcTool(root, quick)]);
+    if (exists(lgo))
+        ts ~= Target.phony("license-generated-output",
+            "sh " ~ lgo ~ " " ~ tool ~ " " ~ qmlFile ~ " " ~ qmlmap ~ " "
+            ~ buildPath(root, "tests", "qmltc", "quick") ~ " " ~ sampleGen,
+            [Target(lgo), Target(qmlFile), quick.gen, qmltcTool(root, quick)]);
     return ts;
 }
 
@@ -1490,7 +1773,13 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {
                 // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
-                auto setArgs = readText(setFile).strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
+                // COMMENT LINES ARE DROPPED FIRST: every token in this file becomes an argument to
+                // the fixture, so until now the format could not carry its own licence header — and
+                // a format that cannot answer for itself is exactly what forces a path map to
+                // exist. The map produced four of this audit's licensing defects.
+                auto setArgs = readText(setFile).split("\n")
+                    .filter!(l => !l.strip.startsWith("#")).join(" ")
+                    .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc,
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
@@ -1520,8 +1809,40 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
 Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
     auto dir = buildPath(root, "tests", "qmltc", "cpptypes");
-    auto moc = "/usr/lib/qt6/moc", reg = "/usr/lib/qt6/qmltyperegistrar";
-    if (!exists(dir) || !exists(moc) || !exists(reg)) return [];
+    // ASK QT WHERE ITS TOOLS ARE, and refuse to disappear quietly if they are missing (round 17 #3).
+    // These paths were hardcoded as `/usr/lib/qt6/<tool>`, which is this distribution's layout and
+    // not Debian's: Ubuntu 24.04 installs both under `libexec/`. There the two `exists()` checks
+    // failed, this function returned an empty list, and an entire family of targets — the ONLY one
+    // that compiles Qt's own C++ QML types — simply did not exist. The CI floor counts `qmltc*`
+    // targets and would have been satisfied by the other families, so absence of capability would
+    // have read as green. That is the exact shape the libsample canaries were built to prevent.
+    auto libexec = () {
+        // try/catch per candidate: std.process.execute THROWS when the binary is absent rather than
+        // returning non-zero, and `qtpaths6` is absent on this machine — the first probe aborted the
+        // whole graph. A discovery loop has to survive not finding things.
+        foreach (q; ["qtpaths6", "qmake6", "qtpaths", "qmake"]) {
+            try {
+                auto r = execute([q, q.startsWith("qtpaths") ? "--query" : "-query", "QT_INSTALL_LIBEXECS"]);
+                if (r.status == 0 && r.output.strip.length) return r.output.strip;
+            } catch (Exception) { /* not installed under this name; try the next */ }
+        }
+        return "";
+    }();
+    string findTool(string name) {
+        foreach (c; [buildPath(libexec, name), "/usr/lib/qt6/libexec/" ~ name, "/usr/lib/qt6/" ~ name])
+            if (c.length > name.length && exists(c)) return c;
+        return "";
+    }
+    auto moc = findTool("moc"), reg = findTool("qmltyperegistrar");
+    if (!exists(dir)) return [];
+    // Qt6Qml IS installed (checked above). If its tools cannot be found, that is a broken or
+    // unexpected installation, and saying so beats building nothing and reporting success.
+    if (!moc.length || !reg.length)
+        throw new Exception("Qt6Qml is installed but its tools were not found (moc="
+            ~ (moc.length ? moc : "MISSING") ~ ", qmltyperegistrar=" ~ (reg.length ? reg : "MISSING")
+            ~ "; QT_INSTALL_LIBEXECS=" ~ (libexec.length ? libexec : "unknown") ~ "). The qmltc C++"
+            ~ " corpus cannot be built, and skipping it silently is how absence of capability"
+            ~ " becomes a green build.");
     auto bind = qtdBinding(root, "spec_cxx_corpustypes.json", ["Qt6Qml"]);
     auto here = buildPath(root, "tests", "qmltc");
     auto tool = qmltcTool(root, qmlBind);          // one qmltc-d, shared with the other suites
@@ -1644,7 +1965,13 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {
                 // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
-                auto setArgs = readText(setFile).strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
+                // COMMENT LINES ARE DROPPED FIRST: every token in this file becomes an argument to
+                // the fixture, so until now the format could not carry its own licence header — and
+                // a format that cannot answer for itself is exactly what forces a path map to
+                // exist. The map produced four of this audit's licensing defects.
+                auto setArgs = readText(setFile).split("\n")
+                    .filter!(l => !l.strip.startsWith("#")).join(" ")
+                    .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 ts ~= Target.phony("qmltcc-" ~ name ~ "-set-" ~ dc,
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs

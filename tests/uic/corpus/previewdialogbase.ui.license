@@ -1,0 +1,3 @@
+SPDX-FileCopyrightText: 2015 The Qt Company Ltd.
+SPDX-License-Identifier: LicenseRef-Qt-Commercial OR LGPL-2.1-only OR LGPL-3.0-only OR GPL-3.0-only
+SPDX-FileComment: Verbatim copy of tests/auto/uic/baseline/previewdialogbase.ui from github.com:qt/qt at revision 0a2f2382541424726168804be2c90b91381608c6 (v4.8.7-3, 2015-07-10). Provenance established 2026-08-14 by SHA-256 equality: c29f54cb171b70403cc71e5e8194b8c8e73bb1472442d27402f2b3216ea5adf9. The upstream header additionally grants The Qt Company LGPL Exception 1.1, which only adds rights and is therefore omitted from the expression above.

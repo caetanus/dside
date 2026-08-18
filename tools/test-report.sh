@@ -57,7 +57,7 @@ category() {
     # ...and the ratchets/probes that answer the long-lived structural findings (r4 #9, r9 #2,
     # r11 #5/#6). They are gates: they fail the build, they take no compiler and no Qt version of
     # their own except abi-layout-qt5, which the qtaxis below marks.
-    qtmoc-probe-*|report-selftest|runtime-boundary|compiler-context|abi-layout|abi-layout-qt5|runtime-provenance|archive-composition|license-coverage|license-no-gpl-product) echo gate ;;
+    qtmoc-probe-*|report-selftest|runtime-boundary|compiler-context|abi-layout|abi-layout-qt5|runtime-provenance|archive-composition|license-coverage|license-no-gpl-product|license-package|license-package-mutations|license-publishable|license-generated-output|license-coverage-mutations|license-generated-output-mutations|license-snapshot|license-publishable|license-no-gpl-product-mutations|license-snapshot-mutations|docs-numbers) echo gate ;;
     tr-*|lupdate-check) echo i18n ;;
     manifest-gate-*|registry-gate-*|expected-fails-lint|expected-fails-run|ctor-guard|ownership-gate-*) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;

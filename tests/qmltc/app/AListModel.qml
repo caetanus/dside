@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A LIST MODEL AND A DELEGATE READING IT. Qt's Controls never declare a ListModel — they take one
 // from outside — so every path here (ListElement rows, `model.<role>` inside a delegate, a count
 // that a binding outside the view reads back) is untouched by the styles corpus.

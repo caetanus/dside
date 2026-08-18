@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // A grouped write whose value READS something: `border.width: bw + 1` is a BINDING, not an
 // assignment. It was emitted as a one-shot with no connect — the same bug this project keeps

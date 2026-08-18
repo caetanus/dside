@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A SIGNAL DECLARED IN ONE DOCUMENT AND HANDLED IN ANOTHER. `onPicked` on a locally-resolved type
 // is a connection the compiler has to make across a document boundary, and the handler mutates
 // state a third binding reads.

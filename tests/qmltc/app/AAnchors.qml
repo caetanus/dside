@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // ANCHORS, which application layout is built from and the styles use sparingly. `anchors.fill`,
 // centreing, margins and a sibling anchor all resolve to a different object than the one being
 // assigned, which is the part a compiler can get wrong without the frame noticing.

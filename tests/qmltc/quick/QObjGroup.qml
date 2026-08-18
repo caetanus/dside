@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // A grouped assignment where the GROUP IS AN OBJECT: `border` on a Rectangle is a QQuickPen*, not
 // a value. The registry marks this with `isPointer`, which the property table now records as a

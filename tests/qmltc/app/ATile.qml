@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A local component another document in this directory instantiates. An application is made of
 // these; Qt's styles resolve every type through a module instead.
 import QtQuick

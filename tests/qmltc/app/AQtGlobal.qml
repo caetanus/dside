@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // O objecto global `Qt` — formatação, cores e enums, que aplicações usam a toda a hora e os
 // estilos do Qt quase não tocam. Nada aqui depende do relógio: uma data fixa, para o valor ser o
 // mesmo em qualquer corrida.

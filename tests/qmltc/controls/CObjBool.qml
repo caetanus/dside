@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 import QtQuick.Templates as T
 // An OBJECT-valued property used as a TRUTH VALUE (`control.indicator ? ... : ...`), which Qt's

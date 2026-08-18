@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Same, with a D base: an inherited @Property is a real field, so the alias reads it directly.
 import AppTypes 1.0
 Backend {

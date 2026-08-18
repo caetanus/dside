@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // An object-or-NULL ternary on a DECLARED property, which is the shape Qt's Basic ComboBox writes
 // for its highlight rectangle:
 //   property Item highlightedItem: parent ? parent.itemAtIndex(control.highlightedIndex) : null

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import App 1.0
 import QtQml 2.15
 // Two distinct registered D types instantiated together — distinct runtime metaobjects, distinct

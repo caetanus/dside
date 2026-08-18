@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // The DEFINITION half of a spliced local type, and it names itself `control` — which is what Qt's
 // own style files do (`Menu.qml`, `Button.qml`, every one of them writes `id: control`).

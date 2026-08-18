@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // PROPERTIES WHOSE TYPE IS ONLY KNOWN AT RUN TIME — `var` holding an object, a map, and a member
 // read by a name computed at run time. This is where mechanism 2 (QVariant) and mechanism 4
 // (delegation) are decided, and it is ordinary application code rather than an edge case.

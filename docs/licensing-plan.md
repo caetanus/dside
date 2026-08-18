@@ -1,13 +1,20 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # Licensing plan
 
 Status: **adopted — implementation in progress**  
 Adopted: **2026-08-13**, by the copyright holder, who asked for this plan to be applied.  
-Last reviewed: **2026-08-13**
+Last reviewed: **2026-08-17**
 
 Progress against the phases is tracked in the checkboxes below; each is ticked only when its exit
 criterion is met and verifiable, not when the work is started. Two phases cannot be completed by
-implementation alone and say so where they appear: Phase 1 needs decisions about test corpora that
-belong to the copyright holder, and Phase 7 is a review by counsel.
+implementation alone and say so where they appear: Phase 7 is a review by counsel. Phase 1 was in
+that list until 2026-08-14 — it needed a decision about test corpora — and it is no longer: the
+corpora were resolved by establishing their provenance, and what is left inside it is a preference
+about vendoring rather than a blocker. It is recorded that way in Phase 1 itself, not summarised
+away here.
 
 This document is the licensing and distribution plan for `qt-dlang-gen`, its generated Qt bindings
 for D, its runtime, and its tools. It records the intended result, the work required before the
@@ -235,7 +242,7 @@ LICENSES/LGPL-2.1-only.txt      # needed by profiles such as WebEngine where app
 LICENSES/BSD-3-Clause.txt       # Qt examples or retained material, if applicable
 LICENSES/Apache-2.0.txt         # third-party payload, if applicable
 LICENSES/LLVM-exception.txt     # libclang distribution, if applicable
-REUSE.toml
+<name>.license sidecars (no path map — see Phase 2)
 CONTRIBUTING.md
 docs/licensing.md               # concise user-facing policy after this plan is executed  [DONE]
 docs/distributing-qt.md         # instructions for application distributors
@@ -257,7 +264,7 @@ SPDX-License-Identifier: BSL-1.0
 ```
 
 Use the comment syntax of the file format. Files that cannot carry comments must be covered by
-`REUSE.toml` or sidecar `.license` files. Do not overwrite upstream headers; add accurate REUSE
+a `<name>.license` sidecar. Do not overwrite upstream headers; add accurate
 metadata only when it does not contradict upstream notices.
 
 The repository currently has one author in Git history. Before adopting the license, confirm that
@@ -421,27 +428,49 @@ The following gates must be mandatory for a release:
 - [x] Confirm BSL-1.0 as the project license.
 - [ ] Confirm ownership of all project-authored commits.
 - [x] Decide whether documentation is also BSL-1.0; this plan recommends yes. **Yes** — docs are
-      covered by REUSE.toml.
+      covered by its own `.license` sidecar.
 - [x] Record the decision in a dated commit.
 
 **Exit criterion:** the copyright holder has explicitly approved the license and scope.
 
 ### Phase 1 — remove publication blockers
 
-- [ ] Replace or remove the 47 unprovenanced UIC files.
-- [ ] Account for the 13 UIC files with legacy Qt headers.
+- [x] Replace or remove the 47 unprovenanced UIC files — **resolved by establishing provenance
+      instead of removing them** (2026-08-14). All 60 are byte-identical to
+      `tests/auto/uic/baseline/` in `github.com:qt/qt` at
+      `0a2f2382541424726168804be2c90b91381608c6` (v4.8.7-3); each carries a `.license` sidecar with
+      repository, revision, path, SHA-256 and the date of the check, and the terms are the ones
+      those files state. `LICENSES/` gained LGPL-2.1, LGPL-3.0 and GPL-3.0 because the repository
+      now asserts them.
+- [x] Account for the 13 UIC files with legacy Qt headers — same measurement; the 13 are the subset
+      whose headers survived, and they carry the same expression as the other 47.
 - [ ] Remove vendored `tests/qmltc/cpptypes` upstream sources from distributable Git content.
+      **Still open, and it is a decision for the copyright holder**: the 19 upstream files are
+      GPL-3.0-only and the repository now ships that text, so the transmission is lawful; whether to
+      keep vendoring them is a preference, not a blocker.
 - [ ] Add a pinned, checksum-verified external-corpus test path.
-- [ ] Update `THIRD-PARTY.md` from investigation notes to a complete inventory.
+- [x] Update `THIRD-PARTY.md` from investigation notes to a complete inventory — it now records the
+      three populations of `cpptypes` counted file by file, and the established `.ui` provenance.
 
-**Exit criterion:** every tracked file has known ownership and applicable terms.
+**Exit criterion:** every tracked file has known ownership and applicable terms. **MET on
+2026-08-14**, and enforced rather than asserted: `license-publishable` is a mandatory gate and
+reports 567 tracked files with zero unestablished terms. What remains open above is not a licensing
+blocker.
 
 ### Phase 2 — establish license metadata
 
-- [x] Add `LICENSE`, required `LICENSES/` texts, and `REUSE.toml`. Only BSL-1.0 is present: the
+- [x] Add `LICENSE` and the required `LICENSES/` texts. BSL-1.0, GPL-3.0-only, LGPL-2.1-only,
+      LGPL-3.0-only and the LicenseRef-Qt-Commercial record are present — every expression this
+      repository asserts now travels with it. Originally this line also added `REUSE.toml`; the
       plan says to add a license text only when something actually needs it, and the GPL-3.0-only
       material is covered by an SPDX expression, not by a copy of the text it never ships with.
-- [x] Add SPDX coverage to all project-authored files. 148 headers added; the rest is REUSE.toml.
+- [x] Add SPDX coverage to all project-authored files — IN the files. 270 further headers and 106
+      `<name>.license` sidecars (61 of them NOASSERTION) replaced `REUSE.toml`, which is deleted.
+      The map was not merely redundant: `override` gave The Qt Company 22 files written here,
+      first-match glob resolution licensed 47 unprovenanced `.ui` files as ours, a `case` list in
+      the gate covered 27 files the map never mentioned, and round 16 #8 showed a file could not
+      state the licence its own annotation gave it without turning the build red. A file answers
+      for itself now, and `license-coverage` refuses to run if the map comes back.
 - [x] Preserve upstream headers unchanged. 102 third-party files untouched, and `license-coverage`
       fails if one of them ever acquires ours.
 - [x] Add BSL-1.0 to every DUB manifest, including the one `tests/install.sh` writes.
@@ -449,7 +478,7 @@ The following gates must be mandatory for a release:
 
 **Exit criterion:** `reuse lint` passes from a clean checkout. **Not met as stated:** `reuse` is not
 installed here. `license-coverage` defers to it when present and otherwise runs the narrower check —
-every tracked file covered by a header or by REUSE.toml, and no third-party file carrying ours — and
+every tracked file answering for itself (own header, else its own tracked `.license` sidecar), and no third-party file carrying ours — and
 says which of the two it did. 545 files covered.
 
 ### Phase 3 — license generated and installed artifacts
@@ -459,9 +488,37 @@ says which of the two it did. 545 files covered.
       version, module list and spec, IN the file — a file travels alone, into bug reports and into
       other people's vendor directories.
 - [x] Copy license and notice files into installed packages (`LICENSE`, `LICENSES/`, `NOTICE`).
-- [ ] Validate both LDC and DMD packages after unpacking. **Not done:** the package gate
-      (`license-package`) is not written; `tests/install.sh` now copies LICENSE/LICENSES/NOTICE but
-      nothing yet unpacks the result and checks it.
+- [x] Validate the installed package. `license-package` reads the package rather than the tree:
+      LICENSE, `LICENSES/BSL-1.0.txt`, NOTICE naming Qt's terms, a `license` field in `dub.json`,
+      an SPDX header on every `.d` and a `// provenance:` line on every one that is not a verbatim
+      copy of a `runtime/` file, no `cpptypes`/corpus/validator/object/fixture, and no absolute
+      build path. Nine planted violations, nine distinct refusals — and, because those plantings
+      were deleted afterwards and the proof would otherwise live only in a transcript,
+      `license-package-probe` is a standing gap probe: it copies the real package, removes LICENSE,
+      requires the refusal, and deletes the broken copy while carrying the exit status past the
+      cleanup.
+      Attacking the gate itself found six more defects in it, all fixed: it swept only `.d` while
+      Phase 3 covers `.d` **and** `.cpp`; it used `grep -I`, which skips binaries by definition, so
+      the three shipped archives were unexaminable (measured clean today — zero occurrences, no `/`
+      in any member name, no debug sections — but nothing was enforcing it, and `-g` would bury the
+      builder's home directory where the check could not look); an absent package returned 0, the
+      "silently degrades" shape this repository condemns in writing; and — the worst — a cap of
+      three messages written as `[ n -le 3 ] && fail …` at the end of a loop body, which under
+      `set -e` KILLED the script: measured with five missing headers, it printed three and died, so
+      the corpus, absolute-path and licence-file checks never ran. The verdict was still 1, which is
+      why it looked fine.
+      It also found the `NOTICE` cross-reference: the Qt module list printed
+      `${qlibs_human:-see qtd-build.txt}`, `qlibs_human` was defined nowhere in the repository, and
+      `qtd-build.txt` did not list the modules either — a dead reference in the one field that
+      decides whether the reader's obligation is LGPL or GPL. Both files now carry the list.
+      It found two real defects on its first runs, both invisible from the source tree:
+      **(a)** the install guard listed only `gen.stamp` in its `newerThan`, so editing
+      `install.sh` re-ran the command and the command then exited 0 — the package on disk was two
+      days stale and had no licence in it while every tree-level gate was green;
+      **(b)** `qtd-build.txt` shipped `generated-from=/home/<user>/lab/...`, the absolute path of the
+      build machine, now recorded relative to the repository.
+      The one bullet not covered: this validates the LDC/DMD package as **installed**, which is what
+      `dub-consumer-ldc2`/`-dmd` then consume; there is no separate tarball round-trip.
 - [x] Document the generated-output grant and input boundary (`docs/licensing.md`).
 
 **Exit criterion:** a consumer can determine the license and provenance using only the installed

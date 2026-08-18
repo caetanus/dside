@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The MIRROR IMAGE of the per-item context, and the reason a required property cannot be filled
 // from it. Measured, both halves in this one file:
 //

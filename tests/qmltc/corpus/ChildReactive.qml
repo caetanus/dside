@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQml 2.15
 // Phase-6: mutate a CHILD property and see the child's binding AND a live child-alias update.
 QtObject {

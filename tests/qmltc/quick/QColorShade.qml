@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `Qt.darker` / `Qt.lighter`: the two QML globals with no QObject behind them, so nothing in the
 // meta channel reaches them and the runtime has to implement what the engine implements. Qt's own
 // Fusion style computes most of its palette this way, and every colour that feeds it — declared

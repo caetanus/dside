@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // ONE DOCUMENT INSTANTIATING ANOTHER from the same directory, reading its declared properties back
 // and binding one of its own to them. The type is resolved by DIRECTORY, not by a module import,
 // which is how application code is written and how none of Qt's styles is.

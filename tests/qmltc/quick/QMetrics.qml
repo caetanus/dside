@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A QObject-derived QML type held in a PROPERTY. The child must be built as its BOUND type, not
 // as a bare @QObject — otherwise setting a member creates a Qt dynamic property and the object is
 // not really a FontMetrics at all. `bold` is set here; `font` and the metrics it derives are the

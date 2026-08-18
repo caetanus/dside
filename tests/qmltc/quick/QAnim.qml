@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // TIME as its own axis. `NumberAnimation on v` is a property VALUE SOURCE: the object is built and
 // then handed the property it drives (QQmlPropertyValueSource — one generic Qt interface that

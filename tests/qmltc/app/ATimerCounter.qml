@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A TIMER THAT HAS ALREADY FIRED. `repeat`/`interval`/`running` plus a handler mutating state is
 // the most ordinary piece of application machinery there is, and nothing in the styles corpus has
 // one. The interval is short and the comparison happens after the scene has run, so both sides

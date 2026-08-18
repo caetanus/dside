@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `Connections`, the explicit form of a signal handler, on a target chosen by a property rather
 // than written in place. Applications use it whenever the emitter is not a child of the handler.
 import QtQuick

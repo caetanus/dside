@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // A value-typed property copied through the meta-object without the generator knowing the type:
 // `color` is a QColor and `tint` is a declared `property color`. The QVariant carries the type and

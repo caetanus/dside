@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The delegated binding on a VIEW-CREATED item, measured by the FRAME.
 //
 // This is the half no property differential can reach. An item a view creates has no static object

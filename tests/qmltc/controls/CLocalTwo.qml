@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // O gémeo: mesmos NOMES (root, box, tag, origin, inner), valores e tipos diferentes.
 import QtQuick
 Rectangle {

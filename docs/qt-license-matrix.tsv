@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
+# Qt module licence matrix — the ALLOWLIST a product build is checked against.
+#
+# Round 15 #2 killed the previous design and was right to. A denylist of GPL-only module names
+# cannot be correct: it only refuses what someone remembered to write down, it ages out with every
+# Qt minor, and the version installed here does not even contain six of the names it carried
+# (Qt6Canvas3D, Qt6Mqtt, Qt6VirtualKeyboard, Qt6HttpServer, Qt6Grpc, Qt6Coap — measured with
+# pkg-config on 2026-08-13). A module invented tomorrow passes a denylist by existing.
+#
+# So the polarity is inverted. This file lists the modules whose open-source licence is ESTABLISHED,
+# with the source of that statement. A product spec may request a module only if it is listed here
+# as lgpl. Anything else — GPL-only, unknown, newly introduced, misspelled — is refused, and the
+# refusal names the module rather than a symbol namespace.
+#
+# `verified-for` is load-bearing: the gate REFUSES to judge a Qt version that is not listed, instead
+# of applying another version's matrix. Adding a version means re-reading Qt's licensing page and
+# the SBOM for that exact release, then recording it here. That is the work; this file is only where
+# the answer is written down.
+#
+# Columns: release<TAB>module<TAB>licence<TAB>source
+#   licence: lgpl      — LGPLv3 for open-source users; may be linked into a BSL-1.0 product
+#            gpl-only  — GPLv3 only for open-source users; may be used by tests, never by a product
+#   Anything absent is neither: it is UNKNOWN, and unknown is refused.
+#
+# KEYED BY (RELEASE, MODULE), not by module alone (round 18 #2). With module-only rows, adding a
+# `verified-for 6.4.2` line made 6.4.2 silently inherit every decision written while reading 6.11.1 —
+# there was no mechanical link between a revision and the answers taken from it. Now a row answers
+# for exactly the release it was read against, and an artifact built with another one is refused
+# even when a module of the same name is listed.
+#
+# NOTE ON Qt 5: the rows below say 5.15.17 because that is the release whose licensing was read.
+# This machine builds its Qt5 parity archives with 5.15.19, which is NOT recorded — so the gate
+# refuses those artifacts, and that refusal is the honest state rather than a gap to paper over by
+# renaming the rows. Establishing 5.15.19 means reading Qt's licensing for 5.15.19.
+
+# Keyed by the EXACT release, not the minor: round 16 #6 measured the gate claiming "Qt 6.11.1 is
+# verified" from a row that said 6.11. Adding a patch release means re-reading Qt's licensing page
+# and SBOM for it — which is the work; this line is only where the answer is written down.
+verified-for	6.11.1	qt.io/licensing + SBOM read 2026-08-14 for this exact release
+verified-for	5.15.17	qt.io/licensing read 2026-08-14; Qt5 parity builds only
+
+# --- the modules this project's specs actually request --------------------------------------------
+6.11.1	Qt6Core	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Gui	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Widgets	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Network	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Qml	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Quick	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6QuickControls2	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6QuickTemplates2	lgpl	qt.io/licensing — ships with Qt Quick Controls, same terms
+6.11.1	Qt6UiTools	lgpl	qt.io/licensing — Qt Add-On under LGPLv3 for open-source use
+# These two were found BY THIS GATE, on its first run: the binding links them and nothing had ever
+# established their terms. They are parts of Qt Declarative and Qt Quick Controls rather than
+# separate products, and they carry those modules' terms — which is a statement worth writing down
+# rather than assuming, because "it comes with something I already checked" is how an unexamined
+# dependency enters a product.
+6.11.1	Qt6QmlModels	lgpl	qt.io/licensing — part of Qt Declarative (qtdeclarative), LGPLv3 for open-source use
+6.11.1	Qt6QuickControls2Impl	lgpl	qt.io/licensing — ships with Qt Quick Controls (qtdeclarative), same terms
+6.11.1	Qt6Test	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Concurrent	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6DBus	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6OpenGL	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6OpenGLWidgets	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6PrintSupport	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Sql	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+6.11.1	Qt6Svg	lgpl	qt.io/licensing — Qt Add-On under LGPLv3 for open-source use
+6.11.1	Qt6Xml	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+
+# Qt WebEngine is LGPLv3 as a Qt module, and that is NOT the whole answer: it embeds Chromium and a
+# large third-party stack with its own terms, including an ffmpeg configuration that decides whether
+# GPL code is being shipped. docs/distributing-qt.md says so; listing it here permits the link, not
+# the reader's compliance.
+6.11.1	Qt6WebEngineCore	lgpl	qt.io/licensing — LGPLv3; third-party attribution list applies separately
+6.11.1	Qt6WebEngineWidgets	lgpl	qt.io/licensing — LGPLv3; third-party attribution list applies separately
+6.11.1	Qt6WebEngineQuick	lgpl	qt.io/licensing — LGPLv3; third-party attribution list applies separately
+# FOUND BY THE EXPANSION, 2026-08-17. `pkg-config --libs Qt6WebEngineCore` returns nine libraries;
+# these two arrive transitively and were in no row, which is round 18 #1 exactly: a module that
+# entered through ordinary dependency resolution was invisible to an allowlist that only ever saw
+# what a spec named. Both are ordinary Qt add-ons under the open-source licensing that covers the
+# add-on set; the source below is what was read, and it is weaker than a per-module SBOM entry —
+# said here rather than dressed up, because the previous row for Qt5 was nearly written with a
+# release nobody had read.
+6.11.1	Qt6WebChannel	lgpl	qt.io/licensing — Qt Add-On, LGPLv3 for open-source use; arrives transitively with Qt WebEngine
+6.11.1	Qt6Positioning	lgpl	qt.io/licensing — Qt Add-On, LGPLv3 for open-source use; arrives transitively with Qt WebEngine
+
+# --- named GPL-only modules ----------------------------------------------------------------------
+# Not the enforcement mechanism — the allowlist above is. These rows exist so the refusal can say
+# WHY rather than just "not established", for the cases this project has actually met.
+6.11.1	Qt6QmlCompiler	gpl-only	qt.io/licensing — Qt Qml Compiler (qmlsc), GPLv3 for open-source use
+6.11.1	Qt6Charts	gpl-only	qt.io/licensing — GPLv3 for open-source use
+6.11.1	Qt6DataVisualization	gpl-only	qt.io/licensing — GPLv3 for open-source use
+6.11.1	Qt6VirtualKeyboard	gpl-only	qt.io/licensing — GPLv3 for open-source use
+
+# --- Qt 5, for the parity builds ------------------------------------------------------------------
+5.15.17	Qt5Core	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+5.15.17	Qt5Gui	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+5.15.17	Qt5Widgets	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+5.15.17	Qt5Qml	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+5.15.17	Qt5Quick	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
+5.15.17	Qt5UiTools	lgpl	qt.io/licensing — Qt Add-On under LGPLv3 for open-source use
+
+# Not a Qt module; it is the C++ runtime the shims link against, and it is listed so the product
+# check can walk a link line without special-casing it.
+any	stdc++	lgpl	GCC Runtime Library Exception — not a Qt module

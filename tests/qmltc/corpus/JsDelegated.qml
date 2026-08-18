@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A binding the compiler REFUSES, handed to the QML ENGINE instead of dropped -- on BOTH Qt5 and
 // Qt6, which is why it lives in this corpus and not only in the QtQuick one.
 //

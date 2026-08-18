@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // QML is dynamically typed through a declared object property, and Qt's own Controls rely on it:
 // Fusion's CheckIndicator declares `property T.AbstractButton control` and then reads
 // `control.checkState` — a property AbstractButton does NOT have and the CheckBox actually put

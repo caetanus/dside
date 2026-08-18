@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // A ternary BETWEEN two value-typed reads: `color: control.down ? control.palette.light : ...` is
 // how Qt's Controls pick a colour. Neither branch can become a D expression — there is no D type

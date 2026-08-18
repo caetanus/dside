@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # generator-d — the generator, in D
 
 The Qt binding generator: native D on the **libclang C API** (`clang_c.d`, no

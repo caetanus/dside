@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Inherited properties feed a chain of derived bindings, and a string property of the D base
 // is concatenated — exercising both scalar kinds through the base type.
 import AppTypes 1.0

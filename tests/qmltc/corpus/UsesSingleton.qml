@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Reading a QML singleton's properties. qmltc-d compiles the singleton as its own class plus a
 // lazy one-instance accessor, so `SingletonFixture.integerProperty` is an ordinary read.
 import QtQml 2.15

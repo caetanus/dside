@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # qt-dlang-gen
 
 A **binding generator** for Qt in D. Hand-written D/Qt wrappers die because nobody
@@ -89,9 +93,16 @@ the right archive per compiler. `dub build --compiler=ldc2` and `--compiler=dmd`
 same install. The package records the Qt it was generated against and the generator commit
 (`qtd-build.txt`), and the consumer refuses a mismatch: a binding built from 6.11's headers and
 linked against another minor mangles the same symbols, so it would surface as a crash inside Qt
-rather than a link error. It is **not published anywhere** — the path is local. Two things stand between it and a
-registry, and only one of them is distribution: there is also **no licence** declared anywhere in
-this repository, which the registry requires and which is the author's call rather than a defect.
+rather than a link error. It is **not published anywhere** — the path is local. The licence question, which used to stand
+next to distribution here, is answered: the project is **BSL-1.0** (see `LICENSE` and
+`docs/licensing.md`), every tracked file states its own terms or carries a `.license` sidecar, and
+the generated package declares `"license": "BSL-1.0"`. What still blocks a public source archive is
+narrower and measurable: `sh tests/license-coverage.sh --publish` names the files whose terms are
+not yet established. That list is now EMPTY — the 60-file `.ui` corpus had its provenance
+established against `qt/qt@0a2f238254` and `singletontype.cpp` was rewritten here, so the gate
+passes. What remains before a public push is engineering, not licensing: CI has never been green on
+a real runner, and the full matrix fails intermittently under parallelism (see
+`matrix-intermittency-under-concurrency` in tests/expected-fails.json).
 
 **Or by hand**, which is what the package expands to:
 
@@ -210,7 +221,7 @@ level does not allow is not compiled with it — it goes to the engine whole.
 
 **`-O3` is the default**, and that is a decision rather than the largest number available: it is
 the only level whose figure below was verified by rendering the result and comparing every property
-against the engine, over both corpora, instead of being assumed. `-O1` compiles 111 of 329 and
+against the engine, over both corpora, instead of being assumed. `-O1` compiles 110 of 329 and
 proves it without a render; `-Ox` waives the check and is experimental by definition.
 
 `-O3` is not a compiler flag but a pipeline: the compiler cannot tell whether something behaves
@@ -224,16 +235,27 @@ different jobs).
 **What each level actually compiles**, over Qt's five Controls styles (a document not compiled
 at a level is handed to the engine there, and still renders correctly):
 
-| style | documents | `-O1` | `-O2` | `-O3` |
-|---|---:|---:|---:|---:|
-| Basic | 70 | 39 | 39 | 70 |
-| Fusion | 70 | 38 | 38 | 70 |
-| Universal | 66 | 27 | 27 | 66 |
-| Imagine | 56 | 0 | 0 | 56 |
-| Material | 67 | 7 | 7 | 67 |
-| **total** | **329** | **111** | **111** | **329** |
+| style | documents | `-O1` | `-O2` | `-O3` compiled | demoted to the engine | unjudgeable |
+|---|---:|---:|---:|---:|---:|---:|
+| Basic | 70 | 39 | 39 | 54 | 5 | 11 |
+| Fusion | 70 | 37 | 37 | 54 | 3 | 13 |
+| Universal | 66 | 27 | 27 | 51 | 4 | 11 |
+| Imagine | 56 | 0 | 0 | 41 | 11 | 4 |
+| Material | 67 | 7 | 7 | 48 | 13 | 6 |
+| **total** | **329** | **110** | **110** | **248** | **36** | **45** |
 
-The middle rung currently buys **nothing**: `-O1` and `-O2` compile the same 111 documents.
+The `-O3` column used to read 329 — every document — under a heading that says "what each level
+actually compiles". That was the count of documents HANDLED: at `-O3` the pipeline attempts all of
+them, then demotes 36 to the engine because they behave differently, and cannot judge 45 at all.
+What it compiles AND proves equivalent is 248. The three columns are now separate because merging
+them turned "handed over safely" into "compiled", which is the distinction this whole ladder exists
+to make.
+
+**`unjudgeable` is not a synonym for broken**: those documents render, and the judge has no way to
+compare them (no object to dump, no frame to diff). They are counted apart from the demotions
+precisely so that neither number can borrow credibility from the other.
+
+The middle rung currently buys **nothing**: `-O1` and `-O2` compile the same 110 documents.
 Everything that needs weak typing in this corpus also needs containment, delegation or has a
 member the compiler skips, so it lands at `-O3` regardless. The scale has three rungs and two of
 them coincide — stated because it is a real property of the corpus, not a defect to hide.
@@ -271,8 +293,8 @@ normal intermediate state, which is what the gate below measures.
 
 **The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every
 document the engine can draw standalone behaves **identically** to it: same frame, byte for
-byte, and the same value for every property of every named object. 245 of them reach that as
-compiled D; 49 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
+byte, and the same value for every property of every named object. 248 of them reach that as
+compiled D; 36 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
 **none is unplaced**.
 
 | style | documents | compiled | at `-O0` | unjudgeable | unplaced |
@@ -280,9 +302,15 @@ compiled D; 49 reach it as `-O0`, where Qt builds the document; 45 have no frame
 | Basic | 70 | 54 | 5 | 11 | 0 |
 | Fusion | 70 | 54 | 3 | 13 | 0 |
 | Universal | 66 | 51 | 4 | 11 | 0 |
-| Imagine | 56 | 40 | 12 | 4 | 0 |
-| Material | 67 | 46 | 15 | 6 | 0 |
-| **total** | **329** | **245** | **39** | **45** | **0** |
+| Imagine | 56 | 41 | 11 | 4 | 0 |
+| Material | 67 | 48 | 13 | 6 | 0 |
+| **total** | **329** | **248** | **36** | **45** | **0** |
+
+<!-- Measured 2026-08-14 from the o3 gate's own output, style by style. This table read 245/39 and
+     the paragraph above it read "49 reach it as -O0" — stale by three documents in the table and
+     wrong by ten in the prose, disagreeing with each other on the same page. The numbers come from
+     one place now: `qmltc-o3-gate-<style>` prints `compiled= demoted= unjudgeable=` and they sum
+     to the style's document count. -->
 
 Both axes are required, and demoting on either is what makes the number mean something. The
 frame alone placed 258 documents; 23 of those disagreed on a property while the frame matched,
@@ -322,7 +350,7 @@ application *consuming* Controls rather than defining them.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls | 329 | 245 | 39 | 45 | 0 |
+| Qt's Controls | 329 | 248 | 36 | 45 | 0 |
 | application-shaped | 18 | 7 | 11 | 0 | **0** |
 
 **Seven of eighteen** is the honest number, and it is the point rather than an embarrassment: this

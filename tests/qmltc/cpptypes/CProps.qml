@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // TypeWithProperties (also verbatim from the corpus) mixes double/QString/int properties, with
 // differently-named notify signals (bChanged, dSignal) — the registry supplies both the types
 // and the notify names, so no <prop>Changed spelling is assumed.

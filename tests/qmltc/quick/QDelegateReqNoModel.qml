@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The boundary the engine draws around the per-item context, in the case where it takes it AWAY.
 //
 // Declaring required properties turns the context injection off. This delegate declares one -- and

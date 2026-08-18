@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick.Templates as T
 // A QUALIFIED import: Qt's own QtQuick.Controls are written `import QtQuick.Templates as T` and
 // rooted `T.Button`. The qualifier names the import, not a scope of the type — without stripping

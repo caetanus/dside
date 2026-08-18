@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # lupdate-d
 
 A **D-aware `lupdate`** (a PySide-style side-car): it extracts translatable strings and

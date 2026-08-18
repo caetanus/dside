@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A SIBLING's id. QML resolves an id anywhere in its component, so a child reads the child next to
 // it by name — Qt's Fusion SwitchIndicator sizes its groove from `handle.x + handle.width`, and its
 // TabButton, ProgressBar and Slider all do the same thing. None of it compiled: a name that was not

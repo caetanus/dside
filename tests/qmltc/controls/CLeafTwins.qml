@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 import QtQuick.Templates as T
 // TWO DEEP READS OF THE SAME PROPERTY NAME, through DIFFERENT owners, inside ONE binding.

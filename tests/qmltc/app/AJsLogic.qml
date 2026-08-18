@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // REAL JAVASCRIPT: a for loop, an array, an object literal, string building. The styles corpus has
 // arithmetic and ternaries and almost nothing else, so this is the shape that decides whether the
 // static translator holds up or the expression goes to the engine — either is a pass, but the

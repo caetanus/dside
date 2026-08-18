@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A METHOD CALL whose result is an OBJECT. Text cannot carry one -- the invoke channel's usual
 // return is a string that QMetaType converts, and no string stands for an item -- so such a call
 // could not be a value at all and the whole property was refused, declaration included.

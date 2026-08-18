@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQml 2.15
 // Phase-10: a signal WITH parameters; the handler reads the argument.
 QtObject {

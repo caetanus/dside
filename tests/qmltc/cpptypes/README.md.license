@@ -1,0 +1,3 @@
+SPDX-FileCopyrightText: 2021 The Qt Company Ltd.
+SPDX-License-Identifier: LicenseRef-Qt-Commercial OR GPL-3.0-only
+SPDX-FileComment: upstream README of the vendored qmltc cpptypes corpus; the expression is the one it quotes for the sources beside it

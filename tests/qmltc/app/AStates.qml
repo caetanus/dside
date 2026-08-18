@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // STATES AND A TRANSITION. A style declares states rarely and an application constantly. The
 // document settles in a named state at startup, so the comparison is about WHERE the property
 // changes land, not about animation timing.

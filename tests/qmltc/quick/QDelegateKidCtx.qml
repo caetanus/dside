@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A delegate's CHILD reads the per-item context. `index` and `modelData` belong to no object the
 // document names — the view publishes them on the per-item QQmlContext — and only the delegate's
 // ROOT was given that context: its children got the document's, where those names do not exist.

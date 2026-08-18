@@ -41,7 +41,10 @@ SPDX-FileCopyrightText: <year> <your name>
 SPDX-License-Identifier: BSL-1.0
 ```
 
-Files that cannot carry comments are covered by `REUSE.toml` instead. Never edit an upstream header
+Files whose format has no comment syntax carry a `<name>.license` sidecar next to them instead —
+REUSE's own mechanism, and the only alternative allowed here. There is no path map: a table of
+globs is a second answer about a file that already answers for itself, and four of this audit's
+licensing defects were properties of that table rather than of any file. Never edit an upstream header
 to match ours — where upstream stated its terms, that statement is the truth.
 
 ## Working in this repository

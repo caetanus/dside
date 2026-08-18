@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A binding the compiler REFUSES, handed to the QML ENGINE instead of dropped.
 //
 // A member read by a name known only at RUN TIME is the shape that has no D translation at all:

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A COMPARISON whose operand is a model role. A comparison hands its operands no type -- what two
 // values are compared as is their own business -- and a role is read through the meta-object, which
 // needs the D type named at the call site. So `model.index === 1` gave the read nothing to be, and

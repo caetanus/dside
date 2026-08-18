@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `property var` holds a QVariant: QML does not declare a static type for it. The value here is
 // a literal, so the type IS known at compile time — which is the case worth compiling.
 //

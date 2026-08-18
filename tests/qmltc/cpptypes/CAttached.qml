@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // ATTACHED properties: `TestType.attachedCount` addresses the object TestType attaches to us.
 // It is reached through Qt's QML type REGISTRY by name, so nothing about the type is hard-coded —
 // and through qmlAttachedPropertiesObject, which CACHES per (object, type): the raw attach

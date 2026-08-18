@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # qt-dlang-gen — Feature Summary
 
 Pure-D Qt bindings generated as `extern(C++)` (no C++ wrapper shim). The generator

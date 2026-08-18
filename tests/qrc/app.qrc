@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 <RCC>
   <qresource prefix="/app">
     <file>icons/logo.png</file>

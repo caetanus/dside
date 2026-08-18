@@ -1,3 +1,7 @@
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+-->
 # Test suite
 
 The binding is validated by a target matrix run through reggae (`./build --list`,

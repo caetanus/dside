@@ -24,6 +24,12 @@
 #   expected-fails-run.sh <expected-fails.json> <build>
 set -eu
 JSON="$1"; BUILD="$2"
+# ...and the nested builds inherit the caller's threading. `./build --single` serialises the top
+# level and these invocations did not see it, so the one phase that launches builds of its own kept
+# running them in parallel — which mattered on 2026-08-14, when a serial matrix was used to decide
+# whether an intermittent failure could be deterministic and this phase quietly stayed parallel.
+# An experiment that does not cover the thing it is measuring is worth what it costs to discover.
+BUILD_FLAGS="${QTD_BUILD_FLAGS:-}"
 
 targets=$(python3 - "$JSON" <<'PY'
 import json, sys
@@ -58,7 +64,7 @@ echo "$targets" | while IFS="	" read -r dir id tgt want_exit want_match; do
     # `set -e` would kill the script on the very failure this branch exists to inspect, so the
     # substitution is part of an `||` list. The first version aborted silently here — a runner that
     # dies on the expected failure reports nothing at all, which looked like "no output, rc=1".
-    out=$("$BUILD" "$tgt" 2>&1) && rc=0 || rc=$?
+    out=$("$BUILD" $BUILD_FLAGS "$tgt" 2>&1) && rc=0 || rc=$?
     if [ "$rc" -eq 0 ]; then
       printf 'expected-fails-run: %s PASSES — it is the GAP probe for `%s`, which claims this does not work. Remove the entry or narrow it.\n' "$tgt" "$id" >&2
       bad=$((bad + 1))
@@ -69,7 +75,7 @@ echo "$targets" | while IFS="	" read -r dir id tgt want_exit want_match; do
       printf 'expected-fails-run: %s failed as contracted but its diagnostic does not contain `%s` — `%s` describes a different failure.\n' "$tgt" "$want_match" "$id" >&2
       bad=$((bad + 1))
     fi
-  elif ! "$BUILD" "$tgt" >/dev/null 2>&1; then
+  elif ! "$BUILD" $BUILD_FLAGS "$tgt" >/dev/null 2>&1; then
     printf 'expected-fails-run: %s FAILED — it is the probe for `%s`, so that entry now describes a protection that is not there\n' \
            "$tgt" "$id" >&2
     bad=$((bad + 1))

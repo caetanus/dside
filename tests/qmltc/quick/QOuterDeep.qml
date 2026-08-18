@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // The root's id read from TWO levels down, through an ANONYMOUS intermediate. `__outer` is always
 // the IMMEDIATE parent, so a farther id is reached by hopping (`__outer.__outer.gap`) and the

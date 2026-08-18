@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A declared object property whose value is the ABSENCE of an object. The property still exists --
 // that is the whole point: the engine reports it as `<null>`, and whoever instantiates the type
 // writes to it. Refused, the declaration went out with the value and the property was missing

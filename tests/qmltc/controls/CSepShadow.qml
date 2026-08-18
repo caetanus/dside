@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // TWO children of the same local type, and that type's root arrived QUALIFIED (`T.MenuSeparator` in
 // MenuSeparator.qml next to this file, which shadows the registry type exactly as every Qt style

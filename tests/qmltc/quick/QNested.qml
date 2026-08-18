@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick
 // (b): a QtQuick Item with a default-property child Item -> nested D subclasses of QQuickItem.
 Item {

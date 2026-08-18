@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A child reading `parent.<prop>` — the centring idiom in Qt's own Controls
 // (`x: (parent.width - width) / 2`). QQuickItem exposes `parent` as a Q_PROPERTY, so the OBJECT is
 // fetched through the meta-object at runtime and nothing static is assumed about it; only the

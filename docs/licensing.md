@@ -59,21 +59,45 @@ exact release are the source of truth, and every Qt minor has to be checked agai
 
 ## Third-party material in this repository
 
-`THIRD-PARTY.md` is the inventory and `REUSE.toml` is the machine-readable form. Two things in it
+`THIRD-PARTY.md` is the inventory. The machine-readable form is the files themselves: each states
+its own SPDX expression, or carries a `<name>.license` sidecar when its format cannot. Two things
 are worth knowing before you clone:
 
-- `tests/qmltc/cpptypes/` — 42 files copied verbatim from Qt's own qmltc test corpus,
-  **GPL-3.0-only**. Used by tests, excluded from every installed artifact.
-- `tests/uic/corpus/` — 60 `.ui` files, of which **47 have no recorded provenance at all**. They are
-  marked `NOASSERTION`, which is not a licence: it is the honest statement that their terms are not
-  established. Removing or replacing them is Phase 1 of the licensing plan and is a precondition for
-  publication.
+- `tests/qmltc/cpptypes/` — 42 files, and **not one population**. Counted file by file: 19 are
+  Qt's, under `LicenseRef-Qt-Commercial OR GPL-3.0-only` as their own headers state; 22 are `C*.qml`
+  and `C*.set` fixtures written HERE to drive those types, under BSL-1.0; and
+  `singletontype.cpp` is three lines written here against Qt's declaration. `LICENSES/GPL-3.0-only.txt`
+  travels with the repository, because asserting a licence and not shipping its text is what GPLv3 §4
+  forbids.
+- `tests/uic/corpus/` — 60 `.ui` files, **provenance established 2026-08-14**: every one is
+  byte-identical to `tests/auto/uic/baseline/` in `github.com:qt/qt` at revision
+  `0a2f2382541424726168804be2c90b91381608c6` (v4.8.7-3), and each carries a `.license` sidecar with
+  the repository, revision, path, SHA-256 and the date the equality was checked. Their terms are the
+  ones those files declare: `LicenseRef-Qt-Commercial OR LGPL-2.1-only OR LGPL-3.0-only OR
+  GPL-3.0-only`, and all four texts are in `LICENSES/`.
+
+There is **no `NOASSERTION` left in the tree**: `sh tests/license-coverage.sh --publish` passes, and
+it is a mandatory gate rather than a documented aspiration. What still blocks a public release is
+engineering — CI has never been green on a real runner — and the Qt5 parity archives are built with
+a release the licence matrix does not record (`qt5-parity-release-not-audited` in
+`tests/expected-fails.json`).
 
 Neither reaches an installed package. That is checked, not asserted.
 
 ## Status
 
-`docs/licensing-plan.md` is the full plan, its phases and its release checklist. As of 2026-08-13 the
-decision is adopted and the metadata is in place; publication is still blocked by the unprovenanced
-`.ui` corpus, and the first release has not been reviewed by counsel. This document describes the
-policy, not a completed compliance review.
+`docs/licensing-plan.md` is the full plan, its phases and its release checklist. As of **2026-08-17**
+the decision is adopted, the metadata is in place, and `license-publishable` — the gate that answers
+"could this tree be published?" — passes with zero files whose terms are unestablished. That is a
+change of state from the 2026-08-13 wording this paragraph used to carry, which said publication was
+blocked by the `.ui` corpus; that corpus now has per-file provenance.
+
+What is NOT finished, stated so this section cannot drift into a clean bill of health again:
+
+- the first release has not been reviewed by counsel;
+- CI has never been green on a real runner, and the Qt release it uses is not one this project has
+  audited;
+- the Qt5 parity archives are built with 5.15.19 while the matrix records 5.15.17
+  (`qt5-parity-release-not-audited`).
+
+This document describes the policy and the gates that enforce it, not a completed compliance review.

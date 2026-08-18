@@ -41,7 +41,9 @@ output refers to. Each generated file carries this statement in its own header.
 THIRD-PARTY MATERIAL PRESENT IN THIS REPOSITORY
 -----------------------------------------------
 
-See THIRD-PARTY.md for the inventory, and REUSE.toml for the machine-readable
-per-path license expressions. Some of it is GPL-3.0-only and is used only by
+See THIRD-PARTY.md for the inventory. The machine-readable form is the files
+themselves: each states its own SPDX expression, or carries a `<name>.license`
+sidecar where its format has no comment syntax. There is no path map — a table
+of globs was a second answer about files that already answer for themselves. Some of it is GPL-3.0-only and is used only by
 tests; it is excluded from every installed and released artifact, and a build
 gate enforces that exclusion rather than a promise in prose.

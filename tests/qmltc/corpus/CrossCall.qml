@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Calling a method on ANOTHER object through its id, and a Connections whose target is that
 // object rather than the enclosing one — the real shape of Connections.
 import QtQml 2.15

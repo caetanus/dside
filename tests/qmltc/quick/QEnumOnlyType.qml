@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // `StandardKey.Copy` — an enum member of a type QML exports for its ENUM ALONE. `StandardKey` is
 // QKeySequence: uncreatable, with no object to read a member from, and the key as TEXT is no use
 // either (Qt would parse "Copy" as four letters, not as the standard key). The NUMBER is what QML

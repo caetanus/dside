@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // Um `enum` declarado em QML e uma propriedade `required` — as duas formas com que uma aplicação
 // dá tipo e obrigação ao seu próprio componente. O `required` é satisfeito pelo sítio de uso.
 import QtQuick

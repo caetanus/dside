@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // The THIRD construction phase. The engine gives a bound type classBegin(), then componentComplete()
 // once the tree is built, and then — from QQmlComponent::completeCreate() — QQmlFinalizerHook::
 // componentFinalized(), once the WHOLE component is finalized. A TableView does all of its work

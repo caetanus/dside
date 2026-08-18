@@ -53,4 +53,7 @@ done
 
 [ "$bad" -eq 0 ] || { echo "optlevels-dir: $bad document(s) compiled at a certainty level and did not match" >&2; exit 1; }
 [ "$checked" -gt 0 ] || { echo "optlevels-dir: NOTHING was checked in $DIR — every document was handed over, which makes this gate vacuous" >&2; exit 1; }
+# recorded for `docs-numbers`, for the same reason as o3.sh: the -O1 column in two documents was
+# transcribed by hand and had drifted by one.
+printf '%s\t%s\n' "$(basename "$DIR")" "$checked" > "$(dirname "$OUT")/optlevels_$(basename "$DIR").tsv" 2>/dev/null || true
 echo "optlevels-dir OK ($(basename "$DIR")): $checked document(s) compiled at -O1/-O2 agree with the engine on every property; $skipped handed over; $unjudgeable unjudgeable; $known known broken promise(s)"

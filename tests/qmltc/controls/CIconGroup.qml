@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 import QtQuick.Templates as T
 // A VALUE group that is a plain Q_GADGET: `icon` on a Control is a QQuickIcon, which has its own
 // meta-object, so setVgroup does a read-modify-write through it. A value type marked `^` in the

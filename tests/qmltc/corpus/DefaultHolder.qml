@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+// SPDX-License-Identifier: BSL-1.0
 // A single-OBJECT `default property`: a bare child of a user of this type becomes THIS property's
 // value, so the engine reaches it through the property — not through children()[0].
 import QtQml 2.15
