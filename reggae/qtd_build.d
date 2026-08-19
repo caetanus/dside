@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: BSL-1.0
 // qtd_build.d — shared reggae helpers for building qt-dlang-gen bindings and apps.
 //
-// The generator (`gend`) is a pure code generator: it emits a nested-layout binding
+// The generator (`xiboca`) is a pure code generator: it emits a nested-layout binding
 // (`<genDir>/qt/<pkg>/*.d` matching each `module` name, plus top-level cxxrt/holder/
 // qtmoc and the C++ shim `.cpp`). reggae owns the whole build graph:
 //
-//   gen (run gend)  ->  shims.a (clang++ every .cpp)      \
+//   gen (run xiboca)  ->  shims.a (clang++ every .cpp)      \
 //                    ->  binding_<dc>.a (compile every .d   >-- link app
 //                        per-module, archive)              /
 //
@@ -67,10 +67,10 @@ string lreleasePath() {
 // --- the binding graph --------------------------------------------------------
 
 struct QtdBinding {
-    Target gen;       // runs gend -> a stamp (the whole genDir is regenerated clean)
+    Target gen;       // runs xiboca -> a stamp (the whole genDir is regenerated clean)
     Target shims;     // libshims.a (all .cpp, C++)
     string root;
-    string genDir;    // pure generated sources (owned by gend, wiped on each regen)
+    string genDir;    // pure generated sources (owned by xiboca, wiped on each regen)
     string bdir;      // reggae build artifacts (objects, archives) — kept out of genDir
     string[] mods;    // pkg-config modules (Qt6Widgets, …)
     string specName;  // the spec file this binding was generated from — gates that read DECLARED
@@ -100,23 +100,23 @@ string installedQtMinor(string pkgMod) {
     return v.length >= 2 ? v[0] ~ "." ~ v[1] : "";
 }
 
-private string gendPath(string root) { return buildPath(root, "generator-d", "gend"); }
+private string gendPath(string root) { return buildPath(root, "xiboca", "xiboca"); }
 
 // The generator binary is an INPUT to every gen step, but it was only ever built by hand
-// (`dub build` in generator-d/). Editing emit_cxx.d therefore changed nothing: the build kept
-// running a months-old gend and re-emitted identical bindings, so a generator fix looked like it
+// (`dub build` in xiboca/). Editing emit_cxx.d therefore changed nothing: the build kept
+// running a months-old xiboca and re-emitted identical bindings, so a generator fix looked like it
 // had no effect. Measured: after teaching the generator to keep C++ default member initializers,
-// the regenerated color.d still said `bool m_null;` until gend was rebuilt by hand.
+// the regenerated color.d still said `bool m_null;` until xiboca was rebuilt by hand.
 // Now it is a real target, rebuilt from its own sources before anything depends on it.
 Target gendTarget(string root) {
-    auto dir = buildPath(root, "generator-d");
-    auto gend = gendPath(root);
+    auto dir = buildPath(root, "xiboca");
+    auto xiboca = gendPath(root);
     auto srcs = ["clang_c.d", "gen.d", "emit.d", "emit_cxx.d"].map!(f => buildPath(dir, f)).array;
     // dub decides itself whether a relink is needed; guarded() keeps concurrent gen steps from
-    // racing into the same dub build, and skips it outright when gend is already newest.
-    auto cmd = guarded(buildPath(dir, "gend.lock"),
-        "cd " ~ dir ~ " && dub build --quiet", gend, srcs);
-    return Target(gend, cmd, srcs.map!(f => Target(f)).array);
+    // racing into the same dub build, and skips it outright when xiboca is already newest.
+    auto cmd = guarded(buildPath(dir, "xiboca.lock"),
+        "cd " ~ dir ~ " && dub build --quiet", xiboca, srcs);
+    return Target(xiboca, cmd, srcs.map!(f => Target(f)).array);
 }
 
 // WHEN A NODE NEEDS THIS (the rule, so the next shared node doesn't slip through): a node needs
@@ -177,7 +177,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     auto cxx = cflags ~ " -std=c++17 -fPIC -O2 -ffunction-sections -fdata-sections";
     // Extra include paths from the spec: private-header subdirs a private-API binding needs so the
     // aggregated shims (qtdctor/qtvirt/...) that reference private types (QQuickGradient etc.) compile.
-    // A RELATIVE path in the spec is relative to the SPEC, not to whoever compiles: gend runs from
+    // A RELATIVE path in the spec is relative to the SPEC, not to whoever compiles: xiboca runs from
     // generator/, reggae from the repo root. Normalize so both resolve the same directory.
     if (auto ip = "include_paths" in j.object)
         foreach (p; ip.array)
@@ -191,19 +191,19 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         ~ (hasQml ? " " ~ modulePrivateFlags(pkgCflags([mods.canFind("Qt6Qml") ? "Qt6Qml" : "Qt5Qml"]), "QtQml").join(" ")
                     ~ " -DQTD_ENABLE_QML" : "");
 
-    // gend fully owns genDir: wipe it first so stale files from an earlier layout can't
+    // xiboca fully owns genDir: wipe it first so stale files from an earlier layout can't
     // linger (a flat qfoo.d beside the nested qt/pkg/qfoo.d would clash on the module).
     // The stamp lives in bdir, not genDir, so wiping genDir doesn't delete it.
     auto stamp = buildPath(bdir, "gen.stamp");
-    auto gend = gendPath(root);
-    auto genCmd = "rm -rf " ~ genDir ~ " && " ~ gend ~ " " ~ specPath ~ " >/dev/null && touch " ~ stamp;
+    auto xiboca = gendPath(root);
+    auto genCmd = "rm -rf " ~ genDir ~ " && " ~ xiboca ~ " " ~ specPath ~ " >/dev/null && touch " ~ stamp;
     // The generator COPIES these runtime sources verbatim into the binding (emit.d), so they are
     // build INPUTS. Without the edge, editing the runtime leaves every already-generated binding
     // on the old copy and the whole matrix goes green against code that is no longer in the tree —
     // which is exactly how a Qt5 build break stayed hidden.
     auto runtimeSrc = qtdRuntimeSources(root);
     auto gen = Target(stamp,
-        guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, gend] ~ runtimeSrc),
+        guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, xiboca] ~ runtimeSrc),
         [Target(specPath), gendTarget(root)] ~ runtimeSrc.map!(f => Target(f)).array);
 
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
@@ -431,9 +431,9 @@ Target[] libsampleTargets(string root, string pyside) {
     auto cflags = pkgCflags(["Qt6Core"]);
     auto cxx = cflags ~ " -std=c++17 -fPIC -O2";
     auto priv = mocPrivateFlags(cflags).join(" ");
-    auto gend = gendPath(root);
+    auto xiboca = gendPath(root);
 
-    // 1) libsample.a from the external sources (+ the umbrella copied in for gend).
+    // 1) libsample.a from the external sources (+ the umbrella copied in for xiboca).
     auto lsa = buildPath(build, "libsample.a");
     auto lsaCmd = "rm -rf " ~ build ~ " && mkdir -p " ~ build ~ " && cp " ~ LS ~ "/*.h " ~ LS ~ "/*.cpp "
         ~ MIN ~ "/libminimalmacros.h " ~ buildPath(bdir, "sample_all.h") ~ " " ~ build ~ "/ && cd " ~ build
@@ -446,12 +446,12 @@ Target[] libsampleTargets(string root, string pyside) {
 
     // 2) generate the "sample" binding.
     auto stamp = buildPath(bdir, "gen.stamp");
-    auto genCmd = "rm -rf " ~ gen ~ " && " ~ gend ~ " " ~ specPath ~ " >/dev/null 2>&1 && touch " ~ stamp;
+    auto genCmd = "rm -rf " ~ gen ~ " && " ~ xiboca ~ " " ~ specPath ~ " >/dev/null 2>&1 && touch " ~ stamp;
     // ...with the runtime sources as inputs, exactly as the common builder has them (critics r13
     // #1): without this edge, editing the runtime leaves libsample testing the copy from before.
     auto lsRuntime = qtdRuntimeSources(root);
     auto genT = Target(stamp,
-        guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, gend] ~ lsRuntime),
+        guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, xiboca] ~ lsRuntime),
         [sampleLib, gendTarget(root)] ~ lsRuntime.map!(f => Target(f)).array);
 
     // 3) shims (.cpp) -> libshims.a.

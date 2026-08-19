@@ -61,8 +61,8 @@ jobs:
         with:
           compiler: ldc-latest
 
-      - name: Build the generator (gend)
-        run: cd generator-d && dub build
+      - name: Build the generator (xiboca)
+        run: cd xiboca && dub build
 
       - name: Generate the reggae build binary
         run: dub run reggae -- -b binary . --reggaefile-import-path "$PWD/reggae"

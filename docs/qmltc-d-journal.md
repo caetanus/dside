@@ -37,7 +37,7 @@ Over the upstream `qmltc` test corpus (108 files) the frontend parses **108/108*
 
 ## Backend model
 
-qmltc-d is a build-time tool (like `gend`/`qmltc`), not a CTFE mixin: CTFE can't drive an external
+qmltc-d is a build-time tool (like `xiboca`/`qmltc`), not a CTFE mixin: CTFE can't drive an external
 parser, and QML+JS is too complex for clean CTFE. It emits a D module: one `@QObject class` per
 object, with `@Property` fields, `Signal!()` change signals, `@Slot` recompute/handler methods, and
 a `__qmltcWire()` method the runtime calls after wiring (see below).

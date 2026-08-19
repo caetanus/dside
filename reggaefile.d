@@ -1396,7 +1396,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             continue;
         }
         foreach (dc; DCS) {
-            // qmlmap.tsv (QML-name -> bound C++ class) is a build output of the binding's gend run;
+            // qmlmap.tsv (QML-name -> bound C++ class) is a build output of the binding's xiboca run;
             // the tool reads it so its bound-type vocabulary is DATA, not hard-coded. Absent (e.g.
             // the QtObject binding) -> the tool just loads nothing.
             // ...and the CORPUS DIRECTORY on the import path, so a fixture can use a sibling
@@ -1637,7 +1637,7 @@ Target[] shadowAotTargets(string root, QtdBinding quick) {
     }
     // ...and the OUTPUT NOTICE, on the same fixture and for the same reason it was chosen here:
     // QJsDelegated is the one document that exercises every mode the compiler can write source in —
-    // a compiled document AND shadows. Round 15 #5 found the notice implemented in generator-d only,
+    // a compiled document AND shadows. Round 15 #5 found the notice implemented in xiboca only,
     // and a gate that ran one mode would have missed the shadows, which are written by a different
     // call in a different function and were the last to be fixed.
     auto lgo = buildPath(root, "tests", "license-generated-output.sh");
@@ -1665,7 +1665,7 @@ Target[] shadowAotTargets(string root, QtdBinding quick) {
 }
 
 // The holder unit test compiles the fixed runtime (holder.d + qtd_holder.cpp) with a
-// small C++ helper — no gend, no binding. Kept as a bespoke target.
+// small C++ helper — no xiboca, no binding. Kept as a bespoke target.
 Target[] holderTests(string root) {
     auto H = buildPath(root, "runtime", "holder");
     auto here = buildPath(root, "tests", "holder");

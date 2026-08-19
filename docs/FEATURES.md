@@ -5,7 +5,7 @@ SPDX-License-Identifier: BSL-1.0
 # qt-dlang-gen — Feature Summary
 
 Pure-D Qt bindings generated as `extern(C++)` (no C++ wrapper shim). The generator
-(`generator-d/`, builds `gend`) parses Qt headers via libclang and emits per-class `.d` plus
+(`xiboca/`, builds `xiboca`) parses Qt headers via libclang and emits per-class `.d` plus
 minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dmd**, **Qt5 + Qt6**.
 
 ## Core binding (generator)

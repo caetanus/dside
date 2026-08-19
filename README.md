@@ -28,7 +28,7 @@ manifest gates and `lupdate-check` are single-config.
 
 ## What it is (and isn't)
 
-- **Is:** a code generator (`generator-d/` → `gend`) built on the libclang **C API**
+- **Is:** a code generator (`xiboca/` → `xiboca`) built on the libclang **C API**
   (stable, no `clang.cindex`), plus a small hand-written runtime (`runtime/`) and a
   reggae build that generates → compiles → links in one incremental graph.
 - **Isn't:** a committed, hand-maintained wrapper. Generated output lands in a
@@ -41,13 +41,13 @@ capabilities. This README is the map, not the catalogue.
 ## Building
 
 ```sh
-cd generator-d && dub build          # build the `gend` generator
+cd xiboca && dub build          # build the `xiboca` generator
 cd .. && reggae -b binary . --reggaefile-import-path "$PWD/reggae"
 ./build                              # generate bindings + build & run the test matrix
 ./build widget_test-ldc2-qt6         # one target;  ./build --list to see them
 ```
 
-`gend <spec.json>` emits `qt/<pkg>/*.d` (+ minimal `.cpp` trampolines) into
+`xiboca <spec.json>` emits `qt/<pkg>/*.d` (+ minimal `.cpp` trampolines) into
 `generated/`. reggae compiles each `.d` per-module into an archive and lets the linker
 select what each app references — no hand-rolled import closure. Every target is
 verified on **ldc2 AND dmd**, **Qt5 AND Qt6** where applicable.
@@ -385,7 +385,7 @@ passes above.
 
 | Path | Status | Notes |
 |------|--------|-------|
-| `generator-d/` | **supported** | the `gend` generator (libclang C API) — source of truth |
+| `xiboca/` | **supported** | the `xiboca` generator (libclang C API) — source of truth |
 | `runtime/{holder,qtmoc,uic,qrc}/` | **supported** | hand-written runtime the generated code links |
 | `reggae/`, `reggaefile.d` | **supported** | the build of record (POSIX/Linux) |
 | `generated/` | **generated** | gitignored, on-demand output |

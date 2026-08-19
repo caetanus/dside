@@ -75,7 +75,7 @@ copying an upstream implementation.
 
 | Artifact | Intended license | Distributed? | Rule |
 |---|---|---:|---|
-| `generator-d` / `gend` | BSL-1.0 | yes | Must not embed third-party implementation text in its output |
+| `xiboca` / `xiboca` | BSL-1.0 | yes | Must not embed third-party implementation text in its output |
 | generated `.d` declarations and wrappers | BSL-1.0 output grant | yes | Generated header must state the policy and provenance |
 | generated C++ shims and trampolines | BSL-1.0 output grant | yes | May be archived and statically linked into the application |
 | `runtime/holder` and `runtime/qtmoc` | BSL-1.0 | yes | Copied into generated bindings; license must travel with every package |
@@ -304,7 +304,7 @@ machine-readable manifest.
 Add `"license": "BSL-1.0"` to:
 
 - the root `dub.json`;
-- `generator-d/dub.json`;
+- `xiboca/dub.json`;
 - `runtime/dub.json`;
 - `tools/lupdate/dub.json`;
 - every later subpackage;

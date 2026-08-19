@@ -1235,7 +1235,7 @@ void verifyInlinesBatched(string outDir, string dpkg) {
     // one method can break another that called it (semantic cascade: `last` calls
     // `verify`; if `verify` drops, `last` becomes "undefined verify"). Phase 1 already
     // removed the syntax errors, so it converges in 1-2 passes.
-    // Unique per PROCESS: reggae runs several gend processes in parallel, so a shared
+    // Unique per PROCESS: reggae runs several xiboca processes in parallel, so a shared
     // temp dir would race (one process's rmdirRecurse deletes another's b*.d).
     auto dir = buildPath(tempDir, "qtd_vfy_" ~ thisProcessID.to!string);
     if (dir.exists) rmdirRecurse(dir);

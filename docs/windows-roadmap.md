@@ -17,7 +17,7 @@ convention-dependent guesswork.
 ## The one thing that makes this tractable
 
 The generator does **not** hand-roll Itanium mangling — it asks libclang for every
-symbol via `clang_Cursor_getMangling()` (`generator-d/emit_cxx.d:94, 1111, 1186, 1327,
+symbol via `clang_Cursor_getMangling()` (`xiboca/emit_cxx.d:94, 1111, 1186, 1327,
 1536, 1577, …`). So the mangled names are whatever the **target ABI of the parsed
 translation unit** produces: Itanium on Linux/MinGW, MSVC (`?foo@Bar@@…`) if the Qt
 headers are parsed with an MSVC target triple. That turns "port the C++ ABI" from

@@ -94,7 +94,7 @@ run_case no-shadows "$(make_fake noshadow 's/$//' 0 no)" "expected 2"
 run_case unknown-revision "$(make_fake unknownrev 's/generator=[^ ]*/generator=unknown/' 0 yes)" \
     "records generator=unknown"
 
-# 5. the grant text drifting away from generator-d's
+# 5. the grant text drifting away from xiboca's
 run_case drifted-grant "$(make_fake drift 's/grants no rights in the Qt/grants ALL rights in the Qt/' 0 yes)" \
     "carries no grant/boundary statement"
 
@@ -110,7 +110,7 @@ else
 fi
 ONEMODE
 chmod +x "$WORK/onemode.sh"
-run_case drift-in-delegated-only "$WORK/onemode.sh" "does not carry generator-d's grant text"
+run_case drift-in-delegated-only "$WORK/onemode.sh" "does not carry xiboca's grant text"
 
 # 6. no SPDX identifier at all
 run_case no-spdx "$(make_fake nospdx '/SPDX-License-Identifier/d' 0 yes)" "carries no SPDX identifier"

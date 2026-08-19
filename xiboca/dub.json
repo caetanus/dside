@@ -1,9 +1,9 @@
 {
-    "name": "generator",
+    "name": "xiboca",
     "license": "BSL-1.0",
     "description": "Qt binding generator (libclang -> extern(C++) D)",
     "targetType": "executable",
-    "targetName": "gend",
+    "targetName": "xiboca",
     "sourceFiles": [
         "clang_c.d",
         "gen.d",

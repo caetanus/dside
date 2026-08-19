@@ -4,7 +4,7 @@
     "description": "Pure-D Qt bindings via extern(C++): a libclang-based generator plus a reggae-driven interop build (C+++D). No hand-written C shim.",
     "targetType": "none",
     "subPackages": [
-        "./generator-d",
+        "./xiboca",
         "./runtime"
     ],
     "dependencies": {

@@ -6,7 +6,7 @@
 #
 #   license-generated-output.sh <qmltc-d> <shadow-producing .qml> <qmlmap.tsv> <-I dir> <generated .d>
 #
-# Phase 3 was marked done with "every emitted `.d` and `.cpp`" while only generator-d implemented it;
+# Phase 3 was marked done with "every emitted `.d` and `.cpp`" while only xiboca implemented it;
 # qmltc-d — whose output a user compiles into their OWN program, outside any package this project
 # builds — opened with a single `// GENERATED` line. That is fixed. What follows is the gate, and
 # the gate itself had to be rewritten after three of its own answers were measured:
@@ -21,7 +21,7 @@
 # So: the tool must exist, every invocation's exit status is contracted, the shadow count is compared
 # against the number this fixture is known to produce, the fully-delegated path is exercised (it is a
 # separate call in a separate function and was never run), and the notice block is compared to
-# generator-d's BOTH ways instead of by three chosen substrings.
+# xiboca's BOTH ways instead of by three chosen substrings.
 set -eu
 [ $# -ge 5 ] || { echo "usage: license-generated-output.sh <tool> <qml> <qmlmap> <incdir> <generated.d>" >&2; exit 2; }
 TOOL=$1; QML=$2; QMLMAP=$3; INCDIR=$4; GEND=$5
@@ -70,7 +70,7 @@ check_file() {
 
 # The canonical block: everything from the grant's first line to its last. Compared as a block and
 # in BOTH directions — the previous check asked only whether three chosen substrings from
-# generator-d appeared in qmltc-d, so deleting a line from the reference disabled the obligation.
+# xiboca appeared in qmltc-d, so deleting a line from the reference disabled the obligation.
 # `|| true`: an EMPTY block is a finding, not a reason to die. Under `set -e` the trailing `grep`
 # returning "no lines" killed the script before it could report anything — rc=1, no output, which is
 # the least useful way a gate can fail.
@@ -110,10 +110,10 @@ for s in "$WORK"/sh/*.qml; do [ -f "$s" ] || continue; found=$((found + 1)); che
 # 4. the two generators must emit the SAME grant, line for line, both ways.
 if [ -f "$GEND" ]; then
     notice_block "$GEND" > "$WORK/ref.txt"
-    [ -s "$WORK/ref.txt" ] || fail "no notice block found in the generator-d sample" \
+    [ -s "$WORK/ref.txt" ] || fail "no notice block found in the xiboca sample" \
         "the reference side of this comparison is empty, so it would compare nothing"
     # ALL THREE OUTPUTS, not the compiled one. The message claimed "the grant block is byte-identical
-    # to generator-d's" while comparing a single document; measured, all three do match today, and
+    # to xiboca's" while comparing a single document; measured, all three do match today, and
     # the reason is structural — one `qtdEmitNotice` writes them. Structural is not the same as
     # verified: the two GENERATORS also "obviously" agreed until their texts were compared, and the
     # drift would be in the legal wording.
@@ -121,7 +121,7 @@ if [ -f "$GEND" ]; then
         [ -f "$_o" ] || continue
         notice_block "$_o" > "$WORK/got.txt"
         if ! diff -q "$WORK/ref.txt" "$WORK/got.txt" >/dev/null; then
-            fail "$(basename "$_o") does not carry generator-d's grant text"
+            fail "$(basename "$_o") does not carry xiboca's grant text"
             diff "$WORK/ref.txt" "$WORK/got.txt" | head -6 | sed 's/^/      /' >&2
         fi
     done
@@ -130,4 +130,4 @@ else
 fi
 
 [ "$bad" -eq 0 ] || exit 1
-echo "license-generated-output OK: compiled, delegated and $found shadow document(s) each carry the SPDX header, the grant and a provenance line with a build-supplied revision, a 12-hex input digest and no absolute path; the grant block is byte-identical to generator-d's"
+echo "license-generated-output OK: compiled, delegated and $found shadow document(s) each carry the SPDX header, the grant and a provenance line with a build-supplied revision, a 12-hex input digest and no absolute path; the grant block is byte-identical to xiboca's"

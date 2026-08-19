@@ -34,7 +34,7 @@ static void check(bool ok, const char* what, long long got, long long want)
 
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 // Qt6 QList<T> == QVector<T> == QArrayDataPointer<T> { void* d; T* ptr; qsizetype size }.
-// generator-d/emit_cxx.d emits exactly this shape for every element type it bridges.
+// xiboca/emit_cxx.d emits exactly this shape for every element type it bridges.
 template <typename T>
 struct Adp { void* d; T* ptr; qsizetype size; };
 

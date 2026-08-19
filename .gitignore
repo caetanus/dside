@@ -22,12 +22,12 @@ __pycache__/
 /build
 /bin/
 
-# --- generated bindings: produced on demand by `gend` / reggae, never committed ---
+# --- generated bindings: produced on demand by `xiboca` / reggae, never committed ---
 generated/
 
 # --- compiled binaries (regenerable) ---
-/generator-d/gend
-/generator-d/gend.lock
+/xiboca/xiboca
+/xiboca/xiboca.lock
 /bootstrap/hello
 compile_commands.json
 /dub.selections.json

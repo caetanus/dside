@@ -2,7 +2,7 @@
 SPDX-FileCopyrightText: 2026 Marcelo A Caetano
 SPDX-License-Identifier: BSL-1.0
 -->
-# generator-d — the generator, in D
+# xiboca — the generator, in D
 
 The Qt binding generator: native D on the **libclang C API** (`clang_c.d`, no
 `clang.cindex`). It discovers classes, extracts public ctors/methods, maps types,
@@ -16,11 +16,11 @@ straight to the Qt symbols; there is no per-class C shim to compile.
 ## Build & run
 
 ```sh
-dub build                                   # -> ./gend  (ldc2 or dmd)
-./gend ../generator/spec_cxx_qtwidgets.json # emits generated/<...>/qt/widgets/*.d
+dub build                                   # -> ./xiboca  (ldc2 or dmd)
+./xiboca ../generator/spec_cxx_qtwidgets.json # emits generated/<...>/qt/widgets/*.d
 ```
 
-`gend <spec.json>` writes the binding into a gitignored `generated/` dir and a
+`xiboca <spec.json>` writes the binding into a gitignored `generated/` dir and a
 `coverage.txt` (D bindings emitted + methods dropped as unmapped-type) beside it.
 
 ## Speed
