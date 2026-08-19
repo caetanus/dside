@@ -486,9 +486,19 @@ Build reggaeBuild() {
             // the LICENSE/NOTICE copies at 17:36, a build ran at 19:32, and the package on disk was
             // still the one from two days before. A guard that can't see the script it runs is a
             // guard for a different question.
+            // The ARCHIVES belong in that same list, for the same reason and one step further.
+            // The dependency list below already names them, so reggae reruns the command when they
+            // change — but the guard then answers a question about gen.stamp and install.sh only,
+            // sees nothing newer, and exits 0 with the old package still on disk. Measured on
+            // 2026-08-18: libbinding_ldc2.a rebuilt at 20:54 while pkg/lib/ still held the copy
+            // from 08-13, five days stale, and license-package's byte comparison (round 18 #5) is
+            // what caught it — the name check it replaced would have passed. A guard that cannot
+            // see the archives it copies is, again, a guard for a different question.
+            auto archivePaths = DCS.map!(dc => buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")).array
+                                ~ [buildPath(ex.bdir, "libshims.a")];
             auto inst = Target(stamp,
                 guarded(prefix ~ ".lock", instCmd, stamp,
-                        [ex.genDir ~ "/gen.stamp", ins]),
+                        [ex.genDir ~ "/gen.stamp", ins] ~ archivePaths),
                 [Target(ins), ex.gen] ~ DCS.map!(dc => qtdBindLib(ex, dc)).array ~ [ex.shims]);
             // THE PACKAGE, not the tree. Every other licensing gate reads what is committed; this
             // one reads what a consumer receives, because a spotless repository can still ship a
