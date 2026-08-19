@@ -1,9 +1,14 @@
 {
   "qt_version": "6.11-userlib",
   "pkg_config": "Qt6Core",
+  "abi": "cxx",
   "out_dir": "../generated/userlib",
   "d_package": "userlib",
-  "headers": ["/home/caetano/lab/qt-dlang-gen/examples/userlib/shape.h"],
+  "headers": [
+    "shape.h"
+  ],
   "source_filter": "examples/userlib",
-  "include_paths": ["/home/caetano/lab/qt-dlang-gen/examples/userlib"]
+  "include_paths": [
+    "../examples/userlib"
+  ]
 }

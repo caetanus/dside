@@ -20,6 +20,9 @@ public:
     QMap<QString,QString> tags() const;     // QMap  -> string[string]
     QVariant metadata() const;              // QVariant -> QtVariant
     void setMetadata(const QVariant &m);
+private:
+    int w = 0, h = 0;
+    QVariant meta;
 };
 
 class Circle {                     // a plain (non-QObject) user value type
@@ -28,4 +31,6 @@ public:
     explicit Circle(int radius);
     int radius() const;
     double circumference() const;
+private:
+    int r = 0;
 };

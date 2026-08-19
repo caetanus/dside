@@ -26,12 +26,25 @@ __gshared CXCursor[string] ENUMS;    // unqualified enum name -> decl cursor
 // silently dropping every method.
 __gshared bool[string] DEFINED_SYMS;
 
-void loadDefinedSymbols(string[] pkgs) {
+// `extraLibs` are raw link flags from the spec, for a library that ships no .pc file at all
+// (VTK, OpenCASCADE, anything CMake-config-only). They are treated exactly like pkg-config's
+// output: -L adds a search directory, -l names a library.
+void loadDefinedSymbols(string[] pkgs, string[] extraLibs = null) {
     import std.process : execute;
-    auto libs = execute(["pkg-config", "--libs"] ~ pkgs).output.split;
+    auto libs = execute(["pkg-config", "--libs"] ~ pkgs).output.split ~ extraLibs;
+    // -L DIRECTORIES FIRST, and this is the whole point of parsing them. The search list used to
+    // be the three system paths below, hardcoded, so a Qt in /opt or a prefix build had none of
+    // its .so found — the table came back empty for those libraries, symbolDefined() then answers
+    // "true" for everything, and the check that exists to catch a declaration with no definition
+    // silently stops running. It failed OPEN and said nothing. pkg-config already tells us where
+    // the libraries are; not reading it was the bug.
+    string[] dirs;
+    foreach (l; libs)
+        if (l.startsWith("-L")) dirs ~= l[2 .. $].chomp("/") ~ "/";
+    dirs ~= ["/usr/lib/", "/usr/lib64/", "/usr/local/lib/"];
     foreach (l; libs) {
         if (!l.startsWith("-l")) continue;
-        foreach (dir; ["/usr/lib/", "/usr/lib64/", "/usr/local/lib/"]) {
+        foreach (dir; dirs) {
             auto so = dir ~ "lib" ~ l[2 .. $] ~ ".so";
             if (!exists(so)) continue;
             auto r = execute(["nm", "-D", "--defined-only", so]);

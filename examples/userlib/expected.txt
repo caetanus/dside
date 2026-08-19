@@ -1,0 +1,6 @@
+area      = 16
+describe  = 4x4
+isSquare  = true
+counts    = ["height":4, "width":4]
+tags      = ["kind":"square"]
+circle    = r7, circumference 43.982

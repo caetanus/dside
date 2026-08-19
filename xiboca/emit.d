@@ -66,9 +66,46 @@ void main(string[] args) {
             RULES.rejectedClass.length, RULES.rejectedMethod.length, RULES.objectType.length, RULES.valueType.length);
     }
 
+    // FAIL CLOSED ON THE ABI, once and before anything else. This check used to live inside the
+    // per-class emit loop, where the exception it threw was caught by that loop's own handler and
+    // printed as "[Shape] skipped: only abi:cxx is supported" — once per class — after which the
+    // run finished and exited 0 with an empty binding. A spec-wide configuration error was being
+    // reported as a per-class problem, and the exit status said success.
+    //
+    // Measured 2026-08-18 on generator/spec_userlib.json, the example BOTH READMEs point at for
+    // binding your own library: 2 classes discovered, 0 emitted, exit 0. xiboca/README.md already
+    // said "a non-cxx spec now errors"; it did not, and now it does. Same shape as the incomplete
+    // translation unit below: an empty binding must never be a successful run.
+    if (("abi" in spec.object) is null || spec["abi"].str != "cxx") {
+        stderr.writefln(`xiboca: %s: only abi:cxx is supported (the C-ABI emitter was removed). `
+                        ~ `Add "abi": "cxx" to the spec.`, specPath);
+        import core.stdc.stdlib : exit;
+        exit(1);
+    }
+
+    // WHICH Qt, and which other libraries — asked of the spec, not of the environment.
+    // pkg_config alone answers "which modules" and leaves "which installation" to whatever
+    // PKG_CONFIG_PATH happened to hold, which is invisible in the spec and therefore unrecorded:
+    // the same spec then binds against a different Qt on a different machine and nothing says so.
+    // Listed dirs are prepended, so a spec's choice wins over the environment's, and relative ones
+    // resolve against the spec file like every other path here.
+    if (auto pp = "pkg_config_path" in spec.object) {
+        string[] dirs;
+        foreach (p; pp.array)
+            dirs ~= isAbsolute(p.str) ? p.str : buildNormalizedPath(specPath.dirName, p.str);
+        auto prev = environment.get("PKG_CONFIG_PATH", "");
+        environment["PKG_CONFIG_PATH"] = dirs.join(":") ~ (prev.length ? ":" ~ prev : "");
+    }
+    // The escape hatch for a library that ships no .pc file — VTK, OpenCASCADE, anything that is
+    // CMake-config-only. pkg_config cannot name it, so its flags are given directly. `cflags`
+    // reaches the parse; `libs` reaches the symbol scan (and is what a build needs to link).
+    string[] rawCflags, rawLibs;
+    if (auto cf = "cflags" in spec.object) foreach (x; cf.array) rawCflags ~= x.str;
+    if (auto lb = "libs" in spec.object)   foreach (x; lb.array) rawLibs ~= x.str;
+
     auto pkgs = spec["pkg_config"].str.split;
-    loadDefinedSymbols(pkgs);   // refuse to bind a symbol the linked libs do not define
-    auto cflags = execute(["pkg-config", "--cflags"] ~ pkgs).output.split;
+    loadDefinedSymbols(pkgs, rawLibs);   // refuse to bind a symbol the linked libs do not define
+    auto cflags = execute(["pkg-config", "--cflags"] ~ pkgs).output.split ~ rawCflags;
     auto res = execute(["clang", "-print-resource-dir"]).output.strip;
     string[] extraI;
     // Relative include paths resolve against the SPEC (like out_dir), not the cwd: xiboca is invoked

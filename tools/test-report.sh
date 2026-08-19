@@ -61,7 +61,10 @@ category() {
     tr-*|lupdate-check) echo i18n ;;
     manifest-gate-*|registry-gate-*|expected-fails-lint|expected-fails-run|ctor-guard|ownership-gate-*) echo gate ;;
     qrc-*|container_*|qlist*|holder_test*|webengine-*) echo misc ;;
-    consumer-smoke-*|dub-consumer-*) echo gate ;;
+    # xiboca-quickstart is a gate for the same reason the consumer smokes are: it builds
+    # something from OUTSIDE the binding's own graph — the documented quickstart for wrapping
+    # a library that is not Qt — and refuses the build when the documentation stops being true.
+    consumer-smoke-*|dub-consumer-*|xiboca-quickstart) echo gate ;;
     # Wrapper LIFETIME, which is neither moc nor qml: who owns a pointer, and who may delete it.
     borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*|threadguard-*|nonqobject-*|dangle-*) echo lifetime ;;
     *) echo other ;;
@@ -122,6 +125,7 @@ if [ "$selftest" = yes ]; then
   ck abi-layout-qt5                  gate      qt5 -
   ck tr-ldc2                         i18n      qt6 ldc2
   ck qrc-ldc2                        misc      qt6 ldc2
+  ck xiboca-quickstart               gate      qt6 -
   # ...and no target the build actually offers may be unclassified.
   # The ` (optional)` suffix is part of the LISTING, not of the name. Glob-matched families never
   # noticed; `binding-core` is matched exactly and came back unclassified the day it became optional.

@@ -636,6 +636,31 @@ Build reggaeBuild() {
                                 Target(dn) ~ docsNumberSources);
     }
 
+    // THE QUICKSTART THE DOCUMENTATION SHOWS, actually run. docs/xiboca/generating-a-wrapper.md
+    // walks a reader through binding a C++ library that is neither Qt nor part of this repository's
+    // bindings; this generates it, compiles it, links it and compares its output to a golden file.
+    //
+    // It exists because on 2026-08-18 the example both READMEs pointed at was broken and had been
+    // for as long as the C-ABI emitter had been gone: generator/spec_userlib.json carried no
+    // "abi": "cxx", so xiboca discovered 2 classes, emitted 0, and exited 0. Nothing ran it, so
+    // nothing said so. It also covers ground the other gates cannot: the whole Qt matrix uses ONE
+    // discovery mode (a Qt module plus qt_marker), and this is the only target exercising the other
+    // one — headers plus source_filter, the mode every outside user starts from.
+    {
+        auto qs = buildPath(root, "tests", "xiboca-quickstart.sh");
+        auto ulib = buildPath(root, "examples", "userlib");
+        auto uspec = buildPath(root, "generator", "spec_userlib.json");
+        if (exists(qs) && exists(uspec) && exists(buildPath(ulib, "shape.cpp")))
+            all ~= Target.phony("xiboca-quickstart",
+                                "sh " ~ qs ~ " " ~ buildPath(root, "xiboca", "xiboca") ~ " "
+                                       ~ buildPath(root, ".build", "xiboca-quickstart"),
+                                [Target(qs), Target(uspec), gendTarget(root),
+                                 Target(buildPath(ulib, "shape.h")),
+                                 Target(buildPath(ulib, "shape.cpp")),
+                                 Target(buildPath(ulib, "app.d")),
+                                 Target(buildPath(ulib, "expected.txt"))]);
+    }
+
     // ...and OPTIONAL, not part of the default build. A node reached by two top-level targets
         // is executed once per reaching target in this backend, so adding these to `all` made the
         // full build run every member TWICE (visible as .reggae/objs/binding-core.objs/…). They are
