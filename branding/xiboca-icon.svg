@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+
+The square xiboca icon: the seal alone, with the word dropped. Reasoning and
+provenance are in xiboca-logo.svg.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <g id="alambique">
+      <circle cx="70" cy="118" r="40"/>
+      <path d="M52,92 C54,70 60,52 70,52 C80,52 86,70 88,92 Z"/>
+      <path d="M82,60 C112,52 132,70 134,94 C135,112 135,122 135,130"
+            fill="none" stroke-width="10" stroke-linecap="round"/>
+      <rect x="44" y="152" width="52" height="11" rx="5"/>
+    </g>
+    <path id="gota" d="M0,0 C7,13 11,20 11,25 A11,11 0 1 1 -11,25 C-11,20 -7,13 0,0 Z"/>
+  </defs>
+
+  <!-- r=224 leaves a 32 px margin on a 512 canvas; everything else is the logo
+       seal scaled by 224/96 -->
+  <g transform="translate(256,256) scale(2.33333)">
+    <circle r="96" fill="#E0A02B"/>
+    <circle r="84" fill="none" stroke="#FFFFFF" stroke-width="3" opacity="0.6"/>
+    <g transform="matrix(0.86,0,0,0.86,-64,-112)" fill="#FFFFFF" stroke="#FFFFFF">
+      <use href="#alambique"/>
+    </g>
+    <g transform="matrix(0.46,0,0,0.46,52,24)" fill="#FFFFFF" stroke="none">
+      <use href="#gota"/>
+    </g>
+  </g>
+</svg>
