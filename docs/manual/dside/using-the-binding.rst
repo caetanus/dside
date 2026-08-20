@@ -19,11 +19,48 @@ Getting a build
 
 
 The bindings are generated, not vendored: ``xiboca`` emits them and the build
-compiles them into two archives. From a consumer's side, three things go into
-your project — the generated import path and the two archives. That path is
-exercised on every build by ``tests/consumer/hello.d``, which is copied out of the
-checkout and built somewhere else precisely so "it compiles in-tree" cannot be
-mistaken for "somebody else can use it".
+compiles them into two archives. What a consumer needs is one import path, two
+archives, and Qt's own libraries.
+
+**As a dub package.** ``./build dub-consumer-ldc2`` installs the binding and builds
+an application against it. The same two steps by hand:
+
+.. code-block:: sh
+
+   sh tests/install.sh generated/qt-6.11/cxx-qtwidgets .build/qt-6.11-cxx-qtwidgets \
+                       /where/you/want/it qtd-qtwidgets $(pkg-config --libs Qt6Widgets)
+
+.. code-block:: json
+
+   { "name": "myapp", "targetType": "executable",
+     "dependencies": { "qtd-qtwidgets": { "path": "/where/you/want/it" } } }
+
+``dub build --compiler=ldc2`` and ``--compiler=dmd`` both work from the same
+install: the package picks the right archive per compiler. It is **not published
+anywhere** — the path is local.
+
+**Or by hand**, which is what the package expands to:
+
+.. code-block:: sh
+
+   ldc2 -of=myapp myapp.d \
+        -I<checkout>/generated/qt-6.11/cxx-qtwidgets \
+        -L--start-group \
+          -L=<checkout>/.build/qt-6.11-cxx-qtwidgets/libbinding_ldc2.a \
+          -L=<checkout>/.build/qt-6.11-cxx-qtwidgets/libshims.a \
+        -L--end-group $(pkg-config --libs Qt6Widgets) -L-lstdc++
+
+**The package refuses a Qt mismatch.** It records the Qt it was generated against
+and the generator commit in ``qtd-build.txt``, and the consumer checks it: a
+binding built from 6.11's headers and linked against another minor mangles the
+same symbols, so the failure would arrive as a crash inside Qt rather than as a
+link error.
+
+Both paths run on every build. ``tests/consumer/`` is sources copied to a
+temporary directory and built there, so nothing in the checkout can be reached by
+a relative path — it runs as ``consumer-smoke-{ldc2,dmd}``, beside
+``dub-consumer-{ldc2,dmd}`` which does the same through the package. That is the
+difference between "it compiles in-tree" and "somebody else can use it".
 
 Your first window
 -----------------

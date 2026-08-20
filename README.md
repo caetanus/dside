@@ -75,66 +75,21 @@ auto v   = make!QVariant();          // value type, no-arg (D forbids a struct t
 
 ## Using it from your own project
 
-**As a dub dependency.** `./build dub-consumer-ldc2` installs the binding as a package and builds an
-application against it; the same two steps by hand are:
+One import path, two archives, and Qt's own libraries — as a dub package or by hand.
+Both routes, the exact commands, and the Qt-mismatch check the package performs are in
+the manual: **[Using DSide → Getting a build](docs/manual/dside/using-the-binding.rst)**.
 
-```sh
-sh tests/install.sh generated/qt-6.11/cxx-qtwidgets .build/qt-6.11-cxx-qtwidgets \
-                    /where/you/want/it qtd-qtwidgets $(pkg-config --libs Qt6Widgets)
-```
+Both are exercised on every build (`consumer-smoke-{ldc2,dmd}` and
+`dub-consumer-{ldc2,dmd}`), from sources copied outside the checkout — so "it compiles
+in-tree" cannot be mistaken for "somebody else can use it".
 
-```json
-{ "name": "myapp", "targetType": "executable",
-  "dependencies": { "qtd-qtwidgets": { "path": "/where/you/want/it" } } }
-```
+On licensing and distribution: the project is **BSL-1.0** (`LICENSE`, `docs/licensing.md`),
+every tracked file states its own terms or carries a `.license` sidecar, and
+`license-publishable` reports zero files with unestablished terms. What still blocks a
+public push is engineering rather than licensing: CI has never been green on a real
+runner, and the full matrix fails intermittently under parallelism (see
+`matrix-intermittency-under-concurrency` in `tests/expected-fails.json`).
 
-That is the whole package: an import path, two archives, and eleven lines of `dub.json` that pick
-the right archive per compiler. `dub build --compiler=ldc2` and `--compiler=dmd` both work from the
-same install. The package records the Qt it was generated against and the generator commit
-(`qtd-build.txt`), and the consumer refuses a mismatch: a binding built from 6.11's headers and
-linked against another minor mangles the same symbols, so it would surface as a crash inside Qt
-rather than a link error. It is **not published anywhere** — the path is local. The licence question, which used to stand
-next to distribution here, is answered: the project is **BSL-1.0** (see `LICENSE` and
-`docs/licensing.md`), every tracked file states its own terms or carries a `.license` sidecar, and
-the generated package declares `"license": "BSL-1.0"`. What still blocks a public source archive is
-narrower and measurable: `sh tests/license-coverage.sh --publish` names the files whose terms are
-not yet established. That list is now EMPTY — the 60-file `.ui` corpus had its provenance
-established against `qt/qt@0a2f238254` and `singletontype.cpp` was rewritten here, so the gate
-passes. What remains before a public push is engineering, not licensing: CI has never been green on
-a real runner, and the full matrix fails intermittently under parallelism (see
-`matrix-intermittency-under-concurrency` in tests/expected-fails.json).
-
-**Or by hand**, which is what the package expands to:
-
-```sh
-ldc2 -of=myapp myapp.d \
-     -I<checkout>/generated/qt-6.11/cxx-qtwidgets \
-     -L--start-group \
-       -L=<checkout>/.build/qt-6.11-cxx-qtwidgets/libbinding_ldc2.a \
-       -L=<checkout>/.build/qt-6.11-cxx-qtwidgets/libshims.a \
-     -L--end-group $(pkg-config --libs Qt6Widgets) -L-lstdc++
-```
-
-One import path, two archives, and Qt's own libraries. `tests/consumer/` is exactly this — sources
-copied to a temporary directory and built there, so nothing in the checkout can be reached by a
-relative path — and it runs in the matrix as `consumer-smoke-{ldc2,dmd}`, beside
-`dub-consumer-{ldc2,dmd}` which does the same through the package.
-
-```d
-import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlabel;
-
-auto w = new QWidget(null);   // or `new QWidget()`
-auto l = new QLabel(w);       // parented -> Qt owns it, the wrapper is pinned
-l.setText("hello from D");
-assert(l.text() == "hello from D");        // QString compares against a D string
-w.resize(200, 60);
-```
-
-**One surprise worth knowing.** `w.width()` does not exist. `QWidget` inherits it from
-`QPaintDevice`, its *second* base, and D has single inheritance — so the secondary base is reached
-explicitly: `w.asQPaintDevice().width()`. Every multiply-inherited Qt class gets an `asX()` upcast
-like that. The per-symbol manifest records such methods as `inherited`, which is accurate and does
-not tell you where to look.
 
 ## Highlights (see `docs/FEATURES.md` for the full list)
 
@@ -151,7 +106,7 @@ not tell you where to look.
 - **`qmltc-d`**: a QML→D compiler with a fallback ladder — see below, and
   `docs/qmltc-d.md` (reference) / `docs/qmltc-d-vs-qmltc.md` (vs Qt's own `qmltc`).
 
-## qmltc-d: QML compiled to D, and a floor under it
+## qmltc-d: QML compiled to D
 
 `qmltc-d` turns a `.qml` document into a D class. A binding stops being a JavaScript
 expression the engine re-evaluates and becomes a D method plus a signal connection — Qt's
@@ -162,224 +117,27 @@ implicitWidth: Math.max(implicitBackgroundWidth + leftInset + rightInset,
                         implicitContentWidth + leftPadding + rightPadding)
 ```
 
-comes out as a slot the meta-object calls when any operand changes:
+comes out as a slot the meta-object calls when any operand changes.
 
-```d
-@Slot void __rcb_implicitWidth() {
-    setProp(this, "implicitWidth", __qmltcMax(
-        propDouble(this, "implicitBackgroundWidth") + propDouble(this, "leftInset") + …,
-        propDouble(this, "implicitContentWidth")   + propDouble(this, "leftPadding") + …));
-}
-```
+It is judged against the engine on two axes at once: a byte-identical rendered frame **and**
+every property of every named object. And it does not have to compile everything — `-O0`
+through `-O3` are degrees of *certainty*, not of speed, so a document the compiler cannot
+prove it handles is handed to the engine rather than emitted half-translated.
 
-No JS engine is involved in that binding again.
-
-### The four mechanisms
-
-Everything qmltc-d does is one of four, and they are not equally trustworthy. That ordering
-IS the `-O` scale.
-
-**1 — Static translation.** Every name has a known D type, so the expression becomes D. This
-is where `a === b`, arithmetic, string concatenation, ternaries, enum keys and property reads
-live. Trivial JS is not a problem; *untypable* JS is. The limit is the type registry, not the
-language.
-
-**2 — QVariant, for what is typed only at run time.** `property var control`, `property color
-targetColor`: the meta-object declares the property, the value lives in a runtime slot, and
-reads go through the meta channel. The value is right; the type is late. (No D field is
-generated for these — a `QColor` field changed how every read of it compiled, and cost eight
-link failures before it was done this way.)
-
-**3 — Containment, COM-style.** Qt's Material style is built on `impl` types it does not
-export — `Ripple`, `BoxShadow`, `ElevationEffect`. No D subclass can wrap a type with no
-linkable symbol, so the **engine** builds the object and the generated class holds an opaque
-pointer to it; every member is asked of whichever object owns it. This is why Material
-compiles far less than Basic: not weak JS translation, unexported types.
-
-**4 — Delegation, to the engine.** `control.model[control.headerView.textRole]` reads a member
-by a name known only at run time: there is no property to name and no type to hold the result.
-The expression is handed to the engine, which also tracks its dependencies — the point being
-that the dependencies of an expression we cannot compile are exactly the ones we cannot
-enumerate. With `--shadow-dir` the same expression is compiled at build time instead: it
-becomes a generated QML document carrying a real `Binding`, which `qmlcachegen` turns into
-bytecode. It has to be a binding and not a function — what makes a delegated expression live
-is the engine capturing a *binding's* dependencies, and a function call captures nothing.
-
-### `-O` is a degree of certainty
-
-The scale is the four mechanisms, in order, and it runs the other way from speed: the higher
-the level the more compiles and the less is proven. A document that needs a mechanism its
-level does not allow is not compiled with it — it goes to the engine whole.
-
-| level | mechanisms | certainty |
-|---|---|---|
-| `-O0` | none of ours: Qt builds the document, as `qmlcachegen` bytecode where it can, interpreted where it cannot | by construction — it is the engine |
-| `-O1` | static translation only | nothing crosses untyped |
-| `-O2` | ...and QVariant | value right, type late |
-| `-O3` | ...and containment and delegation, **and only what BEHAVES THE SAME** — what differs on either axis is demoted to `-O0` | measured, per document — **the default** |
-| `-Ox` | `-O3` with the check waived | experimental |
-
-**`-O3` is the default**, and that is a decision rather than the largest number available: it is
-the only level whose figure below was verified by rendering the result and comparing every property
-against the engine, over both corpora, instead of being assumed. `-O1` compiles 110 of 329 and
-proves it without a render; `-Ox` waives the check and is experimental by definition.
-
-`-O3` is not a compiler flag but a pipeline: the compiler cannot tell whether something behaves
-the same — it does not render and it does not run — so the build compiles the document, renders
-it, compares the frame with the engine's, compares every property of every named object, and
-demotes what differs on either. Two more switches exist for working on coverage rather than
-shipping: `--no-fallback` turns the whole ladder off, and `--pedantic` also makes a delegation a
-failure (its own exit code, 4 — "we could not compile this" and "we handed this over" are
-different jobs).
-
-**What each level actually compiles**, over Qt's five Controls styles (a document not compiled
-at a level is handed to the engine there, and still renders correctly):
-
-| style | documents | `-O1` | `-O2` | `-O3` compiled | demoted to the engine | unjudgeable |
-|---|---:|---:|---:|---:|---:|---:|
-| Basic | 70 | 39 | 39 | 54 | 5 | 11 |
-| Fusion | 70 | 37 | 37 | 54 | 3 | 13 |
-| Universal | 66 | 27 | 27 | 51 | 4 | 11 |
-| Imagine | 56 | 0 | 0 | 41 | 11 | 4 |
-| Material | 67 | 7 | 7 | 48 | 13 | 6 |
-| **total** | **329** | **110** | **110** | **248** | **36** | **45** |
-
-The `-O3` column used to read 329 — every document — under a heading that says "what each level
-actually compiles". That was the count of documents HANDLED: at `-O3` the pipeline attempts all of
-them, then demotes 36 to the engine because they behave differently, and cannot judge 45 at all.
-What it compiles AND proves equivalent is 248. The three columns are now separate because merging
-them turned "handed over safely" into "compiled", which is the distinction this whole ladder exists
-to make.
-
-**`unjudgeable` is not a synonym for broken**: those documents render, and the judge has no way to
-compare them (no object to dump, no frame to diff). They are counted apart from the demotions
-precisely so that neither number can borrow credibility from the other.
-
-The middle rung currently buys **nothing**: `-O1` and `-O2` compile the same 110 documents.
-Everything that needs weak typing in this corpus also needs containment, delegation or has a
-member the compiler skips, so it lands at `-O3` regardless. The scale has three rungs and two of
-them coincide — stated because it is a real property of the corpus, not a defect to hide.
-
-The certainty levels are stricter than the mechanism list suggests, on purpose: they also refuse a
-document with any SKIPPED member. A skip is worse than weak typing — weak typing still produces
-the member, a skip produces a document missing behaviour — and no caller can tell by reading the
-generated D. That refusal costs `-O1` sixty documents against a version that emitted them, and it
-is what makes "`-O1` agrees with the engine" true without a render step to check it.
-
-Imagine's 0-of-56 and Material's 7-of-67 are mechanism 3, not a weak JS translator: Imagine
-resolves every image through a `NinePatchImageSelector` and Material is built on unexported
-`impl` types, and both are containment by definition.
-
-`qmltc-optlevels-*` holds the levels to that promise: each document is built at `-O1` and `-O2`
-and both must produce the engine's value for every property of every named object, and the same
-value as each other. Over the application corpus, and — since the counts above were only ever
-counts — over four of Qt's five styles (`qmltc-optlevels-controls-{Basic,Fusion,Universal,Material}`),
-which is **110 documents** judged property by property at a certainty level: 39, 37, 27 and 7.
-The first run of that check found **seven** documents that compiled at a certainty level and did
-not match, and six of them were three missing rules rather than six quirks: a binding that
-dereferences `null` must write **nothing** (JS throws and the engine keeps the default), QML's
-default for an unset `property color` is **opaque black** where a default-constructed `QColor` is
-*invalid*, and a document's **imports** must be loaded and not only the module it lives in, because
-a module carries its resources. Fixing those three moved five of Qt's documents from `-O0` to
-compiled at the *default* level as well. What is left is one defect in two styles: `DelayButton`
-lays its two `contentItem` children out in the opposite order — they agree on every property
-either side *assigns* and exchange `baselineOffset`, which neither side assigns. Named in
-`optlevels-known.txt` with the measurement rather
-than skipped, so the gate still fails on anything new and the list can only shrink by fixing
-something. Imagine is absent for the opposite reason — `-O1` compiles nothing there, so the run
-would be vacuous, and the script says so instead of reporting a green it did not earn. `-O3` is
-deliberately outside all of this: it is a pipeline, and disagreeing before the demotion step is its
-normal intermediate state, which is what the gate below measures.
-
-**The measured claim.** Over Qt's own Quick Controls — five styles, 329 documents — every
-document the engine can draw standalone behaves **identically** to it: same frame, byte for
-byte, and the same value for every property of every named object. 248 of them reach that as
-compiled D; 36 reach it as `-O0`, where Qt builds the document; 45 have no frame to compare;
-**none is unplaced**.
-
-| style | documents | compiled | at `-O0` | unjudgeable | unplaced |
-|---|---:|---:|---:|---:|---:|
-| Basic | 70 | 54 | 5 | 11 | 0 |
-| Fusion | 70 | 54 | 3 | 13 | 0 |
-| Universal | 66 | 51 | 4 | 11 | 0 |
-| Imagine | 56 | 41 | 11 | 4 | 0 |
-| Material | 67 | 48 | 13 | 6 | 0 |
-| **total** | **329** | **248** | **36** | **45** | **0** |
-
-<!-- Measured 2026-08-14 from the o3 gate's own output, style by style. This table read 245/39 and
-     the paragraph above it read "49 reach it as -O0" — stale by three documents in the table and
-     wrong by ten in the prose, disagreeing with each other on the same page. The numbers come from
-     one place now: `qmltc-o3-gate-<style>` prints `compiled= demoted= unjudgeable=` and they sum
-     to the style's document count. -->
-
-Both axes are required, and demoting on either is what makes the number mean something. The
-frame alone placed 258 documents; 23 of those disagreed on a property while the frame matched,
-which is what a control that draws small at its implicit size will do. Those 23 are the
-difference between the two columns — they are at `-O0` now, still identical to the engine,
-just not by our compilation.
-
-The comparison is filtered twice, and both filters exist because the harness was wrong before
-the compiler was. A path the oracle marks `<missing>` is one it cannot walk rather than a
-disagreement — Qt defers a `Transition`'s animations, so at rest it has none and we have ours;
-counting those called six Fusion documents wrong when two were. And a path the ENGINE cannot
-reproduce cannot be a verdict about us: Material's SpinBox background carries
-`placeholderTextHAlign`, which Qt reads out of uninitialised memory and which answered
-1154029312, 1895307008 and -1856497920 on three consecutive engine runs. Judged against one
-engine dump, three Material documents were unplaceable at every level, `-O0` included.
-
-Every accusation is therefore re-verified against a **fresh** engine run, and only a difference the
-engine reproduces counts. Sampling it twice up front was the first attempt and was not enough: two
-samples of a random value can agree by chance, after which the path counts as measurable, differs
-from ours for real, and Material's `SearchField` comes out unplaced in one run and placed in the
-next. A probabilistic filter under a gate whose whole purpose is "no false positives" is the same
-defect one level up. The gate now gives the same verdict on three consecutive runs.
-
-`./build` re-checks all of it: `qmltc-o3-gate-<Style>` compiles each document, renders it,
-compares the frame AND every property, demotes what differs on either, and fails on a single
-document no level can place. It is a gate, not a number someone remembered to take.
-
-**The scope, which matters as much as the claim.** That corpus is Qt's own QML: `T.Foo` roots,
-declared properties, little loose JS, imports from Qt. Application QML is a different dialect, so
-there is a second corpus for it (`tests/qmltc/app/`, gate `qmltc-o3-gate-app`) — list models and
-delegates, `ListView`, `Loader`, real JS with loops and arrays and objects, states and
-transitions, inline components, `Connections`, signals crossing documents, one document
-instantiating another from its own directory, anchors, a `Timer`, `QtQuick.Layouts` (a different
-module, with its own attached properties), `Behavior on` with an animation, the `Qt` global object
-(`formatDateTime`, `rgba`, enums), a QML-declared `enum` with a `required` property, and an
-application *consuming* Controls rather than defining them.
+Measured against Qt's own shipped Controls, and against this project's own application QML:
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
 | Qt's Controls | 329 | 248 | 36 | 45 | 0 |
 | application-shaped | 18 | 7 | 11 | 0 | **0** |
 
-**Seven of eighteen** is the honest number, and it is the point rather than an embarrassment: this
-dialect is where the compiler is weak today and the ladder is what makes it correct anyway. All
-eighteen behave identically to the engine, and at `-O1`/`-O2` none of them is emitted partial — the
-other fifteen are handed over whole, which `qmltc-optlevels-*` checks property by property. The four
-newest shapes were added precisely because the compiler cannot compile them: `UNPLACED` stayed 0,
-which is the ladder doing the only job it has.
+**Seven of eighteen** on application-shaped QML is the honest number and the interesting one:
+that dialect is where the compiler is weak today, and the ladder is what keeps it correct
+anyway — all eighteen behave identically to the engine.
 
-The third arrived by reading one document's diagnostics to the end. `AEnumRequired` declares a QML
-`enum` and reads it back as `AEnumRequired.Mode.Busy`, and it took three fixes: the three-segment
-spelling of an enum path, the fact that **a document names its own type by the FILE's name and not
-by the generated class's** (which broke the two-segment spelling on every document here too), and a
-type inference that could not see a property read through an ENCLOSING object's id — without which
-JS's `+` had no type to convert and the generated D did not compile at all.
-
-What the second corpus still does not cover is an application's **context**: a document that needs
-the app's C++ context properties, its models and its data. Pointed at a real one (a 78-document
-status bar) the gate reports 3 compiled, 10 demoted, 4 unplaced and **61 unjudgeable** — and that
-last number is the finding, not the first three. `Bitcoin.qml` exists inside the bar, and the
-engine draws nothing for it standalone either, so there is no oracle to compare against. The
-documents above are self-contained on purpose, which is what makes them judgeable and also what
-they do not prove. Judging a whole running application is a different harness and remains open.
-
-The 45 unjudgeable are outside the frame axis and honestly so: `Action`, `ButtonGroup`,
-`CalendarModel`, the `*Delegate`s and the styles' `impl/` helpers have no frame by nature — a
-delegate needs a view to exist and an `Action` is not drawn at all. The engine renders nothing
-for them standalone, so there is nothing to compare a frame against; they are **not** counted as
-passes above.
+The mechanisms, the per-style breakdown, what each `-O` level compiles, and a decomposition
+of every document that is not compiled are in **[`docs/qmltc-d.md`](docs/qmltc-d.md)**. The
+numbers in both files are compared against what the gates counted, by `docs-numbers`.
 
 ## Directory status
 
