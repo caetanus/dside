@@ -26,6 +26,7 @@ third-party Qt library, or from your own C++.
    xiboca/ownership
    xiboca/output
    xiboca/troubleshooting
+   xiboca/new-qt-version
 
 .. toctree::
    :maxdepth: 2
