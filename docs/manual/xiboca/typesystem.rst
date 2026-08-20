@@ -75,9 +75,40 @@ binding (467 classes, 7873 symbols):
 
 The first row is the interesting one: **nothing this project binds is a class
 shiboken refuses**. The 29 rejected classes are Python-specific concerns that do
-not arise here. The five methods are worth looking at individually rather than
-adopting wholesale — a rejection in a Python binding is evidence, not a verdict,
-about a D one.
+not arise here.
+
+The five methods were then looked at individually, because a rejection in a Python
+binding is evidence about Python and not a verdict about D:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 38 18 44
+
+   * - Method
+     - Our fate
+     - What it is
+   * - ``QMetaObject::activate``
+     - ``unmapped-type``
+     - The generator already refuses it on its own.
+   * - ``QMetaObject::metacall``
+     - ``unmapped-type``
+     - Likewise.
+   * - ``QMetaObject::static_metacall``
+     - ``unmapped-type``
+     - Likewise.
+   * - ``QGraphicsItem::scroll``
+     - ``bound``
+     - A legitimate public Qt 6 method, ``(qreal, qreal, const QRectF &)``. The
+       rejection is a Python concern.
+   * - ``QPaintEngine::fix_neg_rect``
+     - ``shimmed``
+     - An ``inline`` internal helper taking four ``int *`` out-parameters —
+       awkward in Python, ordinary in D.
+
+**None of the five is a trap for us.** Three the generator reached the same
+conclusion about without being told, and the two it binds are safe to bind. So the
+one thing these rules could have contributed — a warning about a specific method —
+carries no information this binding needs.
 
 The 341 object-types looked like the rule that would actually bite: a
 QObject-derived type returned by value would be caught earlier and by name.
