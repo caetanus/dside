@@ -53,9 +53,21 @@ done
 # report 255 against a README that correctly says 248, i.e. accuse a document of being wrong for
 # containing the right number. Caught before the gate first ran; the whole point of it is that a
 # figure and its source describe the same population.
-tot_c=0; tot_d=0; tot_u=0; tot_o1=0; counted=""
+# THE TOTALS COME FROM THE GATES, NOT FROM A DOCUMENT. This loop used to skip any style whose row
+# was absent from README.md, which made that file the SELECTOR for what gets verified at all: move
+# the tables out of it and every total silently becomes 0, after which the gate accuses the OTHER
+# document — the correct one — of disagreeing with a count of nothing. A document must not decide
+# what is checked about it. Now every style the build recorded is summed, and each document is
+# checked for the rows it actually carries.
+tot_c=0; tot_d=0; tot_u=0; tot_o1=0; counted=""; docs_with_tables=0
 for st in $styles; do
-    grep -qE "^\| $st \| [0-9]+ \|" "$ROOT/README.md" 2>/dev/null || continue
+    # ...EXCEPT `app`, and this exclusion is now STATED rather than implied. The o3 gate also judges
+    # this project's own application QML, a different corpus, and summing it in makes the totals 255
+    # and 47 against documents that correctly say 248 and 36. The old selector excluded it as a side
+    # effect of the README not having a row for it — which worked, and hid the reason. Measured when
+    # this loop first stopped consulting the README: exactly the 255-vs-248 the comment above
+    # predicted.
+    [ "$st" = app ] && continue
     counted="$counted $st"
     IFS='	' read -r _ c d _ u < "$CDIR/counts_$st.tsv"
     tot_c=$((tot_c + c)); tot_d=$((tot_d + d)); tot_u=$((tot_u + u))
@@ -67,6 +79,7 @@ for st in $styles; do
     for doc in README.md docs/qmltc-d.md; do
         row=$(grep -E "^\| $st \| [0-9]+ \|" "$ROOT/$doc" 2>/dev/null | head -1 || true)
         [ -n "$row" ] || continue
+        docs_with_tables=$((docs_with_tables + 1))
         got_o1=$(printf '%s' "$row" | awk -F'|' '{gsub(/ /,"",$4); print $4}')
         got_c=$(printf '%s' "$row" | awk -F'|' '{gsub(/ /,"",$6); print $6}')
         got_d=$(printf '%s' "$row" | awk -F'|' '{gsub(/ /,"",$7); print $7}')
@@ -117,6 +130,13 @@ for doc in README.md docs/qmltc-d.md; do
     [ "$t_c" = "$tot_c" ] || fail "$doc totals $t_c compiled at -O3; the gates counted $tot_c"
     [ "$t_o1" = "$tot_o1" ] || fail "$doc totals $t_o1 at -O1; the gates counted $tot_o1"
 done
+
+[ "$bad" -eq 0 ] || exit 1
+# ...and SOMEBODY has to carry the tables. Every check above is guarded by "if the row is there",
+# so deleting the tables from both documents would leave a gate that verifies nothing and says OK —
+# the vacuous pass this project keeps finding. One document may drop them; both may not.
+[ "$docs_with_tables" -gt 0 ] || fail "neither README.md nor docs/qmltc-d.md carries a per-style table" \
+    "every check here is conditional on the row existing, so with no tables this gate proves nothing"
 
 [ "$bad" -eq 0 ] || exit 1
 echo "docs-numbers OK: README.md and docs/qmltc-d.md agree with what the gates counted this build — $tot_c compiled at -O3, $tot_d demoted, $tot_u unjudgeable, $tot_o1 at -O1, across the $(printf '%s' "$counted" | wc -w) style(s) those tables describe (the gate also judged:$(printf '%s' "$styles"))"
