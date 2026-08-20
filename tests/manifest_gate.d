@@ -34,20 +34,50 @@ struct Entry { string fate; string label; }
 
 // Parse manifest CONTENT (a string, so it's unittestable through the real parser). Fail-closed:
 // records malformed lines, duplicate keys, and out-of-enum fates for the caller to reject.
+// COLUMNS ARE READ BY NAME, from the `# cppClass<TAB>symbol<TAB>usr<TAB>...<TAB>fate` header,
+// because the manifest's schema is allowed to grow and this gate must not care. It did care: the
+// arity was pinned at 4 and the fate read from index 3, so adding a `why` column on 2026-08-19 —
+// which changed no key and no fate — made EVERY line malformed and the controls gate report 20602
+// issues under the heading "regression OR corrupt manifest". A schema change looked exactly like a
+// catastrophic regression, and the honest fix is not to regenerate the baselines (that would hide
+// any real regression riding along in the same commit) but to stop pinning the shape. Baselines
+// written with the old four columns and a current file with five now compare correctly, because
+// what is compared — class, USR, fate — is found by name in both.
 Entry[string] parse(string content, out string[] dups, out string[] malformed, out string[] badFate) {
     Entry[string] m;
+    size_t iCls = 0, iSym = 1, iUsr = 2, iFate = 3;   // the historical layout, if there is no header
+    size_t want = 4;
+    // The header is the `#` line that NAMES COLUMNS — not merely the first `#` line. These files
+    // open with an SPDX comment, and taking that for the header set the expected arity to 1 and
+    // made every real line malformed: 11246 issues instead of 20602, which is progress in the wrong
+    // direction and would have been read as "the fix helped a bit".
+    foreach (line; content.splitLines) {
+        if (!line.startsWith("#") || !line.canFind("cppClass")) continue;
+        auto h = line[1 .. $].strip.split('\t');
+        foreach (j, name; h) {
+            switch (name.strip) {
+                case "cppClass": iCls = j; break;
+                case "symbol":   iSym = j; break;
+                case "usr":      iUsr = j; break;
+                case "fate":     iFate = j; break;
+                default: break;
+            }
+        }
+        want = h.length;
+        break;
+    }
     foreach (i, line; content.splitLines) {
         if (!line.length || line.startsWith("#")) continue;
         auto c = line.split('\t');
-        if (c.length != 4 || c[0].length == 0 || c[1].length == 0 || c[2].length == 0) {
+        if (c.length != want || c[iCls].length == 0 || c[iSym].length == 0 || c[iUsr].length == 0) {
             malformed ~= "line " ~ (i + 1).to!string ~ ": `" ~ line ~ "`";
             continue;
         }
-        if (!validFate(c[3])) badFate ~= c[0] ~ "::" ~ c[1] ~ " fate=`" ~ c[3] ~ "`";
-        auto key = c[0] ~ "\t" ~ c[2];                      // class + USR
-        auto lbl = c[0] ~ "::" ~ c[1];
+        if (!validFate(c[iFate])) badFate ~= c[iCls] ~ "::" ~ c[iSym] ~ " fate=`" ~ c[iFate] ~ "`";
+        auto key = c[iCls] ~ "\t" ~ c[iUsr];                // class + USR
+        auto lbl = c[iCls] ~ "::" ~ c[iSym];
         if (key in m) dups ~= lbl;
-        m[key] = Entry(c[3], lbl);
+        m[key] = Entry(c[iFate], lbl);
     }
     return m;
 }

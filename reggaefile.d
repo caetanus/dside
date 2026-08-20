@@ -636,7 +636,40 @@ Build reggaeBuild() {
                                 Target(dn) ~ docsNumberSources);
     }
 
-    // THE QUICKSTART THE DOCUMENTATION SHOWS, actually run. docs/xiboca/generating-a-wrapper.md
+    // THE MANUAL, BUILT AND CHECKED. `docs-sphinx` builds docs/manual with warnings as errors, so
+    // an unreachable page or a broken cross-reference is a build failure rather than a site that
+    // looks finished; `docs-spec-keys` compares the spec reference against the keys the generator
+    // actually reads, in BOTH directions. The second direction is the one that already paid: before
+    // the gate existed the reference listed `no_transfer` beside transfer_in/transfer_out as though
+    // xiboca read it, and it does not — the ownership gate does. A reader would have written it into
+    // a spec and got nothing.
+    {
+        auto dsx = buildPath(root, "tests", "docs-sphinx.sh");
+        auto manual = buildPath(root, "docs", "manual");
+        // Whichever binding was asked to emit an API reference is the one the manual assembles.
+        Target[] docsApiDep;
+        foreach (b; ctorGuardBindings) if (b.specName == "spec_cxx_qtwidgets.json") docsApiDep ~= b.gen;
+        if (exists(dsx) && exists(buildPath(manual, "conf.py"))) {
+            auto pages = dirEntries(manual, "*.rst", SpanMode.depth).map!(e => Target(e.name)).array;
+            // The generated API reference is passed in, not built in place: it comes out of the
+            // qtwidgets generation (spec key `docs_dir`), so the gate depends on that gen step. A
+            // fresh checkout with nothing generated still builds the committed manual — the script
+            // says so in its second message — which is why the api dir is an argument rather than a
+            // requirement.
+            all ~= Target.phony("docs-sphinx",
+                                "sh " ~ dsx ~ " " ~ buildPath(root, ".build", "manual")
+                                       ~ " " ~ buildPath(root, ".build", "api", "qtwidgets"),
+                                [Target(dsx), Target(buildPath(manual, "conf.py"))] ~ pages ~ docsApiDep);
+        }
+        auto dsk = buildPath(root, "tests", "docs-spec-keys.sh");
+        if (exists(dsk) && exists(buildPath(manual, "xiboca", "spec.rst")))
+            all ~= Target.phony("docs-spec-keys", "sh " ~ dsk,
+                                [Target(dsk), Target(buildPath(manual, "xiboca", "spec.rst")),
+                                 Target(buildPath(manual, "xiboca", "ownership.rst")),
+                                 Target(buildPath(root, "xiboca", "emit.d"))]);
+    }
+
+    // THE QUICKSTART THE DOCUMENTATION SHOWS, actually run. docs/manual/xiboca/
     // walks a reader through binding a C++ library that is neither Qt nor part of this repository's
     // bindings; this generates it, compiles it, links it and compares its output to a golden file.
     //

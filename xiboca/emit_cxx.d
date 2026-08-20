@@ -819,9 +819,16 @@ __gshared string[] MANIFEST;
 // signature — so overloads get distinct rows (critics r6 #2: class+name collapsed them and let a
 // regressed/vanished overload pass the gate). Column order keeps `fate` LAST so the coverage.txt
 // breakdown (splits on the last column) is unaffected.
-void recordSym(string cppClass, string sym, string fate, CXCursor c) {
+// `why` is the REASON, and it goes before `fate` precisely because of the note above: the
+// coverage.txt breakdown splits on the LAST column, so appending would have broken it silently.
+// It exists because "725 unmapped-type" answers how many and not which — a reader who wants the
+// missing method has to know WHICH type stopped it, and the generator knew: Unmappable carries a
+// message naming the type ("template/std: QFuture<T>", "ref to QFooPrivate"). It was thrown away at
+// the catch. Documentation claiming the manifest named it was therefore false, written 2026-08-18
+// and true from this commit on.
+void recordSym(string cppClass, string sym, string fate, CXCursor c, string why = "") {
     auto usr = clang_getCursorUSR(c).str;
-    MANIFEST ~= cppClass ~ "\t" ~ sym ~ "\t" ~ usr ~ "\t" ~ fate;
+    MANIFEST ~= cppClass ~ "\t" ~ sym ~ "\t" ~ usr ~ "\t" ~ why ~ "\t" ~ fate;
     if (fate == "unmapped-type" || fate == "inline-failed") CXX_SKIP++;   // only real drops
 }
 string wrapperTypeOf(CXType t) {
@@ -1701,7 +1708,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
                     if (ov.length) rawDecls ~= ov;
                 }
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
+            } catch (Unmappable e) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c, e.msg); }
         }
         // Inline verification deferred to a single batch at the end (verifyInlinesBatched)
         // — compiling one ldc2 per class here was the generation bottleneck.
@@ -1782,7 +1789,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (ovc.length) ctorMethods ~= ovc;
                 }
                 vci++;
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
+            } catch (Unmappable e) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c, e.msg); }
         }
         // Deep copy: a non-POD value type (std::string/CoW/... by value) can't be
         // copied bitwise — the SSO self-pointer / the CoW refcount break. We emit a
@@ -1843,8 +1850,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             // wrapper manifest carried 731 rows against the raw 8344 for the SAME spec, so the gate
             // read 7613 methods as DISAPPEARED when most of them were callable. The vocabulary is
             // closed (tests/manifest_gate.d) on purpose — no inventing categories here.
-            string _fate = "bound";
-            scope(exit) recordSym(cppName, mn, _fate, c);
+            string _fate = "bound"; string _why;
+            scope(exit) recordSym(cppName, mn, _fate, c, _why);
             // qt_* are MOC/Q_GADGET internals (qt_metacast, qt_metacall,
             // qt_check_for_QGADGET_macro) — never user-callable, and some reference
             // symbols Qt doesn't export (ldc dead-strips them; dmd whole-program breaks).
@@ -2074,7 +2081,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 auto sov = strOverload(mn, retD, kw, "", wpds, seenStrOvW);
                 if (sov.length) wm ~= sov;
                 wi++;
-            } catch (Unmappable) { _fate = "unmapped-type"; }
+            } catch (Unmappable e) { _fate = "unmapped-type"; _why = e.msg; }
         }
         // one constructor: a _new factory that heap-allocates, runs the C++ ctor, and wraps.
         int wci; bool[string] seenCW;
@@ -2154,7 +2161,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         ? format("\n        if (%s !is null) holder.transferred(this);", ctorParent)
                         : "");
                 wci++;
-            } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
+            } catch (Unmappable e) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c, e.msg); }
         }
         foreach (c; children(cur))
             if (isPublic(c) && c.kind == CXCursor_CXXMethod) emitWrapMethod(c);
@@ -2234,8 +2241,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         if (mn == "qt_check_for_QGADGET_macro") continue;
         // Per-symbol coverage manifest: one row per method, its fate filled in below and written
         // on every exit path (signal/inherited/shim/bound/unmapped) via scope(exit).
-        string _fate = "bound";
-        scope(exit) recordSym(cppName, mn, _fate, c);
+        string _fate = "bound"; string _why;
+        scope(exit) recordSym(cppName, mn, _fate, c, _why);
         // Qt signal -> a connect<Signal>(delegate) method (via a gen-phase functor
         // shim), NOT a callable binding. Non-overloaded; args marshaled to the delegate.
         if (isSignal(c)) {
@@ -2521,7 +2528,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             }
             auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
             if (ov.length) methodLines ~= ov;
-        } catch (Unmappable) { _fate = "unmapped-type"; /* recordSym (scope-exit) counts it */ }
+        } catch (Unmappable e) { _fate = "unmapped-type"; _why = e.msg; /* recordSym (scope-exit) counts it */ }
     }
     // Re-alias base overloads that our new same-name overloads would hide (D name-hiding):
     // e.g. QGridLayout emits addWidget(w,row,col,...) -> without this, QLayout::addWidget(w)
@@ -2633,7 +2640,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             ctorStatics ~= "        return self;";
             ctorStatics ~= "    }";
             ci++;
-        } catch (Unmappable) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c); }
+        } catch (Unmappable e) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c, e.msg); }
     }
 
     string[] body_;

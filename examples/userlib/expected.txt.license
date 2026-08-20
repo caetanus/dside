@@ -1,0 +1,7 @@
+SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+SPDX-License-Identifier: BSL-1.0
+
+The golden output of examples/userlib/app.d, compared byte for byte by
+tests/xiboca-quickstart.sh. It is a plain-text artifact and cannot carry a
+comment header, so its terms travel in this sidecar — the same convention the
+PNGs under branding/ use.

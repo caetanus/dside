@@ -64,7 +64,7 @@ category() {
     # xiboca-quickstart is a gate for the same reason the consumer smokes are: it builds
     # something from OUTSIDE the binding's own graph — the documented quickstart for wrapping
     # a library that is not Qt — and refuses the build when the documentation stops being true.
-    consumer-smoke-*|dub-consumer-*|xiboca-quickstart) echo gate ;;
+    consumer-smoke-*|dub-consumer-*|xiboca-quickstart|docs-sphinx|docs-spec-keys) echo gate ;;
     # Wrapper LIFETIME, which is neither moc nor qml: who owns a pointer, and who may delete it.
     borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*|threadguard-*|nonqobject-*|dangle-*) echo lifetime ;;
     *) echo other ;;
@@ -80,7 +80,10 @@ qtaxis() {
     # The Qt5 transpiler suite spells its version in the FAMILY, not as a `-qt5` suffix, so 122
     # Qt5 targets were being reported as Qt6 — the one axis the report exists to get right.
     qmltc5-*|qtmoc-probe-qml5|abi-layout-qt5) echo qt5 ;;
-    manifest-gate-*|registry-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*|report-selftest) echo - ;;
+    # docs-spec-keys reads the generator's source and the reference page and nothing else — no
+    # Qt, no compiler. docs-sphinx is NOT here on purpose: it assembles the manual with the
+    # API reference emitted by the qt6 qtwidgets generation, so qt6 is the honest axis.
+    manifest-gate-*|registry-gate-*|expected-fails-lint|lupdate-check|holder_test*|sample_*|report-selftest|docs-spec-keys) echo - ;;
     *) echo qt6 ;;
   esac
 }
@@ -126,6 +129,8 @@ if [ "$selftest" = yes ]; then
   ck tr-ldc2                         i18n      qt6 ldc2
   ck qrc-ldc2                        misc      qt6 ldc2
   ck xiboca-quickstart               gate      qt6 -
+  ck docs-sphinx                     gate      qt6 -
+  ck docs-spec-keys                  gate      -   -
   # ...and no target the build actually offers may be unclassified.
   # The ` (optional)` suffix is part of the LISTING, not of the name. Glob-matched families never
   # noticed; `binding-core` is matched exactly and came back unclassified the day it became optional.

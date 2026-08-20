@@ -3,6 +3,7 @@
   "pkg_config": "Qt6Widgets",
   "out_dir": "../generated/qt-6.11/cxx-qtwidgets",
   "d_package": "qt.widgets",
+  "docs_dir": "../.build/api/qtwidgets",
   "abi": "cxx",
   "exceptions": true,
   "discover_module": "QtWidgets",

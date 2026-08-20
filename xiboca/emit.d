@@ -544,7 +544,7 @@ void main(string[] args) {
     auto rows = MANIFEST.dup.sort.array;
     long[string] byFate;
     foreach (r; rows) byFate[r.split("\t")[$ - 1]]++;
-    string man = "# cppClass\tsymbol\tusr\tfate\n";
+    string man = "# cppClass\tsymbol\tusr\twhy\tfate\n";
     foreach (r; rows) man ~= r ~ "\n";
     std.file.write(buildPath(outDir, "coverage-manifest.tsv"), man);
 
@@ -904,5 +904,156 @@ void main(string[] args) {
         cov ~= format("aggregate drops across ALL paths: %d; %d in the manifest, %d not yet per-symbol.\n",
             CXX_SKIP, manifestDrops, residual);
     std.file.write(buildPath(outDir, "coverage.txt"), cov);
+
+    // ...and the API reference, when the spec asks for one. Optional like `qmltypes`: a binding
+    // that nobody documents should not pay for pages nobody reads.
+    if (auto dd = "docs_dir" in spec.object) {
+        auto docsDir = isAbsolute(dd.str) ? dd.str : buildNormalizedPath(specPath.dirName, dd.str);
+        emitDocs(docsDir, dsub, dpkg, spec["qt_version"].str);
+    }
 }
 
+// ---------------------------------------------------------------------------------------------
+// THE API REFERENCE, EMITTED FROM WHAT WAS JUST EMITTED.
+//
+// 857 classes and 44356 symbols cannot be documented by hand, and a hand-kept list would be a
+// second place to forget. The generator already holds every fact a reference page needs — the D
+// signature it wrote, the C++ symbol, the base it came through, the fate, and now the REASON a
+// symbol was dropped — so the page is produced from the artifact rather than about it. Regenerating
+// the binding regenerates the reference; a method that leaves Qt 7 leaves the page in the same run.
+//
+// What this deliberately does NOT do is copy Qt's prose. Qt's documentation is
+// GFDL-1.3-no-invariants (the .qdoc files) or the code licence (the per-class text lives inside the
+// .cpp), and neither is this manual's licence. It also would not help as much as it looks: 98% of
+// the D method NAMES are Qt's own (measured on QWidget: 217 methods, 5 with a spelling of ours), so
+// a link carries the semantics at no cost while staying correct across Qt releases. What the page
+// adds is the 2% Qt cannot tell you: the D signature, the reach, and what is missing here.
+void emitDocs(string docsDir, string dsub, string dpkg, string qtVer) {
+    mkdirRecurse(docsDir);
+    string[][string] byClass;
+    foreach (r; MANIFEST) {
+        auto f = r.split("\t");
+        if (f.length >= 5) byClass[f[0]] ~= r;
+    }
+
+    string[] written;
+    // The classes come from the MODULES THAT WERE WRITTEN, not from the manifest's keys. The
+    // manifest covers the object-method path only — its own comment says so — and a value type
+    // therefore has zero rows in it. Measured on the userlib example: deriving from the manifest
+    // produced 2 pages out of 23 modules, silently dropping `Circle`, and on Qt it would drop every
+    // QSize, QRect and QColor. The emitted source is the artifact; the manifest annotates it.
+    string[] candidates;
+    foreach (e; dirEntries(dsub, "*.d", SpanMode.shallow)) {
+        auto txt = readText(e.name);
+        foreach (line; txt.splitLines) {
+            if (!line.startsWith("extern (C++) class ") && !line.startsWith("extern (C++) struct "))
+                continue;
+            auto rest = line["extern (C++) ".length .. $];
+            auto kw = rest.startsWith("class ") ? "class " : "struct ";
+            auto nm = rest[kw.length .. $].strip.split(" ")[0].split(":")[0].split("{")[0].strip;
+            if (nm.length) candidates ~= nm;
+            break;
+        }
+    }
+    // The page set has to be known BEFORE any page is written, because a cross-reference to a
+    // base that has no page is a broken link — and Sphinx with -W turns that into a build failure
+    // rather than a dangling one. Measured: the first version linked every base unconditionally and
+    // produced `unknown document` for every value type whose base was not itself emitted.
+    auto pageSet = candidates.sort.uniq.array;
+    bool[string] hasPage;
+    foreach (c; pageSet) if (exists(buildPath(dsub, modBase(c) ~ ".d"))) hasPage[modBase(c)] = true;
+
+    foreach (cls; pageSet) {
+        auto modPath = buildPath(dsub, modBase(cls) ~ ".d");
+        if (!exists(modPath)) continue;
+        auto src = readText(modPath);
+
+        // The declared base, straight out of the module we wrote.
+        string base;
+        foreach (line; src.splitLines)
+            if (line.startsWith("extern (C++) class " ~ cls)) {
+                auto i = line.indexOf(" : ");
+                if (i > 0) base = line[i + 3 .. $].strip.chompPrefix("{").strip.split(" ")[0];
+                break;
+            }
+
+        // The D declarations, which are what a reader types. Signatures come from the emitted
+        // source rather than being reconstructed, so they cannot disagree with it.
+        string[] sigs;
+        foreach (line; src.splitLines) {
+            auto t = line.strip;
+            // A bound method is written either as `pragma(mangle, "...") final ...` (it mangles
+            // straight to the C++ symbol) or as `final ... { ... }` (it goes through a shim). Only
+            // the second form was matched at first, and on a user library — where nearly everything
+            // takes the direct form — the page came out with 2 of 6 methods and looked complete.
+            if (t.startsWith("pragma(mangle,")) {
+                auto close = t.indexOf(") ");
+                if (close > 0) t = t[close + 2 .. $].strip;
+            }
+            if (t.startsWith("private ")) continue;   // plumbing the reader never calls
+            if (!t.startsWith("final ") && !t.startsWith("static ") && !t.startsWith("extern (D) final "))
+                continue;
+            auto body_ = t.indexOf(" {");
+            auto decl = (body_ > 0 ? t[0 .. body_] : t.chomp(";")).strip;
+            if (decl.canFind("__") || decl.canFind("qtd_m_")) continue;   // internal plumbing
+            sigs ~= decl;
+        }
+
+        string[] missing;
+        foreach (r; byClass.get(cls, [])) {
+            auto f = r.split("\t");
+            if (f[4] == "unmapped-type")
+                missing ~= f[1] ~ "\t" ~ (f[3].length ? f[3] : "reason not recorded");
+        }
+
+        auto title = cls;
+        string p = title ~ "\n" ~ "=".replicate(title.length) ~ "\n\n";
+        p ~= ".. This page is GENERATED by xiboca from the emitted binding. Do not edit it: the\n"
+           ~ "   next generation overwrites it. See docs/documentation-plan.md.\n\n";
+        if (base.length)
+            p ~= (modBase(base) in hasPage)
+                 ? format("Inherits :doc:`%s`.\n\n", modBase(base))
+                 : format("Inherits ``%s``, which has no page in this reference.\n\n", base);
+        if (cls.startsWith("Q"))
+            p ~= format("Qt's own documentation for this class: `%s <https://doc.qt.io/qt-6/%s.html>`_.\n"
+                        ~ "The method names below are Qt's; what differs is listed in\n"
+                        ~ ":doc:`/dside/reading-qt-docs`.\n\n", cls, cls.toLower);
+
+        p ~= "Methods\n-------\n\n";
+        if (sigs.length) {
+            p ~= ".. code-block:: d\n\n";
+            foreach (s; sigs) p ~= "   " ~ s ~ "\n";
+            p ~= "\n";
+        } else {
+            p ~= "No directly callable methods were emitted for this type.\n\n";
+        }
+
+        if (missing.length) {
+            p ~= "Not bound\n---------\n\n"
+               ~ format("%d symbol(s) of this class are not available, each because a type in its\n"
+                        ~ "signature has no D mapping yet. The reason is the generator's own.\n\n", missing.length);
+            p ~= ".. list-table::\n   :header-rows: 1\n   :widths: 40 60\n\n"
+               ~ "   * - Symbol\n     - Why\n";
+            foreach (m; missing) {
+                auto f = m.split("\t");
+                // BOTH cells are literal. The reason is a C++ type spelling — `void **`,
+                // `char *`, `QList<T> &` — and a bare asterisk opens inline emphasis in
+                // reStructuredText, which Sphinx reports as "Inline emphasis start-string without
+                // end-string" and -W turns into a failed documentation build. Backticks inside the
+                // text would close the literal early, so they are neutralised first.
+                p ~= format("   * - ``%s``\n     - ``%s``\n",
+                            f[0].replace("`", "'"), f[1].replace("`", "'"));
+            }
+            p ~= "\n";
+        }
+        std.file.write(buildPath(docsDir, modBase(cls) ~ ".rst"), p);
+        written ~= cls;
+    }
+
+    string idx = format("%s API reference\n%s\n\n", dpkg, "=".replicate(dpkg.length + 14))
+        ~ format("Generated by xiboca from the %s binding: %d class(es).\n\n", qtVer, written.length)
+        ~ ".. toctree::\n   :maxdepth: 1\n\n";
+    foreach (c; written) idx ~= "   " ~ modBase(c) ~ "\n";
+    std.file.write(buildPath(docsDir, "index.rst"), idx);
+    writefln("docs: %d class page(s) -> %s", written.length, docsDir);
+}
