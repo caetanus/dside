@@ -19,6 +19,34 @@ matrix never fails on baseline drift; CI runs them in a separate continue-on-err
 a real runner** — treat the local machine (Qt 5.15 + 6.11) as the current source of
 truth until CI goes green.
 
+## Which run is the record
+
+Two ways to run the matrix, and they answer different questions. Confusing them is
+how a green reading can describe a subset:
+
+| | |
+|---|---|
+| `./build` (optionally `--single`) | Builds the default targets. **Aborts on the first failure**, so every target after it never runs — and its absence looks exactly like it never had anything to say. |
+| `bash tools/test-report.sh [filter]` | Runs each declared target **individually and to the end**, records pass/fail/skip per target, and exits non-zero if anything failed. This is the record of execution. |
+
+The distinction is not theoretical. On 2026-08-19 three consecutive `./build` runs
+reported 292–295 targets green with no failure from a newly added gate — because the
+run had aborted earlier and that gate was among the 17 targets never reached.
+"No FAIL from X" and "X passed" are different statements, and only the report can
+tell them apart.
+
+The report costs what running everything costs: measured on 2026-08-20, the ten
+`license-*` targets alone take **6m49s**, dominated by the mutation batteries
+(`license-package-mutations` is 272s of that). A full report is therefore hours, not
+minutes. So the working split is:
+
+- `./build --single` while iterating — fast, and any failure it *does* reach is real;
+- `tools/test-report.sh` before claiming the suite is green, and in CI, where the
+  question is coverage rather than turnaround.
+
+A serial run is also what catches ordering-sensitive failures: `--single` found a
+report self-test failure that three parallel runs never reached.
+
 ## Categories
 
 | Category | Targets | What it proves |
