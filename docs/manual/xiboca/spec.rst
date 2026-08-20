@@ -121,11 +121,8 @@ Typesystem
    * - ``typesystem_glob``
      - Which files in it. Default ``typesystem_*.xml``.
 
-Only a small subset is extracted, by regex: ``<rejection>`` (skip a class or
-method) and ``<object-type>`` versus ``<value-type>`` (never heap-copy an object
-type by value). Ownership and renaming semantics are **not** parsed — this is a
-deliberate borrowing of data, not a shiboken fork, and it is why ownership lives
-in the spec keys instead.
+The bounded subset that is read, and what enabling it would change, are in
+:doc:`typesystem`.
 
 Comments
 --------

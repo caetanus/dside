@@ -24,6 +24,7 @@ third-party Qt library, or from your own C++.
    xiboca/discovery
    xiboca/spec
    xiboca/ownership
+   xiboca/typesystem
    xiboca/output
    xiboca/troubleshooting
    xiboca/new-qt-version
