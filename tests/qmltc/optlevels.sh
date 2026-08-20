@@ -60,7 +60,21 @@ for O in 1 2; do
         -L--start-group -L="$BDIR/libbinding_$DC.a" -L="$BDIR/libshims.a" -L--end-group $LIBS \
         > "$OUT/o$O.link" 2>&1 \
     || { echo "optlevels: -O$O does not link" >&2; sed -n '1,5p' "$OUT/o$O.link" >&2; exit 1; }
-  QT_QPA_PLATFORM=offscreen "$OUT/o$O.bin" --dumpall 2>"$OUT/o$O.err" | sort > "$OUT/o$O.txt"
+  # OUR BINARY'S FAILURE IS NOT A DISAGREEMENT. Piping straight into `sort` threw away its exit
+  # status, and `o$O.err` was written and never read — so when it crashed, stdout was empty, the
+  # census saw every engine property as `only-engine`, and this script reported
+  # "DISAGREES with the engine (N real difference(s))" while the actual error sat unread in a file
+  # beside it. That is why the intermittency observed under parallel load stayed uncharacterised for
+  # three sightings: the message pointed at semantics, and the cause was a process that died.
+  # (The engine's own empty dump is already handled above, as unjudgeable.)
+  QT_QPA_PLATFORM=offscreen "$OUT/o$O.bin" --dumpall > "$OUT/o$O.raw" 2>"$OUT/o$O.err"
+  rc=$?
+  sort "$OUT/o$O.raw" > "$OUT/o$O.txt"
+  if [ "$rc" -ne 0 ] || [ ! -s "$OUT/o$O.txt" ]; then
+    echo "optlevels: -O$O produced no dump for $QMLFILE (exit $rc) — OUR binary, not the engine" >&2
+    sed -n '1,5p' "$OUT/o$O.err" >&2
+    exit 1
+  fi
   # THROUGH THE CENSUS, like the o3 gate, and not a raw diff. A path the oracle marks `<missing>`
   # is one it cannot walk, not a disagreement: Qt defers a Transition's animations, so at rest the
   # engine has none and we have ours. A raw diff called five Basic documents wrong on that alone —
