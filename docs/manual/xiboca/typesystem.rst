@@ -79,16 +79,32 @@ not arise here. The five methods are worth looking at individually rather than
 adopting wholesale — a rejection in a Python binding is evidence, not a verdict,
 about a D one.
 
-The 341 object-types are the rule that would actually bite: today a
-QObject-derived type returned by value is caught by the generator's own record
-analysis, and this would catch it earlier and by name. Whether that changes any
-emitted symbol has not been measured, because no spec enables it.
+The 341 object-types looked like the rule that would actually bite: a
+QObject-derived type returned by value would be caught earlier and by name.
+
+It does not bite. Measured on 2026-08-20 by generating the whole QtWidgets binding
+twice, once with ``typesystem_dir`` pointed at PySide6's typesystems and once
+without:
+
+.. code-block:: text
+
+   coverage-manifest.tsv     8428 rows, 0 lines differ
+   emitted D modules         818 vs 818, 0 modules differ
+
+**Enabling the rules changes nothing.** Not a class, not a symbol, not a fate, not
+a line of emitted D. The generator's own analysis already reaches every conclusion
+these rules would contribute: a record type that cannot be copied is caught by
+looking at the record, not by being told.
 
 The honest position
 -------------------
 
-This is a borrowed heuristic with a bounded reader, kept because "what does not
-come for free" is worth knowing from a project that has already answered it. It
-is not load-bearing today. Either a spec should enable it and the diff in
-``coverage-manifest.tsv`` should be recorded, or the code should say plainly that
-it is unused — and this page exists so the choice is visible rather than implied.
+The feature is inert on this binding, and now that is measured rather than
+suspected. It is kept for one reason: it costs four regular expressions, and if a
+future Qt or a third-party library contains a class that libclang describes
+plausibly and shiboken knows to be a trap, this is the channel through which that
+knowledge arrives without inventing a rule of our own.
+
+But it must not be described as load-bearing. Whoever reads ``coverage.txt`` and
+sees ``0 shiboken-rejected`` should know that the number would be 0 with the rules
+switched off as well.
