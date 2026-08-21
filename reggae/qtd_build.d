@@ -268,7 +268,28 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
     auto test = newerThan.map!(d => "[ " ~ output ~ " -nt " ~ d ~ " ]").join(" && ");
     auto inner = (test.length ? "if " ~ test ~ "; then exit 0; fi; " : "") ~ cmd;
     auto esc = inner.replace("'", `'\''`);
-    return "mkdir -p " ~ dirName(lock) ~ " && flock " ~ lock ~ " sh -c '" ~ esc ~ "'";
+    return posixCmd("mkdir -p " ~ dirName(lock) ~ " && flock " ~ lock ~ " sh -c '" ~ esc ~ "'");
+}
+
+// A COMMAND THIS BUILD WROTE, MADE SAFE TO HAND TO WHATEVER SHELL RUNS IT.
+//
+// reggae runs targets through std.process.executeShell, and on Windows that is cmd.exe — not by
+// configuration but by construction: modern D takes the shell from `nativeShell`, a compile-time
+// constant, so COMSPEC cannot redirect it. cmd.exe then parses `&&`, `|`, `>` and `^` before the
+// inner program sees them, and a command written for sh is torn apart on the way in:
+//
+//     '/Users/caetano/qtest' is not recognized as an internal or external command
+//
+// Measured: cmd.exe DOES respect one level of double quotes, so `sh -c "<command>"` reaches sh
+// whole, `&&` and all. Everything this build composes uses single quotes internally, so there is
+// nothing to collide with the wrapper.
+//
+// On POSIX this is the identity — executeShell is already sh.
+string posixCmd(string cmd) {
+    version (Windows) {
+        import std.string : replace;
+        return `sh -c "` ~ cmd.replace(`"`, `\"`) ~ `"`;
+    } else return cmd;
 }
 
 // reggaeBuild() runs on EVERY ./build (even --list), so an unconditional write here bumps the
