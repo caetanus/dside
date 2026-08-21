@@ -344,6 +344,21 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // nothing to collide with the wrapper.
 //
 // On POSIX this is the identity — executeShell is already sh.
+// RUNNING A BUILT BINARY, with the path kept out of the command TEXT.
+//
+// A path substituted by reggae ($in/$out) is native and backslashed, and measured on the VM,
+// backslashes do not survive the executeShell -> cmd.exe -> sh chain in ANY quoting: `a\b\c`
+// arrives as `abc`, single-quoted, double-quoted or escaped alike. As an ARGUMENT it arrives
+// intact — `ARG:[a\b\c]` — because it never passes through a shell's quote processing.
+//
+// So the binary is $0 and the environment prefix stays in the command.
+string runOffscreen(string binRef, string extra = "") {
+    version (Windows)
+        return `sh -c 'QT_QPA_PLATFORM=offscreen exec "$0" ` ~ extra ~ `' ` ~ binRef;
+    else
+        return "QT_QPA_PLATFORM=offscreen " ~ binRef ~ (extra.length ? " " ~ extra : "");
+}
+
 string posixCmd(string cmd) {
     version (Windows) {
         import std.string : replace, indexOf;
@@ -644,7 +659,7 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
 Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "",
                Target[] extraDeps = []) {
     auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra, extraDeps);
-    return Target.phony(name, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [app]);
+    return Target.phony(name, runOffscreen("$in"), [app]);
 }
 
 // The shiboken libsample corner-case harness, ported to reggae. Needs a pyside-setup clone
@@ -744,7 +759,7 @@ Target[] libsampleTargets(string root, string pyside) {
             // transitive one. (critics r7 #8 / r8 #9)
             auto app = Target(n ~ "-bin", dc ~ " -of=$out " ~ c ~ " -I" ~ gen ~ " " ~ grp,
                 [Target(c), libT, shimsT]);
-            outs ~= Target.phony(n, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [app]);
+            outs ~= Target.phony(n, runOffscreen("$in"), [app]);
         }
     }
     return outs;
