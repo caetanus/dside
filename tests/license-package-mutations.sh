@@ -17,6 +17,7 @@
 #
 # Adding a check to license-package means adding its mutation here. That is the deal.
 set -eu
+. "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 [ $# -ge 3 ] || { echo "usage: license-package-mutations.sh <package-dir> <archives> <builddir>" >&2; exit 2; }
 PKG=$1
 ARCHIVES=$2
@@ -89,7 +90,7 @@ run_mutation no-dubjson          "no dub.json in the package"           'rm -f "
 run_mutation no-buildtxt         "no qtd-build.txt in the package"      'rm -f "$P/qtd-build.txt"'
 run_mutation no-verbatim         "no verbatim.txt in the package"       'rm -f "$P/verbatim.txt"'
 run_mutation no-manifest         "no MANIFEST.sha256 in the package"    'rm -f "$P/MANIFEST.sha256"'
-run_mutation dubjson-no-license  "dub.json has no license field"        'python3 -c "import json,sys;d=json.load(open(sys.argv[1]));d.pop(\"license\",None);json.dump(d,open(sys.argv[1],\"w\"))" "$P/dub.json"'
+run_mutation dubjson-no-license  "dub.json has no license field"        '"$PY" -c "import json,sys;d=json.load(open(sys.argv[1]));d.pop(\"license\",None);json.dump(d,open(sys.argv[1],\"w\"))" "$P/dub.json"'
 
 # --- the closed set, and the manifest read as data rather than as text (round 16 #1 and #2) ---
 # These four are the auditor's own counterexamples plus the two they imply. The first two are the

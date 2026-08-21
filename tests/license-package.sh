@@ -25,6 +25,7 @@
 # verdict was still 1, which is why it looked fine. A gate that stops checking after the fourth
 # finding is a gate that reports on its own patience.
 set -eu
+. "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 [ $# -ge 2 ] || { echo "usage: license-package.sh <package-dir> <allowed archives, comma-separated>" >&2
                  echo "    The archive list comes from the BUILD GRAPH. It is required because the" >&2
                  echo "    package's own MANIFEST.sha256 is self-attested: adding an opaque .a AND" >&2
@@ -107,7 +108,7 @@ done
 # about the same package, both accepted. Parsed as JSON rather than grepped, because a malformed
 # manifest, a non-string value or a duplicated key are all ways to satisfy a regex and not a reader.
 if [ -f "$PKG/dub.json" ]; then
-    dubl=$(python3 - "$PKG/dub.json" <<'PY' 2>/dev/null || echo "__ERR__"
+    dubl=$("$PY" - "$PKG/dub.json" <<'PY' 2>/dev/null || echo "__ERR__"
 import json, sys
 # DUPLICATE KEYS ARE A FINDING, not a parse detail. `json.load` keeps the LAST occurrence in
 # silence, so `"license": "GPL-3.0-only", "license": "BSL-1.0"` reads as BSL while a different

@@ -1,4 +1,5 @@
 #!/bin/sh
+. "$(dirname -- "$0")/../pybin.sh"          # $PY: the python that actually runs
 # SPDX-FileCopyrightText: 2026 Marcelo A Caetano
 # SPDX-License-Identifier: BSL-1.0
 # THE LEVELS MUST AGREE. -O is a degree of CERTAINTY, not of speed:
@@ -90,7 +91,7 @@ for O in 1 2; do
           "$OUT/named" "$side" > "$side.f" && mv "$side.f" "$side"
     done
   fi
-  real=$(python3 "$RT/tools/qmltc-value-census.py" "$OUT/cen$O" 2>/dev/null | awk '
+  real=$("$PY" "$RT/tools/qmltc-value-census.py" "$OUT/cen$O" 2>/dev/null | awk '
     $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
   if [ "${real:-0}" -ne 0 ]; then
     echo "optlevels: -O$O DISAGREES with the engine on $QMLFILE ($real real difference(s))" >&2

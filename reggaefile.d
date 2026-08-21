@@ -406,11 +406,17 @@ Build reggaeBuild() {
             if (!qtHasModule(mod)) continue;
             auto tag = mod == "Qt5Core" ? "-qt5" : "";
             auto bin = buildPath(root, ".build", "abi-layout" ~ (tag.length ? "5" : "6"));
-            // pkg-config directly: pkgCflags/pkgLibs speak ldc's `-L-l…` dialect, and this one
-            // is compiled by g++ — the mismatch showed up as an undefined QArrayData::allocate,
-            // which is a linker saying "you gave me no -lQt6Core" in the least obvious way.
-            auto b = Target(bin, "sh -c 'g++ -std=c++17 " ~ cxxPic() ~ " $(pkg-config --cflags " ~ mod
-                            ~ ") -o $out $in $(pkg-config --libs " ~ mod ~ ")'", [Target(abiSrc)]);
+            // NOT pkgCflags/pkgLibs: those speak ldc's `-L-l…` dialect and this one is compiled
+            // by a C++ compiler — the mismatch showed up as an undefined QArrayData::allocate,
+            // which is a linker saying "you gave me no -lQt6Core" in the least obvious way. The
+            // raw answers are what a C++ command line wants.
+            //
+            // And they are resolved HERE rather than by a `$(pkg-config …)` in the command: this
+            // gate ran g++ and pkg-config by name and neither exists on Windows, so it failed with
+            // `sh: g++: command not found` — a gate reporting on the machine, not on the layout.
+            // clang++ is already required by every other C++ step in this build.
+            auto b = Target(bin, posixCmd("clang++ -std=c++17 " ~ cxxPic() ~ " " ~ qtCflags([mod])
+                            ~ " -o $out $in " ~ qtLibsOf([mod])), [Target(abiSrc)]);
             all ~= Target.phony("abi-layout" ~ tag, "$in", [b]);
         }
     }

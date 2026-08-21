@@ -23,6 +23,7 @@
 #
 #   expected-fails-run.sh <expected-fails.json> <build>
 set -eu
+. "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 JSON="$1"; BUILD="$2"
 # ...and the nested builds inherit the caller's threading. `./build --single` serialises the top
 # level and these invocations did not see it, so the one phase that launches builds of its own kept
@@ -31,7 +32,7 @@ JSON="$1"; BUILD="$2"
 # An experiment that does not cover the thing it is measuring is worth what it costs to discover.
 BUILD_FLAGS="${QTD_BUILD_FLAGS:-}"
 
-targets=$(python3 - "$JSON" <<'PY'
+targets=$("$PY" - "$JSON" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 l = d["entries"] if isinstance(d, dict) and "entries" in d else d

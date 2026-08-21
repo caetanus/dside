@@ -19,6 +19,7 @@
 # container conversion that drops entries), and neither shows up in a generator
 # that only writes files. The golden comparison is what closes that.
 set -eu
+. "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 XIBOCA="$1"; WORK="$2"
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SPEC="$ROOT/generator/spec_userlib.json"
@@ -44,7 +45,7 @@ CFLAGS="$(pkg-config --cflags Qt6Core) -I$INC/QtCore/$VER -I$INC/QtCore/$VER/QtC
 
 # The spec, with out_dir redirected into the work directory. Everything else — the
 # headers, the filter, the package name — is the spec a reader is shown, unedited.
-python3 - "$SPEC" "$WORK/spec.json" "$WORK/gen" <<'PY'
+"$PY" - "$SPEC" "$WORK/spec.json" "$WORK/gen" <<'PY'
 import json, sys, os
 spec = json.load(open(sys.argv[1]))
 src = os.path.dirname(os.path.abspath(sys.argv[1]))

@@ -23,9 +23,10 @@
 # Keys are read out of the source the same way the generator reads them, rather
 # than from a hand-kept list: a list would be a third place to forget.
 set -eu
+. "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
-python3 - "$ROOT" <<'PY'
+"$PY" - "$ROOT" <<'PY'
 import re, sys, pathlib, glob
 
 root = pathlib.Path(sys.argv[1])

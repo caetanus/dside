@@ -18,9 +18,10 @@
 #
 #   ownership-gate.sh <spec.json> <generated dir>
 set -eu
+. "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 SPEC="$1"; GEN="$2"
 
-python3 - "$SPEC" "$GEN" <<'PY'
+"$PY" - "$SPEC" "$GEN" <<'PY'
 import json, re, sys, pathlib
 
 spec = json.load(open(sys.argv[1]))

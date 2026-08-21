@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+. "$(dirname -- "$0")/../pybin.sh"          # $PY: the python that actually runs
 # SPDX-License-Identifier: BSL-1.0
 # The BEHAVIOUR half of the render criterion: click the middle of each document and compare the
 # FRAME afterwards, byte for byte. The plain render compares a document at rest and the value
@@ -33,7 +34,7 @@ for f in $B/*.qml; do
   [ -s "$SP/rnd_$STYLE/$n.q.png" ] && [ -s "$SP/rnd_$STYLE/$n.d.png" ] || continue
   cmp -s "$SP/rnd_$STYLE/$n.d.png" "$SP/rnd_$STYLE/$n.q.png" || { echo "$n differs-at-rest" >> "$SP/click_$STYLE.txt"; continue; }
   # The PNG header carries the size; the centre of it is the click point.
-  xy=$(python3 -c "
+  xy=$("$PY" -c "
 import struct,sys
 d=open('$SP/rnd_$STYLE/$n.q.png','rb').read(24)
 w,h=struct.unpack('>II', d[16:24])

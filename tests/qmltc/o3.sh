@@ -1,4 +1,5 @@
 #!/bin/sh
+. "$(dirname -- "$0")/../pybin.sh"          # $PY: the python that actually runs
 # SPDX-FileCopyrightText: 2026 Marcelo A Caetano
 # SPDX-License-Identifier: BSL-1.0
 # -O3 IS A PIPELINE, not a compiler flag: "compile everything that BEHAVES THE SAME".
@@ -85,7 +86,7 @@ judge() {
   # frontier and a broken feature, and deciding what to work on next needed that number badly enough
   # that it was extracted by hand, twice, on 2026-08-14.
   if ! cmp -s "$D/${2}_$1.png" "$D/$2.eng.png"; then
-    px=$(python3 - "$D/${2}_$1.png" "$D/$2.eng.png" <<'PXDIFF' 2>/dev/null || true
+    px=$("$PY" - "$D/${2}_$1.png" "$D/$2.eng.png" <<'PXDIFF' 2>/dev/null || true
 import sys, zlib, struct
 def load(p):
     d = open(p, 'rb').read(); i = 8; idat = b''
@@ -163,7 +164,7 @@ PXDIFF
   fi
   round=0
   while : ; do
-    real=$(python3 "$ROOT/tools/qmltc-value-census.py" "$D/cen" 2>/dev/null | awk '
+    real=$("$PY" "$ROOT/tools/qmltc-value-census.py" "$D/cen" 2>/dev/null | awk '
       $1=="value-diff"||$1=="only-ours"||$1=="only-engine" {t+=$2} END {print t+0}')
     [ "${real:-0}" -eq 0 ] && return 0
     round=$((round + 1))
