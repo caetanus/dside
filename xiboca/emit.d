@@ -121,7 +121,11 @@ void main(string[] args) {
     // through `cflags`/`libs`. A spec that says where the library is should not need a tool whose
     // whole job is to say where the library is.
     auto pkgs = ("pkg_config" in spec.object) ? spec["pkg_config"].str.split : [];
-    if (pkgs.length && !havePkgConfig()) {
+    // ...unless the spec already carries the flags. `pkg_config` then names WHICH MODULES the
+    // binding uses — which is worth recording, and is what the licence gates read — without being
+    // the way those modules are located. Refusing anyway made a derived spec with cflags and libs
+    // filled in unusable, which is precisely the case those keys exist for.
+    if (pkgs.length && !havePkgConfig() && !rawCflags.length) {
         stderr.writefln("xiboca: %s: pkg_config names %s but pkg-config is not installed. "
                         ~ `Give the flags directly with "cflags" and "libs", or install pkg-config.`,
                         specPath, pkgs.join(" "));
