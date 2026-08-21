@@ -1489,7 +1489,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
             auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ renderLink ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
-                ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ " -L-lstdc++";
+                ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ cxxRuntimeFlag();
             // Guarded: with a `<Name>.set` sidecar TWO phony targets depend on this binary, and a
             // concurrent re-schedule links over it while the other target is running it.
             // The link also consumes the helper object and BOTH binding archives; leaving them out
@@ -1750,7 +1750,7 @@ Target[] holderTests(string root) {
             "clang++ " ~ cflags ~ " -c " ~ buildPath(here, "helper.cpp") ~ " -o $out", []);
         // deps order -> $in = holder_test.d holder.d h_qtd.o h_help.o
         auto app = Target("holder_test-" ~ dc ~ "-bin",
-            dc ~ " -of=$out $in -L-lstdc++ " ~ libs,
+            dc ~ " -of=$out $in" ~ cxxRuntimeFlag() ~ " " ~ libs,
             [Target(buildPath(here, "holder_test.d")), Target(buildPath(H, "holder.d")), qtd, help]);
         ts ~= Target.phony("holder_test-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [app]);
     }
@@ -1795,7 +1795,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
     auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
     corpus.sort();
     foreach (dc; DCS) {
-        auto dcLibs = pkgLibs(bind.mods) ~ " -L-lstdc++";
+        auto dcLibs = pkgLibs(bind.mods) ~ cxxRuntimeFlag();
         auto dcLink = " -I" ~ bind.genDir ~ " -I" ~ dir
             ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ dcLibs;
@@ -2027,7 +2027,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 // nothing references, and without it the module isn't registered in this process —
                 // so an ATTACHED object (looked up through Qt's QML type registry) comes back null.
                 ~ " -L--whole-archive -L=" ~ typesLib ~ " -L--no-whole-archive "
-                ~ pkgLibs(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -L-lstdc++";
+                ~ pkgLibs(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ cxxRuntimeFlag();
             auto app = Target(appBin, guardedLink(appBin ~ ".lock", appCmd, appBin,
                 [genD, appObj, typesLib, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),
                  buildPath(bind.bdir, "libshims.a")]),

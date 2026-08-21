@@ -173,6 +173,19 @@ string arCmd(string lib, string objs) {
     else              return "ar rcs " ~ lib ~ " " ~ objs;
 }
 
+// The C++ runtime is a library you name on POSIX and part of the CRT on Windows, where asking for
+// it by name gets `lld-link: error: could not open 'stdc++.lib'`.
+// ...and the same answer as a linker fragment, for the many command strings that concatenate one.
+string cxxRuntimeFlag() {
+    version (Windows) return "";
+    else              return " -L-lstdc++";
+}
+
+string[] cxxRuntimeLibs() {
+    version (Windows) return [];
+    else              return ["-lstdc++"];
+}
+
 string objExt() {
     version (Windows) return ".obj";
     else              return ".o";
@@ -195,7 +208,7 @@ string pkgCflags(string[] mods) {
 // Linker flags for the D compiler: each `-lFoo`/`-L/path` token wrapped as `-L<tok>`
 // (ldc2/dmd forward `-L…` to the C linker), plus libstdc++ for the C++ runtime.
 string pkgLibs(string[] mods) {
-    auto toks = qtLibsOf(mods).split ~ "-lstdc++";
+    auto toks = qtLibsOf(mods).split ~ cxxRuntimeLibs();
     return toks.map!(t => "-L" ~ t).join(" ");
 }
 
@@ -706,7 +719,7 @@ Target[] libsampleTargets(string root, string pyside) {
         auto libT = Target(lib, guarded(bdir ~ "/bind_" ~ dc ~ ".lock", libCmd, lib, [stamp]), [genT]);
         // libsample.a + the shim archives have mutual refs -> a static --start/--end-group.
         auto grp = "-L--start-group -L=" ~ lib ~ " -L=" ~ shimsLib ~ " -L=" ~ lsa
-            ~ " -L--end-group -L-lstdc++";
+            ~ " -L--end-group" ~ (cxxRuntimeLibs().length ? " -L-lstdc++" : "");
         auto cases = dirEntries(buildPath(here, "cases"), "*.d", SpanMode.shallow).map!(e => e.name).array
             ~ buildPath(here, "cornercases.d");
         cases.sort();
