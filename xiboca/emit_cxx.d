@@ -49,6 +49,31 @@ void loadDefinedSymbols(string[] pkgs, string[] extraLibs = null) {
     foreach (l; libs)
         if (l.startsWith("-L")) dirs ~= l[2 .. $].chomp("/") ~ "/";
     dirs ~= ["/usr/lib/", "/usr/lib64/", "/usr/local/lib/"];
+    // A LIBRARY NAMED AS A PATH TO A .lib — the Windows shape. There is no pkg-config there, so
+    // the spec carries absolute paths rather than -l/-L, and the symbols live in an import library
+    // that `nm` cannot read. llvm-nm can, and it ships with the clang this build already needs.
+    //
+    // Without this the table came back EMPTY on Windows, and symbolDefined() fails open by design:
+    // every check built on it silently stopped running. That is how QPainter's inline methods were
+    // reimplemented against an MSVC Qt that already exports them —
+    //   lld-link: error: duplicate symbol: public: void __cdecl QPainter::translate(double, double)
+    bool sawLibFile;
+    foreach (l; libs) {
+        if (!l.endsWith(".lib") || !exists(l)) continue;
+        sawLibFile = true;
+        auto r = execute(["llvm-nm", "--defined-only", l]);
+        if (r.status != 0) continue;
+        foreach (line; r.output.splitter('\n')) {
+            auto f = line.split();
+            if (f.length < 2 || f[$ - 1].endsWith(":")) continue;   // `member.obj:` headers
+            auto sym = f[$ - 1];
+            // An import library carries both `__imp_<sym>` (the address slot) and `<sym>` (the
+            // thunk). The callable one is the plain name.
+            if (sym.startsWith("__imp_")) sym = sym["__imp_".length .. $];
+            DEFINED_SYMS[sym.idup] = true;
+        }
+    }
+    if (sawLibFile) return;
     foreach (l; libs) {
         if (!l.startsWith("-l")) continue;
         foreach (dir; dirs) {
