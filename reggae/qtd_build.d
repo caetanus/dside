@@ -200,6 +200,13 @@ private struct QtProbe {
             foreach (k; keys) {
                 auto n = priField(p, k, "name");
                 if (n.length) f ~= "-I" ~ buildPath(p, "include", n);
+                // ...AND THE MODULE'S OWN DEFINE. pkg-config's Cflags carry `-DQT_QML_LIB`,
+                // `-DQT_WIDGETS_LIB` and so on, and Qt's headers are written against them: the
+                // generated qtdmoc.cpp guards its QtQml includes with `#ifdef QT_QML_LIB`, so
+                // without it the file compiled, saw only a forward declaration and failed with
+                // `variable has incomplete type 'QQmlProperty'` — 600 lines from the include that
+                // was silently skipped. Same source as everything else here: `QT.qml.DEFINES`.
+                foreach (d; priField(p, k, "DEFINES").split) f ~= "-D" ~ d;
             }
         else
             foreach (m; mods) f ~= "-I" ~ buildPath(p, "include", moduleDir(m));
