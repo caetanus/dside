@@ -613,10 +613,19 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         // .build/<binding>/../generated/... and the binding was written into a directory nothing
         // else looked at — measured: `qt/` appeared there and the shims went missing.
         jw.object["out_dir"] = JSONValue(genDir);
-        // ...and discovery needs to recognise THIS Qt. The default marker is `/qt6/`, which is a
-        // Linux distribution's layout; Qt's own installer puts headers under the prefix, so a
-        // Windows run kept nothing and emitted 0 classes without failing.
-        if ("qt_marker" !in jw.object && "source_filter" !in jw.object)
+        // ...and discovery needs to recognise THIS Qt. A marker in the spec describes a Linux
+        // distribution's layout — `/qt6/`, or `/qt/` for the Qt5 specs — and Qt's own installer
+        // puts the headers under the prefix instead. Leaving the spec's value in place was not a
+        // conservative choice: `/qt/` does not match `C:/Qt/5.15.2/...` (the case differs), every
+        // header was filtered out, and the run reported
+        //
+        //     discovered 0 classes in <QtWidgets>
+        //
+        // and exited 0. So the marker is REPLACED here, not merely defaulted: where we resolved
+        // the installation ourselves we know exactly which headers are its, and that is a better
+        // answer than a path fragment written for another platform. A headers-mode spec
+        // (source_filter) is describing the user's own sources and is left alone.
+        if ("source_filter" !in jw.object)
             jw.object["qt_marker"] = JSONValue(QtProbe.prefixOf(mods));
         jw.object["cflags"] = JSONValue(qtCflags(mods).split(" ").filter!(f => f.length).array
                                        .map!(f => JSONValue(f)).array);
