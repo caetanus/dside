@@ -161,8 +161,15 @@ string abiSym(string what) {
             return MSVC_ABI ? "??0QByteArray@@QEAA@PEBD_J@Z"
                             : "_ZN10QByteArrayC1EPKcx";
         case "qbytearray_ctor_i":
-            return MSVC_ABI ? "??0QByteArray@@QEAA@PEBD_K@Z"
+            // `_K` is `unsigned __int64`; the Qt5 spelling takes an `int`, which is `H`. Read out
+            // of Qt5Core.lib with llvm-nm, like every other entry in this table should be:
+            //     llvm-nm --defined-only Qt5Core.lib | grep '??0QByteArray@@QEAA@PEBD'
+            //     ??0QByteArray@@QEAA@PEBDH@Z
+            return MSVC_ABI ? "??0QByteArray@@QEAA@PEBDH@Z"
                             : "_ZN10QByteArrayC1EPKci";
+        case "qlistdata_dispose":  // Qt5 QListData::dispose(Data*) — frees the block
+            return MSVC_ABI ? "?dispose@QListData@@SAXPEAUData@1@@Z"
+                            : "_ZN9QListData7disposeEPNS_4DataE";
         case "cpp_new":    return MSVC_ABI ? "??2@YAPEAX_K@Z" : "_Znwm";
         case "cpp_delete": return MSVC_ABI ? "??3@YAXPEAX@Z"  : "_ZdlPv";
         default: assert(0, "abiSym: unknown symbol purpose `" ~ what ~ "`");
@@ -334,7 +341,7 @@ string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bo
             ~ "        if (atomicOp!\"-=\"(*_r, 1) == 0) {\n"
             ~ "            auto _b = _begin(); auto _e = _end(); auto _a = _arr();\n%s"
             ~ "            __qld_dispose(d);\n        }\n        d = null;\n    }\n}\n"
-            ~ "private pragma(mangle, \"_ZN9QListData7disposeEPNS_4DataE\") extern (C++) void __qld_dispose(void*);\n",
+            ~ "private pragma(mangle, \"" ~ abiSym("qlistdata_dispose") ~ "\") extern (C++) void __qld_dispose(void*);\n",
             dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, rel);
     }
     // Qt6 QList<T> = QArrayDataPointer { void* d; T* ptr; long size } — elements
