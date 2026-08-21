@@ -68,8 +68,31 @@ private struct QtProbe {
         return cached == 1;
     }
 
+    // A PREFIX THE NATIVE TOOLCHAIN CAN OPEN.
+    //
+    // The build is driven from an MSYS shell, where `QTDIR=/c/Qt/6.10.3/msvc2022_64` is the natural
+    // thing to export — but clang++ and lld-link are native Windows programs with no idea what
+    // `/c` mounts. The failure does not look like a path failure in either tool:
+    //
+    //   clang++   -I/c/Qt/.../include   ->  fatal error: 'QString' file not found
+    //   lld-link   /c/Qt/.../Qt6Core.lib ->  a leading `/` IS an option, so the library is
+    //                                        "ignored" and the link fails with undefined symbols
+    //
+    // So the drive-letter form is restored here, once, rather than at the ~40 places that consume
+    // a path derived from the prefix.
     static string prefix() {
-        auto d = environment.get("QTDIR", "");
+        return nativePrefix(environment.get("QTDIR", ""));
+    }
+
+    // `/c/Qt/x` and `/cygdrive/c/Qt/x` -> `C:/Qt/x`. Anything else is returned untouched, so a
+    // native path, a relative path and the empty string all pass through unharmed.
+    static string nativePrefix(string d) {
+        version (Windows) {
+            import std.ascii : isAlpha, toUpper;
+            if (d.startsWith("/cygdrive/")) d = d["/cygdrive".length .. $];
+            if (d.length >= 2 && d[0] == '/' && d[1].isAlpha && (d.length == 2 || d[2] == '/'))
+                return d[1].toUpper ~ ":" ~ d[2 .. $];
+        }
         return d;
     }
 
