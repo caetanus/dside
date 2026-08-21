@@ -346,7 +346,18 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // On POSIX this is the identity — executeShell is already sh.
 string posixCmd(string cmd) {
     version (Windows) {
-        import std.string : replace;
+        import std.string : replace, indexOf;
+        // SINGLE QUOTES WHEN THE COMMAND ALLOWS IT, because inside them sh keeps backslashes.
+        // reggae substitutes $in/$out with paths of its OWN making, which are native and therefore
+        // backslashed — and inside double quotes sh ate them: the run command became
+        // `.reggaeobjswraptest-ldc2.objswraptest-ldc2-bin: command not found`. Those paths are not
+        // ours to normalise, so the quoting has to preserve them.
+        //
+        // Commands this build composes itself contain single quotes (guarded() wraps its body in
+        // them) and cannot use that form; they carry only paths we built, which are already
+        // forward-slashed, so double quotes are safe for them.
+        if (cmd.indexOf('\'') < 0)
+            return `sh -c '` ~ cmd ~ `'`;
         return `sh -c "` ~ cmd.replace(`"`, `\"`) ~ `"`;
     } else return cmd;
 }
