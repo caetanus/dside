@@ -97,9 +97,17 @@ private struct QtProbe {
     //
     // So the drive-letter form is restored here, once, rather than at the ~40 places that consume
     // a path derived from the prefix.
-    static string prefix() {
-        return nativePath(environment.get("QTDIR", ""));
+    // THE PREFIX FOR A GIVEN MODULE, because a dual-target build has two Qt installations and
+    // one QTDIR cannot name both. QTDIR5/QTDIR6 win when set; QTDIR is the answer for a machine
+    // with a single Qt, which is what it has always meant.
+    static string prefix(string mod = "") {
+        auto v = (mod.length > 2 && mod.startsWith("Qt") && (mod[2] == '5' || mod[2] == '6'))
+               ? environment.get("QTDIR" ~ mod[2 .. 3], "") : "";
+        return nativePath(v.length ? v : environment.get("QTDIR", ""));
     }
+
+    // ...and the same question asked with a whole module list: they never mix majors.
+    static string prefixOf(string[] mods) { return prefix(mods.length ? mods[0] : ""); }
 
 
     // Qt6Core -> QtCore, Qt5Widgets -> QtWidgets: the include directory Qt installs per module.
@@ -121,12 +129,12 @@ private struct QtProbe {
     // was not found — invisible on Linux, where pkg-config resolves `Requires:` and hands back
     // QtCore and QtGui unasked. The answer is Qt's own data rather than a table of dependencies
     // maintained here, which would be one more thing that can disagree with the Qt in front of us.
-    private static string priPath(string key) {
-        return buildPath(prefix(), "mkspecs", "modules", "qt_lib_" ~ key ~ ".pri");
+    private static string priPath(string pfx, string key) {
+        return buildPath(pfx, "mkspecs", "modules", "qt_lib_" ~ key ~ ".pri");
     }
 
-    private static string priField(string key, string field) {
-        auto p = priPath(key);
+    private static string priField(string pfx, string key, string field) {
+        auto p = priPath(pfx, key);
         if (!std.file.exists(p)) return "";
         auto want = "QT." ~ key ~ "." ~ field;
         foreach (line; readText(p).splitLines) {
@@ -150,12 +158,13 @@ private struct QtProbe {
     // The dependency closure, dependencies BEFORE dependents, deduplicated. Empty when this Qt
     // ships no mkspecs (then the callers fall back to the modules they were handed).
     private static string[] closure(string[] mods) {
+        auto pfx = prefixOf(mods);
         string[] keys;
         bool[string] seen;
         void visit(string k) {
-            if (k in seen || !std.file.exists(priPath(k))) return;
+            if (k in seen || !std.file.exists(priPath(pfx, k))) return;
             seen[k] = true;                       // before recursing: a cycle must not hang the build
-            foreach (d; priField(k, "depends").split) visit(d);
+            foreach (d; priField(pfx, k, "depends").split) visit(d);
             keys ~= k;
         }
         foreach (m; mods) visit(priKey(m));
@@ -164,19 +173,19 @@ private struct QtProbe {
 
     static bool exists(string mod) {
         if (usePkgConfig) return execute(["pkg-config", "--exists", mod]).status == 0;
-        auto p = prefix();
+        auto p = prefix(mod);
         return p.length && std.file.exists(buildPath(p, "lib", mod ~ ".lib"));
     }
 
     static string cflags(string[] mods) {
         if (usePkgConfig) return execute(["pkg-config", "--cflags"] ~ mods).output.strip;
-        auto p = prefix();
+        auto p = prefixOf(mods);
         if (!p.length) return "";
         string[] f = ["-I" ~ buildPath(p, "include")];
         auto keys = closure(mods);
         if (keys.length)
             foreach (k; keys) {
-                auto n = priField(k, "name");
+                auto n = priField(p, k, "name");
                 if (n.length) f ~= "-I" ~ buildPath(p, "include", n);
             }
         else
@@ -186,7 +195,7 @@ private struct QtProbe {
 
     static string libs(string[] mods) {
         if (usePkgConfig) return execute(["pkg-config", "--libs"] ~ mods).output.strip;
-        auto p = prefix();
+        auto p = prefixOf(mods);
         if (!p.length) return "";
         auto keys = closure(mods);
         if (!keys.length) return mods.map!(m => buildPath(p, "lib", m ~ ".lib")).join(" ");
@@ -194,7 +203,7 @@ private struct QtProbe {
         // wants — the reverse of the order the closure produces them in.
         string[] libs;
         foreach_reverse (k; keys) {
-            auto m = priField(k, "module");
+            auto m = priField(p, k, "module");
             if (m.length) libs ~= buildPath(p, "lib", m ~ ".lib");
         }
         return libs.join(" ");
@@ -206,7 +215,7 @@ private struct QtProbe {
             return r.status == 0 ? r.output.strip : "";
         }
         // The version is the directory Qt installs its private headers under.
-        auto p = prefix();
+        auto p = prefix(mod);
         if (!p.length) return "";
         foreach (e; dirEntries(buildPath(p, "include", "QtCore"), SpanMode.shallow))
             if (e.isDir && baseName(e.name).length && baseName(e.name)[0] >= '5'
@@ -219,14 +228,14 @@ private struct QtProbe {
     static string libexecdir(string mod) {
         if (usePkgConfig)
             return execute(["pkg-config", "--variable=libexecdir", mod]).output.strip;
-        auto p = prefix();
+        auto p = prefix(mod);
         return p.length ? buildPath(p, "bin") : "";
     }
 
     static string bindir(string mod) {
         if (usePkgConfig)
             return execute(["pkg-config", "--variable=bindir", mod]).output.strip;
-        auto p = prefix();
+        auto p = prefix(mod);
         return p.length ? buildPath(p, "bin") : "";
     }
 }
@@ -608,7 +617,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         // Linux distribution's layout; Qt's own installer puts headers under the prefix, so a
         // Windows run kept nothing and emitted 0 classes without failing.
         if ("qt_marker" !in jw.object && "source_filter" !in jw.object)
-            jw.object["qt_marker"] = JSONValue(QtProbe.prefix());
+            jw.object["qt_marker"] = JSONValue(QtProbe.prefixOf(mods));
         jw.object["cflags"] = JSONValue(qtCflags(mods).split(" ").filter!(f => f.length).array
                                        .map!(f => JSONValue(f)).array);
         jw.object["libs"]   = JSONValue(qtLibsOf(mods).split(" ").filter!(f => f.length).array
