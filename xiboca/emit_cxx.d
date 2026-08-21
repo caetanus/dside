@@ -1041,6 +1041,27 @@ bool moveOnlyByValue(CXType t) {
     return copyDeleted(clang_getCursorDefinition(clang_getTypeDeclaration(ct)));
 }
 
+// Does calling this method need a C++ shim because of the RETURN's calling convention?
+//
+// On the MS x64 ABI a member function that returns by value takes `this` FIRST and the hidden
+// sret pointer SECOND — the reverse of SysV. Measured in tests/abi/windows, on both ldc2 and dmd:
+//
+//   declared `Ret f(void* self)`            (the SysV shape) -> segfault
+//   declared `void f(Ret* sret, void* self)`                 -> returns 0x0, silently wrong
+//   declared `void f(void* self, Ret* sret)`                 -> correct
+//
+// The explicit-self declaration xiboca emits is the first shape, so on Windows every
+// container-returning method was reading a garbage struct — which surfaced as an
+// OutOfMemoryError from the GC, allocating an array whose length came from uninitialised stack.
+//
+// A C++ shim is a FREE function, and a free function returning by value has the same shape on
+// both ABIs, so the existing shim path answers this without a second convention to maintain.
+bool needsSretShim(CXCursor c) {
+    if (!MSVC_ABI || clang_CXXMethod_isStatic(c) != 0) return false;
+    auto rt = clang_getCanonicalType(clang_getCursorResultType(c));
+    return rt.kind == CXType_Record;
+}
+
 // Is a method inline (has an inline definition -> no out-of-line symbol to link)?
 // Catches both `int f(){...}` in-class AND out-of-class `inline int C::f(){...}`.
 // Inline (no linkable symbol) — check the in-class declaration AND its definition:
@@ -2075,7 +2096,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 if (qlKey in seenW) { _fate = "inherited"; return; }
                 seenW[qlKey] = true;
                 auto pr = emitQListReturn(c, mn, qtidR, kw2, cst2, impSet, dpkg,
-                                          clang_CXXMethod_isVirtual(c) != 0);
+                                          clang_CXXMethod_isVirtual(c) != 0 || needsSretShim(c));
                 if (pr.length) { wd ~= pr[0]; wm ~= pr[1]; }   // raw -> module scope, idiom -> class
                 return;
             }
@@ -2406,7 +2427,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // The shim body is exception-wrapped identically to the guard (Lippincott). A virtual with
         // a NON-simple signature (value/container/QList return, fn-ptr) can't use the shim, so it
         // falls through to the direct guard path below — bound, but non-virtually (a known gap).
-        bool viaShim = isInline(c)
+        bool viaShim = isInline(c) || needsSretShim(c)
             || (clang_CXXMethod_isVirtual(c) != 0 && clang_CXXMethod_isStatic(c) == 0);
         if (viaShim) {
             bool handled = false;   // emitted, or deliberately skipped -> `continue` (don't fall through)
@@ -2509,7 +2530,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             if (qtid.length) {
                 auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
                 auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
-                auto pr = emitQListReturn(c, mn, qtid, kw2, cst2, impSet, dpkg);
+                auto pr = emitQListReturn(c, mn, qtid, kw2, cst2, impSet, dpkg, needsSretShim(c));
                 if (pr.length) { methodLines ~= pr[0]; methodLines ~= pr[1]; }
                 else _fate = "unmapped-type";   // emitQListReturn bailed: NOTHING was emitted
                 continue;
