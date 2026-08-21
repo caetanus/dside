@@ -393,6 +393,30 @@ private string gendPath(string root) { return buildPath(root, "xiboca", "xiboca"
 // had no effect. Measured: after teaching the generator to keep C++ default member initializers,
 // the regenerated color.d still said `bool m_null;` until xiboca was rebuilt by hand.
 // Now it is a real target, rebuilt from its own sources before anything depends on it.
+// WHERE THE LINKER FINDS libclang, on a platform with no default library path.
+//
+// `libs-windows: ["libclang"]` names the library; nothing tells the linker where it lives, and
+// POSIX gets away with that because /usr/lib is searched by default:
+//
+//     LINK : fatal error LNK1104: cannot open file 'libclang.lib'
+//
+// The answer is next to the clang++ this build already uses — <llvm>/bin/clang++ -> <llvm>/lib —
+// so it is derived from PATH rather than configured. Returns an `LIB=` prefix (lld-link and MSVC
+// link both read that variable) or "" when clang++ is not on PATH or the sibling lib/ is absent,
+// in which case the linker's own defaults are as good an answer as we have.
+string llvmLibEnv() {
+    version (Windows) {
+        foreach (dir; environment.get("PATH", "").split(pathSeparator)) {
+            if (!dir.length) continue;
+            if (!std.file.exists(buildPath(dir, exeName("clang++")))) continue;
+            auto lib = buildNormalizedPath(dir, "..", "lib");
+            // Forward slashes SURVIVE the executeShell -> cmd.exe -> sh chain; backslashes do not.
+            if (std.file.exists(lib)) return "LIB=" ~ lib.replace("\\", "/") ~ " ";
+        }
+    }
+    return "";
+}
+
 Target gendTarget(string root) {
     auto dir = buildPath(root, "xiboca");
     auto xiboca = gendPath(root);
@@ -400,7 +424,7 @@ Target gendTarget(string root) {
     // dub decides itself whether a relink is needed; guarded() keeps concurrent gen steps from
     // racing into the same dub build, and skips it outright when xiboca is already newest.
     auto cmd = guarded(buildPath(dir, "xiboca.lock"),
-        "cd " ~ dir ~ " && dub build --quiet", xiboca, srcs);
+        "cd " ~ dir ~ " && " ~ llvmLibEnv() ~ "dub build --quiet", xiboca, srcs);
     return Target(xiboca, cmd, srcs.map!(f => Target(f)).array);
 }
 
