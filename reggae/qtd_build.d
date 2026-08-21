@@ -465,7 +465,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         // from the same source with QTD_ENABLE_QML undefined: its own `#else` bodies are the stubs.
         ~ `if [ "$b" = qtdmoc_qml ]; then b=qtdmoc_qml` ~ stubObj ~ `; fi; `
         ~ `case "$b" in qtdmoc|qtdmoc_qml|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
-        ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
+        ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b" ~ objExt() ~ " || exit 1; done && "
         ~ arCmd(shimsLib, bdir ~ "/ocpp/*" ~ objExt());
     auto shims = Target(shimsLib,
         guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]),
@@ -689,7 +689,7 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ " && echo no > " ~ bdir ~ "/qml-enabled && for c in " ~ gen ~ "/*.cpp; do "
         ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc_qml ]; then b=qtdmoc_qml_stub; fi; `
         ~ `case "$b" in qtdmoc|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
-        ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
+        ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b" ~ objExt() ~ " || exit 1; done && "
         ~ arCmd(shimsLib, bdir ~ "/ocpp/*" ~ objExt());
     auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);
     _shimsRegistry ~= ShimsEntry(shimsLib, false, shimsT, ["Qt6Core"], qtdExpandLinkMods(["Qt6Core"]), qtdQtRelease(["Qt6Core"]));   // libsample: no QtQml, QtCore only
