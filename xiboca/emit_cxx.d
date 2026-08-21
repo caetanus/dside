@@ -2025,7 +2025,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             // own field while Qt (virtual) saw the QBoxLayout one: our setSpacing(0) was invisible
             // to the layout, which is what made 5 uic corpus files diverge. The RAW emitter has
             // routed virtuals through the shim all along; only this path did not.
-            bool inl = isInline(c)
+            bool inl = isInline(c) || needsSretShim(c)
                     || (clang_CXXMethod_isVirtual(c) != 0 && clang_CXXMethod_isStatic(c) == 0);
             auto rrt = clang_getCursorResultType(c);
             string _a, _b, _cc;
