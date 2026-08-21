@@ -65,6 +65,19 @@ string buildNormalizedPath(A...)(A args) {
 // QTDIR, and the entries of PATH. The tools it hands them to are native Windows programs, and none
 // of them says so: clang++ reports a missing header, lld-link reads a leading `/` as an option and
 // reports an undefined symbol, and a PATH scan simply finds nothing where the tool plainly is.
+// The other direction: `C:/Qt/5.15.2` -> `/c/Qt/5.15.2`. A path that has to live INSIDE a PATH
+// list cannot keep its drive letter — `:` is the separator there, and `C:/x:/d/y` is unparseable.
+// MSYS translates PATH back to the native form when it spawns a native program, so this is the
+// form to hand it.
+string msysPath(string d) {
+    version (Windows) {
+        import std.ascii : isAlpha, toLower;
+        if (d.length >= 2 && d[0].isAlpha && d[1] == ':')
+            return "/" ~ d[0].toLower ~ d[2 .. $].replace("\\", "/");
+    }
+    return d;
+}
+
 string nativePath(string d) {
     version (Windows) {
         import std.ascii : isAlpha, toUpper;
@@ -513,18 +526,27 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // intact — `ARG:[a\b\c]` — because it never passes through a shell's quote processing.
 //
 // So the binary is $0 and the environment prefix stays in the command.
-string runOffscreen(string binRef, string extra = "") {
-    version (Windows)
-        // `exec "$0"` is not enough: a name with no FORWARD slash in it is a command name, and sh
-        // looks it up in PATH — `.reggae\objs\x-bin` is exactly that shape, so a binary that was
-        // right there reported as not found. Say it is a path by making it one, unless it already
-        // is absolute (`/…` or `C:…`).
-        // NO `|` IN THIS TEXT, not even inside the single quotes: cmd.exe parses the command
-        // before sh ever sees it, and `/*|?:*)` became a pipe — `'?:*)' is not recognised as an
-        // internal or external command`. Hence two nested `case`s rather than one alternation.
+string runOffscreen(string binRef, string extra = "", string[] mods = null) {
+    version (Windows) {
+        // The binary reference is a PATH, and `exec "$0"` would throw that away again: a name with
+        // no FORWARD slash in it is a command name, which sh looks up in PATH. `.reggae\objs\x-bin`
+        // is exactly that shape, so a binary that was right there reported as not found. An
+        // absolute path (/… or C:…) is left alone; anything else gets a ./ .
+        //
+        // NO `|` IN THIS TEXT, not even inside the single quotes: cmd.exe parses the command before
+        // sh ever sees it, and `/*|?:*)` became a pipe — `'?:*)' is not recognised as an internal
+        // or external command`. Hence two nested `case`s rather than one alternation.
+        //
+        // ...AND THE RIGHT Qt ON PATH. Windows resolves a DLL through the executable's directory
+        // and then PATH — there is no rpath — so in a dual-target build a Qt5 binary finds Qt6's
+        // DLLs or none at all and dies with exit 127 before main. Which Qt is not a property of the
+        // machine but of the TARGET, so it comes from the binding's own modules.
+        auto qtBin = mods.length ? QtProbe.prefixOf(mods) : "";
+        auto pathPrefix = qtBin.length
+            ? `PATH="` ~ msysPath(buildPath(qtBin, "bin")) ~ `:$PATH" ` : "";
         return `sh -c 'case "$0" in /*) ;; *) case "$0" in ?:*) ;; *) set -- "./$0" "$@";; esac;; esac; `
-            ~ `QT_QPA_PLATFORM=offscreen exec "$0" ` ~ extra ~ `' ` ~ binRef;
-    else
+            ~ pathPrefix ~ `QT_QPA_PLATFORM=offscreen exec "$0" ` ~ extra ~ `' ` ~ binRef;
+    } else
         return "QT_QPA_PLATFORM=offscreen " ~ binRef ~ (extra.length ? " " ~ extra : "");
 }
 
@@ -837,7 +859,7 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
 Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "",
                Target[] extraDeps = []) {
     auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra, extraDeps);
-    return Target.phony(name, runOffscreen("$in"), [app]);
+    return Target.phony(name, runOffscreen("$in", "", b.mods), [app]);
 }
 
 // The shiboken libsample corner-case harness, ported to reggae. Needs a pyside-setup clone
@@ -937,7 +959,7 @@ Target[] libsampleTargets(string root, string pyside) {
             // transitive one. (critics r7 #8 / r8 #9)
             auto app = Target(n ~ "-bin", dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ c ~ " -I" ~ gen ~ " " ~ grp,
                 [Target(c), libT, shimsT]);
-            outs ~= Target.phony(n, runOffscreen("$in"), [app]);
+            outs ~= Target.phony(n, runOffscreen("$in", "", ["Qt6Core"]), [app]);
         }
     }
     return outs;
