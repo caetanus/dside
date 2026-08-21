@@ -533,28 +533,38 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // intact — `ARG:[a\b\c]` — because it never passes through a shell's quote processing.
 //
 // So the binary is $0 and the environment prefix stays in the command.
-string runOffscreen(string binRef, string extra = "", string[] mods = null) {
+// RUN A BUILT BINARY. The path is an ARGUMENT, never part of the command text: a path reggae
+// substitutes is native and backslashed, and backslashes do not survive
+// executeShell -> cmd.exe -> sh inside text — `a\b\c` arrives as `abc`, single-quoted,
+// double-quoted and escaped alike, while as an argument it arrives intact.
+//
+// Then two things have to happen to it, and each was learned by getting them wrong:
+//
+//   * the backslashes become slashes. sh decides "command name" versus "path" by looking for a
+//     FORWARD slash, and an absolute `C:\Users\…\abi-layout6` has none, so it went looking on
+//     PATH: `'C:\Users\…\abi-layout6' is not recognised as an internal or external command`.
+//   * a relative path gets a `./`, for the same reason — `.reggae\objs\x-bin` is a command name
+//     to sh, and a binary that was right there reported as not found.
+//
+// NO `|` IN THIS TEXT, not even inside the single quotes: cmd.exe parses the command before sh
+// ever sees it, and `/*|?:*)` became a pipe — `'?:*)' is not recognised…`. Hence nested `case`s.
+//
+// `mods` names the Qt this binary needs. Windows resolves a DLL through the executable's directory
+// and then PATH — there is no rpath — so in a dual-target build a Qt5 binary otherwise finds Qt6's
+// DLLs or none at all and dies with exit 127 before main. Which Qt is a property of the TARGET.
+string runExe(string binRef, string env = "", string extra = "", string[] mods = null) {
     version (Windows) {
-        // The binary reference is a PATH, and `exec "$0"` would throw that away again: a name with
-        // no FORWARD slash in it is a command name, which sh looks up in PATH. `.reggae\objs\x-bin`
-        // is exactly that shape, so a binary that was right there reported as not found. An
-        // absolute path (/… or C:…) is left alone; anything else gets a ./ .
-        //
-        // NO `|` IN THIS TEXT, not even inside the single quotes: cmd.exe parses the command before
-        // sh ever sees it, and `/*|?:*)` became a pipe — `'?:*)' is not recognised as an internal
-        // or external command`. Hence two nested `case`s rather than one alternation.
-        //
-        // ...AND THE RIGHT Qt ON PATH. Windows resolves a DLL through the executable's directory
-        // and then PATH — there is no rpath — so in a dual-target build a Qt5 binary finds Qt6's
-        // DLLs or none at all and dies with exit 127 before main. Which Qt is not a property of the
-        // machine but of the TARGET, so it comes from the binding's own modules.
         auto qtBin = mods.length ? QtProbe.prefixOf(mods) : "";
         auto pathPrefix = qtBin.length
             ? `PATH="` ~ msysPath(buildPath(qtBin, "bin")) ~ `:$PATH" ` : "";
-        return `sh -c 'case "$0" in /*) ;; *) case "$0" in ?:*) ;; *) set -- "./$0" "$@";; esac;; esac; `
-            ~ pathPrefix ~ `QT_QPA_PLATFORM=offscreen exec "$0" ` ~ extra ~ `' ` ~ binRef;
+        return `sh -c 'p="${0//\\//}"; case "$p" in /*) ;; *) case "$p" in ?:*) ;; *) p="./$p";; esac;; esac; `
+            ~ pathPrefix ~ env ~ `exec "$p" ` ~ extra ~ `' ` ~ binRef;
     } else
-        return "QT_QPA_PLATFORM=offscreen " ~ binRef ~ (extra.length ? " " ~ extra : "");
+        return env ~ binRef ~ (extra.length ? " " ~ extra : "");
+}
+
+string runOffscreen(string binRef, string extra = "", string[] mods = null) {
+    return runExe(binRef, "QT_QPA_PLATFORM=offscreen ", extra, mods);
 }
 
 // A COMMAND WHOSE PATHS TRAVEL AS ARGUMENTS, for the same reason runOffscreen does it: a path

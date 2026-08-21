@@ -417,7 +417,10 @@ Build reggaeBuild() {
             // clang++ is already required by every other C++ step in this build.
             auto b = Target(bin, posixCmdArgv("clang++ -std=c++17 " ~ cxxPic() ~ " " ~ qtCflags([mod])
                             ~ ` -o "$0" "$1" ` ~ qtLibsOf([mod]), ["$out", "$in"]), [Target(abiSrc)]);
-            all ~= Target.phony("abi-layout" ~ tag, "$in", [b]);
+            // Through the same runner as everything else: on Windows `$in` is an absolute native
+            // path, and running it as bare command text got `'C:\Users\…\abi-layout6' is not
+            // recognised as an internal or external command`.
+            all ~= Target.phony("abi-layout" ~ tag, runExe("$in", "", "", [mod]), [b]);
         }
     }
 
