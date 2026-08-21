@@ -43,3 +43,24 @@ rather than reasoned about:
 
 No Visual Studio is installed on the machine this ran on. `ldc2` and `dmd` both
 link and run without it.
+
+## And then against real Qt
+
+`qtglue.cpp` + `qtd.d` are the second half of the same question: the probe above
+uses a class we wrote, so it proves the convention; this one calls **Qt itself**.
+
+```sh
+Q=/c/Qt/6.10.3/msvc2022_64
+clang++ -std=c++17 -c qtglue.cpp -o qtglue.obj -I$Q/include -I$Q/include/QtCore
+ldc2 -of=qtd.exe qtd.d qtglue.obj -L=$Q/lib/Qt6Core.lib
+PATH=$Q/bin:$PATH ./qtd.exe        # -> QByteArray::length() -> 12 ... QT-CALL: PASS
+```
+
+D reaches `?length@QByteArray@@QEBA_JXZ` through the explicit-`self` pattern, on a
+`QByteArray` built by C++, and gets 12 for a 12-byte array. Measured 2026-08-21 on
+Windows 10 with Qt 6.10.3 (msvc2022_64), LLVM 19.1.7, ldc2 1.42.0 — **and no
+Visual Studio installed**.
+
+Note the Qt 5 on that machine is `msvc2017`, 32-bit: Qt5 parity cannot be built
+there against an x64 toolchain, and needs an x64 Qt5 build before it means
+anything.

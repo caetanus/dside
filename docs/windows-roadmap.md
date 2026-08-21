@@ -92,6 +92,24 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
 > So the emission strategy SURVIVES: it needs an MS-ABI variant for exactly one case, the
 > value-returning member, and nothing else about the explicit-`self` pattern changes.
 >
+> **AND THE MECHANISM ITSELF WAS THEN RUN AGAINST REAL QT**, on the same machine, same day.
+> Qt 6.10.3 (msvc2022_64) was already installed there. With `clang++` from LLVM's extractable
+> package and no Visual Studio at all:
+>
+> * `#include <QObject>` compiles;
+> * a program using `QString`/`QByteArray` links against `Qt6Core.lib` and prints the right answer;
+> * and **D calls a real Qt member by its MSVC mangled name** — `?length@QByteArray@@QEBA_JXZ`,
+>   reached with the explicit-`self` pattern on an object built by C++ — returning 12 for a
+>   12-byte array.
+>
+> That is the whole xiboca call mechanism, working on Windows. What remains for Tier 2 is the
+> build mechanics table below (archives, extensions, group linking, pkg-config), not the question
+> of whether the approach can work there.
+>
+> One thing the machine also settles: its Qt 5.14.1 is `msvc2017` **without a `_64` suffix — it is
+> 32-bit**, so Qt5 parity cannot be built there against an x64 toolchain. Qt5-on-Windows needs an
+> x64 Qt5 build before it means anything.
+>
 > Also measured on that machine: **ldc2 and dmd link and run without Visual Studio installed** —
 > both ship what they need — so the Tier 2 assumption that `link.exe`/`lib.exe` are prerequisites is
 > wrong for the D half. `clang++` from the extractable LLVM package is enough for the C++ half.
