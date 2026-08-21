@@ -31,7 +31,14 @@ __gshared bool[string] DEFINED_SYMS;
 // output: -L adds a search directory, -l names a library.
 void loadDefinedSymbols(string[] pkgs, string[] extraLibs = null) {
     import std.process : execute;
-    auto libs = execute(["pkg-config", "--libs"] ~ pkgs).output.split ~ extraLibs;
+    // No modules named means nothing to ask pkg-config about — and on Windows there is no
+    // pkg-config to ask. `extraLibs` from the spec carries the same information.
+    string[] pcLibs;
+    if (pkgs.length) {
+        try pcLibs = execute(["pkg-config", "--libs"] ~ pkgs).output.split;
+        catch (Exception) pcLibs = [];
+    }
+    auto libs = pcLibs ~ extraLibs;
     // -L DIRECTORIES FIRST, and this is the whole point of parsing them. The search list used to
     // be the three system paths below, hardcoded, so a Qt in /opt or a prefix build had none of
     // its .so found — the table came back empty for those libraries, symbolDefined() then answers

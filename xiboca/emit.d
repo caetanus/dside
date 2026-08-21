@@ -44,6 +44,17 @@ extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
 // gen-phase clang++/ar helper (buildCxxLib) and the Qt private-header discovery
 // (mocPrivateFlags) moved to reggae/qtd_build.d.
 
+// Asked once per run rather than assumed. `pkg-config --version` is the cheapest question that
+// distinguishes "not installed" from "installed and unhappy".
+bool havePkgConfig() {
+    static int cached = -1;
+    if (cached < 0) {
+        try cached = (execute(["pkg-config", "--version"]).status == 0) ? 1 : 0;
+        catch (Exception) cached = 0;
+    }
+    return cached == 1;
+}
+
 void main(string[] args) {
     auto specPath = args.length > 1 ? args[1] : "spec.json";
     auto spec = parseJSON(readText(specPath));
@@ -103,9 +114,29 @@ void main(string[] args) {
     if (auto cf = "cflags" in spec.object) foreach (x; cf.array) rawCflags ~= x.str;
     if (auto lb = "libs" in spec.object)   foreach (x; lb.array) rawLibs ~= x.str;
 
-    auto pkgs = spec["pkg_config"].str.split;
+    // PKG-CONFIG IS NOT EVERYWHERE, and on Windows it is nowhere: Qt's MSVC builds ship no .pc
+    // files at all. It used to be required and invoked unconditionally, so the first generation
+    // attempt on Windows died inside spawnProcess with "Failed to spawn process pkg-config" —
+    // before parsing a single header, and for a spec that had already supplied its flags directly
+    // through `cflags`/`libs`. A spec that says where the library is should not need a tool whose
+    // whole job is to say where the library is.
+    auto pkgs = ("pkg_config" in spec.object) ? spec["pkg_config"].str.split : [];
+    if (pkgs.length && !havePkgConfig()) {
+        stderr.writefln("xiboca: %s: pkg_config names %s but pkg-config is not installed. "
+                        ~ `Give the flags directly with "cflags" and "libs", or install pkg-config.`,
+                        specPath, pkgs.join(" "));
+        import core.stdc.stdlib : exit;
+        exit(1);
+    }
     loadDefinedSymbols(pkgs, rawLibs);   // refuse to bind a symbol the linked libs do not define
-    auto cflags = execute(["pkg-config", "--cflags"] ~ pkgs).output.split ~ rawCflags;
+    auto cflags = (pkgs.length ? execute(["pkg-config", "--cflags"] ~ pkgs).output.split : []) ~ rawCflags;
+    if (!cflags.length) {
+        stderr.writefln("xiboca: %s: no compile flags — neither pkg_config nor cflags gave any, "
+                        ~ "so the headers would not be found and discovery would report nothing",
+                        specPath);
+        import core.stdc.stdlib : exit;
+        exit(1);
+    }
     auto res = execute(["clang", "-print-resource-dir"]).output.strip;
     string[] extraI;
     // Relative include paths resolve against the SPEC (like out_dir), not the cwd: xiboca is invoked
@@ -310,6 +341,7 @@ void main(string[] args) {
         auto mods = ("pkg_config" in spec.object) ? spec["pkg_config"].str.split(" ") : [];
         foreach (m; mods) {
             if (!m.startsWith("Qt")) continue;
+            if (!havePkgConfig()) break;
             auto r = execute(["pkg-config", "--modversion", m]);
             if (r.status == 0) return r.output.strip;
         }
