@@ -374,6 +374,16 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     if (!havePkgConfigForBuild()) {
         auto derived = buildPath(bdir, "spec.win.json");
         auto jw = parseJSON(readText(specPath));
+        // The derived spec lives somewhere else, so anything RELATIVE in it has to be resolved
+        // first. out_dir is written relative to generator/; left alone it pointed at
+        // .build/<binding>/../generated/... and the binding was written into a directory nothing
+        // else looked at — measured: `qt/` appeared there and the shims went missing.
+        jw.object["out_dir"] = JSONValue(genDir);
+        // ...and discovery needs to recognise THIS Qt. The default marker is `/qt6/`, which is a
+        // Linux distribution's layout; Qt's own installer puts headers under the prefix, so a
+        // Windows run kept nothing and emitted 0 classes without failing.
+        if ("qt_marker" !in jw.object && "source_filter" !in jw.object)
+            jw.object["qt_marker"] = JSONValue(QtProbe.prefix());
         jw.object["cflags"] = JSONValue(qtCflags(mods).split(" ").filter!(f => f.length).array
                                        .map!(f => JSONValue(f)).array);
         jw.object["libs"]   = JSONValue(qtLibsOf(mods).split(" ").filter!(f => f.length).array
