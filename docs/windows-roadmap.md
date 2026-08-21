@@ -122,6 +122,25 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    `-windows-msvc` before relying on the shim pattern. If this doesn't hold, the emission
    strategy for member calls needs an MS-ABI variant — this is the highest risk.
 
+> **MEASURED 2026-08-21 — risk 2 is NOT a risk.** Built on the same VM with `llvm-lib` and
+> linked by `lld-link` (through ldc2) and by dmd, with no group flag anywhere:
+>
+> * a **circular** dependency across two archives — `main -> a_fn (A) -> b_fn (B) -> a_helper (A)`,
+>   so A must be searched again after B — resolves in **either link order**, `A B` and `B A`;
+> * an archive member that **nothing references** is not pulled in, proven both ways: with no
+>   reference the link succeeds, and adding one reference to it fails with
+>   `undefined symbol: never_defined_anywhere`, so the member was there and selection is what kept
+>   it out;
+> * the **webengine shape** behaves as on Linux: an unreferenced object whose inline copy needs an
+>   absent symbol links clean **through an archive** and fails when the same objects are passed
+>   **directly** — which is the property the manual import-closure BFS was replaced by.
+>
+> One correction to my own first attempt, kept because it is the easy mistake: selection is per
+> OBJECT FILE, not per symbol. Putting the referenced function and the offending one in the same
+> `.cpp` makes the member get pulled in — correctly — and looks like the linker failing.
+>
+> So neither deep risk survives contact. Tier 2 is now mechanics only.
+
 2. **Archive-DCE without `--start-group`.**
    The linker's archive-member selection (which replaces the manual import-closure BFS —
    see the Linux proof: dmd linking the full webengine binding directly fails on an
