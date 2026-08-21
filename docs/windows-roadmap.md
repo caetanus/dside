@@ -74,6 +74,28 @@ build mechanics in `qtd_build.d` are POSIX-hardcoded and must be parametrized:
 Each deserves an isolated proof, exactly like the Linux "step 0" (which empirically proved
 the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd).
 
+> **MEASURED 2026-08-21 on the Windows 10 VM — risk 1 is REAL, and it is one line of emission.**
+> A C++ class was compiled with `clang++` targeting `x86_64-pc-windows-msvc` and called from D
+> through `pragma(mangle)` with an explicit `self`, on **ldc2 1.42 and dmd**, both agreeing:
+>
+> | case | SysV (Linux) | MS x64 |
+> |---|---|---|
+> | plain `const` member, scalar return | `f(this, …)` | **same** |
+> | non-`const` member with an argument | `f(this, …)` | **same** |
+> | **member returning by value** | `f(sret, this, …)` | **`f(this, sret, …)`** |
+>
+> Declared the SysV way (`Ret f(void* self)`) the call **segfaults**; declared as
+> `void f(void* self, Ret* sret)` it returns the right value on both compilers. Written the other
+> way round, `void f(Ret* sret, void* self)`, it does not crash — it silently yields `0x0`, which is
+> the worse failure mode and the reason this had to be measured rather than reasoned about.
+>
+> So the emission strategy SURVIVES: it needs an MS-ABI variant for exactly one case, the
+> value-returning member, and nothing else about the explicit-`self` pattern changes.
+>
+> Also measured on that machine: **ldc2 and dmd link and run without Visual Studio installed** —
+> both ship what they need — so the Tier 2 assumption that `link.exe`/`lib.exe` are prerequisites is
+> wrong for the D half. `clang++` from the extractable LLVM package is enough for the C++ half.
+
 1. **MS x64 calling convention on the explicit-`self` shims.**
    The pattern `pragma(mangle,"…") extern(C++) Ret __Class_m(void* self, …)` assumes the
    SysV/Itanium convention (`this` = first pointer arg, and its sret handling). On **MS
