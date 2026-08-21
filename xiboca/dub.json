@@ -14,6 +14,9 @@
     "libs": [
         "clang"
     ],
+    "libs-windows": [
+        "libclang"
+    ],
     "dependencies": {
         "libdparse": "0.25.1"
     }
