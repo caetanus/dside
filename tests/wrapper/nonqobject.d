@@ -55,8 +55,30 @@ void main() {
     clobber(); GC.collect(); GC.collect();
     assert(qtd_holder_find(orphan) is null,
            "the orphan's finalizer never ran — the C++ object is still leaked");
-    assert(qtd_watch_freed() == 1,
-           "the orphan was unregistered but its BLOCK was never freed — unregistering is not deleting");
+    // ...AND THE BLOCK WAS FREED — where that is observable at all.
+    //
+    // On the Itanium ABI `delete p` calls the destructor and then the CALLER's `operator delete`,
+    // so replacing it (qtd_watchfree.cpp) sees the free. The MS x64 ABI does it the other way
+    // round: for a polymorphic type, `delete p` dispatches through vtable slot 0 to the vector
+    // deleting destructor with the deleting flag set, and THAT function frees, inside the library
+    // that defines the class. Disassembled from the shim this test exercises:
+    //
+    //     qtd_del_QTreeWidgetItem:
+    //         movq (%rcx), %rax     ; the object's vptr
+    //         movq (%rax), %rax     ; slot 0 — ??_GQTreeWidgetItem, in Qt6Widgets.dll
+    //         movl $0x1, %edx       ; "and free the block"
+    //         jmpq *%rax
+    //
+    // The free therefore happens inside Qt6Widgets.dll and no replacement in this binary can see
+    // it — measured: every other delete in the run WAS observed, this address never was. So the
+    // assertion is kept where the instrument can answer, and its absence is stated where it
+    // cannot, rather than quietly passing on a check that did not run.
+    version (Windows) {
+        writeln("nonqobject: block-freed check skipped — the MS x64 ABI frees inside Qt's DLL");
+    } else {
+        assert(qtd_watch_freed() == 1,
+               "the orphan was unregistered but its BLOCK was never freed — unregistering is not deleting");
+    }
 
     // 2. QT TOOK IT. `addTopLevelItem` is declared as a transfer, so the wrapper stopped owning it
     //    at that call. The tree is still alive and must still have its item.
