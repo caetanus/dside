@@ -264,6 +264,21 @@ void main(string[] args) {
             }
             targets ~= cur;
         }
+        // WHICH C++ ABI ARE WE EMITTING FOR — decided here, once, before anything is written.
+        // The few symbols the emitter names itself (operator new, QArrayData::deallocate, the value
+        // type constructors) differ between Itanium and MSVC, and the answer comes from the AST
+        // rather than from the host: libclang mangles for the target it parsed. Deciding it lazily,
+        // on the first symbol that happened to be recorded, left the modules emitted EARLIEST with
+        // Itanium names on Windows — measured: 6 of them survived that way.
+        foreach (t; targets) {
+            bool done;
+            foreach (m; children(t))
+                if (m.kind == CXCursor_CXXMethod || m.kind == CXCursor_Constructor) {
+                    auto mg = clang_Cursor_getMangling(m).str;
+                    if (mg.length) { noteAbiFrom(mg); done = true; break; }
+                }
+            if (done) break;
+        }
         writefln("discovered %d classes%s%s", targets.length,
                  discMod.length ? " in <" ~ discMod ~ ">" : " in your headers",
                  droppedPriv ? format(" (%d unlisted-private skipped)", droppedPriv) : "");
