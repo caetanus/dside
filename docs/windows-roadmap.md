@@ -150,6 +150,33 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
+### A BINDING TARGET BUILDS AND RUNS ON WINDOWS, THROUGH THE REGGAE GRAPH — 2026-08-21
+
+```
+./build.exe wraptest-ldc2     ->  wraptest OK      (exit 0)
+```
+
+Generated, compiled, archived, linked and executed by the same graph that runs on Linux. Nine
+mechanics items, each found by getting one step further and each answered in one place rather than
+at its call sites:
+
+| | |
+|---|---|
+| pkg-config | 35 calls were six questions; a probe answers them from `QTDIR` where the tool is absent |
+| derived spec | the build fills `cflags`/`libs` from the probe, and resolves `out_dir` and `qt_marker`, which moving the file broke |
+| gen guard | watches the spec the generator is GIVEN, not the shipped one |
+| `writeIfChanged` | creates its directory; graph construction writes before any target runs |
+| `findTool` | `moc` is `moc.exe` — a present tool read as MISSING |
+| `QT_INSTALL_LIBEXECS` | qtpaths/qmake are not on PATH; the probe is the last resort |
+| path separators | both composers normalise, because `sh` eats backslashes |
+| shell dialect | `posixCmd` wraps in `sh -c`; cmd.exe cannot be replaced via COMSPEC because D takes the shell from a compile-time constant |
+| `-fPIC`, `ar`, `.o`, `-lstdc++` | `cxxPic`, `arCmd`, `objExt`, `cxxRuntimeLibs` — one name each |
+
+And one finding that shaped the last of them: a path reggae substitutes is native and backslashed,
+and **backslashes do not survive `executeShell → cmd.exe → sh` in any quoting** — `a\b\c` arrives
+as `abc`, single-quoted, double-quoted and escaped alike. As an **argument** it arrives intact. So
+`runOffscreen()` puts the binary in `$0` and keeps only the environment prefix in the command text.
+
 ### THE REGGAE BUILD ITSELF RUNS ON WINDOWS — 2026-08-21
 
 Not just the hand-driven pipeline below: `reggae -b binary` builds the reggaefile there, and the
