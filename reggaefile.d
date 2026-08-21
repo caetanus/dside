@@ -943,7 +943,7 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
             ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims] ~ uiInputs(root, here));
-        ts ~= Target.phony("uicheck-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+        ts ~= Target.phony("uicheck-" ~ dc, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [bin]);
     }
     return ts;
 }
@@ -969,7 +969,7 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]
             ~ uiInputs(root, here) ~ uiInputs(root, buildPath(here, "corpus")));
-        ts ~= Target.phony("corpus-check-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+        ts ~= Target.phony("corpus-check-" ~ dc, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [bin]);
     }
     return ts;
 }
@@ -1049,9 +1049,9 @@ Target[] qmlTrTargets(string root, QtdBinding qml, string tag = "") {
             auto qm = buildPath(qml.bdir, "tr" ~ tag ~ "-" ~ dc ~ ".qm");
             auto qmT = Target(qm, lrelease ~ " " ~ tsFile ~ " -qm $out", [Target(tsFile)]);
             // deps [bin, qmT] -> $in = "<test-bin> <qm>" -> the test loads the .qm (full check).
-            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin, qmT]);
+            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [bin, qmT]);
         } else {
-            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [bin]);
         }
     }
     return ts;
@@ -1522,7 +1522,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             ];
             auto verifyStep = labelsGap.canFind(name) ? ""
                 : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;
-            auto cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+            auto cmd = "sh -c '" ~ mkProps ~ posixCmd("QT_QPA_PLATFORM=offscreen ") ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
                 ~ verifyStep
                 ~ " && diff " ~ a ~ " " ~ b ~ "'";
@@ -1549,7 +1549,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             if (!dumpallGap.canFind(name)) {
             auto objs = genD ~ ".objs", da = genD ~ ".dall", qa = genD ~ ".qall";
             auto mkObjs = toolBin ~ " --objpaths " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > " ~ objs ~ " 2>/dev/null; ";
-            auto allCmd = "sh -c '" ~ mkObjs ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " --dumpall | sort > " ~ da
+            auto allCmd = "sh -c '" ~ mkObjs ~ posixCmd("QT_QPA_PLATFORM=offscreen ") ~ appBin ~ " --dumpall | sort > " ~ da
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --dumpall " ~ objs ~ " | sort > " ~ qa
                 ~ " && diff " ~ da ~ " " ~ qa ~ "'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-all-" ~ dc, allCmd, [app, oracle, tool]);
@@ -1563,7 +1563,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // Time: both sides run for the same wall time, then the property is compared — and
             // the value must differ from the t=0 one, or the test would pass on a frozen document.
             foreach (tm; timed) if (tm.name == name && rndDep.length) {
-                auto renv3 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto renv3 = posixCmd("QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ");
                 auto oT = genD ~ ".time.ours", eT = genD ~ ".time.eng", zT = genD ~ ".time.zero";
                 auto tcmd = renv3 ~ appBin ~ " --run " ~ tm.ms.to!string
                           ~ " | grep '^" ~ tm.prop ~ "\t' > " ~ oT
@@ -1579,7 +1579,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // the bound type's own C++ key handling are machinery nothing else in this suite touches —
             // a document can be pixel-identical and click-correct and never see a key.
             foreach (kk; keyed) if (kk.name == name && rndDep.length) {
-                auto renv4 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto renv4 = posixCmd("QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ");
                 auto oK = genD ~ ".key.ours", eK = genD ~ ".key.eng", zK = genD ~ ".key.zero";
                 auto kcmd = renv4 ~ appBin ~ " --key " ~ kk.key.to!string
                           ~ " | grep '^" ~ kk.prop ~ "\t' > " ~ oK
@@ -1595,7 +1595,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             }
             // Behaviour: same click to both sides, compare the property it should have changed.
             foreach (ck; clickable) if (ck.name == name && rndDep.length) {
-                auto renv2 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto renv2 = posixCmd("QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ");
                 auto ourOut = genD ~ ".click.ours", engOut = genD ~ ".click.eng";
                 auto ccmd = renv2 ~ appBin ~ " --click " ~ ck.x.to!string ~ " " ~ ck.y.to!string
                           ~ " | grep '^" ~ ck.prop ~ "\t' > " ~ ourOut
@@ -1611,7 +1611,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             }
             if (renderable.canFind(name) && rndDep.length) {
                 auto ourPng = genD ~ ".our.png", engPng = genD ~ ".eng.png";
-                auto renv = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto renv = posixCmd("QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ");
                 auto rcmd = renv ~ appBin ~ " --render " ~ ourPng
                           ~ " && " ~ renv ~ rndBin ~ " " ~ qmlFile ~ " " ~ engPng
                           ~ " && " ~ renv ~ rndBin ~ " --compare " ~ engPng ~ " " ~ ourPng;
@@ -1631,7 +1631,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                 auto setArgs = readText(setFile).split("\n")
                     .filter!(l => !l.strip.startsWith("#")).join(" ")
                     .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
-                auto cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                auto cmd2 = "sh -c '" ~ mkProps ~ posixCmd("QT_QPA_PLATFORM=offscreen ") ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
                     ~ " && diff " ~ a ~ ".set " ~ b ~ ".set'";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle, tool]);
@@ -1675,7 +1675,7 @@ Target[] qmlAotTargets(string root, QtdBinding qml) {
             ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPathOf(dc) ~ " -L=" ~ shimsPath
             ~ " -L--end-group " ~ pkgLibs(qml.mods);
         auto bin = Target("qmlaot-" ~ dc ~ "-bin", link, [Target(aotMain), unitOT, loaderOT, lib, qml.shims]);
-        ts ~= Target.phony("qmlaot-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [bin]);
+        ts ~= Target.phony("qmlaot-" ~ dc, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [bin]);
     }
     return ts;
 }
@@ -1752,7 +1752,7 @@ Target[] holderTests(string root) {
         auto app = Target("holder_test-" ~ dc ~ "-bin",
             dc ~ " -of=$out $in" ~ cxxRuntimeFlag() ~ " " ~ libs,
             [Target(buildPath(here, "holder_test.d")), Target(buildPath(H, "holder.d")), qtd, help]);
-        ts ~= Target.phony("holder_test-" ~ dc, "QT_QPA_PLATFORM=offscreen $in", [app]);
+        ts ~= Target.phony("holder_test-" ~ dc, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [app]);
     }
     return ts;
 }
@@ -1833,7 +1833,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > " ~ props ~ " 2>/dev/null; ";
             ts ~= Target.phony("qmltcd-" ~ name ~ "-" ~ dc,
-                "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                "sh -c '" ~ mkProps ~ posixCmd("QT_QPA_PLATFORM=offscreen ") ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
                 ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
@@ -1850,7 +1850,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
                     .filter!(l => !l.strip.startsWith("#")).join(" ")
                     .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc,
-                    "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                    "sh -c '" ~ mkProps ~ posixCmd("QT_QPA_PLATFORM=offscreen ") ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
                     ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set'",
                     [app, oracle, tool]);
@@ -2035,7 +2035,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ arg ~ " > " ~ props ~ " 2>/dev/null; ";
             ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc,
-                "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                "sh -c '" ~ mkProps ~ posixCmd("QT_QPA_PLATFORM=offscreen ") ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props ~ " --attached-uri QmltcTests"
                 ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
@@ -2050,7 +2050,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                     .filter!(l => !l.strip.startsWith("#")).join(" ")
                     .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 ts ~= Target.phony("qmltcc-" ~ name ~ "-set-" ~ dc,
-                    "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                    "sh -c '" ~ mkProps ~ posixCmd("QT_QPA_PLATFORM=offscreen ") ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
                     ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b ~ ".set && diff "
                     ~ a ~ ".set " ~ b ~ ".set'",

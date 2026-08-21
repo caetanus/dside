@@ -633,7 +633,7 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
 Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "",
                Target[] extraDeps = []) {
     auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra, extraDeps);
-    return Target.phony(name, "QT_QPA_PLATFORM=offscreen $in", [app]);
+    return Target.phony(name, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [app]);
 }
 
 // The shiboken libsample corner-case harness, ported to reggae. Needs a pyside-setup clone
@@ -733,7 +733,7 @@ Target[] libsampleTargets(string root, string pyside) {
             // transitive one. (critics r7 #8 / r8 #9)
             auto app = Target(n ~ "-bin", dc ~ " -of=$out " ~ c ~ " -I" ~ gen ~ " " ~ grp,
                 [Target(c), libT, shimsT]);
-            outs ~= Target.phony(n, "QT_QPA_PLATFORM=offscreen $in", [app]);
+            outs ~= Target.phony(n, posixCmd("QT_QPA_PLATFORM=offscreen $in"), [app]);
         }
     }
     return outs;
