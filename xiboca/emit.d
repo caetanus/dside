@@ -133,7 +133,11 @@ void main(string[] args) {
         exit(1);
     }
     loadDefinedSymbols(pkgs, rawLibs);   // refuse to bind a symbol the linked libs do not define
-    auto cflags = (pkgs.length ? execute(["pkg-config", "--cflags"] ~ pkgs).output.split : []) ~ rawCflags;
+    // Ask pkg-config only when it is there to ask: a spec may legitimately name modules AND carry
+    // its own flags, and calling anyway threw inside spawnProcess — a stack trace out of the
+    // generator instead of a binding.
+    auto cflags = (pkgs.length && havePkgConfig()
+                   ? execute(["pkg-config", "--cflags"] ~ pkgs).output.split : []) ~ rawCflags;
     if (!cflags.length) {
         stderr.writefln("xiboca: %s: no compile flags — neither pkg_config nor cflags gave any, "
                         ~ "so the headers would not be found and discovery would report nothing",
