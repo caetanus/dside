@@ -253,6 +253,12 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // Write only when the content actually differs.
 void writeIfChanged(string path, string content) {
     if (exists(path) && readText(path) == content) return;
+    // The directory may not exist yet. On a tree that has built before it always does, which is why
+    // this went unnoticed until a FIRST build on Windows: graph construction writes several small
+    // generated files (the revision stamp, the link manifest) into .build/<binding>/ before any
+    // target has run, and the write failed with "cannot find the path" — during graph construction,
+    // so the build could not even list its targets.
+    mkdirRecurse(dirName(path));
     std.file.write(path, content);
 }
 
