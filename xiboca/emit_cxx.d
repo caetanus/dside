@@ -1023,8 +1023,25 @@ bool moveOnlyByValue(CXType t) {
 // header (QToolBox::addItem, QVector2D::length), which the declaration cursor alone
 // doesn't reveal. An out-of-line (.cpp) definition isn't in the TU -> stays false.
 bool isInline(CXCursor m) {
-    if (clang_Cursor_isFunctionInlined(m) != 0) return true;
-    return clang_Cursor_isFunctionInlined(clang_getCursorDefinition(m)) != 0;
+    if (clang_Cursor_isFunctionInlined(m) == 0
+            && clang_Cursor_isFunctionInlined(clang_getCursorDefinition(m)) == 0)
+        return false;
+    // ...but "defined inline in the header" and "has no symbol to link" are the same statement
+    // only on the Itanium ABI. MSVC exports EVERY member of a __declspec(dllexport) class, the
+    // inline ones included: QPainter::translate IS in Qt6Gui.lib. Reimplementing it there gave
+    //
+    //     lld-link: error: duplicate symbol: public: void __cdecl QPainter::translate(double, double)
+    //     >>> defined at libbinding_ldc2.a(qt.widgets.qpainter.obj)
+    //     >>> defined at Qt6Gui.lib(Qt6Gui.dll)
+    //
+    // Every caller of this predicate is asking the second question, so ask it: the libraries we
+    // are binding against already told us which symbols they define. On the Itanium ABI an inline
+    // member is absent from the .so, so this changes nothing there.
+    if (DEFINED_SYMS.length) {
+        auto mg = clang_Cursor_getMangling(m).str;
+        if (mg.length && (mg in DEFINED_SYMS) !is null) return false;
+    }
+    return true;
 }
 
 // A Qt signal? Detected by the AnnotateAttr("qt_signal") the parse flags inject
