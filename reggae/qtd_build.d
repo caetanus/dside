@@ -19,6 +19,22 @@ module qtd_build;
 import reggae;
 import std.json, std.file, std.path, std.process, std.string, std.array, std.algorithm;
 
+// PATHS THIS BUILD PUTS IN SHELL COMMANDS ARE POSIX-SHAPED.
+//
+// Every command here is `sh -c`, and on Windows std.path.buildPath returns backslashes — which sh
+// eats as escapes. The first full build there died on `mkdir -p C:\Users\...` for exactly that
+// reason. Windows accepts forward slashes everywhere this build cares about (clang, ldc2, dmd,
+// llvm-lib, and Git Bash itself), so the separator is normalised at the one place every path is
+// composed instead of at the hundreds where they are used.
+//
+// On POSIX this is the identity.
+string buildPath(A...)(A args) {
+    import std.path : stdBuildPath = buildPath;
+    import std.string : replace;
+    return stdBuildPath(args).replace("\\", "/");
+}
+
+
 // ---------------------------------------------------------------------------------------------
 // WHERE QT IS — asked through six questions, not through one tool.
 //

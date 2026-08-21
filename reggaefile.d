@@ -11,9 +11,11 @@
 // AND dmd (parity); Qt5 and Qt6 where applicable. See reggae/qtd_build.d.
 import reggae;
 import qtd_build;
+
+
 import std.conv : to;
 import std.file : getcwd, exists, dirEntries, SpanMode, readText;
-import std.path : buildPath, buildNormalizedPath, baseName, stripExtension;
+import std.path : buildNormalizedPath, baseName, stripExtension;   // buildPath comes from qtd_build, normalised
 import std.array : array, replace, join, split;
 import std.algorithm : map, filter, sort, any, startsWith, canFind, all;
 import std.process : execute;
