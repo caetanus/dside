@@ -150,6 +150,46 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
+### Where the mechanics actually stand, measured 2026-08-21
+
+The generator itself now **builds and runs on Windows**, and produced a QtCore binding there:
+
+```
+discovered 286 classes in <QtCore>
+done: 271 classes emitted, 1252 D bindings  (6.2 s)
+```
+
+Everything it emitted then compiled: **7 of 7 C++ shims** (`qtdmoc.cpp` needs Qt's private headers,
+same as on Linux) and **all 335 D modules**, with `clang++` and `ldc2`, no Visual Studio.
+
+Two porting items were found by getting that far, both bounded:
+
+**1. Hardcoded Itanium literals — 5 of them, exactly as this table predicted.** libclang does the
+right thing on Windows: of the manglings in the emitted tree, **2537 are MSVC and 8 are Itanium**,
+and all 8 come from string literals in the generator rather than from the AST. Their MSVC
+counterparts, read from `Qt6Core.lib`:
+
+| literal | MSVC name |
+|---|---|
+| `_ZN10QArrayData10deallocateEPS_xx` | `?deallocate@QArrayData@@SAXPEAU1@_J1@Z` |
+| `_ZN7QStringC1EPK5QCharx` | `??0QString@@QEAA@PEBVQChar@@_J@Z` |
+| `_ZN10QByteArrayC1EPKcx` | `??0QByteArray@@QEAA@PEBD_J@Z` |
+| `_Znwm` / `_ZdlPv` | operator new/delete, MSVC-mangled |
+
+**2. Duplicate symbols at link, which is new and NOT in this table.** The emitted
+`extern (C++) struct QByteArray` declares `~this()`, so LDC emits an out-of-line destructor under
+the C++ mangled name — and `Qt6Core.lib` exports one too:
+
+```
+lld-link: error: duplicate symbol: public: __cdecl QByteArray::~QByteArray(void)
+>>> defined at libbinding.lib(qbytearray.obj)
+>>> defined at Qt6Core.lib(Qt6Core.dll)
+```
+
+On Linux this merges; COFF has no equivalent, so the value-type runtime modules need their
+destructors declared rather than defined on Windows. This is the one genuinely new item the port
+turned up.
+
 ### Mechanics work (after the de-risks pass)
 
 - [ ] Introduce a `struct Toolchain` in `qtd_build.d`: `objExt`, `libExt`, `archiver`,
