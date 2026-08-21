@@ -65,7 +65,7 @@ Build reggaeBuild() {
     string docsNumberBdir;
 
     string t(string dir, string f) { return buildPath(root, "tests", dir, f); }
-    bool haveQt5() { return execute(["pkg-config", "--exists", "Qt5Widgets"]).status == 0; }
+    bool haveQt5() { return qtHasModule("Qt5Widgets"); }
 
     // --- WRAPPER mode QtCore: identity + parenting-pins + orphan collection ---
     auto wrap = qtdBinding(root, "spec_cxx_wraptest.json", ["Qt6Core"]);
@@ -211,7 +211,7 @@ Build reggaeBuild() {
     all ~= qmltcDTypeTargets(root, qml);   // .qml rooted in an APP-DEFINED type written in D
     all ~= qmltcCppTypeTargets(root, qml); // ... and in C++ (Qt's own corpus types, vendored)
     // (b) QtQuick: a bound-type root (Item -> QQuickItem) compiled to a D subclass, diffed vs the engine.
-    if (execute(["pkg-config", "--exists", "Qt6Quick"]).status == 0) {
+    if (qtHasModule("Qt6Quick")) {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
         all ~= registryGateTarget(root, quick, "quick");
@@ -229,7 +229,7 @@ Build reggaeBuild() {
     }
     // QtQuick.Templates — the C++ side of QtQuick.Controls, and the vocabulary real QML documents
     // are written against (measured: Controls is what most of Qt's own .qml needs).
-    if (execute(["pkg-config", "--exists", "Qt6QuickTemplates2"]).status == 0) {
+    if (qtHasModule("Qt6QuickTemplates2")) {
         // Qt6QuickControls2Impl carries IconLabel/CheckLabel/ColorImage — the types every
         // Basic contentItem is built from. Binding their headers without linking the library
         // gets you a clean compile and undefined references at link time.
@@ -401,7 +401,7 @@ Build reggaeBuild() {
         auto abiSrc = buildPath(root, "tests", "abi", "qlist_layout.cpp");
         foreach (mod; ["Qt6Core", "Qt5Core"])
         {
-            if (execute(["pkg-config", "--exists", mod]).status != 0) continue;
+            if (!qtHasModule(mod)) continue;
             auto tag = mod == "Qt5Core" ? "-qt5" : "";
             auto bin = buildPath(root, ".build", "abi-layout" ~ (tag.length ? "5" : "6"));
             // pkg-config directly: pkgCflags/pkgLibs speak ldc's `-L-l…` dialect, and this one
@@ -795,7 +795,7 @@ Build reggaeBuild() {
         // on such a runner NO licensing verification of Qt modules is performed, and the workflow's
         // advisory step is where it runs and where its failure is visible.
         auto qtRel = () {
-            auto r = execute(["pkg-config", "--modversion", "Qt6Core"]);
+            auto r = QtVer("Qt6Core");
             return r.status == 0 ? r.output.strip : "";
         }();
         auto matrixPath = buildPath(root, "docs", "qt-license-matrix.tsv");
@@ -1063,7 +1063,7 @@ Target[] qmlTrTargets(string root, QtdBinding qml, string tag = "") {
 // (private API); skipped if absent. The C++ validator is dc-independent but named per-dc so
 // reggae never double-schedules the shared node.
 Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
-    if (execute(["pkg-config", "--exists", "Qt6QmlCompiler"]).status != 0) return [];
+    if (!qtHasModule("Qt6QmlCompiler")) return [];
     auto here = buildPath(root, "tests", "qml");
     auto genD = buildPath(here, "qmltypes_gen.d");
     auto checkCpp = buildPath(here, "qtd_qmltypes_check.cpp");
@@ -1072,7 +1072,7 @@ Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
            ~ modulePrivateFlags(pkgCflags(["Qt6Qml"]), "QtQml")
            ~ modulePrivateFlags(pkgCflags(["Qt6Core"]), "QtCore")).join(" ");
     // raw pkg-config libs (this is a clang++ link, not the D linker's -L= form).
-    auto clibs = execute(["pkg-config", "--libs", "Qt6QmlCompiler", "Qt6Qml", "Qt6Core"]).output.strip;
+    auto clibs = qtLibsOf(["Qt6QmlCompiler", "Qt6Qml", "Qt6Core"]);
     Target[] ts;
     foreach (dc; DCS) {
         // the CTFE generator binary. Built against the qml binding so libshims resolves the
@@ -1114,7 +1114,7 @@ Target qmltcTool(string root, QtdBinding bind) {
     auto toolFlags = pkgCflags([qml, core]) ~ " -std=c++17 -fPIC -O2 "
         ~ (modulePrivateFlags(pkgCflags([qml]), "QtQml")
            ~ modulePrivateFlags(pkgCflags([core]), "QtCore")).join(" ");
-    auto toolLibs = execute(["pkg-config", "--libs", qml, core]).output.strip;
+    auto toolLibs = qtLibsOf([qml, core]);
     // Shared by every qmltc differential target -> guard it (see `guarded`): a concurrent
     // re-schedule of this one node otherwise links over a binary another target is executing.
     auto toolBin = buildPath(bind.bdir, "qmltc-d");
@@ -1177,7 +1177,7 @@ Target[] qtmocProbeTargets(string root) {
     if (units.length == 0) return [];
     Target[] ts;
     auto mk = (string name, string[] mods, bool qml, string qmlMod) {
-        if (!mods.all!(m => execute(["pkg-config", "--exists", m]).status == 0)) return;
+        if (!mods.all!(m => qtHasModule(m))) return;
         auto cf = pkgCflags(mods);
         auto flags = cf ~ " -std=c++17 -fPIC " ~ mocPrivateFlags(cf).join(" ")
                    ~ (qml ? " " ~ modulePrivateFlags(pkgCflags([qmlMod]), "QtQml").join(" ")
@@ -1319,7 +1319,7 @@ Target[] qmltcControlsRuntimeTargets(string root, QtdBinding bind) {
 
 Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag,
                       string[] skip = []) {
-    if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
+    if (!qtHasModule("Qt6Qml")) return [];
     auto here = buildPath(root, "tests", "qmltc");
     if (!exists(corpusDir)) return [];
     auto oracleCpp = buildPath(here, "qtd_qmlvalues.cpp");
@@ -1334,14 +1334,14 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     auto oq = bind.mods.any!(m => m.startsWith("Qt5")) ? "Qt5" : "Qt6";
     auto oracleMods = [oq ~ "Qml", oq ~ "Gui", oq ~ "Core"];
     auto oracleFlags = pkgCflags(oracleMods) ~ " -std=c++17 -fPIC -O2";
-    auto oracleLibs = execute(["pkg-config", "--libs"] ~ oracleMods).output.strip;
+    auto oracleLibs = qtLibsOf(oracleMods);
     auto oracleBin = buildPath(bind.bdir, "qmlvalues");
     auto rndBin = buildPath(bind.bdir, "qmlrender");
     Target[] rndDep;
     if (bind.mods.any!(m => m.canFind("Quick"))) {
         auto rCpp = buildPath(here, "qtd_qmlrender.cpp");
         auto rFl = pkgCflags(bind.mods ~ ["Qt6Core"]) ~ " -std=c++17 -fPIC -O2";
-        auto rLb = execute(["pkg-config", "--libs"] ~ bind.mods ~ ["Qt6Core"]).output.strip;
+        auto rLb = qtLibsOf(bind.mods ~ ["Qt6Core"]);
         rndDep ~= Target(rndBin, guardedLink(rndBin ~ ".lock",
             "clang++ " ~ rFl ~ " " ~ rCpp ~ " -o $out " ~ rLb, rndBin, [rCpp]), [Target(rCpp)]);
     }
@@ -1775,7 +1775,7 @@ mixin BuildgenMain;
 // sidecar additionally mutates both and re-diffs, which is what proves the bindings stayed LIVE
 // through the base type's own notify signal.
 Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
-    if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
+    if (!qtHasModule("Qt6Qml")) return [];
     auto here = buildPath(root, "tests", "qmltc");
     auto dir = buildPath(here, "dtypes");
     if (!exists(dir)) return [];
@@ -1875,7 +1875,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
 // and emits a trampoline per type, so the generated D class subclasses the C++ type and drives
 // base properties through the meta-object.
 Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
-    if (execute(["pkg-config", "--exists", "Qt6Qml"]).status != 0) return [];
+    if (!qtHasModule("Qt6Qml")) return [];
     auto dir = buildPath(root, "tests", "qmltc", "cpptypes");
     // ASK QT WHERE ITS TOOLS ARE, and refuse to disappear quietly if they are missing (round 17 #3).
     // These paths were hardcoded as `/usr/lib/qt6/<tool>`, which is this distribution's layout and
@@ -1976,7 +1976,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
         "clang++ " ~ cflags ~ " -o " ~ oracleBin ~ " " ~ oracleCpp
         ~ " -Wl,--whole-archive " ~ typesLib ~ " -Wl,--no-whole-archive "
-        ~ execute(["pkg-config", "--libs", "Qt6Qml", "Qt6Gui", "Qt6Core"]).output.strip,
+        ~ qtLibsOf(["Qt6Qml", "Qt6Gui", "Qt6Core"]),
         oracleBin, [oracleCpp, typesLib]), [Target(oracleCpp), lib]);
 
     // A bound root sets properties before any QGuiApplication exists; the helper provides one.

@@ -19,16 +19,113 @@ module qtd_build;
 import reggae;
 import std.json, std.file, std.path, std.process, std.string, std.array, std.algorithm;
 
+// ---------------------------------------------------------------------------------------------
+// WHERE QT IS — asked through six questions, not through one tool.
+//
+// The build used pkg-config in 35 places to decide what exists, where its headers are and which
+// version it is. Qt's MSVC builds ship no .pc files at all, so on Windows the reggaefile could not
+// even LIST its targets: it died in spawnProcess before constructing the graph.
+//
+// Those 35 calls turned out to be six distinct questions. They are answered here, by pkg-config
+// where it exists and from a Qt prefix where it does not — so the rest of the build asks about Qt
+// rather than about a tool that happens to know about Qt.
+//
+// On Windows the prefix comes from QTDIR, and its absence is a clear refusal rather than an empty
+// answer: an empty answer would build a graph with no Qt targets in it and call that success, which
+// is the vacuous-pass shape this project keeps finding.
+private struct QtProbe {
+    static bool usePkgConfig() {
+        static int cached = -1;
+        if (cached < 0) {
+            try cached = (execute(["pkg-config", "--version"]).status == 0) ? 1 : 0;
+            catch (Exception) cached = 0;
+        }
+        return cached == 1;
+    }
+
+    static string prefix() {
+        auto d = environment.get("QTDIR", "");
+        return d;
+    }
+
+    // Qt6Core -> QtCore, Qt5Widgets -> QtWidgets: the include directory Qt installs per module.
+    private static string moduleDir(string mod) {
+        if (mod.length > 3 && mod.startsWith("Qt") && (mod[2] == '5' || mod[2] == '6'))
+            return "Qt" ~ mod[3 .. $];
+        return mod;
+    }
+
+    static bool exists(string mod) {
+        if (usePkgConfig) return qtHasModule(mod);
+        auto p = prefix();
+        return p.length && std.file.exists(buildPath(p, "lib", mod ~ ".lib"));
+    }
+
+    static string cflags(string[] mods) {
+        if (usePkgConfig) return qtCflags(mods);
+        auto p = prefix();
+        if (!p.length) return "";
+        string[] f = ["-I" ~ buildPath(p, "include")];
+        foreach (m; mods) f ~= "-I" ~ buildPath(p, "include", moduleDir(m));
+        return f.join(" ");
+    }
+
+    static string libs(string[] mods) {
+        if (usePkgConfig) return qtLibsOf(mods);
+        auto p = prefix();
+        if (!p.length) return "";
+        return mods.map!(m => buildPath(p, "lib", m ~ ".lib")).join(" ");
+    }
+
+    static string modversion(string mod) {
+        if (usePkgConfig) {
+            auto r = QtVer(mod);
+            return r.status == 0 ? r.output.strip : "";
+        }
+        // The version is the directory Qt installs its private headers under.
+        auto p = prefix();
+        if (!p.length) return "";
+        foreach (e; dirEntries(buildPath(p, "include", "QtCore"), SpanMode.shallow))
+            if (e.isDir && baseName(e.name).length && baseName(e.name)[0] >= '5'
+                        && baseName(e.name)[0] <= '9')
+                return baseName(e.name);
+        return "";
+    }
+
+    // moc and friends live in libexec on Linux and in bin on Windows.
+    static string libexecdir(string mod) {
+        if (usePkgConfig)
+            return qtLibexecDir(mod);
+        auto p = prefix();
+        return p.length ? buildPath(p, "bin") : "";
+    }
+
+    static string bindir(string mod) {
+        if (usePkgConfig)
+            return qtBinDir(mod);
+        auto p = prefix();
+        return p.length ? buildPath(p, "bin") : "";
+    }
+}
+
+// The six questions, as free functions so call sites read as questions about Qt.
+bool   qtHasModule(string mod)      { return QtProbe.exists(mod); }
+string qtCflags(string[] mods)      { return QtProbe.cflags(mods); }
+string qtLibsOf(string[] mods)      { return QtProbe.libs(mods); }
+string qtModVersion(string mod)     { return QtProbe.modversion(mod); }
+string qtLibexecDir(string mod)     { return QtProbe.libexecdir(mod); }
+string qtBinDir(string mod)         { return QtProbe.bindir(mod); }
+
 // --- pkg-config ---------------------------------------------------------------
 
 string pkgCflags(string[] mods) {
-    return execute(["pkg-config", "--cflags"] ~ mods).output.strip;
+    return qtCflags(mods);
 }
 
 // Linker flags for the D compiler: each `-lFoo`/`-L/path` token wrapped as `-L<tok>`
 // (ldc2/dmd forward `-L…` to the C linker), plus libstdc++ for the C++ runtime.
 string pkgLibs(string[] mods) {
-    auto toks = execute(["pkg-config", "--libs"] ~ mods).output.strip.split ~ "-lstdc++";
+    auto toks = qtLibsOf(mods).split ~ "-lstdc++";
     return toks.map!(t => "-L" ~ t).join(" ");
 }
 
@@ -50,7 +147,7 @@ string[] mocPrivateFlags(string cflags) { return modulePrivateFlags(cflags, "QtC
 // qmlcachegen (Qt's AOT QML bytecode compiler) lives under the Qt libexecdir. Returns "" if
 // it isn't installed, so callers can skip the AOT targets on a system that lacks it.
 string qmlcachegenPath() {
-    auto le = execute(["pkg-config", "--variable=libexecdir", "Qt6Qml"]).output.strip;
+    auto le = qtLibexecDir("Qt6Qml");
     auto p = buildPath(le, "qmlcachegen");
     return exists(p) ? p : "";
 }
@@ -58,7 +155,7 @@ string qmlcachegenPath() {
 // lrelease (Qt's .ts -> .qm compiler) — a user-facing tool, usually in bindir or PATH.
 // Returns "" if absent so the translation round-trip test degrades to an identity-only check.
 string lreleasePath() {
-    auto bd = execute(["pkg-config", "--variable=bindir", "Qt6Core"]).output.strip;
+    auto bd = qtBinDir("Qt6Core");
     foreach (p; [buildPath(bd, "lrelease"), "/usr/bin/lrelease"])
         if (exists(p)) return p;
     return execute(["which", "lrelease"]).status == 0 ? "lrelease" : "";
@@ -94,7 +191,7 @@ string bindingQtMinor(string genDir) {
 }
 
 string installedQtMinor(string pkgMod) {
-    auto r = execute(["pkg-config", "--modversion", pkgMod]);
+    auto r = QtVer(pkgMod);
     if (r.status != 0) return "";
     auto v = r.output.strip.split(".");
     return v.length >= 2 ? v[0] ~ "." ~ v[1] : "";
@@ -321,7 +418,7 @@ string[] qtdExpandLinkMods(string[] mods) {
 string qtdQtRelease(string[] mods) {
     auto fam = mods.any!(m => m.startsWith("Qt5")) ? "Qt5Core" : "Qt6Core";
     try {
-        auto r = execute(["pkg-config", "--modversion", fam]);
+        auto r = QtVer(fam);
         if (r.status == 0) return r.output.strip;
     } catch (Exception) { }
     return "";
