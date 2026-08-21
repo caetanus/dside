@@ -152,6 +152,17 @@ bool havePkgConfigForBuild() {
     return cached == 1;
 }
 
+// Position-independent code is a POSIX shared-library concern. On Windows every image is
+// relocatable by construction and clang-cl/clang targeting MSVC rejects the flag outright:
+//
+//     clang++: error: unsupported option '-fPIC' for target 'x86_64-pc-windows-msvc'
+//
+// So the flag is named here rather than spelled at each of the twenty-odd compile lines.
+string cxxPic() {
+    version (Windows) return "";
+    else              return "-fPIC";
+}
+
 // The six questions, as free functions so call sites read as questions about Qt.
 bool   qtHasModule(string mod)      { return QtProbe.exists(mod); }
 string qtCflags(string[] mods)      { return QtProbe.cflags(mods); }
@@ -340,7 +351,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // -ffunction-sections/-fdata-sections put each shim (and each of the ~1500 exception
     // guards) in its own linker section, so the final link's --gc-sections drops the ones an
     // app doesn't call. Without this, libshims.a is one .o -> pulling any shim pulls ALL.
-    auto cxx = cflags ~ " -std=c++17 -fPIC -O2 -ffunction-sections -fdata-sections";
+    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -ffunction-sections -fdata-sections";
     // Extra include paths from the spec: private-header subdirs a private-API binding needs so the
     // aggregated shims (qtdctor/qtvirt/...) that reference private types (QQuickGradient etc.) compile.
     // A RELATIVE path in the spec is relative to the SPEC, not to whoever compiles: xiboca runs from
@@ -628,7 +639,7 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ ` "include_paths": ["` ~ build ~ `"], "headers": ["` ~ buildPath(build, "sample_all.h") ~ `"] }`);
 
     auto cflags = pkgCflags(["Qt6Core"]);
-    auto cxx = cflags ~ " -std=c++17 -fPIC -O2";
+    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2";
     auto priv = mocPrivateFlags(cflags).join(" ");
     auto xiboca = gendPath(root);
 
@@ -637,7 +648,7 @@ Target[] libsampleTargets(string root, string pyside) {
     auto lsaCmd = "rm -rf " ~ build ~ " && mkdir -p " ~ build ~ " && cp " ~ LS ~ "/*.h " ~ LS ~ "/*.cpp "
         ~ MIN ~ "/libminimalmacros.h " ~ buildPath(bdir, "sample_all.h") ~ " " ~ build ~ "/ && cd " ~ build
         ~ " && sed -i 's#../libminimal/libminimalmacros.h#libminimalmacros.h#' libsamplemacros.h"
-        ~ ` && for c in *.cpp; do [ "$c" = main.cpp ] || clang++ -std=c++17 -fPIC -DLIBSAMPLE_BUILD -I. -c "$c" -o "${c%.cpp}.o" 2>/dev/null; done`
+        ~ ` && for c in *.cpp; do [ "$c" = main.cpp ] || clang++ -std=c++17 ` ~ cxxPic() ~ ` -DLIBSAMPLE_BUILD -I. -c "$c" -o "${c%.cpp}.o" 2>/dev/null; done`
         ~ " && ar rcs libsample.a *.o";
     // freshness vs the umbrella (written at configure time): without it a second concurrent
     // scheduling would `rm -rf build` mid-link (empty newerThan == never skip).
