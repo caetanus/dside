@@ -150,7 +150,33 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
-### Where the mechanics actually stand, measured 2026-08-21
+### THE BUILD WORKS ON WINDOWS — 2026-08-21
+
+End to end, on the Windows 10 VM, with `clang++` from LLVM's extractable package, `ldc2` 1.42.0 and
+Qt 6.10.3 (msvc2022_64), and **no Visual Studio installed**:
+
+```
+xiboca.exe spec-win.json    271 classes emitted, 1252 D bindings, 0 Itanium manglings
+clang++                     7 of 7 C++ shims compiled
+ldc2                        335 of 335 D modules compiled
+llvm-lib                    libbinding.lib + libshims.lib
+ldc2 app.d + both archives + Qt6Core.lib
+./app.exe                   QByteArray -> "hello windows" (13 bytes)
+                            WIN-BINDING: PASS
+```
+
+A `QByteArray` built from a D `string`, crossing the generated binding into `Qt6Core.dll` and back.
+
+Four changes got it there, and every one was small:
+
+| | |
+|---|---|
+| `dub.json` | `libs-posix: [clang]` / `libs-windows: [libclang]` — the name differs, and `libs-<platform>` ADDS rather than replaces |
+| pkg-config | made optional; Qt's MSVC builds ship no `.pc` at all, and a spec that gives `cflags`/`libs` needs no such tool |
+| ABI symbols | the five names the emitter spells itself now come from a table indexed by the ABI **libclang is using**, decided once after discovery |
+| destructors | the runtime value types emit `extern(D) ~this()`; a C++-mangled one collides with the copy `Qt6Core.lib` exports |
+
+### Where the mechanics stand
 
 The generator itself now **builds and runs on Windows**, and produced a QtCore binding there:
 
