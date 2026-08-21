@@ -150,7 +150,36 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
-### THE BUILD WORKS ON WINDOWS — 2026-08-21
+### THE REGGAE BUILD ITSELF RUNS ON WINDOWS — 2026-08-21
+
+Not just the hand-driven pipeline below: `reggae -b binary` builds the reggaefile there, and the
+resulting `build.exe` constructs the whole graph and runs targets.
+
+```
+reggae -b binary .          reggaefile compiled and linked -> build.exe
+./build.exe --list          881 targets
+./build.exe license-coverage
+                            license-coverage OK: 616 tracked file(s) ...
+```
+
+**881 and not 1205, for a stated reason**: that machine's Qt5 is `msvc2017`, 32-bit, so
+`qtHasModule` does not find it under `$QTDIR/lib` and every Qt5 target is absent — measured, `grep
+-c qt5` over the listing returns 0. The gap is the Qt5 half, not a silent truncation.
+
+What the environment needs: `QTDIR` pointing at the Qt prefix, LLVM's `bin` on PATH for
+`clang++`/`llvm-lib`, and Git Bash's `/usr/bin` on PATH — which a non-interactive ssh session does
+not have by default.
+
+Four more items, each found by getting one step further:
+
+| | |
+|---|---|
+| pkg-config | 35 call sites were six questions; they now go through a probe backed by `QTDIR` where pkg-config is absent |
+| `writeIfChanged` | graph construction writes into `.build/<binding>/` before any target runs; on a first build that directory does not exist |
+| `findTool` | asked for `moc`, and Qt ships `moc.exe` — a present tool read as MISSING |
+| `QT_INSTALL_LIBEXECS` | probed via qtpaths/qmake **on PATH**, and Qt's installer does not put its bin there; the probe is now the last resort |
+
+### THE HAND-DRIVEN PIPELINE WORKS TOO — 2026-08-21
 
 End to end, on the Windows 10 VM, with `clang++` from LLVM's extractable package, `ldc2` 1.42.0 and
 Qt 6.10.3 (msvc2022_64), and **no Visual Studio installed**:
