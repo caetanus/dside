@@ -510,7 +510,10 @@ string runOffscreen(string binRef, string extra = "") {
         // looks it up in PATH — `.reggae\objs\x-bin` is exactly that shape, so a binary that was
         // right there reported as not found. Say it is a path by making it one, unless it already
         // is absolute (`/…` or `C:…`).
-        return `sh -c 'case "$0" in /*|?:*) ;; *) set -- "./$0" "$@";; esac; `
+        // NO `|` IN THIS TEXT, not even inside the single quotes: cmd.exe parses the command
+        // before sh ever sees it, and `/*|?:*)` became a pipe — `'?:*)' is not recognised as an
+        // internal or external command`. Hence two nested `case`s rather than one alternation.
+        return `sh -c 'case "$0" in /*) ;; *) case "$0" in ?:*) ;; *) set -- "./$0" "$@";; esac;; esac; `
             ~ `QT_QPA_PLATFORM=offscreen exec "$0" ` ~ extra ~ `' ` ~ binRef;
     else
         return "QT_QPA_PLATFORM=offscreen " ~ binRef ~ (extra.length ? " " ~ extra : "");
