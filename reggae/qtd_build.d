@@ -108,6 +108,14 @@ private struct QtProbe {
     }
 }
 
+// An executable's file name. Qt installs `moc` on POSIX and `moc.exe` on Windows, and a build that
+// tests for the file rather than relying on PATH has to ask for the right one — otherwise a present
+// tool reads as missing, which is what "moc=MISSING" meant on a machine where moc was right there.
+string exeName(string n) {
+    version (Windows) return n ~ ".exe";
+    else              return n;
+}
+
 // The six questions, as free functions so call sites read as questions about Qt.
 bool   qtHasModule(string mod)      { return QtProbe.exists(mod); }
 string qtCflags(string[] mods)      { return QtProbe.cflags(mods); }

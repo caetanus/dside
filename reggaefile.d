@@ -1896,8 +1896,12 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
         return "";
     }();
     string findTool(string name) {
-        foreach (c; [buildPath(libexec, name), "/usr/lib/qt6/libexec/" ~ name, "/usr/lib/qt6/" ~ name])
-            if (c.length > name.length && exists(c)) return c;
+        // Qt puts its tools in libexec on Linux and in bin on Windows, where they also carry .exe —
+        // and the two hardcoded paths below are a Linux distribution's layout, kept as a fallback
+        // for when pkg-config does not report libexecdir.
+        auto n = exeName(name);
+        foreach (c; [buildPath(libexec, n), "/usr/lib/qt6/libexec/" ~ n, "/usr/lib/qt6/" ~ n])
+            if (c.length > n.length && exists(c)) return c;
         return "";
     }
     auto moc = findTool("moc"), reg = findTool("qmltyperegistrar");
