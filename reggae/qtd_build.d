@@ -398,7 +398,11 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // which is exactly how a Qt5 build break stayed hidden.
     auto runtimeSrc = qtdRuntimeSources(root);
     auto gen = Target(stamp,
-        guarded(bdir ~ "/gen.lock", genCmd, stamp, [specPath, xiboca] ~ runtimeSrc),
+        // The guard watches the spec the generator is actually GIVEN. Watching the shipped one
+        // while running a derived copy is the same shape as the install guard that could not see
+        // the archives it copied: the derived spec changed, the stamp did not, and the step was
+        // skipped while its output stayed wrong.
+        guarded(bdir ~ "/gen.lock", genCmd, stamp, [useSpec, xiboca] ~ runtimeSrc),
         [Target(specPath), gendTarget(root)] ~ runtimeSrc.map!(f => Target(f)).array);
 
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
