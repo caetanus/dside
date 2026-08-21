@@ -1972,7 +1972,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
             "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ src ~ " -o $out", [Target(src)]);
     }
     auto typesLib = buildPath(bind.bdir, "libcorpustypes.a");
-    auto lib = Target(typesLib, "ar rcs $out $in", mocObjs ~ [regObj] ~ implObjs);
+    auto lib = Target(typesLib, arCmd("$out", "$in"), mocObjs ~ [regObj] ~ implObjs);
 
     // 3) the ORACLE: the stock C++ oracle linked against the types. --whole-archive is REQUIRED —
     //    the module registration is a static QQmlModuleRegistration nothing references, so a

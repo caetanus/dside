@@ -163,6 +163,21 @@ string cxxPic() {
     else              return "-fPIC";
 }
 
+// Making a static archive. `ar rcs <lib> <objs>` on POSIX; on Windows the archiver is llvm-lib,
+// which takes /OUT: and no operation letters. Named here so the twenty call sites ask for "an
+// archive of these objects" rather than for one platform's tool.
+//
+// The object extension differs too — .o against .obj — and follows the same rule.
+string arCmd(string lib, string objs) {
+    version (Windows) return "llvm-lib /OUT:" ~ lib ~ " " ~ objs;
+    else              return "ar rcs " ~ lib ~ " " ~ objs;
+}
+
+string objExt() {
+    version (Windows) return ".obj";
+    else              return ".o";
+}
+
 // The six questions, as free functions so call sites read as questions about Qt.
 bool   qtHasModule(string mod)      { return QtProbe.exists(mod); }
 string qtCflags(string[] mods)      { return QtProbe.cflags(mods); }
@@ -451,7 +466,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         ~ `if [ "$b" = qtdmoc_qml ]; then b=qtdmoc_qml` ~ stubObj ~ `; fi; `
         ~ `case "$b" in qtdmoc|qtdmoc_qml|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
-        ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
+        ~ arCmd(shimsLib, bdir ~ "/ocpp/*" ~ objExt());
     auto shims = Target(shimsLib,
         guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]),
         [gen]);
@@ -550,7 +565,7 @@ Target qtdBindLib(QtdBinding b, string dc) {
     // NB: double-quoted "*.d" (the command is embedded in sh -c '…' by guarded()).
     auto cmd = "rm -rf " ~ od ~ " && mkdir -p " ~ od ~ " && cd " ~ b.genDir ~ " && "
         ~ dc ~ ` -c ` ~ oq ~ "-od=" ~ od ~ ` -I. $(find . -name "*.d") && `
-        ~ "ar rcs " ~ lib ~ " " ~ od ~ "/*.o";
+        ~ arCmd(lib, od ~ "/*" ~ objExt());
     auto t = Target(lib,
         guarded(b.bdir ~ "/bind_" ~ dc ~ ".lock", cmd, lib, [stamp]),
         [b.gen]);
@@ -649,7 +664,7 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ MIN ~ "/libminimalmacros.h " ~ buildPath(bdir, "sample_all.h") ~ " " ~ build ~ "/ && cd " ~ build
         ~ " && sed -i 's#../libminimal/libminimalmacros.h#libminimalmacros.h#' libsamplemacros.h"
         ~ ` && for c in *.cpp; do [ "$c" = main.cpp ] || clang++ -std=c++17 ` ~ cxxPic() ~ ` -DLIBSAMPLE_BUILD -I. -c "$c" -o "${c%.cpp}.o" 2>/dev/null; done`
-        ~ " && ar rcs libsample.a *.o";
+        ~ " && " ~ arCmd("libsample.a", "*" ~ objExt());
     // freshness vs the umbrella (written at configure time): without it a second concurrent
     // scheduling would `rm -rf build` mid-link (empty newerThan == never skip).
     auto sampleLib = Target(lsa, guarded(bdir ~ "/lsa.lock", lsaCmd, lsa, [buildPath(bdir, "sample_all.h")]), []);
@@ -675,7 +690,7 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ `b=$(basename "$c" .cpp); if [ "$b" = qtdmoc_qml ]; then b=qtdmoc_qml_stub; fi; `
         ~ `case "$b" in qtdmoc|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b.o || exit 1; done && "
-        ~ "ar rcs " ~ shimsLib ~ " " ~ bdir ~ "/ocpp/*.o";
+        ~ arCmd(shimsLib, bdir ~ "/ocpp/*" ~ objExt());
     auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);
     _shimsRegistry ~= ShimsEntry(shimsLib, false, shimsT, ["Qt6Core"], qtdExpandLinkMods(["Qt6Core"]), qtdQtRelease(["Qt6Core"]));   // libsample: no QtQml, QtCore only
     _genRegistry ~= genT;
@@ -687,7 +702,7 @@ Target[] libsampleTargets(string root, string pyside) {
         auto lib = buildPath(bdir, "libbinding_" ~ dc ~ ".a");
         auto libCmd = "rm -rf " ~ od ~ " && mkdir -p " ~ od ~ " && cd " ~ gen ~ " && "
             ~ dc ~ " -c " ~ oq ~ "-od=" ~ od ~ ` -I. $(find . -name "*.d") && `
-            ~ "ar rcs " ~ lib ~ " " ~ od ~ "/*.o";
+            ~ arCmd(lib, od ~ "/*" ~ objExt());
         auto libT = Target(lib, guarded(bdir ~ "/bind_" ~ dc ~ ".lock", libCmd, lib, [stamp]), [genT]);
         // libsample.a + the shim archives have mutual refs -> a static --start/--end-group.
         auto grp = "-L--start-group -L=" ~ lib ~ " -L=" ~ shimsLib ~ " -L=" ~ lsa
