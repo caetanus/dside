@@ -34,6 +34,15 @@ string buildPath(A...)(A args) {
     return stdBuildPath(args).replace("\\", "/");
 }
 
+// ...and the other composer. Missing this one let a native path reach a command, where the shell
+// ate the separators outright: clang++ was handed 'C:Userscaetanodsidegenerated...' and reported
+// no input files. Both composers, or neither.
+string buildNormalizedPath(A...)(A args) {
+    import std.path : stdNorm = buildNormalizedPath;
+    import std.string : replace;
+    return stdNorm(args).replace("\\", "/");
+}
+
 
 // ---------------------------------------------------------------------------------------------
 // WHERE QT IS — asked through six questions, not through one tool.
