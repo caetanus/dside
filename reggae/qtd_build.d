@@ -58,6 +58,23 @@ string buildNormalizedPath(A...)(A args) {
 // On Windows the prefix comes from QTDIR, and its absence is a clear refusal rather than an empty
 // answer: an empty answer would build a graph with no Qt targets in it and call that success, which
 // is the vacuous-pass shape this project keeps finding.
+// `/c/Qt/x` and `/cygdrive/c/Qt/x` -> `C:/Qt/x`. Anything else passes through untouched, so a
+// native path, a relative path and the empty string are all unharmed.
+//
+// EVERY path this build reads from the environment comes from an MSYS shell and is in that form —
+// QTDIR, and the entries of PATH. The tools it hands them to are native Windows programs, and none
+// of them says so: clang++ reports a missing header, lld-link reads a leading `/` as an option and
+// reports an undefined symbol, and a PATH scan simply finds nothing where the tool plainly is.
+string nativePath(string d) {
+    version (Windows) {
+        import std.ascii : isAlpha, toUpper;
+        if (d.startsWith("/cygdrive/")) d = d["/cygdrive".length .. $];
+        if (d.length >= 2 && d[0] == '/' && d[1].isAlpha && (d.length == 2 || d[2] == '/'))
+            return d[1].toUpper ~ ":" ~ d[2 .. $];
+    }
+    return d;
+}
+
 private struct QtProbe {
     static bool usePkgConfig() {
         static int cached = -1;
@@ -81,20 +98,9 @@ private struct QtProbe {
     // So the drive-letter form is restored here, once, rather than at the ~40 places that consume
     // a path derived from the prefix.
     static string prefix() {
-        return nativePrefix(environment.get("QTDIR", ""));
+        return nativePath(environment.get("QTDIR", ""));
     }
 
-    // `/c/Qt/x` and `/cygdrive/c/Qt/x` -> `C:/Qt/x`. Anything else is returned untouched, so a
-    // native path, a relative path and the empty string all pass through unharmed.
-    static string nativePrefix(string d) {
-        version (Windows) {
-            import std.ascii : isAlpha, toUpper;
-            if (d.startsWith("/cygdrive/")) d = d["/cygdrive".length .. $];
-            if (d.length >= 2 && d[0] == '/' && d[1].isAlpha && (d.length == 2 || d[2] == '/'))
-                return d[1].toUpper ~ ":" ~ d[2 .. $];
-        }
-        return d;
-    }
 
     // Qt6Core -> QtCore, Qt5Widgets -> QtWidgets: the include directory Qt installs per module.
     private static string moduleDir(string mod) {
@@ -406,7 +412,16 @@ private string gendPath(string root) { return buildPath(root, "xiboca", "xiboca"
 // in which case the linker's own defaults are as good an answer as we have.
 string llvmLibEnv() {
     version (Windows) {
-        foreach (dir; environment.get("PATH", "").split(pathSeparator)) {
+        // PATH comes from the MSYS shell, so its entries need the same treatment as QTDIR —
+        // otherwise the scan finds nothing where clang++ plainly is. MSYS also separates with `:`
+        // rather than the `;` a native build expects, and a piece may be in either form, so only
+        // a piece that STARTS as an MSYS path is split further: splitting `C:/llvm/bin` on `:`
+        // would hand the scan `C` and `/llvm/bin`, neither of which exists.
+        string[] dirs;
+        foreach (piece; environment.get("PATH", "").split(pathSeparator))
+            dirs ~= piece.startsWith("/") ? piece.split(':') : [piece];
+        foreach (raw; dirs) {
+            auto dir = nativePath(raw);
             if (!dir.length) continue;
             if (!std.file.exists(buildPath(dir, exeName("clang++")))) continue;
             auto lib = buildNormalizedPath(dir, "..", "lib");
