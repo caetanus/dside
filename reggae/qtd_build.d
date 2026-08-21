@@ -132,6 +132,17 @@ string exeName(string n) {
     else              return n;
 }
 
+// Whether the build can rely on pkg-config for this run. Same question the probe asks, exposed so
+// the gen step can decide whether a spec needs its flags filled in.
+bool havePkgConfigForBuild() {
+    static int cached = -1;
+    if (cached < 0) {
+        try cached = (execute(["pkg-config", "--version"]).status == 0) ? 1 : 0;
+        catch (Exception) cached = 0;
+    }
+    return cached == 1;
+}
+
 // The six questions, as free functions so call sites read as questions about Qt.
 bool   qtHasModule(string mod)      { return QtProbe.exists(mod); }
 string qtCflags(string[] mods)      { return QtProbe.cflags(mods); }
@@ -342,7 +353,26 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // The stamp lives in bdir, not genDir, so wiping genDir doesn't delete it.
     auto stamp = buildPath(bdir, "gen.stamp");
     auto xiboca = gendPath(root);
-    auto genCmd = "rm -rf " ~ genDir ~ " && " ~ xiboca ~ " " ~ specPath ~ " >/dev/null && touch " ~ stamp;
+
+    // WHERE PKG-CONFIG IS ABSENT, THE BUILD ANSWERS FOR IT. The shipped specs name Qt modules
+    // through `pkg_config`, which is the right thing to write down — it is a fact about the
+    // binding, not about a machine. On Windows there is no pkg-config to resolve it, and xiboca
+    // refuses rather than guessing. But the build already knows where Qt is, so it derives a spec
+    // beside the binding with `cflags` and `libs` filled in from the probe. The shipped spec stays
+    // platform-neutral; the platform knowledge stays in the build, which is the only place that
+    // has it.
+    auto useSpec = specPath;
+    if (!havePkgConfigForBuild()) {
+        auto derived = buildPath(bdir, "spec.win.json");
+        auto jw = parseJSON(readText(specPath));
+        jw.object["cflags"] = JSONValue(qtCflags(mods).split(" ").filter!(f => f.length).array
+                                       .map!(f => JSONValue(f)).array);
+        jw.object["libs"]   = JSONValue(qtLibsOf(mods).split(" ").filter!(f => f.length).array
+                                       .map!(f => JSONValue(f)).array);
+        writeIfChanged(derived, jw.toPrettyString);
+        useSpec = derived;
+    }
+    auto genCmd = "rm -rf " ~ genDir ~ " && " ~ xiboca ~ " " ~ useSpec ~ " >/dev/null && touch " ~ stamp;
     // The generator COPIES these runtime sources verbatim into the binding (emit.d), so they are
     // build INPUTS. Without the edge, editing the runtime leaves every already-generated binding
     // on the old copy and the whole matrix goes green against code that is no longer in the tree —
