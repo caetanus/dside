@@ -415,8 +415,8 @@ Build reggaeBuild() {
             // gate ran g++ and pkg-config by name and neither exists on Windows, so it failed with
             // `sh: g++: command not found` — a gate reporting on the machine, not on the layout.
             // clang++ is already required by every other C++ step in this build.
-            auto b = Target(bin, posixCmd("clang++ -std=c++17 " ~ cxxPic() ~ " " ~ qtCflags([mod])
-                            ~ " -o $out $in " ~ qtLibsOf([mod])), [Target(abiSrc)]);
+            auto b = Target(bin, posixCmdArgv("clang++ -std=c++17 " ~ cxxPic() ~ " " ~ qtCflags([mod])
+                            ~ ` -o "$0" "$1" ` ~ qtLibsOf([mod]), ["$out", "$in"]), [Target(abiSrc)]);
             all ~= Target.phony("abi-layout" ~ tag, "$in", [b]);
         }
     }

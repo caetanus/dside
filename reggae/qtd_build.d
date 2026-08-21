@@ -557,6 +557,15 @@ string runOffscreen(string binRef, string extra = "", string[] mods = null) {
         return "QT_QPA_PLATFORM=offscreen " ~ binRef ~ (extra.length ? " " ~ extra : "");
 }
 
+// A COMMAND WHOSE PATHS TRAVEL AS ARGUMENTS, for the same reason runOffscreen does it: a path
+// reggae substitutes is native and backslashed, and backslashes do not survive
+// executeShell -> cmd.exe -> sh inside command TEXT — `C:\Users\x\a.cpp` arrives as
+// `C:Usersxa.cpp`. As positional arguments they arrive intact, so the text says $0, $1, … and the
+// paths follow it. Same form on both platforms, so there is one behaviour to reason about.
+string posixCmdArgv(string cmd, string[] paths) {
+    return `sh -c '` ~ cmd.replace(`'`, `'\''`) ~ `' ` ~ paths.join(" ");
+}
+
 string posixCmd(string cmd) {
     version (Windows) {
         import std.string : replace, indexOf;
