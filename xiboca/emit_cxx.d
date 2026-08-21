@@ -104,7 +104,13 @@ __gshared bool QT5;    // Qt5 target: QVector<T> has a distinct layout from QLis
 // Chosen by the ABI IN USE, not by the host OS. That distinction matters the day this
 // cross-compiles: the question is which mangling scheme the target speaks, and libclang has
 // already answered it in every name it handed us.
-__gshared bool MSVC_ABI;
+// Defaults to the host's own ABI and is CORRECTED by the first mangling libclang hands back.
+// Detection alone was not enough: it fired from a discovered method, and the `classes` fallback
+// spec reaches emission by a path where that loop had nothing to look at — so a whole Windows
+// binding came out Itanium and the link failed on `operator new(unsigned long)`. The AST still
+// wins when it speaks; the host only answers when it has not.
+version (Windows) __gshared bool MSVC_ABI = true;
+else              __gshared bool MSVC_ABI = false;
 
 // Set from the first real mangling seen, so the emitter follows the AST rather than an assumption.
 void noteAbiFrom(string mangled) {
