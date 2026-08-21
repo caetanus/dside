@@ -11,7 +11,7 @@
         "emit_cxx.d"
     ],
     "sourcePaths": [],
-    "libs": [
+    "libs-posix": [
         "clang"
     ],
     "libs-windows": [
