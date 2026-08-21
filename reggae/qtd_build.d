@@ -103,6 +103,59 @@ private struct QtProbe {
         return mod;
     }
 
+    // QT'S OWN MODULE METADATA, which every Qt 5 and Qt 6 install ships on every platform:
+    //
+    //   <prefix>/mkspecs/modules/qt_lib_widgets.pri
+    //     QT.widgets.name    = QtWidgets     <- the include directory
+    //     QT.widgets.module  = Qt6Widgets    <- the library base name
+    //     QT.widgets.depends =  core gui     <- what pkg-config's `Requires:` gives us for free
+    //
+    // Asking for a module has always meant asking for what it needs. Without this, a binding that
+    // asked for Qt6Widgets got `-I…/include/QtWidgets` and nothing else, and `#include <QString>`
+    // was not found — invisible on Linux, where pkg-config resolves `Requires:` and hands back
+    // QtCore and QtGui unasked. The answer is Qt's own data rather than a table of dependencies
+    // maintained here, which would be one more thing that can disagree with the Qt in front of us.
+    private static string priPath(string key) {
+        return buildPath(prefix(), "mkspecs", "modules", "qt_lib_" ~ key ~ ".pri");
+    }
+
+    private static string priField(string key, string field) {
+        auto p = priPath(key);
+        if (!std.file.exists(p)) return "";
+        auto want = "QT." ~ key ~ "." ~ field;
+        foreach (line; readText(p).splitLines) {
+            auto t = line.strip;
+            if (!t.startsWith(want)) continue;
+            auto eq = t.indexOf('=');
+            // `QT.widgets.name` must not match `QT.widgets.name_extra`: everything between the
+            // field and the `=` has to be whitespace.
+            if (eq > 0 && t[want.length .. eq].strip.length == 0) return t[eq + 1 .. $].strip;
+        }
+        return "";
+    }
+
+    // Qt6Widgets -> widgets
+    private static string priKey(string mod) {
+        import std.uni : toLower;
+        auto d = moduleDir(mod);
+        return (d.startsWith("Qt") ? d[2 .. $] : d).toLower;
+    }
+
+    // The dependency closure, dependencies BEFORE dependents, deduplicated. Empty when this Qt
+    // ships no mkspecs (then the callers fall back to the modules they were handed).
+    private static string[] closure(string[] mods) {
+        string[] keys;
+        bool[string] seen;
+        void visit(string k) {
+            if (k in seen || !std.file.exists(priPath(k))) return;
+            seen[k] = true;                       // before recursing: a cycle must not hang the build
+            foreach (d; priField(k, "depends").split) visit(d);
+            keys ~= k;
+        }
+        foreach (m; mods) visit(priKey(m));
+        return keys;
+    }
+
     static bool exists(string mod) {
         if (usePkgConfig) return execute(["pkg-config", "--exists", mod]).status == 0;
         auto p = prefix();
@@ -114,7 +167,14 @@ private struct QtProbe {
         auto p = prefix();
         if (!p.length) return "";
         string[] f = ["-I" ~ buildPath(p, "include")];
-        foreach (m; mods) f ~= "-I" ~ buildPath(p, "include", moduleDir(m));
+        auto keys = closure(mods);
+        if (keys.length)
+            foreach (k; keys) {
+                auto n = priField(k, "name");
+                if (n.length) f ~= "-I" ~ buildPath(p, "include", n);
+            }
+        else
+            foreach (m; mods) f ~= "-I" ~ buildPath(p, "include", moduleDir(m));
         return f.join(" ");
     }
 
@@ -122,7 +182,16 @@ private struct QtProbe {
         if (usePkgConfig) return execute(["pkg-config", "--libs"] ~ mods).output.strip;
         auto p = prefix();
         if (!p.length) return "";
-        return mods.map!(m => buildPath(p, "lib", m ~ ".lib")).join(" ");
+        auto keys = closure(mods);
+        if (!keys.length) return mods.map!(m => buildPath(p, "lib", m ~ ".lib")).join(" ");
+        // Dependents before dependencies, which is the order a linker that resolves left to right
+        // wants — the reverse of the order the closure produces them in.
+        string[] libs;
+        foreach_reverse (k; keys) {
+            auto m = priField(k, "module");
+            if (m.length) libs ~= buildPath(p, "lib", m ~ ".lib");
+        }
+        return libs.join(" ");
     }
 
     static string modversion(string mod) {
