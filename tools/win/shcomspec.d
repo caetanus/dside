@@ -52,6 +52,13 @@ int main() {
     if (rest.length >= 2 && rest[0] == '/' && (rest[1] == 'C' || rest[1] == 'c'))
         rest = rest[2 .. $].stripLeft;
 
+    // cmd /C strips ONE surrounding pair of double quotes, and callers rely on it: D's spawnShell
+    // hands us `/C "…"` and sh would otherwise try to run the quoted string as a command name —
+    // measured, `sh: line 1: C:/: Is a directory`.
+    rest = rest.strip;
+    if (rest.length >= 2 && rest[0] == '"' && rest[$ - 1] == '"')
+        rest = rest[1 .. $ - 1];
+
     if (!rest.length) {
         stderr.writeln("shcomspec: nothing to run (expected `/C <command>`)");
         return 2;
