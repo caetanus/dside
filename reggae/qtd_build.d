@@ -506,7 +506,12 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // So the binary is $0 and the environment prefix stays in the command.
 string runOffscreen(string binRef, string extra = "") {
     version (Windows)
-        return `sh -c 'QT_QPA_PLATFORM=offscreen exec "$0" ` ~ extra ~ `' ` ~ binRef;
+        // `exec "$0"` is not enough: a name with no FORWARD slash in it is a command name, and sh
+        // looks it up in PATH — `.reggae\objs\x-bin` is exactly that shape, so a binary that was
+        // right there reported as not found. Say it is a path by making it one, unless it already
+        // is absolute (`/…` or `C:…`).
+        return `sh -c 'case "$0" in /*|?:*) ;; *) set -- "./$0" "$@";; esac; `
+            ~ `QT_QPA_PLATFORM=offscreen exec "$0" ` ~ extra ~ `' ` ~ binRef;
     else
         return "QT_QPA_PLATFORM=offscreen " ~ binRef ~ (extra.length ? " " ~ extra : "");
 }
