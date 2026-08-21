@@ -37,6 +37,8 @@ enum : int {
     // expression kinds start at 100 (used to detect default-arg values)
     CXCursor_FirstExpr = 100,
     CXCursor_AnnotateAttr = 406,   // __attribute__((annotate("qt_signal"))) on a signal
+    CXCursor_DLLExport = 418,      // __declspec(dllexport) — the MSVC ABI's "this symbol is here"
+    CXCursor_DLLImport = 419,      // __declspec(dllimport) — ...and "it is in that DLL"
 }
 
 // Type kinds

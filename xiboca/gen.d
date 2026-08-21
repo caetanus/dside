@@ -7,6 +7,7 @@
 module gen;
 
 import clang_c;
+import emit_cxx : MSVC_ABI;
 import std.stdio, std.string, std.array, std.algorithm, std.conv, std.json,
        std.process, std.file, std.path;
 
@@ -374,13 +375,26 @@ private bool derivesFromRec(CXCursor node, string baseName, ref bool[string] see
 // (e.g. QQuickImplicitSizeItem) can't back a trampoline that default-constructs its base.
 bool isSubclassable(CXCursor node) {
     if (clang_CXXRecord_isAbstract(node)) return false;
-    // Must be EXPORTED (Q_*_EXPORT -> Default visibility under -fvisibility=hidden): a subclass
-    // references the base's ctor + staticMetaObject, so those symbols must be linkable. Legacy
-    // compat types (QQuickPre64TextEdit) are hidden -> their symbols aren't in the .so -> link error.
-    // This test only means something for a type coming from a SHARED LIBRARY. In headers-mode the
-    // sources are the user's own and get compiled into the binary, so an unexported class (an app
-    // type with no export macro at all — the normal case) is perfectly linkable.
-    if (!sourceFilter.length && clang_getCursorVisibility(node) != 3) return false;
+    // Must be EXPORTED: a subclass references the base's ctor + staticMetaObject, so those symbols
+    // must be linkable. Legacy compat types (QQuickPre64TextEdit) are hidden -> their symbols
+    // aren't in the library -> link error. This test only means something for a type coming from a
+    // SHARED LIBRARY. In headers-mode the sources are the user's own and get compiled into the
+    // binary, so an unexported class (an app type with no export macro at all — the normal case)
+    // is perfectly linkable.
+    //
+    // HOW a class says it is exported is ABI-specific, and asking the wrong way does not look like
+    // a wrong question: on the MSVC ABI clang_getCursorVisibility answers Invalid for EVERY class,
+    // so Q_WIDGETS_EXPORT classes read as hidden and QWidget was dropped from `subclass` with the
+    // diagnostic "cannot be subclassed (abstract, or no public default constructor)" — which was
+    // true of neither. Q_*_EXPORT is __declspec(dllimport) there, an attribute child of the class.
+    if (!sourceFilter.length) {
+        if (MSVC_ABI) {
+            bool dll;
+            foreach (c; children(node))
+                if (c.kind == CXCursor_DLLImport || c.kind == CXCursor_DLLExport) { dll = true; break; }
+            if (!dll) return false;
+        } else if (clang_getCursorVisibility(node) != 3) return false;
+    }
     bool anyCtor = false, pubDefault = false;
     foreach (c; children(node))
         if (c.kind == CXCursor_Constructor) {
