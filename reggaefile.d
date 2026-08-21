@@ -1893,7 +1893,11 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 if (r.status == 0 && r.output.strip.length) return r.output.strip;
             } catch (Exception) { /* not installed under this name; try the next */ }
         }
-        return "";
+        // ...and the probe, which knows where Qt is even when none of those four is on PATH. On
+        // Windows they are not: Qt's bin is not added to PATH by its installer, so every one of the
+        // four probes above fails and libexec came back empty — reported as "QT_INSTALL_LIBEXECS=
+        // unknown" while moc.exe sat in the directory the probe would have named.
+        return qtLibexecDir("Qt6Qml");
     }();
     string findTool(string name) {
         // Qt puts its tools in libexec on Linux and in bin on Windows, where they also carry .exe —
