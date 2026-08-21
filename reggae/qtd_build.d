@@ -56,13 +56,13 @@ private struct QtProbe {
     }
 
     static bool exists(string mod) {
-        if (usePkgConfig) return qtHasModule(mod);
+        if (usePkgConfig) return execute(["pkg-config", "--exists", mod]).status == 0;
         auto p = prefix();
         return p.length && std.file.exists(buildPath(p, "lib", mod ~ ".lib"));
     }
 
     static string cflags(string[] mods) {
-        if (usePkgConfig) return qtCflags(mods);
+        if (usePkgConfig) return execute(["pkg-config", "--cflags"] ~ mods).output.strip;
         auto p = prefix();
         if (!p.length) return "";
         string[] f = ["-I" ~ buildPath(p, "include")];
@@ -71,7 +71,7 @@ private struct QtProbe {
     }
 
     static string libs(string[] mods) {
-        if (usePkgConfig) return qtLibsOf(mods);
+        if (usePkgConfig) return execute(["pkg-config", "--libs"] ~ mods).output.strip;
         auto p = prefix();
         if (!p.length) return "";
         return mods.map!(m => buildPath(p, "lib", m ~ ".lib")).join(" ");
@@ -79,7 +79,7 @@ private struct QtProbe {
 
     static string modversion(string mod) {
         if (usePkgConfig) {
-            auto r = QtVer(mod);
+            auto r = execute(["pkg-config", "--modversion", mod]);
             return r.status == 0 ? r.output.strip : "";
         }
         // The version is the directory Qt installs its private headers under.
@@ -95,14 +95,14 @@ private struct QtProbe {
     // moc and friends live in libexec on Linux and in bin on Windows.
     static string libexecdir(string mod) {
         if (usePkgConfig)
-            return qtLibexecDir(mod);
+            return execute(["pkg-config", "--variable=libexecdir", mod]).output.strip;
         auto p = prefix();
         return p.length ? buildPath(p, "bin") : "";
     }
 
     static string bindir(string mod) {
         if (usePkgConfig)
-            return qtBinDir(mod);
+            return execute(["pkg-config", "--variable=bindir", mod]).output.strip;
         auto p = prefix();
         return p.length ? buildPath(p, "bin") : "";
     }
@@ -191,9 +191,7 @@ string bindingQtMinor(string genDir) {
 }
 
 string installedQtMinor(string pkgMod) {
-    auto r = QtVer(pkgMod);
-    if (r.status != 0) return "";
-    auto v = r.output.strip.split(".");
+    auto v = qtModVersion(pkgMod).split(".");
     return v.length >= 2 ? v[0] ~ "." ~ v[1] : "";
 }
 
@@ -418,8 +416,8 @@ string[] qtdExpandLinkMods(string[] mods) {
 string qtdQtRelease(string[] mods) {
     auto fam = mods.any!(m => m.startsWith("Qt5")) ? "Qt5Core" : "Qt6Core";
     try {
-        auto r = QtVer(fam);
-        if (r.status == 0) return r.output.strip;
+        auto v = qtModVersion(fam);
+        if (v.length) return v;
     } catch (Exception) { }
     return "";
 }

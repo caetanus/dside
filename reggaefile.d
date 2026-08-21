@@ -795,8 +795,7 @@ Build reggaeBuild() {
         // on such a runner NO licensing verification of Qt modules is performed, and the workflow's
         // advisory step is where it runs and where its failure is visible.
         auto qtRel = () {
-            auto r = QtVer("Qt6Core");
-            return r.status == 0 ? r.output.strip : "";
+            return qtModVersion("Qt6Core");
         }();
         auto matrixPath = buildPath(root, "docs", "qt-license-matrix.tsv");
         bool relRecorded = qtRel.length && exists(matrixPath)
