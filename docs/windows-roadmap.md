@@ -150,6 +150,44 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
+### 16 OF 17 SAMPLED TARGETS PASS ON WINDOWS — 2026-08-21
+
+The mechanism, not just a link: `wraptest`, `ownership`, `moc_test`, `thread_test`,
+`threadguard`, `moclife_widget`, `widget_test`, `cannon_t1/t5/widget` (a real Qt widget app,
+headless), `container_qvector`, `qlist_roundtrip`, `borrowed`, `dangle`, `nonqobject`,
+`noqml_helpers`.
+
+Eight defects, and not one of them presented as what it was:
+
+| Symptom | What it actually was |
+|---|---|
+| `'QString' file not found`; `undefined symbol QCoreApplication` | `QTDIR=/c/Qt/…` is an MSYS path; lld-link reads a leading `/` as an **option**, so the library is "ignored" |
+| `-I…/QtWidgets` and nothing else | the probe resolved no module dependencies — they now come from Qt's own `mkspecs/modules/*.pri` |
+| `duplicate symbol QPainter::translate` | MSVC exports the **inline** members of an exported class; our symbol table could not read a `.lib` and `symbolDefined()` fails OPEN, so every check built on it had silently stopped running |
+| `undefined identifier __QWidget_vnames` | `clang_getCursorVisibility` answers *Invalid* for every class on MSVC; the equivalent question is `__declspec(dllimport)` |
+| `OutOfMemoryError` from the GC | a member returning by value is `f(this, sret, …)` on MS x64 and `f(sret, this, …)` on SysV |
+| segfault in `objectName()` | the same rule, missing from the wrapper emitter |
+| `llvm-lib: Argument list too long` | a response file; Windows has a command-line length limit `ar` does not |
+| `'?:*)' is not recognised as a command` | cmd.exe eats `\|` before sh sees it, single quotes and all |
+
+### OPEN: `uicheck` — a layout margin that differs from QUiLoader, on Windows only
+
+```
+ours    pageGeneral|layout|QVBoxLayout|margins=9,9,9,9   |spacing=6|count=1|pw=pageGeneral:win=0
+oracle  pageGeneral|layout|QVBoxLayout|margins=11,11,11,11|spacing=6|count=1|pw=pageGeneral:win=0
+```
+
+Both sides are measured the same way, on the same machine, under the same style — so this is a
+real difference in the UI we build, not an instrument artefact. 11 is the style's margin for a
+**window** and 9 for a child, and the page of a tab widget is created parentless on purpose
+(see the note in `runtime/uic/uiform.d`) precisely so it gets the window default. On Linux the
+two values coincide, which is why this never showed there. The open question is WHEN the margin
+is resolved relative to when the page is parented.
+
+The oracle's own `QUiLoader` warnings also land inside the dump on Windows
+(`genLabel/Designer: Invalid QButtonGroup reference …`), which the harness should route away
+before this can be compared cleanly.
+
 ### A BINDING TARGET BUILDS AND RUNS ON WINDOWS, THROUGH THE REGGAE GRAPH — 2026-08-21
 
 ```
