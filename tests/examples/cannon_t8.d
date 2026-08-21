@@ -8,7 +8,8 @@ import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlcdnumber, qt.wi
 import qt.widgets.qvboxlayout, qt.widgets.orientation, qt.widgets.qtimer;
 import qtmoc;
 import cxxrt, std.stdio;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(QApplication, ref int, char**, int);
 
 @QObject class LCDRange {
     QWidget root; QLCDNumber lcd; QSlider slider;

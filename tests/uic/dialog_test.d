@@ -5,7 +5,8 @@
 import qt.widgets.qapplication, qt.widgets.qdialog, qt.widgets.qstring;
 import cxxrt, uiform, std.stdio;
 
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 
 mixin(uiForm(import("dialog.ui")));   // -> imports + struct Ui_Dialog { setupUi(QDialog); retranslateUi(QDialog); }
 

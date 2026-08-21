@@ -7,7 +7,8 @@ import qt.qml.qcoreapplication, qt.qml.qqmlapplicationengine;
 import qtmoc, qrc, cxxrt, std.stdio;
 import a = homonym_a;
 import b = homonym_b;
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcore_ctor(void*, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcore_ctor(void*, ref int, char**, int);
 mixin(qrcRegister(import("homonym.qrc"), "qt.qml"));
 
 void main() {

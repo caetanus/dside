@@ -22,7 +22,8 @@ import cxxrt, holder;
 import core.memory : GC;
 import std.stdio : writeln;
 
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
 extern (C) void qtd_qobject_delete(void* o) nothrow;
 
 // A freed block is not observable from D, so the count of live wrappers stands in for it: the

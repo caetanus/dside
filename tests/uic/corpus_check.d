@@ -4,7 +4,8 @@ import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widge
 import cxxrt, uiform, qrc, std.stdio, std.string;
 import std.algorithm : splitter, canFind, all;
 import std.array : array;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 extern (C) const(char)* qtd_ui_dump(void*); extern (C) const(char)* qtd_ui_load_and_dump(const(char)*);
 mixin(uiForm(import("corpus/addtorrentform.ui")));
 mixin(uiForm(import("corpus/authenticationdialog.ui")));

@@ -8,7 +8,8 @@ import cppq = qt.qml.qobject;   // the C++ QObject (renamed: `@QObject` UDA belo
 import qtmoc, qrc, cxxrt, std.stdio;
 // The QML root is a non-visual QtObject tree (import QtQml only), so a QCoreApplication
 // event loop is enough — no need to pull QtGui's QGuiApplication into the binding.
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcore_ctor(void*, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcore_ctor(void*, ref int, char**, int);
 mixin(qrcRegister(import("app.qrc"), "qt.qml"));
 
 @QObject class Backend {

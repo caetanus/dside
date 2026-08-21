@@ -7,7 +7,8 @@
 // requires g_moAttach + _reg back to baseline.
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qtvirt;
 import qtmoc, cxxrt, std.stdio;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
 extern (C) size_t qtd_moc_attach_count() nothrow;
 extern (C) void qtd_qobject_delete(void* o) nothrow;
 

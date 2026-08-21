@@ -23,7 +23,8 @@ QJsonDocument parseJsonOrThrow(string json) {
     return doc;
 }
 
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 extern (C) const(char)* qtd_ui_dump(void*);
 extern (C) const(char)* qtd_ui_load_and_dump(const(char)*);
 extern (C) void qtd_test_throw();   // raises a C++ exception via the Lippincott path

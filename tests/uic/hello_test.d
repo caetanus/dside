@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: BSL-1.0
 import qt.widgets.qapplication, qt.widgets.qmainwindow;
 import cxxrt, uiform, std.stdio;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 mixin(uiForm(import("hello.ui")));
 void main() {
     __gshared int argc = 1; __gshared char*[2] argv = [cast(char*) "uic\0".ptr, null];

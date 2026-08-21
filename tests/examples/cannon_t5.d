@@ -6,7 +6,8 @@ import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qpushbutton, qt.w
 import qt.widgets.qlcdnumber, qt.widgets.qslider, qt.widgets.qvboxlayout, qt.widgets.orientation;
 import qt.widgets.qtimer, qt.widgets.qstring;
 import cxxrt, std.stdio;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(QApplication, ref int, char**, int);
 
 void main() {
     __gshared int argc = 1; __gshared char*[2] argv = [cast(char*) "t5\0".ptr, null];

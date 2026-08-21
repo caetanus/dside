@@ -8,7 +8,8 @@
 import qt.core.qobject, qt.core.qcoreapplication;
 import holder, cxxrt, std.stdio;
 
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcoreapp_ctor(void* self, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcoreapp_ctor(void* self, ref int, char**, int);
 
 enum DeferredDelete = 52;   // QEvent::DeferredDelete — deleteLater posts this; we flush it
 

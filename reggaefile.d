@@ -938,7 +938,7 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
         auto uidumpT = uidumpObj(root, ex, dc);
         auto lib = qtdBindLib(ex, dc);
         auto bin = Target("uicheck-" ~ dc ~ "-bin",
-            dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
+            dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
             ~ " -I" ~ ex.genDir ~ " -I" ~ buildPath(root, "runtime", "qrc")
             ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
@@ -963,7 +963,7 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
         auto uidumpT = uidumpObj(root, ex, dc);
         auto lib = qtdBindLib(ex, dc);
         auto bin = Target("corpus-check-" ~ dc ~ "-bin",
-            dc ~ " -of=$out " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
+            dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ checkD ~ " " ~ uiformD ~ " " ~ qrcD ~ " " ~ uidumpO
             ~ " -I" ~ ex.genDir ~ " -I" ~ buildPath(root, "runtime", "qrc")
             ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
@@ -1487,7 +1487,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             auto gen = Target(genD, genCmd, [tool, Target(qmlFile), bind.gen]);
             // 2) link the generated D against the binding (same shape as qtdApp).
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
-            auto link = dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ renderLink ~ " -I" ~ bind.genDir
+            auto link = dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ genD ~ " " ~ appObj ~ renderLink ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ cxxRuntimeFlag();
             // Guarded: with a `<Name>.set` sidecar TWO phony targets depend on this binary, and a
@@ -1671,7 +1671,7 @@ Target[] qmlAotTargets(string root, QtdBinding qml) {
         auto loaderO = buildPath(qml.bdir, "aot_qmlcache_loader-" ~ dc ~ ".o");
         auto loaderOT = Target(loaderO, "clang++ " ~ qmlCxx ~ " -c " ~ loaderCpp ~ " -o $out", [loaderCppT]);
         auto lib = qtdBindLib(qml, dc);
-        auto link = dc ~ " -of=$out " ~ aotMain ~ " " ~ unitO ~ " " ~ loaderO ~ " -I" ~ qml.genDir
+        auto link = dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ aotMain ~ " " ~ unitO ~ " " ~ loaderO ~ " -I" ~ qml.genDir
             ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPathOf(dc) ~ " -L=" ~ shimsPath
             ~ " -L--end-group " ~ pkgLibs(qml.mods);
         auto bin = Target("qmlaot-" ~ dc ~ "-bin", link, [Target(aotMain), unitOT, loaderOT, lib, qml.shims]);
@@ -1750,7 +1750,7 @@ Target[] holderTests(string root) {
             "clang++ " ~ cflags ~ " -c " ~ buildPath(here, "helper.cpp") ~ " -o $out", []);
         // deps order -> $in = holder_test.d holder.d h_qtd.o h_help.o
         auto app = Target("holder_test-" ~ dc ~ "-bin",
-            dc ~ " -of=$out $in" ~ cxxRuntimeFlag() ~ " " ~ libs,
+            dc ~ " -of=$out" ~ dSupport(root) ~ " $in" ~ cxxRuntimeFlag() ~ " " ~ libs,
             [Target(buildPath(here, "holder_test.d")), Target(buildPath(H, "holder.d")), qtd, help]);
         ts ~= Target.phony("holder_test-" ~ dc, runOffscreen("$in"), [app]);
     }
@@ -1825,7 +1825,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > $out",
                 [tool, Target(qmlFile), types]);
             auto appBin = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ "_check");
-            auto appCmd = dc ~ " -of=$out " ~ genD ~ " " ~ appD ~ dcLink;
+            auto appCmd = dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ genD ~ " " ~ appD ~ dcLink;
             auto app = Target(appBin, guardedLink(appBin ~ ".lock", appCmd, appBin,
                 [genD, appD, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"), buildPath(bind.bdir, "libshims.a")]),
                 [gd, Target(appD), qtdBindLib(bind, dc), bind.shims]);
@@ -2020,7 +2020,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 [tool, Target(qmlFile), regT, bind.gen]);   // regenerating the binding must re-emit
             auto appBin = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ "_check");
             auto appCmd =
-                dc ~ " -of=$out " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
+                dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ genD ~ " " ~ appObj ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group"
                 // --whole-archive on the types: their QQmlModuleRegistration is a static object

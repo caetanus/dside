@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: BSL-1.0
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qpaintevent, qt.widgets.qtvirt;
 import qtmoc, cxxrt, std.stdio;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
 extern(C) void qtd_force_paint(void*);
 @QObject class CannonField {
     mixin QtdWidget!QWidget;

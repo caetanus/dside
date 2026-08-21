@@ -8,7 +8,8 @@ import qt.qml.qcoreapplication;
 import qtmoc, cxxrt, std.stdio;
 import a = homonym_a;
 import b = homonym_b;
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcore_ctor(void*, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcore_ctor(void*, ref int, char**, int);
 
 void main() {
     __gshared int argc = 1; __gshared char*[2] argv = [cast(char*) "q\0".ptr, null];

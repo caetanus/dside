@@ -22,7 +22,8 @@ import std.file : thisExePath;
 import std.stdio : writeln;
 import std.string : indexOf;
 
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
 extern (C) int qtd_moc_owner_check() nothrow;
 
 @QObject class Offender { @Property("vChanged") int v; Signal!() vChanged; }

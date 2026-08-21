@@ -7,7 +7,8 @@
 // drops its half-attached side-table entry, warns, and stays inert. The process must SURVIVE.
 import qt.qml.qcoreapplication, qt.qml.qqmlapplicationengine;
 import qtmoc, qrc, cxxrt, std.stdio;
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcore_ctor(void*, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcore_ctor(void*, ref int, char**, int);
 mixin(qrcRegister(import("boom.qrc"), "qt.qml"));
 
 @QObject class Boom {

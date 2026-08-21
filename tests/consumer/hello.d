@@ -19,7 +19,8 @@ import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlabel;
 import cxxrt;
 import std.stdio : writeln;
 
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(void* self, ref int, char**, int);
 
 void main() {
     __gshared int argc = 1; __gshared char*[2] argv = [cast(char*) "hello\0".ptr, null];

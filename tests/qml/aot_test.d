@@ -6,7 +6,8 @@
 // precompiled unit. If the round-trip runs, the AOT cache is definitively what's consumed.
 import qt.qml.qcoreapplication, qt.qml.qqmlapplicationengine;
 import qtmoc, cxxrt, std.stdio;
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcore_ctor(void*, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcore_ctor(void*, ref int, char**, int);
 
 __gshared int g_received = -1;
 

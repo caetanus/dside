@@ -6,7 +6,8 @@
 // and a D @Slot (InvokeMetaMethod) on the QML-owned instance.
 import qt.qml.qcoreapplication, qt.qml.qqmlapplicationengine;
 import qtmoc, qrc, cxxrt, std.stdio;
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcore_ctor(void*, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcore_ctor(void*, ref int, char**, int);
 mixin(qrcRegister(import("register.qrc"), "qt.qml"));
 
 // The QML-created instance is owned by the engine, not the test — observe the round-trip

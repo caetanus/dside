@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: BSL-1.0
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qstring;
 import cxxrt, uiform, qrc, std.stdio;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 mixin(qrcRegister(import("icons.qrc")));
 mixin(uiForm(import("icon.ui")));
 void main() {

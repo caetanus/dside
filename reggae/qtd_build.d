@@ -225,6 +225,11 @@ private struct QtProbe {
     }
 }
 
+// Import path for test-support modules that are pure manifest constants — appctor.d, which
+// carries the application constructor's symbol for this ABI. Manifest constants emit no symbols,
+// so an import path is the whole wiring: nothing to compile, nothing to link.
+string dSupport(string root) { return " -I" ~ buildPath(root, "tests", "support"); }
+
 // An executable's file name. Qt installs `moc` on POSIX and `moc.exe` on Windows, and a build that
 // tests for the file rather than relying on PATH has to ask for the right one — otherwise a present
 // tool reads as missing, which is what "moc=MISSING" meant on a machine where moc was right there.
@@ -260,9 +265,19 @@ string cxxPic() {
 // archive of these objects" rather than for one platform's tool.
 //
 // The object extension differs too — .o against .obj — and follows the same rule.
+// Archiving a binding means naming a few thousand object files, and Windows has a hard limit on
+// the length of a command line that `ar` on POSIX does not:
+//
+//     sh: llvm-lib: Argument list too long
+//
+// llvm-lib reads a RESPONSE FILE with `@`, one path per line, which has no such limit. The list is
+// still produced by the shell expanding the same glob — `printf` is a builtin, so writing the file
+// never builds an argument list either.
 string arCmd(string lib, string objs) {
-    version (Windows) return "llvm-lib /OUT:" ~ lib ~ " " ~ objs;
-    else              return "ar rcs " ~ lib ~ " " ~ objs;
+    version (Windows) {
+        auto rsp = lib ~ ".rsp";
+        return "printf '%s\\n' " ~ objs ~ " > " ~ rsp ~ " && llvm-lib /OUT:" ~ lib ~ " @" ~ rsp;
+    } else return "ar rcs " ~ lib ~ " " ~ objs;
 }
 
 // The C++ runtime is a library you name on POSIX and part of the CRT on Windows, where asking for
@@ -737,7 +752,7 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
     // --gc-sections drops every unreferenced function/section (unused guards + unused binding
     // code -> the à-la-carte binary). --as-needed drops DT_NEEDED for a Qt .so the app never
     // touches (a QtCore-only program stops requiring Widgets/Gui just by being linked here).
-    auto link = dc ~ " -of=$out " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
+    auto link = dc ~ " -of=$out" ~ dSupport(b.root) ~ " " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
         ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
         ~ " -L--end-group " ~ pkgLibs(b.mods);
     // extraDeps carries inputs the STRING cannot: an object file another target produces has to
@@ -849,7 +864,7 @@ Target[] libsampleTargets(string root, string pyside) {
             // each a no-op behind its flock, and each still a process. The link line keeps the
             // archive (grp), which is what the mutual refs actually need; the dependency is the
             // transitive one. (critics r7 #8 / r8 #9)
-            auto app = Target(n ~ "-bin", dc ~ " -of=$out " ~ c ~ " -I" ~ gen ~ " " ~ grp,
+            auto app = Target(n ~ "-bin", dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ c ~ " -I" ~ gen ~ " " ~ grp,
                 [Target(c), libT, shimsT]);
             outs ~= Target.phony(n, runOffscreen("$in"), [app]);
         }

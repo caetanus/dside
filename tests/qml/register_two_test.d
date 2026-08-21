@@ -6,7 +6,8 @@
 // (and exercising the shape-keyed buildMo cache: same-named-but-different types must NOT collide).
 import qt.qml.qcoreapplication, qt.qml.qqmlapplicationengine;
 import qtmoc, qrc, cxxrt, std.stdio;
-pragma(mangle, "_ZN16QCoreApplicationC1ERiPPci") extern(C++) void __qcore_ctor(void*, ref int, char**, int);
+import appctor : QCOREAPP_CTOR;
+pragma(mangle, QCOREAPP_CTOR) extern(C++) void __qcore_ctor(void*, ref int, char**, int);
 mixin(qrcRegister(import("register_two.qrc"), "qt.qml"));
 
 __gshared int g_alpha = -1, g_beta = -1;

@@ -7,7 +7,8 @@ import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qlabel;
 import qt.widgets.qvboxlayout, qt.widgets.qtimer, qt.widgets.qstring;
 import qtmoc;
 import cxxrt, std.stdio;
-pragma(mangle, "_ZN12QApplicationC1ERiPPci") extern(C++) void __qapp_ctor(QApplication, ref int, char**, int);
+import appctor : QAPP_CTOR;
+pragma(mangle, QAPP_CTOR) extern(C++) void __qapp_ctor(QApplication, ref int, char**, int);
 
 @QObject class Editor {
     Signal!string textChanged;
