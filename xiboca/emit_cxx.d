@@ -92,6 +92,51 @@ struct QListElem {
 }
 __gshared QListElem[string] QLISTS;    // tid -> element info
 __gshared bool QT5;    // Qt5 target: QVector<T> has a distinct layout from QList<T>
+
+// THE FEW SYMBOLS THE EMITTER NAMES ITSELF, one entry per C++ ABI.
+//
+// Everything else in a binding is mangled by libclang from the AST, and libclang gets it right on
+// every target — measured on Windows: 2537 MSVC manglings against 8 Itanium ones, and all 8 came
+// from string literals here. These are the runtime's own dependencies (allocate/deallocate, the
+// two value-type constructors, operator new/delete): the emitter knows which function it wants and
+// nothing in the AST corresponds to it, so it spells the name.
+//
+// Chosen by the ABI IN USE, not by the host OS. That distinction matters the day this
+// cross-compiles: the question is which mangling scheme the target speaks, and libclang has
+// already answered it in every name it handed us.
+__gshared bool MSVC_ABI;
+
+// Set from the first real mangling seen, so the emitter follows the AST rather than an assumption.
+void noteAbiFrom(string mangled) {
+    static bool decided;
+    if (!decided && mangled.length) { MSVC_ABI = mangled[0] == '?'; decided = true; }
+}
+
+string abiSym(string what) {
+    switch (what) {
+        case "qad_deallocate_x":   // QArrayData::deallocate, qsizetype (Qt6)
+            return MSVC_ABI ? "?deallocate@QArrayData@@SAXPEAU1@_J1@Z"
+                            : "_ZN10QArrayData10deallocateEPS_xx";
+        case "qad_deallocate_m":   // ...and the Qt5 size_t spelling
+            return MSVC_ABI ? "?deallocate@QArrayData@@SAXPEAU1@_K1@Z"
+                            : "_ZN10QArrayData10deallocateEPS_mm";
+        case "qstring_ctor_x":
+            return MSVC_ABI ? "??0QString@@QEAA@PEBVQChar@@_J@Z"
+                            : "_ZN7QStringC1EPK5QCharx";
+        case "qstring_ctor_i":
+            return MSVC_ABI ? "??0QString@@QEAA@PEBVQChar@@H@Z"
+                            : "_ZN7QStringC1EPK5QChari";
+        case "qbytearray_ctor_x":
+            return MSVC_ABI ? "??0QByteArray@@QEAA@PEBD_J@Z"
+                            : "_ZN10QByteArrayC1EPKcx";
+        case "qbytearray_ctor_i":
+            return MSVC_ABI ? "??0QByteArray@@QEAA@PEBD_K@Z"
+                            : "_ZN10QByteArrayC1EPKci";
+        case "cpp_new":    return MSVC_ABI ? "??2@YAPEAX_K@Z" : "_Znwm";
+        case "cpp_delete": return MSVC_ABI ? "??3@YAXPEAX@Z"  : "_ZdlPv";
+        default: assert(0, "abiSym: unknown symbol purpose `" ~ what ~ "`");
+    }
+}
 // Wrapper lifetime mode: object types become GC wrappers extending holder.QtdObject
 // (hold a nullable _cpp, delegate to C++ via pragma(mangle) with explicit self, are
 // pinned when parented, invalidated on destroyed()). Off = the legacy extern(C++)
@@ -233,7 +278,7 @@ string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bo
             ~ "        if (atomicOp!\"-=\"(*_r, 1) == 0) {\n"
             ~ "            auto _n = _size(); auto ptr = _ptr();\n%s"
             ~ "            __qad_dealloc_qt5(d, %d, %d);\n        }\n        d = null;\n    }\n}\n"
-            ~ "private pragma(mangle, \"_ZN10QArrayData10deallocateEPS_mm\") extern (C++) void __qad_dealloc_qt5(void*, size_t, size_t);\n",
+            ~ "private pragma(mangle, " ~ abiSym("qad_deallocate_m") ~ ") extern (C++) void __qad_dealloc_qt5(void*, size_t, size_t);\n",
             dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, e.layoutTy, rel, e.elemSize, al);
     }
     if (qt5) {
@@ -273,7 +318,7 @@ string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bo
         ~ "    ~this() {\n        if (d is null) return;\n        auto r = cast(shared(int)*) d;\n"
         ~ "        if (*cast(int*) d < 0) return;\n        if (atomicOp!\"-=\"(*r, 1) == 0) {\n%s"
         ~ "            __qad_deallocate(d, %d, 8);\n        }\n    }\n}\n"
-        ~ "private pragma(mangle, \"_ZN10QArrayData10deallocateEPS_xx\") extern (C++) void __qad_deallocate(void*, long, long);\n",
+        ~ "private pragma(mangle, " ~ abiSym("qad_deallocate_x") ~ ") extern (C++) void __qad_deallocate(void*, long, long);\n",
         dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, rel, e.elemSize);
 }
 // Base classes referenced by generated classes: these MUST be generated in full
@@ -835,6 +880,7 @@ __gshared string[] MANIFEST;
 // and true from this commit on.
 void recordSym(string cppClass, string sym, string fate, CXCursor c, string why = "") {
     auto usr = clang_getCursorUSR(c).str;
+    noteAbiFrom(clang_Cursor_getMangling(c).str);   // the AST decides which ABI we are emitting for
     MANIFEST ~= cppClass ~ "\t" ~ sym ~ "\t" ~ usr ~ "\t" ~ why ~ "\t" ~ fate;
     if (fate == "unmapped-type" || fate == "inline-failed") CXX_SKIP++;   // only real drops
 }
@@ -2880,9 +2926,9 @@ extern (C++) struct QString {
         return (cast(const(wchar)[]) p[0 .. size]).to!string;
     }
 }
-private pragma(mangle, "_ZN7QStringC1EPK5QChari")
+private } ~ `pragma(mangle, "` ~ abiSym("qstring_ctor_i") ~ `")` ~ q{
     extern (C++) void __qstr_ctor(QString* self, const(wchar)* d, int n);
-private pragma(mangle, "_ZN10QArrayData10deallocateEPS_mm")
+private } ~ `pragma(mangle, "` ~ abiSym("qad_deallocate_m") ~ `")` ~ q{
     extern (C++) void __qad_deallocate(void* d, size_t objSize, size_t alignment);
 
 /// D string -> QString temporary (released when it leaves scope).
@@ -2930,9 +2976,9 @@ extern (C++) struct QString {
         return (cast(const(wchar)[]) ptr[0 .. size]).to!string;
     }
 }
-private pragma(mangle, "_ZN7QStringC1EPK5QCharx")
+private } ~ `pragma(mangle, "` ~ abiSym("qstring_ctor_x") ~ `")` ~ q{
     extern (C++) void __qstr_ctor(QString* self, const(wchar)* d, long n);
-private pragma(mangle, "_ZN10QArrayData10deallocateEPS_xx")
+private } ~ `pragma(mangle, "` ~ abiSym("qad_deallocate_x") ~ `")` ~ q{
     extern (C++) void __qad_deallocate(void* d, long objSize, long alignment);
 
 /// D string -> QString temporary (released when it leaves scope).
@@ -2976,9 +3022,9 @@ extern (C++) struct QByteArray {
     ~this() { __release(); }
     extern (D) string toString() const { auto n = __size(); return n == 0 ? "" : __data()[0 .. n].idup; }
 }
-private pragma(mangle, "_ZN10QByteArrayC1EPKci")
+private } ~ `pragma(mangle, "` ~ abiSym("qbytearray_ctor_i") ~ `")` ~ q{
     extern (C++) void __qba_ctor(QByteArray* self, const(char)* d, int n);
-private pragma(mangle, "_ZN10QArrayData10deallocateEPS_mm")
+private } ~ `pragma(mangle, "` ~ abiSym("qad_deallocate_m") ~ `")` ~ q{
     extern (C++) void __qad_deallocate(void* d, size_t objSize, size_t alignment);
 
 /// D string -> QByteArray temporary (released when it leaves scope).
@@ -3013,9 +3059,9 @@ extern (C++) struct QByteArray {
     ~this() { __release(); }
     extern (D) string toString() const { return (ptr is null || size == 0) ? "" : ptr[0 .. size].idup; }
 }
-private pragma(mangle, "_ZN10QByteArrayC1EPKcx")
+private } ~ `pragma(mangle, "` ~ abiSym("qbytearray_ctor_x") ~ `")` ~ q{
     extern (C++) void __qba_ctor(QByteArray* self, const(char)* d, long n);
-private pragma(mangle, "_ZN10QArrayData10deallocateEPS_xx")
+private } ~ `pragma(mangle, "` ~ abiSym("qad_deallocate_x") ~ `")` ~ q{
     extern (C++) void __qad_deallocate(void* d, long objSize, long alignment);
 
 /// D string -> QByteArray temporary (released when it leaves scope).
@@ -3570,7 +3616,7 @@ string cxxRuntime(string manifest) {
     // that can't apply. (Object types use `new T(args)`, never a factory.)
     auto mk = "T make(T, A...)(auto ref A args) { return T.__make(args); }\n";
     return manifest ~ "\nmodule cxxrt;\n"
-        ~ `pragma(mangle, "_Znwm") extern(C++) void* __cpp_new(size_t);` ~ "\n"
-        ~ `pragma(mangle, "_ZdlPv") extern(C++) void __cpp_delete(void*);` ~ "\n"
+        ~ `pragma(mangle, "` ~ abiSym("cpp_new") ~ `") extern(C++) void* __cpp_new(size_t);` ~ "\n"
+        ~ `pragma(mangle, "` ~ abiSym("cpp_delete") ~ `") extern(C++) void __cpp_delete(void*);` ~ "\n"
         ~ mk ~ exc;
 }
