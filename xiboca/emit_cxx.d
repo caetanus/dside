@@ -278,7 +278,7 @@ string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bo
             ~ "        if (atomicOp!\"-=\"(*_r, 1) == 0) {\n"
             ~ "            auto _n = _size(); auto ptr = _ptr();\n%s"
             ~ "            __qad_dealloc_qt5(d, %d, %d);\n        }\n        d = null;\n    }\n}\n"
-            ~ "private pragma(mangle, " ~ abiSym("qad_deallocate_m") ~ ") extern (C++) void __qad_dealloc_qt5(void*, size_t, size_t);\n",
+            ~ "private pragma(mangle, \"" ~ abiSym("qad_deallocate_m") ~ "\") extern (C++) void __qad_dealloc_qt5(void*, size_t, size_t);\n",
             dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, e.layoutTy, rel, e.elemSize, al);
     }
     if (qt5) {
@@ -318,7 +318,7 @@ string emitQListModule(string tid, QListElem e, string dpkg, string manifest, bo
         ~ "    ~this() {\n        if (d is null) return;\n        auto r = cast(shared(int)*) d;\n"
         ~ "        if (*cast(int*) d < 0) return;\n        if (atomicOp!\"-=\"(*r, 1) == 0) {\n%s"
         ~ "            __qad_deallocate(d, %d, 8);\n        }\n    }\n}\n"
-        ~ "private pragma(mangle, " ~ abiSym("qad_deallocate_x") ~ ") extern (C++) void __qad_deallocate(void*, long, long);\n",
+        ~ "private pragma(mangle, \"" ~ abiSym("qad_deallocate_x") ~ "\") extern (C++) void __qad_deallocate(void*, long, long);\n",
         dpkg, tid, elemImp, tid, e.layoutTy, e.layoutTy, rel, e.elemSize);
 }
 // Base classes referenced by generated classes: these MUST be generated in full
@@ -2910,7 +2910,7 @@ extern (C++) struct QString {
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 2, 8);
         d = null;
     }
-    ~this() { __release(); }
+    extern (D) ~this() { __release(); }   // D-mangled: a C++-mangled dtor collides with Qt's own
     // COMPARING is the third thing anyone does with a string, after making one and reading it, and
     // it was the only one missing: `label.text() == "hi"` did not compile. Found by writing an
     // application against the binding from outside the checkout, which is the one thing the test
@@ -2964,7 +2964,7 @@ extern (C++) struct QString {
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 2, 8);
         d = null;
     }
-    ~this() { __release(); }
+    extern (D) ~this() { __release(); }   // D-mangled: a C++-mangled dtor collides with Qt's own
     // COMPARING is the third thing anyone does with a string, after making one and reading it, and
     // it was the only one missing: `label.text() == "hi"` did not compile. Found by writing an
     // application against the binding from outside the checkout, which is the one thing the test
@@ -3019,7 +3019,7 @@ extern (C++) struct QByteArray {
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 1, 8);   // char: objSize=1
         d = null;
     }
-    ~this() { __release(); }
+    extern (D) ~this() { __release(); }   // D-mangled: a C++-mangled dtor collides with Qt's own
     extern (D) string toString() const { auto n = __size(); return n == 0 ? "" : __data()[0 .. n].idup; }
 }
 private } ~ `pragma(mangle, "` ~ abiSym("qbytearray_ctor_i") ~ `")` ~ q{
@@ -3056,7 +3056,7 @@ extern (C++) struct QByteArray {
         if (atomicOp!"-="(*refp, 1) == 0) __qad_deallocate(d, 1, 8);   // char: objSize=1
         d = null;
     }
-    ~this() { __release(); }
+    extern (D) ~this() { __release(); }   // D-mangled: a C++-mangled dtor collides with Qt's own
     extern (D) string toString() const { return (ptr is null || size == 0) ? "" : ptr[0 .. size].idup; }
 }
 private } ~ `pragma(mangle, "` ~ abiSym("qbytearray_ctor_x") ~ `")` ~ q{
