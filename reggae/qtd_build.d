@@ -407,9 +407,15 @@ private string gendPath(string root) { return buildPath(root, "xiboca", "xiboca"
 //     LINK : fatal error LNK1104: cannot open file 'libclang.lib'
 //
 // The answer is next to the clang++ this build already uses — <llvm>/bin/clang++ -> <llvm>/lib —
-// so it is derived from PATH rather than configured. Returns an `LIB=` prefix (lld-link and MSVC
-// link both read that variable) or "" when clang++ is not on PATH or the sibling lib/ is absent,
-// in which case the linker's own defaults are as good an answer as we have.
+// so it is derived from PATH rather than configured.
+//
+// It is handed over as DFLAGS, which dub appends to the compiler's flags, and NOT as the `LIB`
+// environment variable: dmd's sc.ini SETS LIB in its own [Environment64] section, which replaces
+// whatever was inherited. Measured — the command carried `LIB=C:/Users/caetano/llvm/lib` and the
+// link still failed with LNK1104.
+//
+// Returns "" when clang++ is not on PATH or the sibling lib/ is absent, leaving the linker's own
+// defaults, which is as good an answer as we have.
 string llvmLibEnv() {
     version (Windows) {
         // PATH comes from the MSYS shell, so its entries need the same treatment as QTDIR —
@@ -426,7 +432,7 @@ string llvmLibEnv() {
             if (!std.file.exists(buildPath(dir, exeName("clang++")))) continue;
             auto lib = buildNormalizedPath(dir, "..", "lib");
             // Forward slashes SURVIVE the executeShell -> cmd.exe -> sh chain; backslashes do not.
-            if (std.file.exists(lib)) return "LIB=" ~ lib.replace("\\", "/") ~ " ";
+            if (std.file.exists(lib)) return `DFLAGS="-L/LIBPATH:` ~ lib.replace("\\", "/") ~ `" `;
         }
     }
     return "";
