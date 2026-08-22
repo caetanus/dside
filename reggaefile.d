@@ -1888,7 +1888,9 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             [appD, buildPath(dir, "qmltypes_gen.d"), buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")]),
             [Target(buildPath(dir, "qmltypes_gen.d")), Target(appD), qtdBindLib(bind, dc), bind.shims]);
         auto typesFile = buildPath(bind.bdir, "AppTypes-" ~ dc ~ ".qmltypes");
-        auto types = Target(typesFile, "$in $out", [gen]);
+        // Through the runner: `$in $out` as bare command text is a program with no file
+        // extension, which cmd.exe refuses to start.
+        auto types = Target(typesFile, runExe(root, "$in", "", "$out", bind.mods), [gen]);
 
         // 2) the ORACLE: D main (registers the types) + the C++ engine half.
         auto oracleBin = buildPath(bind.bdir, "qmlvalues-d-" ~ dc);
