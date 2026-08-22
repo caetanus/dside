@@ -435,7 +435,12 @@ string installedQtMinor(string pkgMod) {
     return v.length >= 2 ? v[0] ~ "." ~ v[1] : "";
 }
 
-private string gendPath(string root) { return buildPath(root, "xiboca", "xiboca"); }
+// dub names the executable for the platform, so the file on disk is `xiboca.exe` on Windows —
+// and this path is BOTH the target's declared output and the program the gen step runs. Without
+// the suffix reggae watched a file that never appears (so the target could never be up to date)
+// and the runner could not find the binary. MSYS's sh hid the second half by appending `.exe`
+// itself when the exact name does not exist; CreateProcess does not.
+private string gendPath(string root) { return buildPath(root, "xiboca", exeName("xiboca")); }
 
 // The generator binary is an INPUT to every gen step, but it was only ever built by hand
 // (`dub build` in xiboca/). Editing emit_cxx.d therefore changed nothing: the build kept
