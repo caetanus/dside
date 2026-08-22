@@ -605,7 +605,13 @@ string psRedirect(string exe, string[] args, string outFile, bool sortOut = fals
                   bool allowFail = false) {
     auto argList = args.length ? "@(" ~ args.map!psQ.join(", ") ~ ")" : "@()";
     string s = "$rc = Invoke-Proc -Exe " ~ psQ(exe) ~ " -ProcArgs " ~ argList ~ " -Capture"
-             ~ "\n$o = $script:ProcOut";
+             ~ "\n$o = $script:ProcOut"
+             // DROP THE TRAILING EMPTY ELEMENT. Splitting "a\nb\n" on newlines yields a final
+             // empty string, and writing it back added a blank line the POSIX `>` never produced.
+             // Not cosmetic: the objpaths file is READ BACK by the oracle, and a blank path means
+             // the ROOT object — so it dumped everything a second time and the differential failed
+             // with every line reported as missing from our side.
+             ~ "\nwhile ($o.Count -gt 0 -and $o[$o.Count - 1] -eq '') { $o = $o[0 .. ($o.Count - 2)] }";
     if (sortOut) s ~= "\n$o = $o | Sort-Object";
     if (!allowFail) s ~= "\nif ($rc -ne 0) { exit $rc }";
     s ~= "\n[System.IO.File]::WriteAllText(" ~ psQ(outFile) ~ ", (($o -join \"`n\") + \"`n\"))";
