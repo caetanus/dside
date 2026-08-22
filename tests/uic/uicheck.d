@@ -83,7 +83,12 @@ void check(T, R)(string path, R root) {
         waived++;
     } else {
         writefln("  MISMATCH  %s", path);
-        writeln("--- ours ---\n", ours, "--- oracle ---\n", oracle);
+        // PREFIXED, one line at a time. Qt writes its own warnings to stderr while this runs, and
+        // in a log where both streams land together they interleave INSIDE a dump line — which
+        // made a truncated line look like a missing widget and cost an hour of reading the wrong
+        // evidence. With a prefix per line, what belongs to which side is never in question.
+        foreach (l; ours.splitter('\n'))   if (l.length) writeln("OURS| ", l);
+        foreach (l; oracle.splitter('\n')) if (l.length) writeln("ORCL| ", l);
         fails++;
     }
 }
