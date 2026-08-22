@@ -1494,10 +1494,15 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // diagnostic is the expected output, and the differential beside it is what proves the
             // refusal is the right one (both sides read empty). Any other exit code still fails.
             static immutable string[] partialOk = ["QDelegateReqNoModel", "QDelegateReqFill"];
-            auto genCmd = partialOk.canFind(name)
-                ? "sh -c '" ~ toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg
-                    ~ " > $out; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 3 ]'"
-                : toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > $out";
+            string genCmd;
+            version (Windows)
+                genCmd = psCapture(root, toolBin, ["--dump", qmlFile, name] ~ qmlmapArgs,
+                                   "$out", partialOk.canFind(name) ? "0,3" : "0");
+            else
+                genCmd = partialOk.canFind(name)
+                    ? "sh -c '" ~ toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg
+                        ~ " > $out; rc=$?; [ $rc -eq 0 ] || [ $rc -eq 3 ]'"
+                    : toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > $out";
             auto gen = Target(genD, genCmd, [tool, Target(qmlFile), bind.gen]);
             // 2) link the generated D against the binding (same shape as qtdApp).
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");

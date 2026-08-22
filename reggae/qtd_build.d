@@ -552,6 +552,24 @@ string psArg(string a) {
     return (a.length && !a.canFind(' ')) ? a : `"` ~ a ~ `"`;
 }
 
+// `prog args > outRef` for a step whose OUTPUT PATH reggae substitutes. The arguments travel
+// encoded (the binder would read them first) and the output path travels plain (reggae has to be
+// able to substitute it) — each the only way it can go. `ok` lists the exit codes that count as
+// success, for the steps where a non-zero one is the expected answer.
+string psCapture(string root, string exe, string[] args, string outRef,
+                 string ok = "0", bool sortOut = false, string[] mods = null) {
+    import std.base64 : Base64;
+    import std.conv : to;
+    auto w = args.join("\n").to!wstring;
+    auto cmd = [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", psTool(_psRoot, "run-capture.ps1"),
+                "-Exe", exe, "-Out", outRef, "-Ok", ok];
+    if (args.length) cmd ~= ["-ArgsB64", Base64.encode(cast(ubyte[]) w.dup).idup];
+    if (mods.length) cmd ~= ["-QtBin", buildPath(QtProbe.prefixOf(mods), "bin")];
+    auto s = cmd.map!psArg.join(" ");
+    return sortOut ? s ~ " -Sort" : s;
+}
+
 // One PowerShell literal string. Single quotes, `'` doubled.
 string psQ(string a) { return `'` ~ a.replace("'", "''") ~ `'`; }
 
