@@ -585,6 +585,10 @@ string psCapture(string root, string exe, string[] args, string outRef,
     return sortOut ? s ~ " -Sort" : s;
 }
 
+// A path for a PowerShell literal: forward slashes are accepted everywhere on Windows and cannot
+// be mistaken for an escape.
+string msysWinPath(string p) { return p.replace("\\", "/"); }
+
 // One PowerShell literal string. Single quotes, `'` doubled.
 string psQ(string a) { return `'` ~ a.replace("'", "''") ~ `'`; }
 
@@ -633,13 +637,19 @@ string psDiff(string a, string b, string label) {
 //
 // The preamble is what makes a sequence behave like `&&`: PowerShell keeps going after a native
 // program fails, so `Run` checks and stops. $ErrorActionPreference covers the cmdlets.
-string psInline(string root, string name, string[] lines) {
+string psInline(string root, string name, string[] lines, string[] mods = null) {
     auto dir = buildPath(root, ".build", "ps");
     auto path = buildPath(dir, name ~ ".ps1");
     auto preamble = [
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference    = 'SilentlyContinue'",
         "$env:QT_QPA_PLATFORM   = 'offscreen'",
+        // ...AND THE BINDING'S OWN Qt ON PATH. There is no rpath on Windows, so a program started
+        // from here finds its DLLs through PATH or not at all — and "not at all" is a process that
+        // dies before main with no output, which then reads as a failure of whatever came after.
+        // Third place this had to be said: run-exe, run-capture, and now the generated steps.
+        mods.length ? "$env:PATH = '" ~ msysWinPath(buildPath(QtProbe.prefixOf(mods), "bin"))
+                      ~ ";' + $env:PATH" : "",
         // Invoke-Proc, not `&`: the call operator resolves a program through PATHEXT and these
         // binaries have no extension, so `&` does not find them, does not raise a terminating
         // error, and leaves $LASTEXITCODE unset — which reads as success. See tools/win/proc.ps1.
@@ -647,7 +657,7 @@ string psInline(string root, string name, string[] lines) {
         "function Run { $e = $args[0]; $r = if ($args.Count -gt 1) { $args[1 .. ($args.Count - 1)] } else { @() };",
         "               $rc = Invoke-Proc -Exe $e -ProcArgs $r; if ($rc -ne 0) { exit $rc } }",
     ];
-    writeIfChanged(path, (preamble ~ lines).join("\n") ~ "\n");
+    writeIfChanged(path, (preamble.filter!(l => l.length).array ~ lines).join("\n") ~ "\n");
     return [psExe(), "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-ExecutionPolicy", "Bypass", "-File", path]
            .map!psArg.join(" ");
 }

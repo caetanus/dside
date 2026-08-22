@@ -1563,7 +1563,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                 if (verifyStep.length)
                     ls ~= "Run " ~ psQ(oracleBin) ~ " " ~ psQ(qmlFile) ~ " '--verify-props' " ~ psQ(props);
                 ls ~= psDiff(a, b, "qmltc " ~ name ~ " (" ~ dc ~ ")");
-                cmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, ls);
+                cmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, ls, bind.mods);
             } else
                 cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
