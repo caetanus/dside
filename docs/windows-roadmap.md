@@ -150,6 +150,24 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
+### A RUNNER THAT COULD NOT RUN ANYTHING REPORTED 13 OF 13 PASSING — 2026-08-21
+
+The one to remember. `& $exe` in PowerShell resolves a program through `PATHEXT`, and the binaries
+this build produces have no extension — `wraptest-ldc2-bin`, `qmltc-d`, because that is what `-of=`
+was given. The call operator does not find them, the error is **not terminating**, `$LASTEXITCODE`
+is never set, and `exit $LASTEXITCODE` with `$null` exits **zero**.
+
+So the first sweep after moving the runner to PowerShell reported thirteen targets passing with
+nothing having run: the logs contained no output from any of them. The same shape gave a "captured"
+one-byte file from a tool that produces four kilobytes by hand — and exited 0.
+
+`tools/win/proc.ps1` goes through `CreateProcess`, which has no such rule, and a process that
+cannot start is a failure that says so. And the rule that follows:
+
+> **On Windows, verify a target by reading its OUTPUT, not its exit code.**
+
+Re-measured that way: 12 of 12, none silent.
+
 ### QT5 AND QT6 SIDE BY SIDE, AND THE COMMANDS IN POWERSHELL — 2026-08-21
 
 Qt 5.15.2 msvc2019_64 installed with `aqtinstall` (the Qt online installer wants an interactive
