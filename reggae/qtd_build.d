@@ -851,6 +851,23 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         // .build/<binding>/../generated/... and the binding was written into a directory nothing
         // else looked at — measured: `qt/` appeared there and the shims went missing.
         jw.object["out_dir"] = JSONValue(genDir);
+        // EVERY relative path in the spec, for the same reason. The derived spec lives in .build,
+        // so a path written relative to generator/ points somewhere else once it is read from
+        // there — `../tests/qmltc/cpptypes` became `.build/tests/…` and xiboca reported
+        // `fatal error: 'typewithmanyproperties.h' file not found` about a header that is in the
+        // repository. out_dir was the first of these; no reason to fix them one at a time.
+        {
+            auto specDir = dirName(specPath);
+            string abs(string v) { return isAbsolute(v) ? v : buildNormalizedPath(specDir, v); }
+            if (auto ip = "include_paths" in jw.object)
+                jw.object["include_paths"] = JSONValue(ip.array.map!(e => JSONValue(abs(e.str))).array);
+            foreach (k; ["typesystem_dir", "docs_dir", "source_filter"])
+                if (auto v = k in jw.object)
+                    if (v.type == JSONType.string) jw.object[k] = JSONValue(abs(v.str));
+            if (auto hs = "headers" in jw.object)
+                jw.object["headers"] = JSONValue(hs.array
+                    .map!(e => JSONValue(e.str.canFind('/') ? abs(e.str) : e.str)).array);
+        }
         // ...and discovery needs to recognise THIS Qt. A marker in the spec describes a Linux
         // distribution's layout — `/qt6/`, or `/qt/` for the Qt5 specs — and Qt's own installer
         // puts the headers under the prefix instead. Leaving the spec's value in place was not a
