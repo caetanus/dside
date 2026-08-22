@@ -36,10 +36,12 @@ if ($ArgsB64) {
     $argv = @($txt -split "`n" | Where-Object { $_ -ne '' })
 }
 
-if (-not [System.IO.Path]::IsPathRooted($Exe)) { $Exe = Join-Path (Get-Location).Path $Exe }
-
-$lines = if ($argv.Count -gt 0) { & $Exe @argv 2>$null } else { & $Exe 2>$null }
-$code  = $LASTEXITCODE
+# NOT `& $Exe` — see tools/win/proc.ps1: it cannot run an extensionless binary and says so by
+# exiting 0 with no output, which is how this script first "captured" a one-byte file from a tool
+# that produces four kilobytes when run by hand.
+. (Join-Path $PSScriptRoot 'proc.ps1')
+$code  = Invoke-Proc -Exe $Exe -ProcArgs $argv -Capture
+$lines = $script:ProcOut
 if ($Sort) { $lines = $lines | Sort-Object }
 
 # Written before the verdict, exactly as `prog > out; rc=$?` does: the file is the evidence even

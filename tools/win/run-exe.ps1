@@ -41,10 +41,9 @@ foreach ($e in $Env) {
     Set-Item -Path ("env:" + $e.Substring(0, $i)) -Value $e.Substring($i + 1)
 }
 
-# A relative path must be said to BE a path. PowerShell resolves a bare name against the command
-# search path just as sh does, and `.reggae\objs\x-bin` is a bare name to both.
-if (-not [System.IO.Path]::IsPathRooted($Exe)) { $Exe = Join-Path (Get-Location).Path $Exe }
-if (-not (Test-Path -LiteralPath $Exe)) { Write-Error "run-exe: no such file: $Exe" }
-
-if ($Rest.Count -gt 0) { & $Exe @Rest } else { & $Exe }
-exit $LASTEXITCODE
+# NOT `& $Exe`. The call operator resolves a program through PATHEXT, and these binaries have no
+# extension — `&` does not find them, the error is not terminating, $LASTEXITCODE is never set, and
+# `exit $LASTEXITCODE` with $null exits ZERO. That reported a whole sweep of targets as passing
+# with nothing having run. Invoke-Proc goes through CreateProcess, which has no such rule.
+. (Join-Path $PSScriptRoot 'proc.ps1')
+exit (Invoke-Proc -Exe $Exe -ProcArgs $Rest)
