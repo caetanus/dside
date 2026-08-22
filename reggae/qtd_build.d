@@ -539,6 +539,63 @@ string psArg(string a) {
     return (a.length && !a.canFind(' ')) ? a : `"` ~ a ~ `"`;
 }
 
+// One PowerShell literal string. Single quotes, `'` doubled.
+string psQ(string a) { return `'` ~ a.replace("'", "''") ~ `'`; }
+
+// Run a program and capture its stdout into a file, the way `prog args > file` does on POSIX.
+//
+// The output is written with [System.IO.File]::WriteAllText and explicit LF, NOT Set-Content or
+// `>`: PowerShell 5.1's redirection writes UTF-16, Set-Content writes the ANSI code page, and both
+// write CRLF — and these files are read back by our own C++ oracle and compared against a POSIX
+// run. The bytes have to be the same ones the sh side produced.
+//
+// `allowFail` is the `;` in `prog … > f 2>/dev/null;` — that step is allowed to fail, the diff
+// afterwards is what judges. Without it the step is an `&&`.
+string psRedirect(string exe, string[] args, string outFile, bool sortOut = false,
+                  bool allowFail = false) {
+    auto call = ([exe] ~ args).map!psQ.join(" ");
+    string s = "$o = & " ~ call ~ " 2>$null";
+    if (sortOut) s ~= " | Sort-Object";
+    if (!allowFail) s ~= "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
+    s ~= "\n[System.IO.File]::WriteAllText(" ~ psQ(outFile) ~ ", (($o -join \"`n\") + \"`n\"))";
+    return s;
+}
+
+// `diff a b`: same verdict (0 same, 1 different) and the differing lines on stdout, so a failure
+// says what differed rather than only that something did.
+string psDiff(string a, string b) {
+    return "$da = Get-Content -LiteralPath " ~ psQ(a) ~ "\n"
+         ~ "$db = Get-Content -LiteralPath " ~ psQ(b) ~ "\n"
+         ~ "$d  = Compare-Object $da $db\n"
+         ~ "if ($d) { $d | ForEach-Object { Write-Output ($_.SideIndicator + ' ' + $_.InputObject) }; exit 1 }";
+}
+
+// A COMPOUND STEP, WRITTEN OUT AS ITS OWN .ps1 — for the commands this build composes itself
+// (run a tool into a file, run two sides, diff them) rather than the fixed steps in tools/win.
+//
+// A file, not an encoded blob and not a long -Command: the text is arbitrary PowerShell, it is
+// easier to read in a failure than a base64 string, and it can be run by hand. It is only valid
+// for a command with NO reggae substitution in it — every path must be known when the graph is
+// built, which is true of these because reggae only substitutes $in/$out for a target's own
+// inputs and outputs, and a phony has neither.
+//
+// The preamble is what makes a sequence behave like `&&`: PowerShell keeps going after a native
+// program fails, so `Run` checks and stops. $ErrorActionPreference covers the cmdlets.
+string psInline(string root, string name, string[] lines) {
+    auto dir = buildPath(root, ".build", "ps");
+    auto path = buildPath(dir, name ~ ".ps1");
+    auto preamble = [
+        "$ErrorActionPreference = 'Stop'",
+        "$ProgressPreference    = 'SilentlyContinue'",
+        "$env:QT_QPA_PLATFORM   = 'offscreen'",
+        "function Run { $e = $args[0]; $r = if ($args.Count -gt 1) { $args[1 .. ($args.Count - 1)] } else { @() };",
+        "               & $e @r; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }",
+    ];
+    writeIfChanged(path, (preamble ~ lines).join("\n") ~ "\n");
+    return [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path]
+           .map!psArg.join(" ");
+}
+
 // A PowerShell call to one of tools/win/*.ps1: `kv` alternates -Name and its VALUE, `switches`
 // are the bare ones. The two are separate because guessing which is which does not work — the
 // value of `-Cxx` is a flags string that starts with `-I…`, so a "does it start with a dash"

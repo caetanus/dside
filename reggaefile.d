@@ -1484,7 +1484,8 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // ...and the CORPUS DIRECTORY on the import path, so a fixture can use a sibling
             // local type the way an application does. Without it a fixture that instantiates one
             // fails at type resolution, which reads like a compiler gap and is a missing -I.
-            auto qmlmapArg = " --qmlmap " ~ buildPath(bind.genDir, "qmlmap.tsv") ~ " -I " ~ corpusDir;
+            auto qmlmapArgs = ["--qmlmap", buildPath(bind.genDir, "qmlmap.tsv"), "-I", corpusDir];
+            auto qmlmapArg = " " ~ qmlmapArgs.join(" ");
             // 1) qmltc-d --dump <qml> <Name> -> generated D (class + a value-dumping main).
             auto genD = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ ".d");
             // Exit 3 is "partial": members were skipped and reported. The fixture suite treats it
@@ -1535,10 +1536,25 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             ];
             auto verifyStep = labelsGap.canFind(name) ? ""
                 : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;
-            auto cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
-                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
-                ~ verifyStep
-                ~ " && diff " ~ a ~ " " ~ b ~ "'";
+            string cmd;
+            version (Windows) {
+                // The same sequence in PowerShell. `Run` is the `&&`: PowerShell carries on after a
+                // native program fails, so each step is checked. The label list is allowed to fail
+                // (`2>/dev/null` on the sh side) — the diff is what judges.
+                string[] ls = [
+                    psRedirect(toolBin, [qmlFile, name] ~ qmlmapArgs, props, false, true),
+                    psRedirect(appBin, [], a),
+                    psRedirect(oracleBin, [qmlFile, "--props", props], b),
+                ];
+                if (verifyStep.length)
+                    ls ~= "Run " ~ psQ(oracleBin) ~ " " ~ psQ(qmlFile) ~ " '--verify-props' " ~ psQ(props);
+                ls ~= psDiff(a, b);
+                cmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, ls);
+            } else
+                cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
+                    ~ verifyStep
+                    ~ " && diff " ~ a ~ " " ~ b ~ "'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
             // ...and the STRONGER protocol beside it, which until now lived only in the corpus
             // scripts: `--objpaths` lists the objects and BOTH sides then enumerate every property
