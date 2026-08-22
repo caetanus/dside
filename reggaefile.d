@@ -1501,8 +1501,12 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             static immutable string[] partialOk = ["QDelegateReqNoModel", "QDelegateReqFill"];
             string genCmd;
             version (Windows)
+                // bind.mods: the tool needs its own Qt on PATH to LOAD, not just to link. Without
+                // it qmltc-d dies with `error while loading shared libraries: Qt6Core.dll` before
+                // printing a line, the capture writes an empty file, and the failure surfaces much
+                // later and elsewhere — at the link of the app built from it.
                 genCmd = psCapture(root, toolBin, ["--dump", qmlFile, name] ~ qmlmapArgs,
-                                   "$out", partialOk.canFind(name) ? "0,3" : "0");
+                                   "$out", partialOk.canFind(name) ? "0,3" : "0", false, bind.mods);
             else
                 genCmd = partialOk.canFind(name)
                     ? "sh -c '" ~ toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ qmlmapArg
