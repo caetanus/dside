@@ -150,6 +150,31 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
+### THE MSVC ABI, ANSWERED FROM LINUX — 2026-08-21
+
+`tools/win/cross-preflight.sh`. No Windows machine and no Visual Studio: `xwin` fetches the MSVC
+CRT and Windows SDK from Microsoft's own servers, `aqt` fetches the Windows Qt, the Windows LDC
+package supplies druntime and phobos, clang++ and lld-link target `x86_64-pc-windows-msvc`
+natively, and wine runs the result.
+
+```
+cross-preflight probe: ABI-PROBE: PASS      <- the calling convention, against a class we wrote
+cross-preflight qtd:   QT-CALL: PASS        <- ...and against Qt6Core.dll, through explicit self
+```
+
+Two things stop this halfway, and both were measured here:
+
+* `-L=-libpath:DIR` never reaches the linker — ldc2 eats the `-l` and lld-link asks for
+  `ibpath:DIR.lib`. The MSVC spelling `-L=/LIBPATH:DIR` works.
+* xwin ships no `vcruntime140.lib`, which is what ldc2 asks for by default. `-mscrtlib=msvcrt` uses
+  the dynamic CRT umbrella that IS there — and it must be the dynamic one, because the Qt DLLs are.
+
+WHAT IT IS FOR, and what it is not. It answers one class of question — does our code compile, link
+and RUN against the MSVC ABI — which is the class that produced the sret ordering, the exported
+inline members and the mangling-table error, each of which cost a round trip to the VM. It answers
+NOTHING about the build: MSYS paths, cmd.exe, PATHEXT, `guard.ps1`. Those exist only on the real
+machine, and wine has no PowerShell. It is a pre-flight; **the VM stays the authority**.
+
 ### A RUNNER THAT COULD NOT RUN ANYTHING REPORTED 13 OF 13 PASSING — 2026-08-21
 
 The one to remember. `& $exe` in PowerShell resolves a program through `PATHEXT`, and the binaries
