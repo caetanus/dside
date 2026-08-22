@@ -1593,10 +1593,19 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             if (!dumpallGap.canFind(name)) {
             auto objs = genD ~ ".objs", da = genD ~ ".dall", qa = genD ~ ".qall";
             auto mkObjs = toolBin ~ " --objpaths " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > " ~ objs ~ " 2>/dev/null; ";
-            auto allCmd = "sh -c '" ~ mkObjs ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " --dumpall | sort > " ~ da
-                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --dumpall " ~ objs ~ " | sort > " ~ qa
-                ~ " && diff " ~ da ~ " " ~ qa
-                ~ " && echo \"qmltc " ~ name ~ " (" ~ dc ~ ", objpaths): $(wc -l < " ~ da ~ ") lines match\"'";
+            string allCmd;
+            version (Windows)
+                allCmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-all-" ~ dc, [
+                    psRedirect(toolBin, ["--objpaths", qmlFile, name] ~ qmlmapArgs, objs, false, true),
+                    psRedirect(appBin, ["--dumpall"], da, true),
+                    psRedirect(oracleBin, [qmlFile, "--dumpall", objs], qa, true),
+                    psDiff(da, qa, "qmltc " ~ name ~ " (" ~ dc ~ ", objpaths)"),
+                ], bind.mods);
+            else
+                allCmd = "sh -c '" ~ mkObjs ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " --dumpall | sort > " ~ da
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --dumpall " ~ objs ~ " | sort > " ~ qa
+                    ~ " && diff " ~ da ~ " " ~ qa
+                    ~ " && echo \"qmltc " ~ name ~ " (" ~ dc ~ ", objpaths): $(wc -l < " ~ da ~ ") lines match\"'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-all-" ~ dc, allCmd, [app, oracle, tool]);
             }
             // RENDER differential: draw the same document both ways and compare the FRAME. The
@@ -1680,10 +1689,23 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                 auto setArgs = readText(setFile).split("\n")
                     .filter!(l => !l.strip.startsWith("#")).join(" ")
                     .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
-                auto cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
-                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
-                    ~ " && diff " ~ a ~ ".set " ~ b ~ ".set"
-                    ~ " && echo \"qmltc " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'";
+                // The mutation tokens as a LIST — the sh side quotes each because `method()` is
+                // shell syntax there; through Invoke-Proc they are arguments and need no quoting.
+                auto setList = readText(setFile).split("\n")
+                    .filter!(l => !l.strip.startsWith("#")).join(" ").strip.split.array;
+                string cmd2;
+                version (Windows)
+                    cmd2 = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-set-" ~ dc, [
+                        psRedirect(toolBin, ["--labels", qmlFile, name] ~ qmlmapArgs, props, false, true),
+                        psRedirect(appBin, setList, a ~ ".set"),
+                        psRedirect(oracleBin, [qmlFile] ~ setList ~ ["--props", props], b ~ ".set"),
+                        psDiff(a ~ ".set", b ~ ".set", "qmltc " ~ name ~ " (" ~ dc ~ ", setters)"),
+                    ], bind.mods);
+                else
+                    cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                        ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
+                        ~ " && diff " ~ a ~ ".set " ~ b ~ ".set"
+                        ~ " && echo \"qmltc " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle, tool]);
             }
         }
