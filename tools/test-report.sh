@@ -202,7 +202,9 @@ for t in "${targets[@]}"; do
     # runner that could not START any binary reported thirteen targets passing, and every one of
     # their logs held nothing but the build's own progress lines. A green with no output of its own
     # is reported as `mute` and counts as a failure.
-    elif [ "$(grep -cvE '^\[build\]|^$' "$log")" -eq 0 ]; then
+    # `run-exe:` is the Windows runner's own bookkeeping (which binary it started, and the exit
+    # code if non-zero) — it is not the target speaking, so it must not count as output here.
+    elif [ "$(grep -cvE '^\[build\]|^run-exe:|^$' "$log")" -eq 0 ]; then
       st=mute; fail=$((fail+1)); logcol="$log"
     else
       st=pass; pass=$((pass+1)); rm -f "$log"; logcol=-
