@@ -1878,7 +1878,9 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
                 "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
-                ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
+                ~ " && diff " ~ a ~ " " ~ b
+                ~ " && echo \"qmltcd " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") value lines match the engine\"'",
+                [app, oracle, tool]);
             // 5) LIVE-binding differential: mutate both, re-diff. A binding that lost its
             //    connection to the BASE type's notify signal diverges here.
             auto setFile = buildPath(dir, name ~ ".set");
@@ -1894,7 +1896,8 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
                 ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc,
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
-                    ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set'",
+                    ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set"
+                    ~ " && echo \"qmltcd " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'",
                     [app, oracle, tool]);
             }
         }

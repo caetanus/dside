@@ -24,7 +24,11 @@ param(
     [string]   $Platform = '',
     [string[]] $Env      = @(),
     [Parameter(Mandatory = $true)][string] $Exe,
-    [Parameter(ValueFromRemainingArguments = $true)][string[]] $Rest = @()
+    # Position 0 so a leftover argument lands HERE and not in the first unbound parameter, which
+    # PowerShell assigns by declaration order. reggae expands `$in` to EVERY input of the target,
+    # so a run whose target also depends on a data file arrives as `-Exe <bin> <file>` — and the
+    # file bound to -Env: `run-exe: -Env expects NAME=VALUE, got 'C:\...\tr-ldc2.qm'`.
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)][string[]] $Rest = @()
 )
 
 $ErrorActionPreference = 'Stop'
