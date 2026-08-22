@@ -504,18 +504,18 @@ string guardedLink(string lock, string cmdWithOut, string output, string[] newer
                    null, output, newerThan);
 }
 
-// `winArgv` is the SAME step said in PowerShell — a program and its arguments, which is what
+// `winPs` is the SAME step said in PowerShell — a program and its arguments, which is what
 // tools/win/guard.ps1 runs. The two dialects sit at the same call site on purpose: they are one
 // decision, and a step whose two halves live apart is a step whose halves drift. Passing null
 // keeps the sh form on Windows too, for a step not converted yet.
-string guarded(string lock, string cmd, string[] winArgv, string output, string[] newerThan) {
+string guarded(string lock, string cmd, string winPs, string output, string[] newerThan) {
     version (Windows) {
-        if (winArgv.length) {
+        if (winPs.length) {
             auto g = [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                       "-File", psTool(_psRoot, "guard.ps1"),
                       "-Lock", lock, "-Output", output];
             if (newerThan.length) g ~= ["-Newer", newerThan.join(",")];
-            g ~= ["-Payload", psEncode(winArgv)];
+            g ~= ["-Payload", psEncode(winPs)];
             return g.map!psArg.join(" ");
         }
     }
@@ -539,26 +539,30 @@ string psArg(string a) {
     return (a.length && !a.canFind(' ')) ? a : `"` ~ a ~ `"`;
 }
 
-// A PowerShell tool invocation as a call and its arguments, for guarded()'s `winArgv`: the
-// script path first, then alternating -Name value.
-string[] psStep(string script, string[] args) {
-    return [psTool(_psRoot, script)] ~ args;
+// A PowerShell call to one of tools/win/*.ps1: `kv` alternates -Name and its VALUE, `switches`
+// are the bare ones. The two are separate because guessing which is which does not work — the
+// value of `-Cxx` is a flags string that starts with `-I…`, so a "does it start with a dash"
+// rule left `-Cxx` with no argument and PowerShell said so:
+//
+//     Invoke-Expression : Falta um argumento para o parâmetro 'Cxx'
+//
+// Values are single-quoted, PowerShell's literal string, with `'` doubled to escape.
+string psStep(string script, string[] kv, string[] switches = []) {
+    auto q = (string a) => `'` ~ a.replace("'", "''") ~ `'`;
+    string s = "& " ~ q(psTool(_psRoot, script));
+    for (size_t i = 0; i + 1 < kv.length; i += 2) s ~= " " ~ kv[i] ~ " " ~ q(kv[i + 1]);
+    foreach (sw; switches) s ~= " " ~ sw;
+    return s;
 }
 
-// ...and the same, encoded, because handing it over as trailing arguments lets PowerShell's
-// parameter binder read it instead of the script: `-NoProfile` and friends get matched against
-// guard.ps1's own parameters and the common ones, and the run died with
-// `AmbiguousParameter,guard.ps1`. Base64 of UTF-16LE is what -EncodedCommand and friends speak.
-string psEncode(string[] call) {
+// ...encoded, because handing the step over as trailing arguments lets PowerShell's parameter
+// binder read it instead of the script: `-NoProfile` and the step's own names get matched against
+// guard.ps1's parameters and the common ones, and the run died with `AmbiguousParameter`.
+// Base64 of UTF-16LE is the encoding PowerShell's own -EncodedCommand speaks.
+string psEncode(string script) {
     import std.base64 : Base64;
     import std.conv : to;
-    import std.ascii : isDigit;
-    // `& 'script' -Name 'value' …` — single quotes, PowerShell's literal string, doubled to escape.
-    auto q = (string a) => `'` ~ a.replace("'", "''") ~ `'`;
-    string s = "& " ~ q(call[0]);
-    foreach (a; call[1 .. $])
-        s ~= " " ~ (a.startsWith("-") && a.length > 1 && !a[1].isDigit ? a : q(a));
-    auto w = s.to!wstring;
+    auto w = script.to!wstring;
     return Base64.encode(cast(ubyte[]) w.dup);
 }
 
@@ -885,7 +889,7 @@ Target qtdBindLib(QtdBinding b, string dc) {
     auto t = Target(lib,
         guarded(b.bdir ~ "/bind_" ~ dc ~ ".lock", cmd,
                 psStep("dlib.ps1", ["-GenDir", b.genDir, "-ObjDir", od, "-Lib", lib, "-Dc", dc,
-                                    "-ObjExt", objExt()] ~ (oq.length ? ["-Oq"] : [])),
+                                    "-ObjExt", objExt()], oq.length ? ["-Oq"] : []),
                 lib, [stamp]),
         [b.gen]);
     _libCache[key] = t;
