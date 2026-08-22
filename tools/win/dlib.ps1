@@ -27,8 +27,11 @@ Push-Location -LiteralPath $GenDir
 try {
     # Relative paths, as `find . -name "*.d"` gives on POSIX: the compiler derives module names
     # from them, and an absolute path here makes every module a root module.
+    # Resolve-Path -Relative, not [System.IO.Path]::GetRelativePath: that method arrived in
+    # .NET Core 2.1 and PowerShell 5.1 runs on .NET Framework, where it does not exist —
+    # `MethodNotFound,ForEachObjectCommand`.
     $srcs = Get-ChildItem -Recurse -Filter *.d -File |
-            ForEach-Object { [System.IO.Path]::GetRelativePath((Get-Location).Path, $_.FullName) }
+            ForEach-Object { (Resolve-Path -LiteralPath $_.FullName -Relative) }
     if ($srcs.Count -eq 0) { Write-Error "dlib: no .d sources under $GenDir" }
 
     # A COMMAND-LINE LENGTH LIMIT applies here too — a binding is ~800 modules. Both ldc2 and dmd
