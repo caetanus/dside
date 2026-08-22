@@ -39,7 +39,10 @@ function Invoke-Proc {
     )
 
     if (-not [System.IO.Path]::IsPathRooted($Exe)) { $Exe = Join-Path (Get-Location).Path $Exe }
-    if (-not (Test-Path -LiteralPath $Exe)) { Write-Error "no such file: $Exe" }
+    # Write-Output, not Write-Error. The error stream is rendered by the console host, and
+    # detached from a terminal that host has nothing to talk to — so the diagnosis disappears
+    # exactly when it is needed, leaving an empty log and a non-zero exit. stdout is a plain pipe.
+    if (-not (Test-Path -LiteralPath $Exe)) { Write-Output "proc: no such file: $Exe"; exit 127 }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName               = $Exe
@@ -52,8 +55,9 @@ function Invoke-Proc {
     # double, and a quote is escaped with one backslash.
     $psi.Arguments = ($ProcArgs | ForEach-Object { Quote-Arg $_ }) -join ' '
 
-    $p = [System.Diagnostics.Process]::Start($psi)
-    if (-not $p) { Write-Error "could not start: $Exe" }
+    try { $p = [System.Diagnostics.Process]::Start($psi) }
+    catch { Write-Output ("proc: could not start " + $Exe + ": " + $_.Exception.Message); exit 126 }
+    if (-not $p) { Write-Output "proc: could not start: $Exe"; exit 126 }
     # Read BEFORE waiting: a child that fills the pipe blocks for ever if nobody drains it.
     if ($Capture) { $script:ProcOut = $p.StandardOutput.ReadToEnd() -split "`r?`n" }
     $p.WaitForExit()

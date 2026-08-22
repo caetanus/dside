@@ -25,6 +25,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Anything that goes wrong in here says so on STDOUT and exits non-zero — see tools/win/proc.ps1.
+trap { Write-Output ("run-capture: " + $_.Exception.Message); exit 1 }
 $ProgressPreference    = 'SilentlyContinue'
 $env:QT_QPA_PLATFORM   = 'offscreen'
 

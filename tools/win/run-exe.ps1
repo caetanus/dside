@@ -32,6 +32,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Anything that goes wrong in here says so on STDOUT and exits non-zero — see tools/win/proc.ps1.
+trap { Write-Output ("run-exe: " + $_.Exception.Message); exit 1 }
 $ProgressPreference    = 'SilentlyContinue'   # else PowerShell 5.1 writes a #< CLIXML banner to stderr
 
 # Windows resolves a DLL through the executable's directory and then PATH — there is no rpath — so
