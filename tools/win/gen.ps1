@@ -20,8 +20,11 @@ $ProgressPreference    = 'SilentlyContinue'
 
 if (Test-Path -LiteralPath $GenDir) { Remove-Item -LiteralPath $GenDir -Recurse -Force }
 
-if ($Quiet) { & $Xiboca $Spec *> $null } else { & $Xiboca $Spec > $null }
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+# Invoke-Proc, not `&`: xiboca has no file extension, and its own output must not pass through
+# PowerShell's host (see tools/win/proc.ps1). -Capture swallows stdout the way `> /dev/null` did.
+. (Join-Path $PSScriptRoot 'proc.ps1')
+$rc = Invoke-Proc -Exe $Xiboca -ProcArgs @($Spec) -Capture
+if ($rc -ne 0) { exit $rc }
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Stamp) | Out-Null
 # `touch`: create it, or move its timestamp forward if it is already there.

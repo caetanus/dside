@@ -19,6 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
+. (Join-Path $PSScriptRoot 'proc.ps1')   # every child through CreateProcess, see shims.ps1
 
 if (Test-Path -LiteralPath $ObjDir) { Remove-Item -LiteralPath $ObjDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $ObjDir | Out-Null
@@ -41,13 +42,13 @@ try {
     if ($Oq) { $args += '-oq' }
     $args += @("-od=$ObjDir", '-I.')
     Set-Content -LiteralPath $rsp -Value ($args + $srcs)
-    & $Dc ("@" + $rsp)
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $rc = Invoke-Proc -Exe (Get-Command $Dc -ErrorAction Stop).Source -ProcArgs @(("@" + $rsp))
+    if ($rc -ne 0) { exit $rc }
 } finally { Pop-Location }
 
 $objs = Get-ChildItem -LiteralPath $ObjDir -Filter ("*" + $ObjExt) -File | ForEach-Object { $_.FullName }
 if ($objs.Count -eq 0) { Write-Error "dlib: nothing compiled from $GenDir" }
 $rsp2 = $Lib + '.rsp'
 Set-Content -LiteralPath $rsp2 -Value $objs
-& llvm-lib ("/OUT:" + $Lib) ("@" + $rsp2)
-exit $LASTEXITCODE
+exit (Invoke-Proc -Exe (Get-Command llvm-lib -ErrorAction Stop).Source `
+                 -ProcArgs @(("/OUT:" + $Lib), ("@" + $rsp2)))
