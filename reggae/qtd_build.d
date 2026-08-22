@@ -474,7 +474,7 @@ Target gendTarget(string root) {
     // dub decides itself whether a relink is needed; guarded() keeps concurrent gen steps from
     // racing into the same dub build, and skips it outright when xiboca is already newest.
     auto cmd = guarded(buildPath(dir, "xiboca.lock"),
-        "cd " ~ dir ~ " && " ~ llvmLibEnv() ~ "dub build --quiet", xiboca, srcs);
+        "cd " ~ dir ~ " && " ~ llvmLibEnv() ~ "dub build --quiet", null, xiboca, srcs);
     return Target(xiboca, cmd, srcs.map!(f => Target(f)).array);
 }
 
@@ -501,14 +501,47 @@ Target gendTarget(string root) {
 string guardedLink(string lock, string cmdWithOut, string output, string[] newerThan) {
     auto tmp = output ~ ".tmp$$";
     return guarded(lock, cmdWithOut.replace("$out", tmp) ~ " && mv -f " ~ tmp ~ " " ~ output,
-                   output, newerThan);
+                   null, output, newerThan);
 }
 
-string guarded(string lock, string cmd, string output, string[] newerThan) {
+// `winArgv` is the SAME step said in PowerShell — a program and its arguments, which is what
+// tools/win/guard.ps1 runs. The two dialects sit at the same call site on purpose: they are one
+// decision, and a step whose two halves live apart is a step whose halves drift. Passing null
+// keeps the sh form on Windows too, for a step not converted yet.
+string guarded(string lock, string cmd, string[] winArgv, string output, string[] newerThan) {
+    version (Windows) {
+        if (winArgv.length) {
+            auto g = [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                      "-File", psTool(_psRoot, "guard.ps1"),
+                      "-Lock", lock, "-Output", output];
+            if (newerThan.length) g ~= ["-Newer", newerThan.join(",")];
+            return (g ~ "--" ~ winArgv).map!psArg.join(" ");
+        }
+    }
     auto test = newerThan.map!(d => "[ " ~ output ~ " -nt " ~ d ~ " ]").join(" && ");
     auto inner = (test.length ? "if " ~ test ~ "; then exit 0; fi; " : "") ~ cmd;
     auto esc = inner.replace("'", `'\''`);
     return posixCmd("mkdir -p " ~ dirName(lock) ~ " && flock " ~ lock ~ " sh -c '" ~ esc ~ "'");
+}
+
+// The repo root, so the PowerShell halves can be found without threading it through every
+// signature. Set once, from the reggaefile, before any target is built.
+__gshared string _psRoot;
+void setPsRoot(string root) { _psRoot = root; }
+
+string psExe()  { return "powershell"; }
+string psTool(string root, string script) { return buildPath(root, "tools", "win", script); }
+
+// One argument of a command STRING. cmd.exe splits on spaces and respects one level of double
+// quotes, and a Windows path routinely contains a space (`C:\Program Files\…`).
+string psArg(string a) {
+    return (a.length && !a.canFind(' ')) ? a : `"` ~ a ~ `"`;
+}
+
+// A PowerShell tool invocation as a program+arguments list, for guarded()'s `winArgv`.
+string[] psStep(string script, string[] args) {
+    return [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", psTool(_psRoot, script)] ~ args;
 }
 
 // A COMMAND THIS BUILD WROTE, MADE SAFE TO HAND TO WHATEVER SHELL RUNS IT.
@@ -525,14 +558,6 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // nothing to collide with the wrapper.
 //
 // On POSIX this is the identity — executeShell is already sh.
-// RUNNING A BUILT BINARY, with the path kept out of the command TEXT.
-//
-// A path substituted by reggae ($in/$out) is native and backslashed, and measured on the VM,
-// backslashes do not survive the executeShell -> cmd.exe -> sh chain in ANY quoting: `a\b\c`
-// arrives as `abc`, single-quoted, double-quoted or escaped alike. As an ARGUMENT it arrives
-// intact — `ARG:[a\b\c]` — because it never passes through a shell's quote processing.
-//
-// So the binary is $0 and the environment prefix stays in the command.
 // The PowerShell that runs a build command, as an invocation prefix. `-File` rather than
 // `-Command`/`-EncodedCommand` because only `-File` accepts trailing arguments, and a path reggae
 // substitutes has to arrive as an argument: it is native and backslashed, and backslashes do not
@@ -693,7 +718,10 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         // while running a derived copy is the same shape as the install guard that could not see
         // the archives it copied: the derived spec changed, the stamp did not, and the step was
         // skipped while its output stayed wrong.
-        guarded(bdir ~ "/gen.lock", genCmd, stamp, [useSpec, xiboca] ~ runtimeSrc),
+        guarded(bdir ~ "/gen.lock", genCmd,
+                psStep("gen.ps1", ["-GenDir", genDir, "-Xiboca", xiboca, "-Spec", useSpec,
+                                   "-Stamp", stamp]),
+                stamp, [useSpec, xiboca] ~ runtimeSrc),
         [Target(specPath), gendTarget(root)] ~ runtimeSrc.map!(f => Target(f)).array);
 
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
@@ -733,7 +761,12 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b" ~ objExt() ~ " || exit 1; done && "
         ~ arCmd(shimsLib, bdir ~ "/ocpp/*" ~ objExt());
     auto shims = Target(shimsLib,
-        guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]),
+        guarded(bdir ~ "/shims.lock", shimsCmd,
+                psStep("shims.ps1", ["-GenDir", genDir, "-ObjDir", bdir ~ "/ocpp", "-Lib", shimsLib,
+                                     "-Cxx", cxx, "-Priv", priv, "-QmlEnabled", hasQml ? "yes" : "no",
+                                     "-StubSuffix", stubObj, "-ObjExt", objExt(),
+                                     "-QmlFlag", bdir ~ "/qml-enabled"]),
+                shimsLib, [stamp]),
         [gen]);
 
     // REGISTERED, so the composition canary gets its list from the GRAPH instead of a glob over
@@ -832,7 +865,10 @@ Target qtdBindLib(QtdBinding b, string dc) {
         ~ dc ~ ` -c ` ~ oq ~ "-od=" ~ od ~ ` -I. $(find . -name "*.d") && `
         ~ arCmd(lib, od ~ "/*" ~ objExt());
     auto t = Target(lib,
-        guarded(b.bdir ~ "/bind_" ~ dc ~ ".lock", cmd, lib, [stamp]),
+        guarded(b.bdir ~ "/bind_" ~ dc ~ ".lock", cmd,
+                psStep("dlib.ps1", ["-GenDir", b.genDir, "-ObjDir", od, "-Lib", lib, "-Dc", dc,
+                                    "-ObjExt", objExt()] ~ (oq.length ? ["-Oq"] : [])),
+                lib, [stamp]),
         [b.gen]);
     _libCache[key] = t;
     return t;
@@ -932,7 +968,7 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ " && " ~ arCmd("libsample.a", "*" ~ objExt());
     // freshness vs the umbrella (written at configure time): without it a second concurrent
     // scheduling would `rm -rf build` mid-link (empty newerThan == never skip).
-    auto sampleLib = Target(lsa, guarded(bdir ~ "/lsa.lock", lsaCmd, lsa, [buildPath(bdir, "sample_all.h")]), []);
+    auto sampleLib = Target(lsa, guarded(bdir ~ "/lsa.lock", lsaCmd, null, lsa, [buildPath(bdir, "sample_all.h")]), []);
 
     // 2) generate the "sample" binding.
     auto stamp = buildPath(bdir, "gen.stamp");
@@ -941,7 +977,7 @@ Target[] libsampleTargets(string root, string pyside) {
     // #1): without this edge, editing the runtime leaves libsample testing the copy from before.
     auto lsRuntime = qtdRuntimeSources(root);
     auto genT = Target(stamp,
-        guarded(bdir ~ "/gen.lock", genCmd, stamp, [lsa, xiboca] ~ lsRuntime),
+        guarded(bdir ~ "/gen.lock", genCmd, null, stamp, [lsa, xiboca] ~ lsRuntime),
         [sampleLib, gendTarget(root)] ~ lsRuntime.map!(f => Target(f)).array);
 
     // 3) shims (.cpp) -> libshims.a.
@@ -956,7 +992,7 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ `case "$b" in qtdmoc|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b" ~ objExt() ~ " || exit 1; done && "
         ~ arCmd(shimsLib, bdir ~ "/ocpp/*" ~ objExt());
-    auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, shimsLib, [stamp]), [genT]);
+    auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, null, shimsLib, [stamp]), [genT]);
     _shimsRegistry ~= ShimsEntry(shimsLib, false, shimsT, ["Qt6Core"], qtdExpandLinkMods(["Qt6Core"]), qtdQtRelease(["Qt6Core"]));   // libsample: no QtQml, QtCore only
     _genRegistry ~= genT;
 
@@ -968,7 +1004,7 @@ Target[] libsampleTargets(string root, string pyside) {
         auto libCmd = "rm -rf " ~ od ~ " && mkdir -p " ~ od ~ " && cd " ~ gen ~ " && "
             ~ dc ~ " -c " ~ oq ~ "-od=" ~ od ~ ` -I. $(find . -name "*.d") && `
             ~ arCmd(lib, od ~ "/*" ~ objExt());
-        auto libT = Target(lib, guarded(bdir ~ "/bind_" ~ dc ~ ".lock", libCmd, lib, [stamp]), [genT]);
+        auto libT = Target(lib, guarded(bdir ~ "/bind_" ~ dc ~ ".lock", libCmd, null, lib, [stamp]), [genT]);
         // libsample.a + the shim archives have mutual refs -> a static --start/--end-group.
         auto grp = "-L--start-group -L=" ~ lib ~ " -L=" ~ shimsLib ~ " -L=" ~ lsa
             ~ " -L--end-group" ~ (cxxRuntimeLibs().length ? " -L-lstdc++" : "");

@@ -58,6 +58,10 @@ string qtInstallQml() {
 
 Build reggaeBuild() {
     immutable root = getcwd();
+    // Where the PowerShell halves of the build's steps live (tools/win/*.ps1). Set once, so a
+    // step's two dialects can sit at the same call site without threading the root through
+    // every signature that composes a command.
+    setPsRoot(root);
     Target[] all;
     // Targets that must FAIL while a documented gap is open (critics r13 #6). They are OPTIONAL:
     // expected-fails-run names them and expects the failure, and a failing target in the default
@@ -137,7 +141,7 @@ Build reggaeBuild() {
         auto wf = buildPath(root, "tests", "wrapper", "qtd_watchfree.cpp");
         auto wfo = buildPath(ex.bdir, "qtd_watchfree.o");
         auto wfObj = Target(wfo, guarded(wfo ~ ".lock",
-            "clang++ " ~ pkgCflags(ex.mods) ~ " -std=c++17 " ~ cxxPic() ~ " -O0 -c " ~ wf ~ " -o " ~ wfo, wfo, [wf]),
+            "clang++ " ~ pkgCflags(ex.mods) ~ " -std=c++17 " ~ cxxPic() ~ " -O0 -c " ~ wf ~ " -o " ~ wfo, null, wfo, [wf]),
             [Target(wf)]);
         foreach (dc; DCS)
             all ~= qtdTest("nonqobject-" ~ dc, t("wrapper", "nonqobject.d"), ex, dc,
@@ -508,7 +512,7 @@ Build reggaeBuild() {
             auto archivePaths = DCS.map!(dc => buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")).array
                                 ~ [buildPath(ex.bdir, "libshims.a")];
             auto inst = Target(stamp,
-                guarded(prefix ~ ".lock", instCmd, stamp,
+                guarded(prefix ~ ".lock", instCmd, null, stamp,
                         [ex.genDir ~ "/gen.stamp", ins] ~ archivePaths),
                 [Target(ins), ex.gen] ~ DCS.map!(dc => qtdBindLib(ex, dc)).array ~ [ex.shims]);
             // THE PACKAGE, not the tree. Every other licensing gate reads what is committed; this
@@ -917,7 +921,7 @@ Target uidumpObj(string root, QtdBinding ex, string dc) {
     if (auto p = o in _uidumpObjs) return *p;
     auto src = buildPath(root, "tests", "uic", "qtd_uidump.cpp");
     auto cf = pkgCflags(["Qt6UiTools", "Qt6Widgets"]) ~ " -std=c++17 " ~ cxxPic() ~ " -O2";
-    auto t = Target(o, guarded(o ~ ".lock", "clang++ " ~ cf ~ " -c " ~ src ~ " -o " ~ o, o, [src]),
+    auto t = Target(o, guarded(o ~ ".lock", "clang++ " ~ cf ~ " -c " ~ src ~ " -o " ~ o, null, o, [src]),
                     [Target(src)]);
     _uidumpObjs[o] = t;
     return t;
@@ -1150,7 +1154,7 @@ Target qmltcTool(string root, QtdBinding bind) {
     auto revO = Target(revObj, "clang++ -std=c++17 " ~ cxxPic() ~ " -O2 -c " ~ revCpp ~ " -o " ~ revObj,
                        [Target(revCpp)]);
     auto t = Target(toolBin, guarded(toolBin ~ ".lock",
-        "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " " ~ revObj ~ " -o " ~ toolBin ~ " " ~ toolLibs,
+        "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " " ~ revObj ~ " -o " ~ toolBin ~ " " ~ toolLibs, null,
         toolBin, [toolCpp, revObj]),
         [Target(toolCpp), revO]);
     _qmltcTools[bind.bdir] = t;
@@ -1238,7 +1242,7 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
         ts ~= Target.phony("qmltc-o3-gate-app",
             guarded(buildPath(outDir, "o3_app.lock"),
                 "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ appDir ~ " " ~ bind.bdir ~ " "
-                ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'", "", []),
+                ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'", null, "", []),
             [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
     auto ctlDir = buildPath(qtInstallQml(), "QtQuick", "Controls");
     // A MISSING STYLE IS A RED GATE, not a missing one. Controls absent altogether is a genuine
@@ -1260,7 +1264,7 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
         // it, and the ldc2/dmd split is already covered everywhere else.
         auto cmd = guarded(buildPath(outDir, "o3_" ~ style ~ ".lock"),
                  "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " " ~ bind.bdir ~ " "
-                 ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'", "", []);
+                 ~ bind.genDir ~ " | tee /dev/stderr | grep -q \"UNPLACED=0\"'", null, "", []);
         ts ~= Target.phony("qmltc-o3-gate-" ~ style, cmd,
                            [tool, Target(script), bind.gen, qtdBindLib(bind, "ldc2"), bind.shims]);
     }
@@ -1373,7 +1377,7 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     auto appHelper = () {
         if (auto p = bind.bdir in _qmltcAppObjs) return *p;
         auto t = Target(appObj, guarded(appObj ~ ".lock",
-            "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o " ~ appObj, appObj, [appCpp]),
+            "clang++ " ~ oracleFlags ~ " -c " ~ appCpp ~ " -o " ~ appObj, null, appObj, [appCpp]),
             [Target(appCpp)]);
         _qmltcAppObjs[bind.bdir] = t;
         return t;
@@ -1438,10 +1442,10 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
         // object and must depend on the SAME node, not on a second definition of it.
         if (bind.bdir !in _qmltcRenderObjs)
             _qmltcRenderObjs[bind.bdir] = Target(renderObj, guarded(renderObj ~ ".lock",
-                "clang++ " ~ rFlags ~ " -c " ~ renderCpp ~ " -o " ~ renderObj, renderObj, [renderCpp]),
+                "clang++ " ~ rFlags ~ " -c " ~ renderCpp ~ " -o " ~ renderObj, null, renderObj, [renderCpp]),
                 [Target(renderCpp)]);
         renderDep ~= Target(renderObj, guarded(renderObj ~ ".lock",
-            "clang++ " ~ rFlags ~ " -c " ~ renderCpp ~ " -o " ~ renderObj, renderObj, [renderCpp]),
+            "clang++ " ~ rFlags ~ " -c " ~ renderCpp ~ " -o " ~ renderObj, null, renderObj, [renderCpp]),
             [Target(renderCpp)]);
         renderLink = " " ~ renderObj;
     }
@@ -1813,7 +1817,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
         auto genBin = buildPath(bind.bdir, "dtypes-gen-" ~ dc);
         // Shared by every qmltcd- target -> guard it, like the oracle and qmltc-d itself.
         auto genCmd = dc ~ " -of=" ~ genBin ~ " " ~ buildPath(dir, "qmltypes_gen.d") ~ " " ~ appD ~ dcLink;
-        auto gen = Target(genBin, guarded(genBin ~ ".lock", genCmd, genBin,
+        auto gen = Target(genBin, guarded(genBin ~ ".lock", genCmd, null, genBin,
             [appD, buildPath(dir, "qmltypes_gen.d"), buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")]),
             [Target(buildPath(dir, "qmltypes_gen.d")), Target(appD), qtdBindLib(bind, dc), bind.shims]);
         auto typesFile = buildPath(bind.bdir, "AppTypes-" ~ dc ~ ".qmltypes");
@@ -1822,7 +1826,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
         // 2) the ORACLE: D main (registers the types) + the C++ engine half.
         auto oracleBin = buildPath(bind.bdir, "qmlvalues-d-" ~ dc);
         auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
-            dc ~ " -of=" ~ oracleBin ~ " " ~ buildPath(here, "qtd_qmlvalues_d.d") ~ " " ~ appD ~ " " ~ oracleObj ~ dcLink,
+            dc ~ " -of=" ~ oracleBin ~ " " ~ buildPath(here, "qtd_qmlvalues_d.d") ~ " " ~ appD ~ " " ~ oracleObj ~ dcLink, null,
             oracleBin, [appD, buildPath(here, "qtd_qmlvalues_d.d"), oracleObj]),
             [Target(buildPath(here, "qtd_qmlvalues_d.d")), Target(appD), oracleLib, qtdBindLib(bind, dc), bind.shims]);
 
@@ -1959,7 +1963,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
         jsons ~= j;
         // moc writes the .json as a SIDE EFFECT of -o, so the .cpp is the tracked output.
         auto m = Target(mocCpp, guarded(mocCpp ~ ".lock",
-            moc ~ " " ~ pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " " ~ privInc ~ " --output-json -o " ~ mocCpp ~ " " ~ hdr,
+            moc ~ " " ~ pkgCflags(["Qt6Qml", "Qt6Core"]) ~ " " ~ privInc ~ " --output-json -o " ~ mocCpp ~ " " ~ hdr, null,
             mocCpp, [hdr]), [Target(hdr)]);
         mocObjs ~= Target(buildPath(bind.bdir, "moc_" ~ stem ~ ".o"),
             "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ mocCpp ~ " -o $out", [m]);
@@ -1969,7 +1973,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     auto typesFile = buildPath(bind.bdir, "QmltcTests.qmltypes");
     auto regT = Target(regCpp, guarded(regCpp ~ ".lock",
         reg ~ " --generate-qmltypes=" ~ typesFile ~ " --import-name=QmltcTests"
-        ~ " --major-version=1 --minor-version=0 -o " ~ regCpp ~ " " ~ jsons.join(" "),
+        ~ " --major-version=1 --minor-version=0 -o " ~ regCpp ~ " " ~ jsons.join(" "), null,
         regCpp, jsons), mocObjs);   // deps on the moc targets: the JSON must exist first
     auto regObj = Target(buildPath(bind.bdir, "qmltyperegistrations.o"),
         "clang++ " ~ cflags ~ " -I" ~ dir ~ " -c " ~ regCpp ~ " -o $out", [regT]);
@@ -1995,12 +1999,12 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
         "clang++ " ~ cflags ~ " -o " ~ oracleBin ~ " " ~ oracleCpp
         ~ " -Wl,--whole-archive " ~ typesLib ~ " -Wl,--no-whole-archive "
         ~ qtLibsOf(["Qt6Qml", "Qt6Gui", "Qt6Core"]),
-        oracleBin, [oracleCpp, typesLib]), [Target(oracleCpp), lib]);
+        null, oracleBin, [oracleCpp, typesLib]), [Target(oracleCpp), lib]);
 
     // A bound root sets properties before any QGuiApplication exists; the helper provides one.
     auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
     auto appHelper = Target(appObj, guarded(appObj ~ ".lock",
-        "clang++ " ~ cflags ~ " -c " ~ buildPath(here, "qtd_qmltc_app.cpp") ~ " -o " ~ appObj,
+        "clang++ " ~ cflags ~ " -c " ~ buildPath(here, "qtd_qmltc_app.cpp") ~ " -o " ~ appObj, null,
         appObj, [buildPath(here, "qtd_qmltc_app.cpp")]), [Target(buildPath(here, "qtd_qmltc_app.cpp"))]);
 
     Target[] ts;
