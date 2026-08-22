@@ -9,6 +9,11 @@
 #
 #   tools/test-report.sh [glob] > report.tsv
 set -uo pipefail
+
+# `build` on POSIX, `build.exe` on Windows — the same graph either way.
+BUILD=./build
+[ -x ./build.exe ] && BUILD=./build.exe
+
 cd "$(dirname "$0")/.."
 selftest=no; [ "${1:-}" = "--self-test" ] && { selftest=yes; shift; }
 filter="${1:-*}"
@@ -134,7 +139,7 @@ if [ "$selftest" = yes ]; then
   # ...and no target the build actually offers may be unclassified.
   # The ` (optional)` suffix is part of the LISTING, not of the name. Glob-matched families never
   # noticed; `binding-core` is matched exactly and came back unclassified the day it became optional.
-  if list=$(./build --list 2>/dev/null | sed -e 's/^- //' -e 's/ (optional)$//' | grep -v '^List'); then
+  if list=$("$BUILD" --list 2>/dev/null | sed -e 's/^- //' -e 's/ (optional)$//' | grep -v '^List'); then
     n_other=0
     while read -r t; do [ -n "$t" ] && [ "$(category "$t")" = other ] && {
       printf 'self-test FAIL unclassified target: %s\n' "$t"; n_other=$((n_other+1)); }
@@ -142,7 +147,8 @@ if [ "$selftest" = yes ]; then
     [ "$n_other" -eq 0 ] || st_fail=1
     printf 'report self-test: %s targets classified, %s unclassified\n' "$(wc -l <<< "$list")" "$n_other"
   else
-    printf 'report self-test: canaries only (./build --list unavailable)\n'
+    printf 'report self-test: canaries only (%s --list unavailable)\n' "$BUILD"
+
   fi
   [ "$st_fail" -eq 0 ] && printf 'report self-test: OK\n'
   exit "$st_fail"
@@ -152,17 +158,26 @@ fi
 pass=0 fail=0 skip=0
 # Only the DEFAULT (mandatory) targets: `- name`. Optional targets print as `- name (optional)`
 # (the manifest gates, r8 #1) and are advisory, so they're excluded from the gated record here.
-mapfile -t targets < <(./build --list 2>/dev/null | grep -oE '^- [^ ]+$' | sed 's/^- //')
-if [ "${#targets[@]}" -eq 0 ]; then echo "# ERROR: ./build --list produced no default targets" >&2; exit 2; fi
+mapfile -t targets < <("$BUILD" --list 2>/dev/null | grep -oE '^- [^ ]+$' | sed 's/^- //')
+if [ "${#targets[@]}" -eq 0 ]; then echo "# ERROR: "$BUILD" --list produced no default targets" >&2; exit 2; fi
 for t in "${targets[@]}"; do
   case "$t" in $filter) ;; *) continue ;; esac
   log="$logdir/$t.log"
   start=$(date +%s%3N)
-  if ./build "$t" >"$log" 2>&1; then
+  if "$BUILD" "$t" >"$log" 2>&1; then
     # A capability-gated target (qmlaot/qmltypes with the tool absent) runs but prints SKIP and
     # does no work — record it as skip, not a green pass it didn't actually perform (r8 #8/#10).
-    if grep -qiE '(^|[^a-z])skip(ping|ped)?([^a-z]|$)' "$log"; then st=skip; skip=$((skip+1)); else st=pass; pass=$((pass+1)); fi
-    rm -f "$log"; logcol=-
+    if grep -qiE '(^|[^a-z])skip(ping|ped)?([^a-z]|$)' "$log"; then
+      st=skip; skip=$((skip+1)); rm -f "$log"; logcol=-
+    # A TARGET THAT PRODUCED NOTHING DID NOT RUN. Exit status alone is not evidence: on Windows a
+    # runner that could not START any binary reported thirteen targets passing, and every one of
+    # their logs held nothing but the build's own progress lines. A green with no output of its own
+    # is reported as `mute` and counts as a failure.
+    elif [ "$(grep -cvE '^\[build\]|^$' "$log")" -eq 0 ]; then
+      st=mute; fail=$((fail+1)); logcol="$log"
+    else
+      st=pass; pass=$((pass+1)); rm -f "$log"; logcol=-
+    fi
   else st=fail; fail=$((fail+1)); logcol="$log"; fi
   ms=$(( $(date +%s%3N) - start ))
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n' \
