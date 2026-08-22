@@ -1612,7 +1612,9 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                           ~ " " ~ tm.prop ~ " > " ~ eT
                           ~ " && diff " ~ eT ~ " " ~ oT
                           ~ " && " ~ renv3 ~ appBin ~ " | grep '^" ~ tm.prop ~ "\t' > " ~ zT
-                          ~ " && ! diff -q " ~ oT ~ " " ~ zT ~ " > /dev/null";
+                          ~ " && ! diff -q " ~ oT ~ " " ~ zT ~ " > /dev/null"
+                          ~ " && echo \"qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", " ~ tm.ms.to!string
+                          ~ "ms): " ~ tm.prop ~ " matches the engine and differs from t=0\"";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-time-" ~ dc, tcmd,
                                    [app] ~ rndDep ~ [tool]);
             }
@@ -1646,7 +1648,9 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                           // ...and prove the click MATTERED: without it the value must differ, or
                           // the test would pass on a document that ignores input entirely.
                           ~ " && " ~ renv2 ~ appBin ~ " | grep '^" ~ ck.prop ~ "\t' > " ~ ourOut ~ ".noclick"
-                          ~ " && ! diff -q " ~ ourOut ~ " " ~ ourOut ~ ".noclick > /dev/null";
+                          ~ " && ! diff -q " ~ ourOut ~ " " ~ ourOut ~ ".noclick > /dev/null"
+                          ~ " && echo \"qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", click): " ~ ck.prop
+                          ~ " matches the engine and differs from no-click\"";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-click-" ~ dc, ccmd,
                                    [app] ~ rndDep ~ [tool]);
             }
