@@ -156,7 +156,11 @@ extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
             if (!attachedUri.isEmpty()) {
                 auto t = QQmlMetaType::qmlType(p, attachedUri, QTypeRevision());
                 if (t.isValid())
-                    if (auto fn = t.attachedPropertiesFunction(nullptr)) {
+                    // Named, not nullptr: Qt 6.10 still carries an older overload beside the
+                    // QQmlTypeLoader* one, so a bare nullptr is ambiguous and the oracle does not
+                    // compile there. Same fix as runtime/qtmoc/qtdmoc.cpp — a second call site
+                    // that only surfaced once the first one stopped failing.
+                    if (auto fn = t.attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr))) {
                         cur = qmlAttachedPropertiesObject(cur, fn, /*createIfMissing*/ false);
                         continue;
                     }
