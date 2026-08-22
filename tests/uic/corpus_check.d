@@ -102,8 +102,10 @@ bool onlyWaived(string p, string a, string b) {
     return true;
 }
 // Differential check: the tree WE build must serialize identically to QUiLoader's. On a
-// mismatch, set DIFF=<path> to dump both serializations to /tmp for inspection.
-void ck(T, R)(string p, R root){ T ui; ui.setupUi(root); auto a=qtd_ui_dump(root.ptr()).fromStringz.idup; auto b=qtd_ui_load_and_dump(p.toStringz).fromStringz.idup; if(a==b){oks++;} else if(onlyWaived(p,a,b)){oks++; waived++; writefln("WAIVED (known QUiLoader-vs-uic margin divergence) %s",p);} else {fails++; writefln("MISMATCH %s",p); if(environment.get("DIFF")==p){ import std.file; std.file.write("/tmp/ours.txt",a); std.file.write("/tmp/oracle.txt",b);} } }
+// mismatch, set DIFF=<path> to dump both serializations to the system temp dir. NOT /tmp: that is
+// a POSIX path, and on Windows the dump died with `O sistema nao pode encontrar o caminho`
+// exactly when it was needed to diagnose a mismatch.
+void ck(T, R)(string p, R root){ T ui; ui.setupUi(root); auto a=qtd_ui_dump(root.ptr()).fromStringz.idup; auto b=qtd_ui_load_and_dump(p.toStringz).fromStringz.idup; if(a==b){oks++;} else if(onlyWaived(p,a,b)){oks++; waived++; writefln("WAIVED (known QUiLoader-vs-uic margin divergence) %s",p);} else {fails++; writefln("MISMATCH %s",p); if(environment.get("DIFF")==p){ import std.file, std.path; auto d=tempDir; std.file.write(buildPath(d,"ours.txt"),a); std.file.write(buildPath(d,"oracle.txt"),b); writefln("wrote %s and %s", buildPath(d,"ours.txt"), buildPath(d,"oracle.txt"));} } }
 import std.process : environment;
 void main(){ int argc=1; char*[2] argv=[cast(char*)"c".ptr,null]; auto app=cast(QApplication)__cpp_new(__traits(classInstanceSize,QApplication)); __qapp_ctor(app,argc,argv.ptr,0);
   ck!Ui_AddTorrentFile("tests/uic/corpus/addtorrentform.ui", new QDialog());
