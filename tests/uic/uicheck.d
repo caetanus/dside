@@ -58,6 +58,19 @@ __gshared int fails, waived;
 // The same divergence is waived, with the same justification, in corpus_check.d.
 immutable string[] WAIVED_LINES = [
     "pageGeneral|layout|QVBoxLayout", "pageAdvanced|layout|QVBoxLayout",
+    // DOWNSTREAM OF THE SAME DIVERGENCE, and only visible where the numbers differ enough to
+    // matter. QUiLoader freezes a tab page's layout margin at the value it had while the page was
+    // still parentless (11); uic-generated code leaves it dynamic, so once the page is parented it
+    // is the child margin (9). Measured, on both platforms — a standalone QUiLoader probe reports
+    // margins=11 while the style's PM_LayoutLeftMargin for that widget is 9.
+    //
+    // Those four pixels change the width the tab bar has left, and on Windows that flips whether
+    // its internal scroll buttons are enabled. They are Qt's own children, created and managed by
+    // QTabBar; no binding decides their state. Waiving the line rather than the field because the
+    // waiver works on lines — the cost is that a real difference in those two Qt-internal widgets
+    // would not be caught, which is a price worth naming.
+    "qt_tabwidget_tabbar/QToolButton/ScrollLeftButton",
+    "qt_tabwidget_tabbar/QToolButton/ScrollRightButton",
 ];
 
 bool onlyWaived(string a, string b) {

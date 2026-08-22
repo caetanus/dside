@@ -30,6 +30,7 @@
 #include <QSize>
 #include <QFile>
 #include <QUiLoader>
+#include <cstdio>
 #include <QList>
 #include <string>
 #include <vector>
@@ -240,9 +241,19 @@ extern "C" const char *qtd_ui_dump(void *root) {
     return dump(reinterpret_cast<QObject *>(root));
 }
 
+// QUiLoader complains about a fixture on stderr WHILE the caller is writing the dump to stdout,
+// and in a log where both land together the warning appears INSIDE a dump line. That made a
+// truncated line read as a missing widget. The messages are still shown — collected here and
+// printed on their own line, prefixed — so nothing is hidden and nothing interleaves.
+static void collectMsg(QtMsgType, const QMessageLogContext &, const QString &m) {
+    std::printf("QTMSG| %s\n", qPrintable(m));
+}
+
 extern "C" const char *qtd_ui_load_and_dump(const char *path) {
     QFile f(QString::fromUtf8(path));
     if (!f.open(QIODevice::ReadOnly)) return "";
+    auto prev = qInstallMessageHandler(collectMsg);
+    struct Restore { QtMessageHandler p; ~Restore() { qInstallMessageHandler(p); } } restore{prev};
     QUiLoader loader;
     QWidget *w = loader.load(&f, nullptr);
     f.close();
