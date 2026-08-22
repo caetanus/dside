@@ -526,7 +526,7 @@ string guardedLink(string lock, string cmdWithOut, string output, string[] newer
 string guarded(string lock, string cmd, string winPs, string output, string[] newerThan) {
     version (Windows) {
         if (winPs.length) {
-            auto g = [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            auto g = [psExe(), "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-ExecutionPolicy", "Bypass",
                       "-File", psTool(_psRoot, "guard.ps1"),
                       "-Lock", lock, "-Output", output];
             if (newerThan.length) g ~= ["-Newer", newerThan.join(",")];
@@ -545,6 +545,14 @@ string guarded(string lock, string cmd, string winPs, string output, string[] ne
 __gshared string _psRoot;
 void setPsRoot(string root) { _psRoot = root; }
 
+// -InputFormat None is not optional here. Detached from a terminal — which is how the record
+// execution runs, `nohup … &` over ssh — PowerShell 5.1 reads stdin, finds the other end closed,
+// and dies inside its own host with
+//
+//     Erro interno "Nao ha processo na outra ponta do pipe" … SetConsoleWindowTitle
+//
+// naming the script it was running rather than the pipe. Interactively the same command works,
+// which is exactly how this stayed hidden until the full matrix ran.
 string psExe()  { return "powershell"; }
 string psTool(string root, string script) { return buildPath(root, "tools", "win", script); }
 
@@ -563,7 +571,7 @@ string psCapture(string root, string exe, string[] args, string outRef,
     import std.base64 : Base64;
     import std.conv : to;
     auto w = args.join("\n").to!wstring;
-    auto cmd = [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    auto cmd = [psExe(), "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-ExecutionPolicy", "Bypass",
                 "-File", psTool(_psRoot, "run-capture.ps1"),
                 "-Exe", exe, "-Out", outRef, "-Ok", ok];
     if (args.length) cmd ~= ["-ArgsB64", Base64.encode(cast(ubyte[]) w.dup).idup];
@@ -635,7 +643,7 @@ string psInline(string root, string name, string[] lines) {
         "               $rc = Invoke-Proc -Exe $e -ProcArgs $r; if ($rc -ne 0) { exit $rc } }",
     ];
     writeIfChanged(path, (preamble ~ lines).join("\n") ~ "\n");
-    return [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path]
+    return [psExe(), "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-ExecutionPolicy", "Bypass", "-File", path]
            .map!psArg.join(" ");
 }
 
@@ -685,7 +693,7 @@ string psEncode(string script) {
 // substitutes has to arrive as an argument: it is native and backslashed, and backslashes do not
 // survive executeShell -> cmd.exe inside command TEXT.
 string psRun(string root, string script) {
-    return "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "
+    return "powershell -NoProfile -NonInteractive -InputFormat None -ExecutionPolicy Bypass -File "
          ~ buildPath(root, "tools", "win", script);
 }
 

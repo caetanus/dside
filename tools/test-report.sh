@@ -45,7 +45,7 @@ have() { command -v "$1" >/dev/null 2>&1 || command -v "$1.exe" >/dev/null 2>&1 
 haveqtlib() {  # a Qt module, by pkg-config or by its import library under the prefix
     pkg-config --exists "$1" 2>/dev/null && return 0
     [ -f "${QTDIR6:-$QTDIR}/lib/$1.lib" ] || [ -f "${QTDIR6:-$QTDIR}/lib/lib$1.so" ]; }
-caps="qmlcachegen=$(have qmlcachegen && echo y || echo n) Qt6QmlCompiler=$(haveqtlib Qt6QmlCompiler && echo y || echo n) lrelease=$(command -v lrelease >/dev/null && echo y || echo n)"
+caps="qmlcachegen=$(have qmlcachegen && echo y || echo n) Qt6QmlCompiler=$(haveqtlib Qt6QmlCompiler && echo y || echo n) lrelease=$(have lrelease && echo y || echo n)"
 
 if [ "$selftest" = no ]; then
 printf '# qt-dlang-gen report — commit %s (%s) — %s\n' "$commit" "$dirty" "$(uname -sm)"
