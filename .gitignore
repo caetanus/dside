@@ -20,6 +20,11 @@ __pycache__/
 .reggae/
 .build/
 /build
+# ...and what the same two binaries are called on Windows, plus what its linker leaves beside
+# them. Untracked, they made every report header on that machine say DIRTY.
+/build.exe
+/build.ilk
+/build.pdb
 /bin/
 
 # --- generated bindings: produced on demand by `xiboca` / reggae, never committed ---
@@ -27,6 +32,8 @@ generated/
 
 # --- compiled binaries (regenerable) ---
 /xiboca/xiboca
+/xiboca/xiboca.exe
+/xiboca/xiboca.pdb
 /xiboca/xiboca.lock
 /bootstrap/hello
 compile_commands.json
