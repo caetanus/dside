@@ -611,7 +611,14 @@ string psRedirect(string exe, string[] args, string outFile, bool sortOut = fals
              // Not cosmetic: the objpaths file is READ BACK by the oracle, and a blank path means
              // the ROOT object — so it dumped everything a second time and the differential failed
              // with every line reported as missing from our side.
-             ~ "\nwhile ($o.Count -gt 0 -and $o[$o.Count - 1] -eq '') { $o = $o[0 .. ($o.Count - 2)] }";
+             // `-gt 1`, and the single-element case handled separately: with ONE element,
+             // $o[0 .. ($o.Count - 2)] is $o[0 .. -1], and PowerShell reads that as the range
+             // 0,-1 — elements [0] and [-1], which are the SAME element. The array grows instead
+             // of shrinking and the loop never ends. That is the descending-range trap again, in
+             // a second place: a step whose tool printed nothing hung for ever, and the target
+             // was killed by the timeout with no output at all.
+             ~ "\nwhile ($o.Count -gt 1 -and $o[$o.Count - 1] -eq '') { $o = $o[0 .. ($o.Count - 2)] }"
+             ~ "\nif ($o.Count -eq 1 -and $o[0] -eq '') { $o = @() }";
     if (sortOut) s ~= "\n$o = $o | Sort-Object";
     if (!allowFail) s ~= "\nif ($rc -ne 0) { exit $rc }";
     s ~= "\n[System.IO.File]::WriteAllText(" ~ psQ(outFile) ~ ", (($o -join \"`n\") + \"`n\"))";
