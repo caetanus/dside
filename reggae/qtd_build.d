@@ -364,8 +364,21 @@ string[] modulePrivateFlags(string cflags, string mod) {
         if (f.startsWith("-I") && f.endsWith("/" ~ mod) && exists(f[2 .. $]))
             foreach (de; dirEntries(f[2 .. $], SpanMode.shallow))
                 if (de.isDir && exists(buildPath(de.name, mod, "private")))
-                    return ["-I" ~ de.name, "-I" ~ buildPath(de.name, mod)];
+                    // FORWARD SLASHES. These two come from dirEntries, which returns native paths,
+                    // and a backslash does not survive the way to the compiler: the flag read
+                    // `-I…/include/QtQml\6.10.3` in the command and arrived as
+                    // `-I…/include/QtQml6.10.3`, so clang reported
+                    // `'QtQml/private/qqmljsengine_p.h' file not found` about a header that was
+                    // plainly there. Every other path in these flags already uses `/`.
+                    return [fwdSlash("-I" ~ de.name), fwdSlash("-I" ~ buildPath(de.name, mod))];
     return [];
+}
+
+// A path as every tool this build talks to will accept it. Windows accepts `/` everywhere;
+// `\` is the one that gets eaten between cmd.exe and sh.
+string fwdSlash(string p) {
+    version (Windows) return p.replace("\\", "/");
+    else              return p;
 }
 string[] mocPrivateFlags(string cflags) { return modulePrivateFlags(cflags, "QtCore"); }
 
