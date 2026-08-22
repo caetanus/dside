@@ -193,7 +193,15 @@ for t in "${targets[@]}"; do
   fi
   log="$logdir/$t.log"
   start=$(date +%s%3N)
-  if "$BUILD" "$t" >"$log" 2>&1; then
+  # A BOUND PER TARGET. A step that hangs stops the record execution dead — three Windows runs
+  # stalled on one target with no output and no child process, and a matrix that never finishes
+  # reports nothing at all. `timeout` turns that into a row that says `hang`, and the run goes on.
+  # Generous by default: the slowest legitimate target here takes about two minutes.
+  rc=0; timeout "${TARGET_TIMEOUT:-900}" "$BUILD" "$t" >"$log" 2>&1 || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    st=hang; fail=$((fail+1)); logcol="$log"
+    echo "# target exceeded ${TARGET_TIMEOUT:-900}s and was killed" >> "$log"
+  elif [ "$rc" -eq 0 ]; then
     # A capability-gated target (qmlaot/qmltypes with the tool absent) runs but prints SKIP and
     # does no work — record it as skip, not a green pass it didn't actually perform (r8 #8/#10).
     if grep -qiE '(^|[^a-z])skip(ping|ped)?([^a-z]|$)' "$log"; then
