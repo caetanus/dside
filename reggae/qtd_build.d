@@ -584,10 +584,11 @@ string psQ(string a) { return `'` ~ a.replace("'", "''") ~ `'`; }
 // afterwards is what judges. Without it the step is an `&&`.
 string psRedirect(string exe, string[] args, string outFile, bool sortOut = false,
                   bool allowFail = false) {
-    auto call = ([exe] ~ args).map!psQ.join(" ");
-    string s = "$o = & " ~ call ~ " 2>$null";
-    if (sortOut) s ~= " | Sort-Object";
-    if (!allowFail) s ~= "\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
+    auto argList = args.length ? "@(" ~ args.map!psQ.join(", ") ~ ")" : "@()";
+    string s = "$rc = Invoke-Proc -Exe " ~ psQ(exe) ~ " -ProcArgs " ~ argList ~ " -Capture"
+             ~ "\n$o = $script:ProcOut";
+    if (sortOut) s ~= "\n$o = $o | Sort-Object";
+    if (!allowFail) s ~= "\nif ($rc -ne 0) { exit $rc }";
     s ~= "\n[System.IO.File]::WriteAllText(" ~ psQ(outFile) ~ ", (($o -join \"`n\") + \"`n\"))";
     return s;
 }
@@ -619,8 +620,12 @@ string psInline(string root, string name, string[] lines) {
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference    = 'SilentlyContinue'",
         "$env:QT_QPA_PLATFORM   = 'offscreen'",
+        // Invoke-Proc, not `&`: the call operator resolves a program through PATHEXT and these
+        // binaries have no extension, so `&` does not find them, does not raise a terminating
+        // error, and leaves $LASTEXITCODE unset — which reads as success. See tools/win/proc.ps1.
+        ". '" ~ psTool(root, "proc.ps1") ~ "'",
         "function Run { $e = $args[0]; $r = if ($args.Count -gt 1) { $args[1 .. ($args.Count - 1)] } else { @() };",
-        "               & $e @r; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }",
+        "               $rc = Invoke-Proc -Exe $e -ProcArgs $r; if ($rc -ne 0) { exit $rc } }",
     ];
     writeIfChanged(path, (preamble ~ lines).join("\n") ~ "\n");
     return [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path]
