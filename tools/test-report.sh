@@ -177,8 +177,20 @@ pass=0 fail=0 skip=0
 # (the manifest gates, r8 #1) and are advisory, so they're excluded from the gated record here.
 mapfile -t targets < <("$BUILD" --list 2>/dev/null | grep -oE '^- [^ ]+$' | sed 's/^- //')
 if [ "${#targets[@]}" -eq 0 ]; then echo "# ERROR: "$BUILD" --list produced no default targets" >&2; exit 2; fi
+# THE BUILD MUST NOT CHANGE UNDER THE REPORT. Editing a build input mid-run makes the next
+# `./build <target>` rebuild the build binary itself and exit without running the target — which
+# lands in the report as a failure of whatever target happened to be next. It has produced false
+# rows three times; a record execution that can be invalidated silently is not a record.
+buildstamp() { stat -c %Y "$BUILD" 2>/dev/null || echo 0; }
+stamp0=$(buildstamp)
+
 for t in "${targets[@]}"; do
   case "$t" in $filter) ;; *) continue ;; esac
+  if [ "$(buildstamp)" != "$stamp0" ]; then
+    echo "# ABORTED: $BUILD was rebuilt during the run — a build input changed under it." >&2
+    echo "# Every row after that point would describe the rebuild, not the target." >&2
+    exit 3
+  fi
   log="$logdir/$t.log"
   start=$(date +%s%3N)
   if "$BUILD" "$t" >"$log" 2>&1; then
