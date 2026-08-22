@@ -23,12 +23,29 @@ commit=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
 # --porcelain also counts UNTRACKED files (a plain `git diff` misses them), so a report run
 # against a tree with stray generated/edited files is honestly flagged DIRTY (r8 #8).
 dirty=$([ -z "$(git status --porcelain 2>/dev/null)" ] && echo clean || echo DIRTY)
-qt6v=$(pkg-config --modversion Qt6Core 2>/dev/null || echo none)
-qt5v=$(pkg-config --modversion Qt5Core 2>/dev/null || echo none)
+# WITHOUT pkg-config, ASK THE PREFIX — the build already does, and a header that says `Qt6=none`
+# on a machine with two Qt installations describes the probe, not the machine. The version is the
+# directory Qt puts its private headers under, which is the same thing QtProbe.modversion reads.
+qtver() {  # $1 = QTDIR-style prefix
+    [ -n "${1:-}" ] || { echo none; return; }
+    for d in "$1"/include/QtCore/[0-9]*; do
+        [ -d "$d" ] && { basename "$d"; return; }
+    done
+    echo none
+}
+qt6v=$(pkg-config --modversion Qt6Core 2>/dev/null || qtver "${QTDIR6:-$QTDIR}")
+qt5v=$(pkg-config --modversion Qt5Core 2>/dev/null || qtver "${QTDIR5:-}")
 dmdv=$(dmd --version 2>/dev/null | head -1 | grep -oE 'v[0-9.]+' || echo none)
 ldcv=$(ldc2 --version 2>/dev/null | grep -oE 'LDC.*\([0-9.]+\)' | head -1 || echo none)
-have() { command -v "$1" >/dev/null 2>&1 || [ -x "/usr/lib/qt6/$1" ] || [ -x "/usr/lib/qt6/bin/$1" ]; }
-caps="qmlcachegen=$(have qmlcachegen && echo y || echo n) Qt6QmlCompiler=$(pkg-config --exists Qt6QmlCompiler 2>/dev/null && echo y || echo n) lrelease=$(command -v lrelease >/dev/null && echo y || echo n)"
+# ...and the same for a tool: it is `qmlcachegen.exe` under a Qt prefix on Windows, which is why
+# this said `qmlcachegen=n` on a machine that has it.
+have() { command -v "$1" >/dev/null 2>&1 || command -v "$1.exe" >/dev/null 2>&1 \
+         || [ -x "/usr/lib/qt6/$1" ] || [ -x "/usr/lib/qt6/bin/$1" ] \
+         || [ -x "${QTDIR6:-$QTDIR}/bin/$1" ] || [ -x "${QTDIR6:-$QTDIR}/bin/$1.exe" ]; }
+haveqtlib() {  # a Qt module, by pkg-config or by its import library under the prefix
+    pkg-config --exists "$1" 2>/dev/null && return 0
+    [ -f "${QTDIR6:-$QTDIR}/lib/$1.lib" ] || [ -f "${QTDIR6:-$QTDIR}/lib/lib$1.so" ]; }
+caps="qmlcachegen=$(have qmlcachegen && echo y || echo n) Qt6QmlCompiler=$(haveqtlib Qt6QmlCompiler && echo y || echo n) lrelease=$(command -v lrelease >/dev/null && echo y || echo n)"
 
 if [ "$selftest" = no ]; then
 printf '# qt-dlang-gen report — commit %s (%s) — %s\n' "$commit" "$dirty" "$(uname -sm)"

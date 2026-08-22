@@ -386,7 +386,9 @@ string[] mocPrivateFlags(string cflags) { return modulePrivateFlags(cflags, "QtC
 // it isn't installed, so callers can skip the AOT targets on a system that lacks it.
 string qmlcachegenPath() {
     auto le = qtLibexecDir("Qt6Qml");
-    auto p = buildPath(le, "qmlcachegen");
+    // exeName: it is `qmlcachegen.exe` on Windows, and asking for the bare name found nothing —
+    // so every AOT target silently left the graph, the same way `moc` read as MISSING once.
+    auto p = buildPath(le, exeName("qmlcachegen"));
     return exists(p) ? p : "";
 }
 
@@ -394,9 +396,9 @@ string qmlcachegenPath() {
 // Returns "" if absent so the translation round-trip test degrades to an identity-only check.
 string lreleasePath() {
     auto bd = qtBinDir("Qt6Core");
-    foreach (p; [buildPath(bd, "lrelease"), "/usr/bin/lrelease"])
+    foreach (p; [buildPath(bd, exeName("lrelease")), "/usr/bin/lrelease"])
         if (exists(p)) return p;
-    return execute(["which", "lrelease"]).status == 0 ? "lrelease" : "";
+    return execute(["which", exeName("lrelease")]).status == 0 ? "lrelease" : "";
 }
 
 // --- the binding graph --------------------------------------------------------
