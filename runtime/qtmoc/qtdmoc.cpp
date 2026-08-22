@@ -1574,7 +1574,11 @@ void* qtd_attached_obj(void* obj, const char* uri, const char* typeName) {
     if (!obj) return nullptr;
     auto t = QQmlMetaType::qmlType(QString::fromUtf8(typeName), QString::fromUtf8(uri), QTypeRevision());
     if (!t.isValid()) return nullptr;
-    auto fn = t.attachedPropertiesFunction(nullptr);
+    // The cast is not decoration: Qt 6.10 still carries an older overload beside the
+    // QQmlTypeLoader* one, so a bare `nullptr` is ambiguous there and the file does not compile —
+    // `call to member function 'attachedPropertiesFunction' is ambiguous`. 6.11 kept only this
+    // one, so naming it works on both.
+    auto fn = t.attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr));
     if (!fn) return nullptr;
     // Go through qmlAttachedPropertiesObject, NOT the raw function: the raw one CONSTRUCTS an
     // attached object every time it is called. The public entry point caches per (object, type),
