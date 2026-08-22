@@ -1202,6 +1202,11 @@ Target[] qtmocProbeTargets(string root) {
             cmd ~= (cmd.length ? " && " : "") ~ "clang++ " ~ flags ~ " -c " ~ u ~ " -o " ~ obj;
             deps ~= Target(u);
         }
+        // A compile-only probe prints nothing when it works, and "it compiled" then looks exactly
+        // like "it never ran". Say what was built and in which configuration.
+        import std.conv : to;
+        cmd ~= " && echo 'qtmoc-probe-" ~ name ~ " OK: " ~ units.length.to!string
+             ~ " runtime unit(s) compile with " ~ (qml ? "QtQml" : "no QtQml") ~ "'";
         ts ~= Target.phony("qtmoc-probe-" ~ name, cmd, deps);
     };
     // No QtQml in sight: the configuration that broke.
@@ -1553,13 +1558,14 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                 ];
                 if (verifyStep.length)
                     ls ~= "Run " ~ psQ(oracleBin) ~ " " ~ psQ(qmlFile) ~ " '--verify-props' " ~ psQ(props);
-                ls ~= psDiff(a, b);
+                ls ~= psDiff(a, b, "qmltc " ~ name ~ " (" ~ dc ~ ")");
                 cmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, ls);
             } else
                 cmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
                     ~ verifyStep
-                    ~ " && diff " ~ a ~ " " ~ b ~ "'";
+                    ~ " && diff " ~ a ~ " " ~ b
+                    ~ " && echo \"qmltc " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") value lines match the engine\"'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-" ~ dc, cmd, [app, oracle, tool]);
             // ...and the STRONGER protocol beside it, which until now lived only in the corpus
             // scripts: `--objpaths` lists the objects and BOTH sides then enumerate every property
@@ -1585,7 +1591,8 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             auto mkObjs = toolBin ~ " --objpaths " ~ qmlFile ~ " " ~ name ~ qmlmapArg ~ " > " ~ objs ~ " 2>/dev/null; ";
             auto allCmd = "sh -c '" ~ mkObjs ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " --dumpall | sort > " ~ da
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --dumpall " ~ objs ~ " | sort > " ~ qa
-                ~ " && diff " ~ da ~ " " ~ qa ~ "'";
+                ~ " && diff " ~ da ~ " " ~ qa
+                ~ " && echo \"qmltc " ~ name ~ " (" ~ dc ~ ", objpaths): $(wc -l < " ~ da ~ ") lines match\"'";
             ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-all-" ~ dc, allCmd, [app, oracle, tool]);
             }
             // RENDER differential: draw the same document both ways and compare the FRAME. The
@@ -1667,7 +1674,8 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                     .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
                 auto cmd2 = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs ~ " --props " ~ props ~ " > " ~ b ~ ".set"
-                    ~ " && diff " ~ a ~ ".set " ~ b ~ ".set'";
+                    ~ " && diff " ~ a ~ ".set " ~ b ~ ".set"
+                    ~ " && echo \"qmltc " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-set-" ~ dc, cmd2, [app, oracle, tool]);
             }
         }

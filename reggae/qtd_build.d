@@ -595,11 +595,16 @@ string psRedirect(string exe, string[] args, string outFile, bool sortOut = fals
 
 // `diff a b`: same verdict (0 same, 1 different) and the differing lines on stdout, so a failure
 // says what differed rather than only that something did.
-string psDiff(string a, string b) {
+//
+// ...and on SUCCESS it says what matched. A diff that agrees prints nothing, which makes "the
+// comparison passed" and "the comparison never ran" identical in a log — and one of those was
+// true of thirteen targets. `label` is what the target proved, with the line count.
+string psDiff(string a, string b, string label) {
     return "$da = Get-Content -LiteralPath " ~ psQ(a) ~ "\n"
          ~ "$db = Get-Content -LiteralPath " ~ psQ(b) ~ "\n"
          ~ "$d  = Compare-Object $da $db\n"
-         ~ "if ($d) { $d | ForEach-Object { Write-Output ($_.SideIndicator + ' ' + $_.InputObject) }; exit 1 }";
+         ~ "if ($d) { $d | ForEach-Object { Write-Output ($_.SideIndicator + ' ' + $_.InputObject) }; exit 1 }\n"
+         ~ "Write-Output (" ~ psQ(label ~ ": ") ~ " + $da.Count + ' lines match')";
 }
 
 // A COMPOUND STEP, WRITTEN OUT AS ITS OWN .ps1 — for the commands this build composes itself
