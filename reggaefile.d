@@ -420,7 +420,7 @@ Build reggaeBuild() {
             // Through the same runner as everything else: on Windows `$in` is an absolute native
             // path, and running it as bare command text got `'C:\Users\…\abi-layout6' is not
             // recognised as an internal or external command`.
-            all ~= Target.phony("abi-layout" ~ tag, runExe("$in", "", "", [mod]), [b]);
+            all ~= Target.phony("abi-layout" ~ tag, runExe(root, "$in", "", "", [mod]), [b]);
         }
     }
 
@@ -952,7 +952,7 @@ Target[] uicheckTargets(string root, QtdBinding ex) {
             ~ " -J=" ~ here ~ " -L--start-group -L=" ~ buildPath(ex.bdir, "libbinding_" ~ dc ~ ".a")
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims] ~ uiInputs(root, here));
-        ts ~= Target.phony("uicheck-" ~ dc, runOffscreen("$in", "", ex.mods), [bin]);
+        ts ~= Target.phony("uicheck-" ~ dc, runOffscreen(root, "$in", "", ex.mods), [bin]);
     }
     return ts;
 }
@@ -978,7 +978,7 @@ Target[] corpusCheckTargets(string root, QtdBinding ex) {
             ~ " -L=" ~ buildPath(ex.bdir, "libshims.a") ~ " -L--end-group " ~ libs,
             [Target(checkD), uidumpT, lib, ex.shims]
             ~ uiInputs(root, here) ~ uiInputs(root, buildPath(here, "corpus")));
-        ts ~= Target.phony("corpus-check-" ~ dc, runOffscreen("$in", "", ex.mods), [bin]);
+        ts ~= Target.phony("corpus-check-" ~ dc, runOffscreen(root, "$in", "", ex.mods), [bin]);
     }
     return ts;
 }
@@ -1058,9 +1058,9 @@ Target[] qmlTrTargets(string root, QtdBinding qml, string tag = "") {
             auto qm = buildPath(qml.bdir, "tr" ~ tag ~ "-" ~ dc ~ ".qm");
             auto qmT = Target(qm, lrelease ~ " " ~ tsFile ~ " -qm $out", [Target(tsFile)]);
             // deps [bin, qmT] -> $in = "<test-bin> <qm>" -> the test loads the .qm (full check).
-            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, runOffscreen("$in", "", qml.mods), [bin, qmT]);
+            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, runOffscreen(root, "$in", "", qml.mods), [bin, qmT]);
         } else {
-            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, runOffscreen("$in", "", qml.mods), [bin]);
+            ts ~= Target.phony("tr" ~ tag ~ "-" ~ dc, runOffscreen(root, "$in", "", qml.mods), [bin]);
         }
     }
     return ts;
@@ -1684,7 +1684,7 @@ Target[] qmlAotTargets(string root, QtdBinding qml) {
             ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPathOf(dc) ~ " -L=" ~ shimsPath
             ~ " -L--end-group " ~ pkgLibs(qml.mods);
         auto bin = Target("qmlaot-" ~ dc ~ "-bin", link, [Target(aotMain), unitOT, loaderOT, lib, qml.shims]);
-        ts ~= Target.phony("qmlaot-" ~ dc, runOffscreen("$in", "", qml.mods), [bin]);
+        ts ~= Target.phony("qmlaot-" ~ dc, runOffscreen(root, "$in", "", qml.mods), [bin]);
     }
     return ts;
 }
@@ -1761,7 +1761,7 @@ Target[] holderTests(string root) {
         auto app = Target("holder_test-" ~ dc ~ "-bin",
             dc ~ " -of=$out" ~ dSupport(root) ~ " $in" ~ cxxRuntimeFlag() ~ " " ~ libs,
             [Target(buildPath(here, "holder_test.d")), Target(buildPath(H, "holder.d")), qtd, help]);
-        ts ~= Target.phony("holder_test-" ~ dc, runOffscreen("$in", "", ["Qt6Core"]), [app]);
+        ts ~= Target.phony("holder_test-" ~ dc, runOffscreen(root, "$in", "", ["Qt6Core"]), [app]);
     }
     return ts;
 }

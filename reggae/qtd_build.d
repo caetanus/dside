@@ -533,38 +533,38 @@ string guarded(string lock, string cmd, string output, string[] newerThan) {
 // intact — `ARG:[a\b\c]` — because it never passes through a shell's quote processing.
 //
 // So the binary is $0 and the environment prefix stays in the command.
-// RUN A BUILT BINARY. The path is an ARGUMENT, never part of the command text: a path reggae
-// substitutes is native and backslashed, and backslashes do not survive
-// executeShell -> cmd.exe -> sh inside text — `a\b\c` arrives as `abc`, single-quoted,
-// double-quoted and escaped alike, while as an argument it arrives intact.
+// The PowerShell that runs a build command, as an invocation prefix. `-File` rather than
+// `-Command`/`-EncodedCommand` because only `-File` accepts trailing arguments, and a path reggae
+// substitutes has to arrive as an argument: it is native and backslashed, and backslashes do not
+// survive executeShell -> cmd.exe inside command TEXT.
+string psRun(string root, string script) {
+    return "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "
+         ~ buildPath(root, "tools", "win", script);
+}
+
+// RUN A BUILT BINARY. POSIX runs it directly; Windows goes through tools/win/run-exe.ps1, which
+// also puts the target's own Qt on PATH (no rpath there) and turns a relative path into one
+// PowerShell will not mistake for a command name.
 //
-// Then two things have to happen to it, and each was learned by getting them wrong:
-//
-//   * the backslashes become slashes. sh decides "command name" versus "path" by looking for a
-//     FORWARD slash, and an absolute `C:\Users\…\abi-layout6` has none, so it went looking on
-//     PATH: `'C:\Users\…\abi-layout6' is not recognised as an internal or external command`.
-//   * a relative path gets a `./`, for the same reason — `.reggae\objs\x-bin` is a command name
-//     to sh, and a binary that was right there reported as not found.
-//
-// NO `|` IN THIS TEXT, not even inside the single quotes: cmd.exe parses the command before sh
-// ever sees it, and `/*|?:*)` became a pipe — `'?:*)' is not recognised…`. Hence nested `case`s.
-//
-// `mods` names the Qt this binary needs. Windows resolves a DLL through the executable's directory
-// and then PATH — there is no rpath — so in a dual-target build a Qt5 binary otherwise finds Qt6's
-// DLLs or none at all and dies with exit 127 before main. Which Qt is a property of the TARGET.
-string runExe(string binRef, string env = "", string extra = "", string[] mods = null) {
+// `mods` names the Qt this binary needs — a property of the TARGET, not of the machine, so that a
+// Qt5 binary in a dual-target build does not load Qt6's DLLs.
+string runExe(string root, string binRef, string env = "", string extra = "", string[] mods = null) {
     version (Windows) {
         auto qtBin = mods.length ? QtProbe.prefixOf(mods) : "";
-        auto pathPrefix = qtBin.length
-            ? `PATH="` ~ msysPath(buildPath(qtBin, "bin")) ~ `:$PATH" ` : "";
-        return `sh -c 'p="${0//\\//}"; case "$p" in /*) ;; *) case "$p" in ?:*) ;; *) p="./$p";; esac;; esac; `
-            ~ pathPrefix ~ env ~ `exec "$p" ` ~ extra ~ `' ` ~ binRef;
+        string cmd = psRun(root, "run-exe.ps1");
+        if (qtBin.length) cmd ~= ` -QtBin "` ~ buildPath(qtBin, "bin") ~ `"`;
+        foreach (e; env.split) {
+            if (e == "QT_QPA_PLATFORM=offscreen") { cmd ~= " -Platform offscreen"; continue; }
+            cmd ~= ` -Env "` ~ e ~ `"`;
+        }
+        cmd ~= " -Exe " ~ binRef;
+        return extra.length ? cmd ~ " " ~ extra : cmd;
     } else
         return env ~ binRef ~ (extra.length ? " " ~ extra : "");
 }
 
-string runOffscreen(string binRef, string extra = "", string[] mods = null) {
-    return runExe(binRef, "QT_QPA_PLATFORM=offscreen ", extra, mods);
+string runOffscreen(string root, string binRef, string extra = "", string[] mods = null) {
+    return runExe(root, binRef, "QT_QPA_PLATFORM=offscreen ", extra, mods);
 }
 
 // A COMMAND WHOSE PATHS TRAVEL AS ARGUMENTS, for the same reason runOffscreen does it: a path
@@ -885,7 +885,7 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
 Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "",
                Target[] extraDeps = []) {
     auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra, extraDeps);
-    return Target.phony(name, runOffscreen("$in", "", b.mods), [app]);
+    return Target.phony(name, runOffscreen(b.root, "$in", "", b.mods), [app]);
 }
 
 // The shiboken libsample corner-case harness, ported to reggae. Needs a pyside-setup clone
@@ -985,7 +985,7 @@ Target[] libsampleTargets(string root, string pyside) {
             // transitive one. (critics r7 #8 / r8 #9)
             auto app = Target(n ~ "-bin", dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ c ~ " -I" ~ gen ~ " " ~ grp,
                 [Target(c), libT, shimsT]);
-            outs ~= Target.phony(n, runOffscreen("$in", "", ["Qt6Core"]), [app]);
+            outs ~= Target.phony(n, runOffscreen(root, "$in", "", ["Qt6Core"]), [app]);
         }
     }
     return outs;
