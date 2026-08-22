@@ -718,7 +718,14 @@ string runExe(string root, string binRef, string env = "", string extra = "", st
             cmd ~= ` -Env "` ~ e ~ `"`;
         }
         cmd ~= " -Exe " ~ binRef;
-        return extra.length ? cmd ~ " " ~ extra : cmd;
+        if (extra.length) cmd ~= " " ~ extra;
+        // ONE VISIBLE RETRY. Under a long run, powershell.exe occasionally does not start at all:
+        // the target fails with a log containing nothing — not even the marker run-exe writes as
+        // its first statement — while the identical command passes in isolation, attached,
+        // detached and through cmd.exe, and it lands on a different target each time. The cause is
+        // not established; the retry is a mitigation, and it announces itself so a run that needed
+        // it is not mistaken for a clean one. `||` and `&` are cmd's, which is what parses this.
+        return cmd ~ " || (echo run-exe: RETRY after a start failure & " ~ cmd ~ ")";
     } else
         return env ~ binRef ~ (extra.length ? " " ~ extra : "");
 }

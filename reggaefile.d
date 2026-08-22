@@ -2083,7 +2083,8 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props ~ " --attached-uri QmltcTests"
-                ~ " && diff " ~ a ~ " " ~ b ~ "'", [app, oracle, tool]);
+                ~ " && diff " ~ a ~ " " ~ b
+                ~ " && echo \"qmltcc " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") lines match\"'", [app, oracle, tool]);
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {
                 // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
@@ -2098,7 +2099,8 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                     "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
                     ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
                     ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b ~ ".set && diff "
-                    ~ a ~ ".set " ~ b ~ ".set'",
+                    ~ a ~ ".set " ~ b ~ ".set"
+                    ~ " && echo \"qmltcc " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'",
                     [app, oracle, tool]);
             }
         }
