@@ -515,7 +515,8 @@ string guarded(string lock, string cmd, string[] winArgv, string output, string[
                       "-File", psTool(_psRoot, "guard.ps1"),
                       "-Lock", lock, "-Output", output];
             if (newerThan.length) g ~= ["-Newer", newerThan.join(",")];
-            return (g ~ "--" ~ winArgv).map!psArg.join(" ");
+            g ~= ["-Payload", psEncode(winArgv)];
+            return g.map!psArg.join(" ");
         }
     }
     auto test = newerThan.map!(d => "[ " ~ output ~ " -nt " ~ d ~ " ]").join(" && ");
@@ -538,10 +539,27 @@ string psArg(string a) {
     return (a.length && !a.canFind(' ')) ? a : `"` ~ a ~ `"`;
 }
 
-// A PowerShell tool invocation as a program+arguments list, for guarded()'s `winArgv`.
+// A PowerShell tool invocation as a call and its arguments, for guarded()'s `winArgv`: the
+// script path first, then alternating -Name value.
 string[] psStep(string script, string[] args) {
-    return [psExe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", psTool(_psRoot, script)] ~ args;
+    return [psTool(_psRoot, script)] ~ args;
+}
+
+// ...and the same, encoded, because handing it over as trailing arguments lets PowerShell's
+// parameter binder read it instead of the script: `-NoProfile` and friends get matched against
+// guard.ps1's own parameters and the common ones, and the run died with
+// `AmbiguousParameter,guard.ps1`. Base64 of UTF-16LE is what -EncodedCommand and friends speak.
+string psEncode(string[] call) {
+    import std.base64 : Base64;
+    import std.conv : to;
+    import std.ascii : isDigit;
+    // `& 'script' -Name 'value' …` — single quotes, PowerShell's literal string, doubled to escape.
+    auto q = (string a) => `'` ~ a.replace("'", "''") ~ `'`;
+    string s = "& " ~ q(call[0]);
+    foreach (a; call[1 .. $])
+        s ~= " " ~ (a.startsWith("-") && a.length > 1 && !a[1].isDigit ? a : q(a));
+    auto w = s.to!wstring;
+    return Base64.encode(cast(ubyte[]) w.dup);
 }
 
 // A COMMAND THIS BUILD WROTE, MADE SAFE TO HAND TO WHATEVER SHELL RUNS IT.

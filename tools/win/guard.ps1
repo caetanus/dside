@@ -14,22 +14,29 @@
 # holder died", and Windows answers that for a mutex already: the wait returns AbandonedMutexExcept
 # ion and the waiter owns it. The name is derived from -Lock so it still reads as a path in the
 # build, and `Global\` so it works across sessions.
+# THE INNER STEP ARRIVES BASE64-ENCODED, and that is not decoration. Handed over as trailing
+# arguments it is the PowerShell parameter binder that reads them, not this script: `-NoProfile`
+# and friends get matched against guard.ps1's own parameters and against the common ones, and the
+# run died with `AmbiguousParameter,guard.ps1`. ValueFromRemainingArguments does not stop that —
+# binding is attempted first.
+#
+# Encoding is safe here precisely because these steps have no reggae substitution in them: every
+# path is known when the graph is built. A step that needs $in/$out must take it as an argument
+# instead (see run-exe.ps1).
 param(
-    [Parameter(Mandatory = $true)][string]   $Lock,
-    [Parameter(Mandatory = $true)][string]   $Output,
-    [string[]] $Newer = @(),
-    [Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)][string[]] $Command
+    [Parameter(Mandatory = $true)][string] $Lock,
+    [Parameter(Mandatory = $true)][string] $Output,
+    [string] $Newer = '',
+    [Parameter(Mandatory = $true)][string] $Payload
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
-if ($Command.Count -gt 0 -and $Command[0] -eq '--') { $Command = $Command[1..($Command.Count - 1)] }
-if ($Command.Count -eq 0) { Write-Error "guard: nothing to run" }
+$script = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($Payload))
 
-# `Newer` arrives as one comma-joined argument (cmd.exe would split a bare list on spaces).
-$inputs = @()
-foreach ($n in $Newer) { $inputs += ($n -split ',' | Where-Object { $_ }) }
+# `Newer` arrives comma-joined: cmd.exe would split a bare list on spaces.
+$inputs = @($Newer -split ',' | Where-Object { $_ })
 
 function Test-UpToDate {
     if ($inputs.Count -eq 0) { return $false }        # nothing to compare -> always run
@@ -57,12 +64,8 @@ try {
     catch [System.Threading.AbandonedMutexException] { }   # previous holder died; we own it now
     # Re-check under the lock: the run we queued behind may have been the one that produced this.
     if (Test-UpToDate) { exit 0 }
-    # NOT $Command[1..($Command.Count-1)]: with a single element that range is 1..0, which
-    # PowerShell reads as a DESCENDING range and hands back element 0 — the program would be
-    # passed to itself as an argument.
-    $exe  = $Command[0]
-    $rest = if ($Command.Count -gt 1) { $Command[1 .. ($Command.Count - 1)] } else { @() }
-    & $exe @rest
+    $global:LASTEXITCODE = 0
+    Invoke-Expression $script
     exit $LASTEXITCODE
 } finally {
     $mutex.ReleaseMutex()
