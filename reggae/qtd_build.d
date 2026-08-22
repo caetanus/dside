@@ -859,8 +859,18 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         {
             auto specDir = dirName(specPath);
             string abs(string v) { return isAbsolute(v) ? v : buildNormalizedPath(specDir, v); }
-            if (auto ip = "include_paths" in jw.object)
-                jw.object["include_paths"] = JSONValue(ip.array.map!(e => JSONValue(abs(e.str))).array);
+            if (auto ip = "include_paths" in jw.object) {
+                // A spec's private-header paths are written for ONE machine's Qt
+                // (`/usr/include/qt6/QtCore/6.11.1`). They do not exist here, and xiboca then
+                // reports `fatal error: 'private/qobject_p.h' file not found`. Drop what is not
+                // there and add what the probe found for THIS Qt — the same private flags the
+                // shims are compiled with, so the generator and the compiler agree.
+                auto kept = ip.array.map!(e => abs(e.str)).filter!(d => exists(d)).array;
+                foreach (f; priv.split)
+                    if (f.startsWith("-I") && exists(f[2 .. $]) && !kept.canFind(f[2 .. $]))
+                        kept ~= f[2 .. $];
+                jw.object["include_paths"] = JSONValue(kept.map!(d => JSONValue(d)).array);
+            }
             foreach (k; ["typesystem_dir", "docs_dir", "source_filter"])
                 if (auto v = k in jw.object)
                     if (v.type == JSONType.string) jw.object[k] = JSONValue(abs(v.str));
