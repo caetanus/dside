@@ -150,6 +150,41 @@ the explicit-`self` `pragma(mangle)` member call incl. sret + const on ldc + dmd
    unreferenced-inline case is still dropped. Likely yes (MSVC linkers do member
    selection), but this is the exact thing to validate.
 
+### QT5 AND QT6 SIDE BY SIDE, AND THE COMMANDS IN POWERSHELL — 2026-08-21
+
+Qt 5.15.2 msvc2019_64 installed with `aqtinstall` (the Qt online installer wants an interactive
+login; aqt pulls the same official mirrors, 45 seconds). Then four things had to exist before Qt5
+did:
+
+| | |
+|---|---|
+| `QTDIR` names ONE Qt | `QTDIR5`/`QTDIR6` win when set; each of the six questions asks for its own module's installation |
+| the discovery marker | the spec says `/qt/`, a distribution layout; against `C:/Qt/5.15.2/…` the case differs, every header was filtered out, and xiboca said `discovered 0 classes` and exited 0 |
+| the mangling table | `qbytearray_ctor_i` carried the `size_t` spelling (`_K`) where Qt5 takes an `int` (`H`), and `QListData::dispose` was the last hardcoded Itanium symbol outside `abiSym()` |
+| the DLL search | there is no rpath on Windows: a Qt5 binary found Qt6's DLLs and died with 127 before `main`. Which Qt is a property of the TARGET |
+
+**Qt5: 39 of 40 targets pass. A mixed Qt5+Qt6 sample: 13 of 13.**
+
+The build's Windows commands are moving from `sh` to PowerShell (`tools/win/*.ps1`); the gates stay
+`.sh`. `guarded()` carries both dialects at one call site, because they are one decision and halves
+that live apart drift apart. Five things that had to be measured rather than reasoned about:
+
+* `-EncodedCommand` and `-Command` both REFUSE trailing arguments, so a path reggae substitutes
+  can only travel with `-File`; and it must travel as an argument, since reggae substitutes into
+  the command TEXT and anything encoded is opaque to it.
+* Exit codes do propagate through `executeShell → cmd.exe → powershell -File`: `exit 3` → 3, a
+  failing child forwarded via `$LASTEXITCODE` → 7, a PowerShell error under
+  `$ErrorActionPreference='Stop'` → 1.
+* `$a[1..($a.Count-1)]` with ONE element is a descending range and returns element 0.
+* PowerShell 5.1 writes a `#< CLIXML` progress banner to stderr unless `$ProgressPreference` is
+  silenced — straight into gate output.
+* 5.1 runs on .NET Framework: `[System.IO.Path]::GetRelativePath` is not there.
+
+And one design rule that came out of a failure: a step's parameters cannot be handed over as
+trailing arguments, because PowerShell's binder reads them before the script does
+(`AmbiguousParameter,guard.ps1`), and name-versus-value cannot be guessed from a leading dash —
+the value of `-Cxx` starts with `-I…`.
+
 ### 16 OF 17 SAMPLED TARGETS PASS ON WINDOWS — 2026-08-21
 
 The mechanism, not just a link: `wraptest`, `ownership`, `moc_test`, `thread_test`,
