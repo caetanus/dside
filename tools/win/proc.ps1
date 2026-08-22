@@ -35,7 +35,8 @@ function Invoke-Proc {
     param(
         [Parameter(Mandatory = $true)][string] $Exe,
         [string[]] $ProcArgs = @(),
-        [switch]   $Capture
+        [switch]   $Capture,
+        [int]      $TimeoutSec = 900
     )
 
     if (-not [System.IO.Path]::IsPathRooted($Exe)) { $Exe = Join-Path (Get-Location).Path $Exe }
@@ -58,8 +59,27 @@ function Invoke-Proc {
     try { $p = [System.Diagnostics.Process]::Start($psi) }
     catch { Write-Output ("proc: could not start " + $Exe + ": " + $_.Exception.Message); exit 126 }
     if (-not $p) { Write-Output "proc: could not start: $Exe"; exit 126 }
-    # Read BEFORE waiting: a child that fills the pipe blocks for ever if nobody drains it.
-    if ($Capture) { $script:ProcOut = $p.StandardOutput.ReadToEnd() -split "`r?`n" }
-    $p.WaitForExit()
+    # A BOUNDED WAIT. Three full runs stalled here: one PowerShell alive, no child process, no
+    # output, for ever. The cause is not established — a blocking ReadToEnd needs the pipe's write
+    # end closed, and something was holding it. Whatever it is, a build step that hangs is worse
+    # than one that fails with a sentence, so this says what happened and moves on.
+    #
+    # Async read + a timed WaitForExit, in that order: reading BEFORE waiting is required (a child
+    # that fills the pipe blocks for ever if nobody drains it), and reading asynchronously is what
+    # makes the wait bounded at all.
+    $reader = if ($Capture) { $p.StandardOutput.ReadToEndAsync() } else { $null }
+    if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+        try { $p.Kill() } catch { }
+        Write-Output ("proc: timed out after " + $TimeoutSec + "s: " + $Exe)
+        exit 124
+    }
+    if ($Capture) {
+        if ($reader.Wait(15000)) { $script:ProcOut = $reader.Result -split "`r?`n" }
+        else {
+            # The child is gone and its output is still unreadable: somebody else holds the pipe.
+            Write-Output ("proc: output pipe never closed after exit: " + $Exe)
+            exit 125
+        }
+    }
     return $p.ExitCode
 }
