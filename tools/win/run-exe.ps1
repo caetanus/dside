@@ -53,4 +53,15 @@ foreach ($e in $Env) {
 # `exit $LASTEXITCODE` with $null exits ZERO. That reported a whole sweep of targets as passing
 # with nothing having run. Invoke-Proc goes through CreateProcess, which has no such rule.
 . (Join-Path $PSScriptRoot 'proc.ps1')
-exit (Invoke-Proc -Exe $Exe -ProcArgs $Rest)
+
+# A MARKER BEFORE AND A CODE AFTER, so an empty log means something specific. A target failed with
+# no output at all and ran fine in isolation — attached, detached, and through cmd.exe — and there
+# was no way to tell "PowerShell never started" from "the program ran and said nothing". Now the
+# first tells them apart, and the second names the exit code, including the 0xC0000005-class ones
+# a crash produces (which print nothing by themselves).
+Write-Output ("run-exe: " + $Exe)
+$rc = Invoke-Proc -Exe $Exe -ProcArgs $Rest
+if ($rc -ne 0) {
+    Write-Output ("run-exe: exit " + $rc + " (0x" + ("{0:X8}" -f ($rc -band 0xFFFFFFFF)) + ")")
+}
+exit $rc
