@@ -1902,8 +1902,13 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             auto dtypesArg = " --dtypes " ~ typesFile ~ " apptypes";
             // 3) compile the .qml to D against the registry, and link it with the app's types.
             auto genD = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ ".d");
-            auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > $out",
-                [tool, Target(qmlFile), types]);
+            string gdCmd;
+            version (Windows)
+                gdCmd = psCapture(root, toolBin, ["--dump", qmlFile, name, "--dtypes", typesFile,
+                                                  "apptypes"], "$out", "0", false, bind.mods);
+            else
+                gdCmd = toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > $out";
+            auto gd = Target(genD, gdCmd, [tool, Target(qmlFile), types]);
             auto appBin = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ "_check");
             auto appCmd = dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ genD ~ " " ~ appD ~ dcLink;
             auto app = Target(appBin, guardedLink(appBin ~ ".lock", appCmd, appBin,
@@ -2099,7 +2104,13 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 continue;
             }
             auto genD = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ ".d");
-            auto gd = Target(genD, toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ arg ~ " > $out",
+            string gdCmd;
+            version (Windows)
+                gdCmd = psCapture(root, toolBin, ["--dump", qmlFile, name, "--cpptypes", typesFile,
+                                                  "qt.corpustypes"], "$out", "0", false, bind.mods);
+            else
+                gdCmd = toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ arg ~ " > $out";
+            auto gd = Target(genD, gdCmd,
                 [tool, Target(qmlFile), regT, bind.gen]);   // regenerating the binding must re-emit
             auto appBin = buildPath(bind.bdir, "qmltcc_" ~ name ~ "_" ~ dc ~ "_check");
             auto appCmd =
