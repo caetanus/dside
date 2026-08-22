@@ -975,10 +975,12 @@ bool nonTriviallyCopyable(CXType t) {
     auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(t)));
     if (decl.kind != CXCursor_ClassDecl && decl.kind != CXCursor_StructDecl) return false;
     // Criterion (a) is only safe for EXPORTED types: the copy-ctor/~this shims call the real
-    // C++ copy-ctor/dtor, whose symbols must be linkable. A public Q_*_EXPORT type has them
-    // (Default visibility); a Qt-internal one (e.g. QOpenGLVersionFunctionsStorage, Hidden)
-    // does not — marking it non-trivial would emit an unlinkable dtor reference.
-    bool exported = clang_getCursorVisibility(decl) == 3;   // CXVisibility_Default
+    // C++ copy-ctor/dtor, whose symbols must be linkable. A public Q_*_EXPORT type has them; a
+    // Qt-internal one (e.g. QOpenGLVersionFunctionsStorage) does not — marking it non-trivial
+    // would emit an unlinkable dtor reference. classExported() asks that the way the ABI in
+    // front of us answers it; asking the ELF way on MSVC said "no" for every class, and the
+    // crash it produced is the one this comment goes on to describe.
+    bool exported = classExported(decl);
     foreach (c; children(decl)) {
         // (a) a USER-PROVIDED (not =default/=delete) copy-ctor or dtor -> the C++ ABI returns
         // this type via sret and expects a real copy/dtor. This is the Qt CoW case (QIcon/

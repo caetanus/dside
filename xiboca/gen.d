@@ -373,6 +373,27 @@ private bool derivesFromRec(CXCursor node, string baseName, ref bool[string] see
 // PUBLIC default constructor (or no user-declared ctors -> implicit public default). Auto-subclass
 // only these — an abstract type (pure virtuals) or one whose only ctors are protected/parameterised
 // (e.g. QQuickImplicitSizeItem) can't back a trampoline that default-constructs its base.
+// IS THIS CLASS EXPORTED BY THE LIBRARY WE BIND AGAINST — asked the way the ABI in front of us
+// answers it, which is not the same question twice.
+//
+// Itanium: Q_*_EXPORT is `__attribute__((visibility("default")))` under -fvisibility=hidden, so
+// clang_getCursorVisibility says Default.
+// MSVC:    Q_*_EXPORT is `__declspec(dllimport)`, an attribute CHILD of the class — and
+//          clang_getCursorVisibility answers Invalid for EVERY class, exported or not.
+//
+// Asking the wrong one does not look like a wrong question. It made QWidget "not subclassable",
+// and it made every Qt CoW value type (QIcon, QFont, QPen…) look trivially copyable, so the D
+// mirror had no destructor, D returned it in a register while C++ returned it via sret, and
+// `button.icon()` crashed inside QAbstractButton::icon+0x9 with `this` pointing at the return slot.
+bool classExported(CXCursor decl) {
+    if (MSVC_ABI) {
+        foreach (c; children(decl))
+            if (c.kind == CXCursor_DLLImport || c.kind == CXCursor_DLLExport) return true;
+        return false;
+    }
+    return clang_getCursorVisibility(decl) == 3;   // CXVisibility_Default
+}
+
 bool isSubclassable(CXCursor node) {
     if (clang_CXXRecord_isAbstract(node)) return false;
     // Must be EXPORTED: a subclass references the base's ctor + staticMetaObject, so those symbols
@@ -387,14 +408,7 @@ bool isSubclassable(CXCursor node) {
     // so Q_WIDGETS_EXPORT classes read as hidden and QWidget was dropped from `subclass` with the
     // diagnostic "cannot be subclassed (abstract, or no public default constructor)" — which was
     // true of neither. Q_*_EXPORT is __declspec(dllimport) there, an attribute child of the class.
-    if (!sourceFilter.length) {
-        if (MSVC_ABI) {
-            bool dll;
-            foreach (c; children(node))
-                if (c.kind == CXCursor_DLLImport || c.kind == CXCursor_DLLExport) { dll = true; break; }
-            if (!dll) return false;
-        } else if (clang_getCursorVisibility(node) != 3) return false;
-    }
+    if (!sourceFilter.length && !classExported(node)) return false;
     bool anyCtor = false, pubDefault = false;
     foreach (c; children(node))
         if (c.kind == CXCursor_Constructor) {
