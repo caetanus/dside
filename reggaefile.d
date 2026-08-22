@@ -1094,12 +1094,16 @@ Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
         auto gen = qtdApp("qmltypes-gen-" ~ dc ~ "-bin", genD, qml, dc);
         // run the generator -> App.qmltypes (deps=[gen] so $in is the generator path).
         auto outTypes = buildPath(qml.bdir, "App-" ~ dc ~ ".qmltypes");
-        auto types = Target(outTypes, "$in $out", [gen]);
+        // Through the runner: `$in $out` as bare command text is a program with no file
+        // extension, which cmd.exe refuses to start.
+        auto types = Target(outTypes, runExe(root, "$in", "", "$out", qml.mods), [gen]);
         // Qt's authoritative .qmltypes reader.
         auto check = Target("qmltypes-check-" ~ dc ~ "-bin",
             "clang++ " ~ ccflags ~ " " ~ checkCpp ~ " -o $out " ~ clibs, [Target(checkCpp)]);
         // validate: deps=[check, types] -> $in = "<validator> <App.qmltypes>".
-        ts ~= Target.phony("qmltypes-" ~ dc, "$in", [check, types]);
+        // $in is "<validator> <App.qmltypes>" — the validator is the program and the file its
+        // argument, which is where runExe puts a leftover.
+        ts ~= Target.phony("qmltypes-" ~ dc, runExe(root, "$in", "", "", qml.mods), [check, types]);
     }
     return ts;
 }
