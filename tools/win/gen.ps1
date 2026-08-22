@@ -18,6 +18,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 
+# THE STAMP GOES FIRST. guard.ps1 decides "already done" by comparing the stamp against the
+# inputs, so a run that wiped GenDir and then FAILED leaves a stamp still newer than everything —
+# and from then on this step is skipped for ever while every consumer fails somewhere else
+# entirely (`Push-Location : PathNotFound`). Removing it first leaves no claim behind.
+if (Test-Path -LiteralPath $Stamp)  { Remove-Item -LiteralPath $Stamp -Force }
 if (Test-Path -LiteralPath $GenDir) { Remove-Item -LiteralPath $GenDir -Recurse -Force }
 
 # Invoke-Proc, not `&`: xiboca has no file extension, and its own output must not pass through

@@ -842,7 +842,13 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         writeIfChanged(derived, jw.toPrettyString);
         useSpec = derived;
     }
-    auto genCmd = "rm -rf " ~ genDir ~ " && " ~ xiboca ~ " " ~ useSpec ~ " >/dev/null && touch " ~ stamp;
+    // THE STAMP GOES FIRST. guarded() decides "already done" by comparing the stamp against the
+    // inputs, so a run that wiped genDir and then FAILED leaves a stamp still newer than
+    // everything — and from then on the gen step is skipped for ever while every consumer fails
+    // somewhere else entirely (`Push-Location : PathNotFound`, about a directory nothing
+    // regenerates). Removing it first means a failed run leaves no claim behind.
+    auto genCmd = "rm -f " ~ stamp ~ " && rm -rf " ~ genDir ~ " && " ~ xiboca ~ " " ~ useSpec
+                ~ " >/dev/null && touch " ~ stamp;
     // The generator COPIES these runtime sources verbatim into the binding (emit.d), so they are
     // build INPUTS. Without the edge, editing the runtime leaves every already-generated binding
     // on the old copy and the whole matrix goes green against code that is no longer in the tree —
@@ -1107,7 +1113,8 @@ Target[] libsampleTargets(string root, string pyside) {
 
     // 2) generate the "sample" binding.
     auto stamp = buildPath(bdir, "gen.stamp");
-    auto genCmd = "rm -rf " ~ gen ~ " && " ~ xiboca ~ " " ~ specPath ~ " >/dev/null 2>&1 && touch " ~ stamp;
+    auto genCmd = "rm -f " ~ stamp ~ " && rm -rf " ~ gen ~ " && " ~ xiboca ~ " " ~ specPath
+                ~ " >/dev/null 2>&1 && touch " ~ stamp;
     // ...with the runtime sources as inputs, exactly as the common builder has them (critics r13
     // #1): without this edge, editing the runtime leaves libsample testing the copy from before.
     auto lsRuntime = qtdRuntimeSources(root);
