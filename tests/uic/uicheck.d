@@ -8,7 +8,7 @@ import qt.widgets.qcheckbox, qt.widgets.qcborarray, qt.widgets.qcborvalue;
 import qt.widgets.qjsondocument, qt.widgets.qjsonparseerror;
 import cxxrt, uiform, qrc, std.stdio, std.string;
 import std.algorithm : splitter, canFind;
-import std.array : array;
+import std.array : array, join;
 
 // Error-return -> typed D exception (the json/png case). Qt reports bad JSON via a
 // QJsonParseError OUT-PARAM (not a C++ exception, so the Lippincott net never fires); a
@@ -69,9 +69,36 @@ immutable string[] WAIVED_LINES = [
     // QTabBar; no binding decides their state. Waiving the line rather than the field because the
     // waiver works on lines — the cost is that a real difference in those two Qt-internal widgets
     // would not be caught, which is a price worth naming.
+];
+
+// QT'S OWN LAZY CHILDREN, excluded from BOTH sides before comparing — not waived per file,
+// because they are not a property of any form.
+//
+// QTabBar creates its scroll buttons itself and enables them when the tabs do not fit. Whether
+// they fit depends on the width left over, which depends on the page margin above — and that
+// margin is the divergence already waived: QUiLoader freezes the parentless value (11), uic-
+// generated code leaves it dynamic (9 once parented). Four pixels, and on Windows the buttons
+// flip. No binding decides their state.
+//
+// Counted and reported, so "excluded" never means "unnoticed".
+immutable string[] QT_INTERNAL = [
     "qt_tabwidget_tabbar/QToolButton/ScrollLeftButton",
     "qt_tabwidget_tabbar/QToolButton/ScrollRightButton",
 ];
+__gshared int excluded;
+bool qtInternal(string line) {
+    foreach (m; QT_INTERNAL) if (line.canFind(m)) { return true; }
+    return false;
+}
+string dropQtInternal(string dump) {
+    string[] keep;
+    foreach (l; dump.splitter('\n')) {
+        if (!l.length) continue;
+        if (qtInternal(l)) { excluded++; continue; }
+        keep ~= l;
+    }
+    return keep.join("\n") ~ "\n";
+}
 
 bool onlyWaived(string a, string b) {
     auto la = a.splitter('\n').array, lb = b.splitter('\n').array;
@@ -87,8 +114,8 @@ bool onlyWaived(string a, string b) {
 void check(T, R)(string path, R root) {
     T ui;
     ui.setupUi(root);
-    string ours = qtd_ui_dump(root.ptr()).fromStringz.idup;
-    string oracle = qtd_ui_load_and_dump(path.toStringz).fromStringz.idup;
+    string ours = dropQtInternal(qtd_ui_dump(root.ptr()).fromStringz.idup);
+    string oracle = dropQtInternal(qtd_ui_load_and_dump(path.toStringz).fromStringz.idup);
     if (ours == oracle) {
         writefln("  MATCH     %s", path);
     } else if (onlyWaived(ours, oracle)) {
@@ -174,6 +201,7 @@ void main() {
         else { writeln("  JSONFAIL  bad JSON not caught"); fails++; }
     }
 
+    if (excluded) writefln("uicheck: %d Qt-internal line(s) excluded (see QT_INTERNAL)", excluded);
     if (fails) { writefln("uicheck: %d MISMATCH(es)", fails); assert(false); }
     assert(waived == 1, "a waiver stopped applying — re-verify against `uic`, don't widen it");
     writefln("uicheck OK: our uic == QUiLoader for every .ui (%d waived, see WAIVED_LINES)", waived);

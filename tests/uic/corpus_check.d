@@ -3,7 +3,7 @@
 import qt.widgets.qapplication, qt.widgets.qwidget, qt.widgets.qdialog, qt.widgets.qmainwindow;
 import cxxrt, uiform, qrc, std.stdio, std.string;
 import std.algorithm : splitter, canFind, all;
-import std.array : array;
+import std.array : array, join;
 import appctor : QAPP_CTOR;
 pragma(mangle, QAPP_CTOR) extern (C++) void __qapp_ctor(QApplication, ref int, char**, int);
 extern (C) const(char)* qtd_ui_dump(void*); extern (C) const(char)* qtd_ui_load_and_dump(const(char)*);
@@ -80,6 +80,29 @@ __gshared int fails, oks, waived;
 //                     SAME parent and isWindow=0, which is what proves it is a freeze, not us.
 // Only lines containing one of these markers may differ, and only in these files. Any other
 // difference — or a difference in any other file — is still a hard failure.
+// QT'S OWN LAZY CHILDREN, excluded from BOTH sides before comparing — not waived per file,
+// because they are not a property of any form. QTabBar creates its scroll buttons itself and
+// enables them when the tabs do not fit; whether they fit depends on the width left over, which
+// depends on the tab page's layout margin — the divergence already waived below. On Windows those
+// four pixels flip the buttons, and in helpdialog.ui it was the ONLY difference in 54 lines.
+// Counted and reported, so "excluded" never means "unnoticed".
+immutable string[] QT_INTERNAL = [
+    "qt_tabwidget_tabbar/QToolButton/ScrollLeftButton",
+    "qt_tabwidget_tabbar/QToolButton/ScrollRightButton",
+];
+__gshared int excluded;
+string dropQtInternal(string dump) {
+    string[] keep;
+    foreach (l; dump.splitter('\n')) {
+        if (!l.length) continue;
+        bool internal = false;
+        foreach (m; QT_INTERNAL) if (l.canFind(m)) { internal = true; break; }
+        if (internal) { excluded++; continue; }
+        keep ~= l;
+    }
+    return keep.join("\n") ~ "\n";
+}
+
 struct Waiver { string file; string[] markers; }
 immutable Waiver[] WAIVERS = [
     Waiver("tests/uic/corpus/addtorrentform.ui",       ["groupBox|layout|QGridLayout"]),
@@ -105,7 +128,7 @@ bool onlyWaived(string p, string a, string b) {
 // mismatch, set DIFF=<path> to dump both serializations to the system temp dir. NOT /tmp: that is
 // a POSIX path, and on Windows the dump died with `O sistema nao pode encontrar o caminho`
 // exactly when it was needed to diagnose a mismatch.
-void ck(T, R)(string p, R root){ T ui; ui.setupUi(root); auto a=qtd_ui_dump(root.ptr()).fromStringz.idup; auto b=qtd_ui_load_and_dump(p.toStringz).fromStringz.idup; if(a==b){oks++;} else if(onlyWaived(p,a,b)){oks++; waived++; writefln("WAIVED (known QUiLoader-vs-uic margin divergence) %s",p);} else {fails++; writefln("MISMATCH %s",p); if(environment.get("DIFF")==p){ import std.file, std.path; auto d=tempDir; std.file.write(buildPath(d,"ours.txt"),a); std.file.write(buildPath(d,"oracle.txt"),b); writefln("wrote %s and %s", buildPath(d,"ours.txt"), buildPath(d,"oracle.txt"));} } }
+void ck(T, R)(string p, R root){ T ui; ui.setupUi(root); auto a=dropQtInternal(qtd_ui_dump(root.ptr()).fromStringz.idup); auto b=dropQtInternal(qtd_ui_load_and_dump(p.toStringz).fromStringz.idup); if(a==b){oks++;} else if(onlyWaived(p,a,b)){oks++; waived++; writefln("WAIVED (known QUiLoader-vs-uic margin divergence) %s",p);} else {fails++; writefln("MISMATCH %s",p); if(environment.get("DIFF")==p){ import std.file, std.path; auto d=tempDir; std.file.write(buildPath(d,"ours.txt"),a); std.file.write(buildPath(d,"oracle.txt"),b); writefln("wrote %s and %s", buildPath(d,"ours.txt"), buildPath(d,"oracle.txt"));} } }
 import std.process : environment;
 void main(){ int argc=1; char*[2] argv=[cast(char*)"c".ptr,null]; auto app=cast(QApplication)__cpp_new(__traits(classInstanceSize,QApplication)); __qapp_ctor(app,argc,argv.ptr,0);
   ck!Ui_AddTorrentFile("tests/uic/corpus/addtorrentform.ui", new QDialog());
@@ -174,6 +197,7 @@ void main(){ int argc=1; char*[2] argv=[cast(char*)"c".ptr,null]; auto app=cast(
   ck!Ui_ValidatorsForm("tests/uic/corpus/validators.ui", new QWidget());
   ck!Ui_NewActionDialog("tests/uic/corpus/newactiondialog.ui", new QDialog());
   writefln("corpus: %d OK (%d waived), %d MISMATCH", oks, waived, fails);
+  if (excluded) writefln("corpus: %d Qt-internal line(s) excluded (see QT_INTERNAL)", excluded);
   assert(waived == 2, "a waiver stopped applying — re-verify it against `uic` instead of widening it");
   if (fails) { writeln("corpus_check: FAIL"); assert(false); }
   writefln("corpus_check OK: our uic == QUiLoader across the baseline corpus (%d waived, see WAIVERS)", waived); }
