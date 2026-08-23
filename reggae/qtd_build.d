@@ -836,9 +836,18 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // aggregated shims (qtdctor/qtvirt/...) that reference private types (QQuickGradient etc.) compile.
     // A RELATIVE path in the spec is relative to the SPEC, not to whoever compiles: xiboca runs from
     // generator/, reggae from the repo root. Normalize so both resolve the same directory.
+    // ...and a path that does not EXIST is dropped rather than passed. A spec's private-header
+    // entries name one machine's Qt (`/usr/include/qt6/QtCore/6.11.1`); on another they are noise,
+    // and the private header a corpus type includes is then not found at all:
+    //     tests/qmltc/cpptypes/testprivateproperty.h: fatal error: 'private/qobject_p.h' not found
+    // The ones that ARE there for this Qt come from the probe, below, and are added to every unit
+    // rather than only to qtdmoc — a bound header may include a private one too.
+    string[] specIncludes;
     if (auto ip = "include_paths" in j.object)
-        foreach (p; ip.array)
-            cxx ~= " -I" ~ (isAbsolute(p.str) ? p.str : buildNormalizedPath(dirName(specPath), p.str));
+        foreach (p; ip.array) {
+            auto d = isAbsolute(p.str) ? p.str : buildNormalizedPath(dirName(specPath), p.str);
+            if (exists(d)) { specIncludes ~= d; cxx ~= " -I" ~ d; }
+        }
     // qtdmoc.cpp needs the Qt private headers; the QML registration block is compiled in only
     // when this binding actually links Qt6Qml (else it would reference QQmlPrivate with no lib).
     // qtdmoc.cpp needs QtCore private (QMetaObjectBuilder) always, and — in a QML-enabled binding
@@ -847,6 +856,10 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     auto priv = mocPrivateFlags(cflags).join(" ")
         ~ (hasQml ? " " ~ modulePrivateFlags(pkgCflags([mods.canFind("Qt6Qml") ? "Qt6Qml" : "Qt5Qml"]), "QtQml").join(" ")
                     ~ " -DQTD_ENABLE_QML" : "");
+    // The QtCore private directory goes to EVERY unit, not only qtdmoc: a bound header can include
+    // `private/qobject_p.h` itself, and the spec's own entry for it names a Qt that is not here.
+    foreach (f; mocPrivateFlags(cflags))
+        if (f.startsWith("-I") && !specIncludes.canFind(f[2 .. $])) cxx ~= " " ~ fwdSlash(f);
 
     // xiboca fully owns genDir: wipe it first so stale files from an earlier layout can't
     // linger (a flat qfoo.d beside the nested qt/pkg/qfoo.d would clash on the module).
