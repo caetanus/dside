@@ -917,9 +917,17 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
             if (auto v = "source_filter" in jw.object)
                 if (v.type == JSONType.string && !isAbsolute(v.str))
                     jw.object["source_filter"] = JSONValue(buildNormalizedPath(root, v.str));
+            // A header with a slash is NOT necessarily a path relative to the spec: it can be an
+            // include-relative name that only the include path can resolve, like
+            // `QtQuick/private/qquickrectangle_p.h`. Absolutising that produced
+            //   fatal error: 'C:/.../generator/QtQuick/private/qquickrectangle_p.h' file not found
+            // So a header is rewritten only when the rewritten path actually EXISTS; otherwise it
+            // is left for the compiler to find, which is what it was always for.
             if (auto hs = "headers" in jw.object)
-                jw.object["headers"] = JSONValue(hs.array
-                    .map!(e => JSONValue(e.str.canFind('/') ? abs(e.str) : e.str)).array);
+                jw.object["headers"] = JSONValue(hs.array.map!((e) {
+                    auto a = abs(e.str);
+                    return JSONValue(e.str.canFind('/') && exists(a) ? a : e.str);
+                }).array);
         }
         // ...and discovery needs to recognise THIS Qt. A marker in the spec describes a Linux
         // distribution's layout — `/qt6/`, or `/qt/` for the Qt5 specs — and Qt's own installer
