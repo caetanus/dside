@@ -20,13 +20,17 @@ PREFIX=$(CDPATH= cd -- "$PREFIX" && pwd)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/qtd-dubapp-XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 cp "$HERE/hello.d" "$TMP/app.d"
+# ...and appctor.d with it: it holds the mangled QApplication constructor for the ABI in front of
+# us, which no binding exports, so a real consumer carries the same three lines. See the same copy
+# in consumer.sh — pointing dub at tests/support instead would reach back into the checkout.
+cp "$HERE/../support/appctor.d" "$TMP/appctor.d"
 
 cat > "$TMP/dub.json" <<EOF
 {
   "name": "hello-qtd",
   "targetType": "executable",
   "mainSourceFile": "app.d",
-  "sourceFiles": ["app.d"],
+  "sourceFiles": ["app.d", "appctor.d"],
   "dependencies": { "$PKG": { "path": "$PREFIX" } }
 }
 EOF

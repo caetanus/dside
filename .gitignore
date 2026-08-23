@@ -38,3 +38,7 @@ generated/
 /bootstrap/hello
 compile_commands.json
 /dub.selections.json
+
+# xwin downloads the MSVC CRT and the Windows SDK into ITS WORKING DIRECTORY. Run it from
+# outside the checkout (see tools/win/cross-preflight.sh); this keeps an accident out of the tree.
+.xwin-cache/

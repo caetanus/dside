@@ -24,6 +24,12 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/qtd-consumer-XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 cp "$HERE"/*.d "$TMP/"
+# appctor.d is the CONSUMER'S OWN source here, copied out with the rest. It carries the mangled
+# name of the QApplication constructor for the ABI in front of us, which every test needs and no
+# binding exports — so a real consumer would carry the same three lines. Copying it keeps that
+# true; adding -I to tests/support would have pointed the build back into the checkout, which is
+# the one thing this test exists to forbid.
+cp "$HERE/../support/appctor.d" "$TMP/"
 
 # Absolute, because the consumer's working directory is NOT the checkout.
 GEN=$(CDPATH= cd -- "$GEN" && pwd)

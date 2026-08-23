@@ -17,7 +17,11 @@
 # SETUP (once). No Windows machine and no Visual Studio are involved.
 #
 #   cargo install xwin
-#   xwin --accept-license --arch x86_64 --sdk-version 10.0.22621 splat --output ~/winsdk/splat
+#   cd ~/winsdk && xwin --accept-license --arch x86_64 --sdk-version 10.0.22621 splat --output ~/winsdk/splat
+#
+#   `cd` FIRST, and not into the checkout: xwin caches its downloads in .xwin-cache under its
+#   WORKING directory, and run from the repository root that is 1.1 GB of Microsoft redistributables
+#   inside the tree — which the licence gate then reports, correctly, as 181 files stating no terms.
 #
 #   pipx install aqtinstall
 #   cd ~/winqt && aqt install-qt windows desktop 6.10.3 win64_msvc2022_64

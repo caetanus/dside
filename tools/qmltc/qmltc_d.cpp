@@ -18,6 +18,7 @@
 #include <QtQml/private/qqmljsast_p.h>
 #include <QFile>
 #include <QFileInfo>
+#include <QUrl>
 #include <QDir>
 #include <QCryptographicHash>
 #include <cstdio>
@@ -4967,7 +4968,15 @@ static UiObjectDefinition *loadLocalType(const std::string &typeName, const char
     if (std::find(g_srcSeen.begin(), g_srcSeen.end(), code) == g_srcSeen.end())
         g_srcSeen.push_back(code);
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
-    g_docUrl = "file://" + QFileInfo(path).absoluteFilePath().toStdString();
+    // QUrl::fromLocalFile, NOT "file://" + a path. The concatenation is only correct where
+    // an absolute path begins with `/`: on POSIX `file://` + `/home/x` happens to give the
+    // three slashes a file URL needs, and on Windows `file://` + `C:/Users/x` makes `C:` the
+    // URL's AUTHORITY. Measured against the engine in qmltcq-QDeclObjType-all:
+    //     engine  file:///C:/Users/caetano/dside/tests/qmltc/quick/QDeclObjType.qml
+    //     ours    file://c/Users/caetano/dside/tests/qmltc/quick/QDeclObjType.qml
+    // Anything resolving a relative URL inside a compiled document (`source: "icon.png"`)
+    // was resolving it against that.
+    g_docUrl = QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()).toString().toStdString();
     auto *engine = new Engine();
     g_astEngine = engine;
     auto *lexer = new Lexer(engine);
@@ -10654,7 +10663,7 @@ int main(int argc, char **argv) {
     g_srcText = code;   // this document's text, for the snippet a diagnostic quotes
     g_rootSrcText = code;
     const char *inPath = pos[0];
-    g_docUrl = "file://" + QFileInfo(inPath).absoluteFilePath().toStdString();
+    g_docUrl = QUrl::fromLocalFile(QFileInfo(inPath).absoluteFilePath()).toString().toStdString();
     g_rootDocUrl = g_docUrl;
     if (noFallback && (delegateDoc || !g_shadowDir.empty())) {
         std::fprintf(stderr, "qmltc-d: --no-fallback overrides %s\n",
@@ -10898,7 +10907,8 @@ int main(int argc, char **argv) {
         // document was loaded LAST, which for a root that pulls in a local type is that type's
         // file: Qt's Imagine GroupBox was handed over as `Label.qml` — a different document that
         // builds and renders, so nothing failed, it was simply the wrong thing.
-        std::string rootUrl = "file://" + QFileInfo(QString::fromUtf8(inPath)).absoluteFilePath().toStdString();
+        std::string rootUrl = QUrl::fromLocalFile(
+            QFileInfo(QString::fromUtf8(inPath)).absoluteFilePath()).toString().toStdString();
         std::vector<DumpLine> dl;
         collectDump(rootNode, "o.", "", dl);
         std::sort(dl.begin(), dl.end(), [](const DumpLine &a, const DumpLine &b){ return a.label < b.label; });

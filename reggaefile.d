@@ -254,10 +254,28 @@ Build reggaeBuild() {
             foreach (doc; ["CDynLeaf"]) {
                 auto qmlFile = buildPath(cdir, doc ~ ".qml");
                 if (!exists(qmlFile)) continue;
-                all ~= Target.phony("qmltc-pedantic-" ~ doc,
-                    buildPath(ctrl.bdir, "qmltc-d") ~ " --pedantic --dump " ~ qmlFile ~ " " ~ doc
-                    ~ " --qmlmap " ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " -I " ~ cdir
-                    ~ " > /dev/null",
+                auto ptool = buildPath(ctrl.bdir, "qmltc-d");
+                auto pargs = ["--pedantic", "--dump", qmlFile, doc,
+                              "--qmlmap", buildPath(ctrl.genDir, "qmlmap.tsv"), "-I", cdir];
+                auto plabel = "qmltc-pedantic " ~ doc ~ ": compiled with no delegation";
+                string pcmd;
+                version (Windows) {
+                    auto pout = buildPath(ctrl.bdir, "pedantic-" ~ doc ~ ".d");
+                    pcmd = psInline(root, "qmltc-pedantic-" ~ doc, [
+                        psRedirect(ptool, pargs, pout),
+                        "Write-Output ('" ~ plabel ~ " (' + (Get-Content -LiteralPath '"
+                            ~ pout ~ "').Count + ' lines emitted)')",
+                    ], ctrl.mods);
+                } else {
+                    // NOT `> /dev/null`. This target's whole claim is that the document compiled
+                    // with no delegation, and a target that says nothing is indistinguishable from
+                    // one that never ran — the report called it `mute`, and was right to.
+                    // `$(...)` with `&&` keeps the TOOL's exit status as the verdict; `| wc -l`
+                    // would have replaced it with wc's.
+                    pcmd = "sh -c 'OUT=$(" ~ ptool ~ " " ~ pargs.join(" ") ~ ")"
+                         ~ " && echo \"" ~ plabel ~ " ($(printf %s \"$OUT\" | wc -l) lines emitted)\"'";
+                }
+                all ~= Target.phony("qmltc-pedantic-" ~ doc, pcmd,
                     [Target(qmlFile), qmltcTool(root, ctrl), ctrl.gen]);
             }
         }
@@ -610,6 +628,10 @@ Build reggaeBuild() {
     // named. Same ordering family as the registries rounds 13/14 fixed, reintroduced in the entry
     // point that answers the broadest question.
     Target[] aggregates;
+    // ...and the quickstart, hoisted out of buildAggregates: it is created there but the
+    // runtime-provenance gate below has to depend on it, and a target the gate does not wait
+    // for is a directory it reads mid-write.
+    Target[] quickstart;
 
     void buildAggregates() {
         bool isQmltc(string n) {
@@ -694,19 +716,23 @@ Build reggaeBuild() {
     // nothing said so. It also covers ground the other gates cannot: the whole Qt matrix uses ONE
     // discovery mode (a Qt module plus qt_marker), and this is the only target exercising the other
     // one — headers plus source_filter, the mode every outside user starts from.
+    // It is ALSO a writer of runtime copies (.build/xiboca-quickstart/gen), which is why the
+    // target is kept in `quickstart` for runtime-provenance to depend on.
     {
         auto qs = buildPath(root, "tests", "xiboca-quickstart.sh");
         auto ulib = buildPath(root, "examples", "userlib");
         auto uspec = buildPath(root, "generator", "spec_userlib.json");
-        if (exists(qs) && exists(uspec) && exists(buildPath(ulib, "shape.cpp")))
-            all ~= Target.phony("xiboca-quickstart",
+        if (exists(qs) && exists(uspec) && exists(buildPath(ulib, "shape.cpp"))) {
+            quickstart = [Target.phony("xiboca-quickstart",
                                 "sh " ~ qs ~ " " ~ buildPath(root, "xiboca", "xiboca") ~ " "
                                        ~ buildPath(root, ".build", "xiboca-quickstart"),
                                 [Target(qs), Target(uspec), gendTarget(root),
                                  Target(buildPath(ulib, "shape.h")),
                                  Target(buildPath(ulib, "shape.cpp")),
                                  Target(buildPath(ulib, "app.d")),
-                                 Target(buildPath(ulib, "expected.txt"))]);
+                                 Target(buildPath(ulib, "expected.txt"))])];
+            all ~= quickstart;
+        }
     }
 
     // ...and OPTIONAL, not part of the default build. A node reached by two top-level targets
@@ -864,7 +890,13 @@ Build reggaeBuild() {
     //     A gate that can be scheduled before the thing it inspects reports the previous state.
     {
         auto pv = buildPath(root, "tests", "runtime-provenance.sh");
-        auto gens = qtdGenRegistry();
+        // ...and `gens` is not every writer. The registry holds the BINDINGS; the quickstart is a
+        // phony shell target that generates into .build/xiboca-quickstart/gen and was in nobody's
+        // dependency list, so the gate could read that directory while it was being written —
+        // which is what it did: `qtdmoc.cpp is NOT the current qtdmoc.cpp` about a file that was
+        // byte-identical to its origin a minute later. Same failure mode as libsample's, one
+        // writer later.
+        auto gens = qtdGenRegistry() ~ quickstart;
         if (exists(pv) && gens.length)
             all ~= Target.phony("runtime-provenance", "sh " ~ pv, Target(pv) ~ gens);
     }
@@ -1627,15 +1659,28 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             foreach (tm; timed) if (tm.name == name && rndDep.length) {
                 auto renv3 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
                 auto oT = genD ~ ".time.ours", eT = genD ~ ".time.eng", zT = genD ~ ".time.zero";
-                auto tcmd = renv3 ~ appBin ~ " --run " ~ tm.ms.to!string
+                auto tlabel = "qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", " ~ tm.ms.to!string
+                            ~ "ms): " ~ tm.prop;
+                string tcmd;
+                version (Windows)
+                    tcmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-time-" ~ dc, [
+                        "$env:QT_QUICK_BACKEND = 'software'",
+                        psRedirect(appBin, ["--run", tm.ms.to!string], oT, false, false,
+                                   tm.prop ~ "\t"),
+                        psRedirect(rndBin, ["--run", qmlFile, tm.ms.to!string, tm.prop], eT),
+                        psDiff(eT, oT, tlabel ~ " matches the engine"),
+                        psRedirect(appBin, [], zT, false, false, tm.prop ~ "\t"),
+                        psDiffer(oT, zT, tlabel ~ " differs from t=0"),
+                    ], bind.mods);
+                else
+                    tcmd = renv3 ~ appBin ~ " --run " ~ tm.ms.to!string
                           ~ " | grep '^" ~ tm.prop ~ "\t' > " ~ oT
                           ~ " && " ~ renv3 ~ rndBin ~ " --run " ~ qmlFile ~ " " ~ tm.ms.to!string
                           ~ " " ~ tm.prop ~ " > " ~ eT
                           ~ " && diff " ~ eT ~ " " ~ oT
                           ~ " && " ~ renv3 ~ appBin ~ " | grep '^" ~ tm.prop ~ "\t' > " ~ zT
                           ~ " && ! diff -q " ~ oT ~ " " ~ zT ~ " > /dev/null"
-                          ~ " && echo \"qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", " ~ tm.ms.to!string
-                          ~ "ms): " ~ tm.prop ~ " matches the engine and differs from t=0\"";
+                          ~ " && echo \"" ~ tlabel ~ " matches the engine and differs from t=0\"";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-time-" ~ dc, tcmd,
                                    [app] ~ rndDep ~ [tool]);
             }
@@ -1645,7 +1690,20 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             foreach (kk; keyed) if (kk.name == name && rndDep.length) {
                 auto renv4 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
                 auto oK = genD ~ ".key.ours", eK = genD ~ ".key.eng", zK = genD ~ ".key.zero";
-                auto kcmd = renv4 ~ appBin ~ " --key " ~ kk.key.to!string
+                auto klabel = "qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", key): " ~ kk.prop;
+                string kcmd;
+                version (Windows)
+                    kcmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-key-" ~ dc, [
+                        "$env:QT_QUICK_BACKEND = 'software'",
+                        psRedirect(appBin, ["--key", kk.key.to!string], oK, false, false,
+                                   kk.prop ~ "\t"),
+                        psRedirect(rndBin, ["--key", qmlFile, kk.key.to!string, kk.prop], eK),
+                        psDiff(eK, oK, klabel ~ " matches the engine"),
+                        psRedirect(appBin, [], zK, false, false, kk.prop ~ "\t"),
+                        psDiffer(oK, zK, klabel ~ " differs from no-key"),
+                    ], bind.mods);
+                else
+                    kcmd = renv4 ~ appBin ~ " --key " ~ kk.key.to!string
                           ~ " | grep '^" ~ kk.prop ~ "\t' > " ~ oK
                           ~ " && " ~ renv4 ~ rndBin ~ " --key " ~ qmlFile ~ " " ~ kk.key.to!string
                           ~ " " ~ kk.prop ~ " > " ~ eK
@@ -1653,7 +1711,11 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                           // ...and prove the key MATTERED: without it the value must differ, or the
                           // test would pass on a document that ignores the keyboard entirely.
                           ~ " && " ~ renv4 ~ appBin ~ " | grep '^" ~ kk.prop ~ "\t' > " ~ zK
-                          ~ " && ! diff -q " ~ oK ~ " " ~ zK ~ " > /dev/null";
+                          ~ " && ! diff -q " ~ oK ~ " " ~ zK ~ " > /dev/null"
+                          // ...and SAY SO. Without this the target passes in silence, which the
+                          // report cannot tell from a target that never ran — the PowerShell half
+                          // says it through psDiffer, so the sh half has to as well.
+                          ~ " && echo \"" ~ klabel ~ " matches the engine and differs from no-key\"";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-key-" ~ dc, kcmd,
                                    [app] ~ rndDep ~ [tool]);
             }
@@ -1661,7 +1723,21 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             foreach (ck; clickable) if (ck.name == name && rndDep.length) {
                 auto renv2 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
                 auto ourOut = genD ~ ".click.ours", engOut = genD ~ ".click.eng";
-                auto ccmd = renv2 ~ appBin ~ " --click " ~ ck.x.to!string ~ " " ~ ck.y.to!string
+                auto clabel = "qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", click): " ~ ck.prop;
+                string ccmd;
+                version (Windows)
+                    ccmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-click-" ~ dc, [
+                        "$env:QT_QUICK_BACKEND = 'software'",
+                        psRedirect(appBin, ["--click", ck.x.to!string, ck.y.to!string], ourOut,
+                                   false, false, ck.prop ~ "\t"),
+                        psRedirect(rndBin, ["--click", qmlFile, ck.x.to!string, ck.y.to!string,
+                                            ck.prop], engOut),
+                        psDiff(engOut, ourOut, clabel ~ " matches the engine"),
+                        psRedirect(appBin, [], ourOut ~ ".noclick", false, false, ck.prop ~ "\t"),
+                        psDiffer(ourOut, ourOut ~ ".noclick", clabel ~ " differs from no-click"),
+                    ], bind.mods);
+                else
+                    ccmd = renv2 ~ appBin ~ " --click " ~ ck.x.to!string ~ " " ~ ck.y.to!string
                           ~ " | grep '^" ~ ck.prop ~ "\t' > " ~ ourOut
                           ~ " && " ~ renv2 ~ rndBin ~ " --click " ~ qmlFile ~ " " ~ ck.x.to!string
                           ~ " " ~ ck.y.to!string ~ " " ~ ck.prop ~ " > " ~ engOut
@@ -1670,17 +1746,25 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                           // the test would pass on a document that ignores input entirely.
                           ~ " && " ~ renv2 ~ appBin ~ " | grep '^" ~ ck.prop ~ "\t' > " ~ ourOut ~ ".noclick"
                           ~ " && ! diff -q " ~ ourOut ~ " " ~ ourOut ~ ".noclick > /dev/null"
-                          ~ " && echo \"qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", click): " ~ ck.prop
-                          ~ " matches the engine and differs from no-click\"";
+                          ~ " && echo \"" ~ clabel ~ " matches the engine and differs from no-click\"";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-click-" ~ dc, ccmd,
                                    [app] ~ rndDep ~ [tool]);
             }
             if (renderable.canFind(name) && rndDep.length) {
                 auto ourPng = genD ~ ".our.png", engPng = genD ~ ".eng.png";
                 auto renv = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
-                auto rcmd = renv ~ appBin ~ " --render " ~ ourPng
-                          ~ " && " ~ renv ~ rndBin ~ " " ~ qmlFile ~ " " ~ engPng
-                          ~ " && " ~ renv ~ rndBin ~ " --compare " ~ engPng ~ " " ~ ourPng;
+                string rcmd;
+                version (Windows)
+                    rcmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-render-" ~ dc, [
+                        "$env:QT_QUICK_BACKEND = 'software'",
+                        psRunLine(appBin, ["--render", ourPng]),
+                        psRunLine(rndBin, [qmlFile, engPng]),
+                        psRunLine(rndBin, ["--compare", engPng, ourPng]),
+                    ], bind.mods);
+                else
+                    rcmd = renv ~ appBin ~ " --render " ~ ourPng
+                         ~ " && " ~ renv ~ rndBin ~ " " ~ qmlFile ~ " " ~ engPng
+                         ~ " && " ~ renv ~ rndBin ~ " --compare " ~ engPng ~ " " ~ ourPng;
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-render-" ~ dc, rcmd,
                                    [app] ~ rndDep ~ [tool]);
             }

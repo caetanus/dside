@@ -642,8 +642,9 @@ string psQ(string a) { return `'` ~ a.replace("'", "''") ~ `'`; }
 //
 // `allowFail` is the `;` in `prog … > f 2>/dev/null;` — that step is allowed to fail, the diff
 // afterwards is what judges. Without it the step is an `&&`.
+// `keepPrefix` is `| grep '^<prefix>'`: several differentials read ONE property out of a dump.
 string psRedirect(string exe, string[] args, string outFile, bool sortOut = false,
-                  bool allowFail = false) {
+                  bool allowFail = false, string keepPrefix = null) {
     auto argList = args.length ? "@(" ~ args.map!psQ.join(", ") ~ ")" : "@()";
     string s = "$rc = Invoke-Proc -Exe " ~ psQ(exe) ~ " -ProcArgs " ~ argList ~ " -Capture"
              ~ "\n$o = $script:ProcOut"
@@ -660,6 +661,10 @@ string psRedirect(string exe, string[] args, string outFile, bool sortOut = fals
              // was killed by the timeout with no output at all.
              ~ "\nwhile ($o.Count -gt 1 -and $o[$o.Count - 1] -eq '') { $o = $o[0 .. ($o.Count - 2)] }"
              ~ "\nif ($o.Count -eq 1 -and $o[0] -eq '') { $o = @() }";
+    // `@(...)`, because a Where-Object that matches ONE line yields that line, not an array of
+    // one — and the next step would then index into a string.
+    if (keepPrefix.length)
+        s ~= "\n$o = @($o | Where-Object { $_.StartsWith(" ~ psQ(keepPrefix) ~ ") })";
     if (sortOut) s ~= "\n$o = $o | Sort-Object";
     if (!allowFail) s ~= "\nif ($rc -ne 0) { exit $rc }";
     s ~= "\n[System.IO.File]::WriteAllText(" ~ psQ(outFile) ~ ", (($o -join \"`n\") + \"`n\"))";
@@ -678,6 +683,18 @@ string psDiff(string a, string b, string label) {
          ~ "$d  = Compare-Object $da $db\n"
          ~ "if ($d) { $d | ForEach-Object { Write-Output ($_.SideIndicator + ' ' + $_.InputObject) }; exit 1 }\n"
          ~ "Write-Output (" ~ psQ(label ~ ": ") ~ " + $da.Count + ' lines match')";
+}
+
+// `! diff -q a b`: the two files must DIFFER. Several differentials prove a value CHANGED — that
+// the document is not frozen, that the key was seen — and for those the passing verdict is the
+// opposite one. It says so on success for the same reason psDiff does: "they differed" and "the
+// step never ran" must not read the same in a log.
+string psDiffer(string a, string b, string label) {
+    return "$da = Get-Content -LiteralPath " ~ psQ(a) ~ "\n"
+         ~ "$db = Get-Content -LiteralPath " ~ psQ(b) ~ "\n"
+         ~ "if (-not (Compare-Object $da $db)) { Write-Output " ~ psQ("IDENTICAL: " ~ label)
+         ~ "; exit 1 }\n"
+         ~ "Write-Output " ~ psQ(label);
 }
 
 // A COMPOUND STEP, WRITTEN OUT AS ITS OWN .ps1 — for the commands this build composes itself
@@ -714,6 +731,14 @@ string psInline(string root, string name, string[] lines, string[] mods = null) 
     writeIfChanged(path, (preamble.filter!(l => l.length).array ~ lines).join("\n") ~ "\n");
     return [psExe(), "-NoProfile", "-NonInteractive", "-InputFormat", "None", "-ExecutionPolicy", "Bypass", "-File", path]
            .map!psArg.join(" ");
+}
+
+// One `Run <exe> <args…>` line inside a psInline step: the program's output flows through and a
+// non-zero exit stops the script, which is what `&&` did on the sh side. Use this when the step
+// runs a program for its EFFECT (writing a PNG, comparing two of them) rather than its stdout;
+// psRedirect is the one that captures.
+string psRunLine(string exe, string[] args) {
+    return (["Run", psQ(exe)] ~ args.map!psQ.array).join(" ");
 }
 
 // A PowerShell call to one of tools/win/*.ps1: `kv` alternates -Name and its VALUE, `switches`
