@@ -1919,13 +1919,23 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
             // 4) run both over the SAME .qml and diff (same --labels/--props protocol as the corpus).
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > " ~ props ~ " 2>/dev/null; ";
-            ts ~= Target.phony("qmltcd-" ~ name ~ "-" ~ dc,
-                "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
-                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
-                ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
-                ~ " && diff " ~ a ~ " " ~ b
-                ~ " && echo \"qmltcd " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") value lines match the engine\"'",
-                [app, oracle, tool]);
+            string dCmd;
+            version (Windows)
+                dCmd = psInline(root, "qmltcd-" ~ name ~ "-" ~ dc, [
+                    psRedirect(toolBin, ["--labels", qmlFile, name, "--dtypes", typesFile, "apptypes"],
+                               props, false, true),
+                    psRedirect(appBin, [], a),
+                    psRedirect(oracleBin, [qmlFile, "--props", props], b),
+                    "Run " ~ psQ(oracleBin) ~ " " ~ psQ(qmlFile) ~ " '--verify-props' " ~ psQ(props),
+                    psDiff(a, b, "qmltcd " ~ name ~ " (" ~ dc ~ ")"),
+                ], bind.mods);
+            else
+                dCmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " > " ~ b
+                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props
+                    ~ " && diff " ~ a ~ " " ~ b
+                    ~ " && echo \"qmltcd " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") value lines match the engine\"'";
+            ts ~= Target.phony("qmltcd-" ~ name ~ "-" ~ dc, dCmd, [app, oracle, tool]);
             // 5) LIVE-binding differential: mutate both, re-diff. A binding that lost its
             //    connection to the BASE type's notify signal diverges here.
             auto setFile = buildPath(dir, name ~ ".set");
@@ -2130,12 +2140,24 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 [gd, appHelper, lib, qtdBindLib(bind, dc), bind.shims]);
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ arg ~ " > " ~ props ~ " 2>/dev/null; ";
-            ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc,
-                "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
+            string cCmd;
+            version (Windows)
+                cCmd = psInline(root, "qmltcc-" ~ name ~ "-" ~ dc, [
+                    psRedirect(toolBin, ["--labels", qmlFile, name, "--cpptypes", typesFile,
+                                         "qt.corpustypes"], props, false, true),
+                    psRedirect(appBin, [], a),
+                    psRedirect(oracleBin, [qmlFile, "--props", props, "--attached-uri", "QmltcTests"], b),
+                    "Run " ~ psQ(oracleBin) ~ " " ~ psQ(qmlFile) ~ " '--verify-props' " ~ psQ(props)
+                        ~ " '--attached-uri' 'QmltcTests'",
+                    psDiff(a, b, "qmltcc " ~ name ~ " (" ~ dc ~ ")"),
+                ], bind.mods);
+            else
+                cCmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " > " ~ a
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b
                 ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props ~ " --attached-uri QmltcTests"
                 ~ " && diff " ~ a ~ " " ~ b
-                ~ " && echo \"qmltcc " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") lines match\"'", [app, oracle, tool]);
+                ~ " && echo \"qmltcc " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") lines match\"'";
+            ts ~= Target.phony("qmltcc-" ~ name ~ "-" ~ dc, cCmd, [app, oracle, tool]);
             auto setFile = buildPath(dir, name ~ ".set");
             if (exists(setFile)) {
                 // Quote each token: a mutation may be `method()`, and bare parens are shell syntax.
