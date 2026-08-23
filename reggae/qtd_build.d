@@ -124,6 +124,8 @@ private struct QtProbe {
 
 
     // Qt6Core -> QtCore, Qt5Widgets -> QtWidgets: the include directory Qt installs per module.
+    static string moduleDirOf(string mod) { return moduleDir(mod); }
+
     private static string moduleDir(string mod) {
         if (mod.length > 3 && mod.startsWith("Qt") && (mod[2] == '5' || mod[2] == '6'))
             return "Qt" ~ mod[3 .. $];
@@ -901,6 +903,14 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
                 // there and add what the probe found for THIS Qt — the same private flags the
                 // shims are compiled with, so the generator and the compiler agree.
                 auto kept = ip.array.map!(e => abs(e.str)).filter!(d => exists(d)).array;
+                // EVERY module's private directory, not just the two the shims happen to need. A
+                // spec can name a private header of any module it binds — the quick binding asks
+                // for `QtQuick/private/qquickrectangle_p.h` — and with only QtCore's and QtQml's
+                // present the generator refused the whole binding.
+                foreach (m; mods)
+                    foreach (f; modulePrivateFlags(cflags, QtProbe.moduleDirOf(m)))
+                        if (f.startsWith("-I") && exists(f[2 .. $]) && !kept.canFind(f[2 .. $]))
+                            kept ~= f[2 .. $];
                 foreach (f; priv.split)
                     if (f.startsWith("-I") && exists(f[2 .. $]) && !kept.canFind(f[2 .. $]))
                         kept ~= f[2 .. $];
