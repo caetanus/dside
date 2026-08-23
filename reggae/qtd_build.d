@@ -890,9 +890,17 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
                         kept ~= f[2 .. $];
                 jw.object["include_paths"] = JSONValue(kept.map!(d => JSONValue(d)).array);
             }
-            foreach (k; ["typesystem_dir", "docs_dir", "source_filter"])
+            // typesystem_dir and docs_dir are written relative to the SPEC; source_filter is
+            // written relative to the REPO ROOT, which is where xiboca runs. Resolving them the
+            // same way pointed source_filter at generator/tests/... and the generator kept
+            // nothing — `discovered 0 classes in your headers`, and then a D module that no
+            // longer existed. Two conventions in one file, so two rules.
+            foreach (k; ["typesystem_dir", "docs_dir"])
                 if (auto v = k in jw.object)
                     if (v.type == JSONType.string) jw.object[k] = JSONValue(abs(v.str));
+            if (auto v = "source_filter" in jw.object)
+                if (v.type == JSONType.string && !isAbsolute(v.str))
+                    jw.object["source_filter"] = JSONValue(buildNormalizedPath(root, v.str));
             if (auto hs = "headers" in jw.object)
                 jw.object["headers"] = JSONValue(hs.array
                     .map!(e => JSONValue(e.str.canFind('/') ? abs(e.str) : e.str)).array);
