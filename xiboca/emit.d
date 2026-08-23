@@ -251,7 +251,12 @@ void main(string[] args) {
                 // QQuickPositionerAttached, QQuickPathViewAttached, QQuickDropAreaDrag) is
                 // Hidden, so its ctors/signals/staticMetaObject are not in the .so. ldc2's
                 // --gc-sections drops the dead references; dmd's whole-program link does not.
-                if (clang_getCursorVisibility(cur) != 3) { droppedPriv++; continue; }
+                // classExported, not the raw visibility: this is the THIRD place that asked the
+                // ELF question, and on the MSVC ABI it answers Invalid for every class — so every
+                // explicitly listed private type was dropped. 38 QQuick* classes went missing that
+                // way, and with them the QML map, and with that the whole qmltcq family:
+                //   qmltc-d: root type 'Item' is not a bound Qt type … skipped
+                if (!classExported(cur)) { droppedPriv++; continue; }
                 includes ~= decl;
             }
             else if (discMod.length) includes ~= discMod;
