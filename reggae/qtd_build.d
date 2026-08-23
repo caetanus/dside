@@ -511,14 +511,31 @@ string llvmLibEnv() {
     return "";
 }
 
+// The same value, without the `NAME="…" ` shell dressing: the PowerShell half sets the variable
+// itself, and there is no shell in between to strip the quotes.
+string llvmLibDflags() {
+    auto s = llvmLibEnv();
+    if (!s.length) return "";
+    auto i = s.indexOf('"');
+    auto j = s.lastIndexOf('"');
+    return (i < 0 || j <= i) ? "" : s[i + 1 .. j].idup;
+}
+
 Target gendTarget(string root) {
     auto dir = buildPath(root, "xiboca");
     auto xiboca = gendPath(root);
     auto srcs = ["clang_c.d", "gen.d", "emit.d", "emit_cxx.d"].map!(f => buildPath(dir, f)).array;
     // dub decides itself whether a relink is needed; guarded() keeps concurrent gen steps from
     // racing into the same dub build, and skips it outright when xiboca is already newest.
+    // The PowerShell half was `null` here for a long time and nothing noticed, because xiboca's
+    // sources had not changed since the conversion and the step was always skipped as up to date.
+    // The first edit to the generator brought it back with `flock: command not found` — a step
+    // whose second dialect is missing is not a step that fails, it is a step that waits.
+    auto df = llvmLibDflags();
     auto cmd = guarded(buildPath(dir, "xiboca.lock"),
-        "cd " ~ dir ~ " && " ~ llvmLibEnv() ~ "dub build --quiet", null, xiboca, srcs);
+        "cd " ~ dir ~ " && " ~ llvmLibEnv() ~ "dub build --quiet",
+        psStep("dub.ps1", ["-Dir", dir] ~ (df.length ? ["-DFlags", df] : [])),
+        xiboca, srcs);
     return Target(xiboca, cmd, srcs.map!(f => Target(f)).array);
 }
 
@@ -945,6 +962,24 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
                     auto a = abs(e.str);
                     return JSONValue(e.str.canFind('/') && exists(a) ? a : e.str);
                 }).array);
+            // The QML TYPE REGISTRY is written as absolute paths into one distribution's qml
+            // directory (`/usr/lib/qt6/qml/QtQuick/plugins.qmltypes`). Nothing here resolved them,
+            // and the damage was total but silent: qmlmap.tsv and every other QML table came out
+            // EMPTY, so no QML name had a class, and qmltc-d answered
+            //     root type 'Item' is not a bound Qt type ... skipped
+            // for every fixture — 57 targets, none of which mentioned a registry.
+            // Qt puts the same tree under `<prefix>/qml`, so the part after the LAST `/qml/` is
+            // portable and the part before it is not. Rewritten unconditionally, even when the
+            // result is absent: xiboca now names the file it could not find, and a path pointing
+            // at THIS Qt is the one worth naming.
+            if (auto qt = "qmltypes" in jw.object) {
+                auto qmlRoot = buildPath(QtProbe.prefixOf(mods), "qml");
+                jw.object["qmltypes"] = JSONValue(qt.array.map!((e) {
+                    auto s = e.str.replace("\\", "/");
+                    auto i = s.lastIndexOf("/qml/");
+                    return JSONValue(i < 0 ? s : buildPath(qmlRoot, s[i + 5 .. $]));
+                }).array);
+            }
         }
         // ...and discovery needs to recognise THIS Qt. A marker in the spec describes a Linux
         // distribution's layout — `/qt6/`, or `/qt/` for the Qt5 specs — and Qt's own installer

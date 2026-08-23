@@ -1649,10 +1649,23 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     // mean "Qt does not export it" rather than "we are not looking at the right .so" — a binding whose
     // library is built locally (libsample) has none of its symbols here, and without this guard every
     // one of its methods would be refused.
+    //
+    // ...and the probe reads CONSTRUCTORS AND DESTRUCTORS TOO, not just methods. With methods only,
+    // a class that has exactly one of them asks the same question twice: "can I see this library?"
+    // and "is this method exported?" become one, and a missing method disables the very guard that
+    // exists to catch it. QNativeInterface::QSGVulkanTexture is that class. Its ctor, dtor and
+    // vtable are all in Qt6Quick.lib; only `fromNative` is absent, because without a Vulkan SDK Qt
+    // hands the application placeholder typedefs (`typedef quint64 VkImage`) instead of the real
+    // handles it was itself compiled against — Qt says so in qvulkaninstance.h — so the signature
+    // we mangle can never be the one in the library. It linked as
+    //   undefined symbol: QSGVulkanTexture::fromNative(unsigned __int64, int, QQuickWindow*, ...)
+    // against a library defining fromNative(VkImage_T*, VkImageLayout, ...).
     bool classSymsVisible = false;
     if (DEFINED_SYMS.length)
         foreach (mc; children(cur))
-            if (mc.kind == CXCursor_CXXMethod && isPublic(mc) && !isInline(mc)
+            if ((mc.kind == CXCursor_CXXMethod || mc.kind == CXCursor_Constructor
+                    || mc.kind == CXCursor_Destructor)
+                    && isPublic(mc) && !isInline(mc)
                     && (clang_Cursor_getMangling(mc).str in DEFINED_SYMS) !is null) {
                 classSymsVisible = true; break;
             }

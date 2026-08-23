@@ -9,6 +9,21 @@ import std.stdio, std.string, std.array, std.algorithm, std.conv, std.json,
        std.process, std.file, std.path, std.datetime.stopwatch;
 import std.digest.sha : sha256Of, toHexString;   // the input digest in the provenance line
 
+// THE PATH libclang REPORTS IS NOT IN ONE SPELLING. On Windows it hands back whatever each half
+// of the lookup contributed, so an include directory given with forward slashes and a header found
+// under it arrive joined with a backslash:
+//
+//     C:/Qt/6.10.3/msvc2022_64/include\QtGui/qpa/qplatformwindow.h
+//
+// Every question we ask a declaring path is a question about SPELLING — does it sit under
+// `/private/`, does it end with a header the spec listed — and each one silently answered "no".
+// QPlatformWindow then looked like an ordinary public type reachable through <QtQuick>, was bound
+// from an umbrella that only forward-declares it, and the binding failed to compile with
+// `member access into incomplete type 'QPlatformWindow'`. Normalise once, at the source.
+string declPath(CXFile f) {
+    return f ? clang_getFileName(f).str.replace("\\", "/") : "";
+}
+
 struct DiscCtx { CXCursor[] classes; CXCursor[] functions; bool[string] seen; }
 extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
     auto ctx = cast(DiscCtx*) d;
@@ -18,7 +33,7 @@ extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
                 && !n.canFind("PrivateSignal") && n !in ctx.seen) {
             CXFile f; uint ln, col, off;
             clang_getFileLocation(clang_getCursorLocation(c), &f, &ln, &col, &off);
-            auto loc = f ? clang_getFileName(f).str : "";
+            auto loc = declPath(f);
             // your-own-code mode: any class defined in your files; else Qt framework
             bool want = sourceFilter.length ? loc.canFind(sourceFilter)
                                             : (n[0] == 'Q' && loc.canFind(qtMarker));
@@ -31,7 +46,7 @@ extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
         if (n.length && !n.startsWith("operator") && !n.canFind('<')) {
             CXFile f; uint ln, col, off;
             clang_getFileLocation(clang_getCursorLocation(c), &f, &ln, &col, &off);
-            auto loc = f ? clang_getFileName(f).str : "";
+            auto loc = declPath(f);
             bool want = sourceFilter.length ? loc.canFind(sourceFilter) : loc.canFind(qtMarker);
             if (want) ctx.functions ~= c;   // overloads kept (distinct cursors)
         }
@@ -233,7 +248,7 @@ void main(string[] args) {
             // The type's own declaring header (needed for private types the umbrella misses).
             CXFile f; uint ln, col, off;
             clang_getFileLocation(clang_getCursorLocation(cur), &f, &ln, &col, &off);
-            string decl = f ? clang_getFileName(f).str : "";
+            string decl = declPath(f);
             // A discover_module umbrella (<QtQuick>) reaches only PUBLIC types; a type declared in
             // one of Qt's two NON-public header dirs (.../private/, .../qpa/) is NOT visible
             // through it, so it must include its own header.
@@ -696,6 +711,20 @@ void main(string[] args) {
         string[][string] uriRows;
         string[string] singletonRows;   // QML name -> "<uri>\t<version>", for every QML SINGLETON
         string methodRows;              // <QML name>\t<method>\t<return type>\t<param types>
+        // A REGISTRY THE SPEC ASKED FOR AND WE DID NOT FIND IS AN EVENT, not a nothing. Skipping in
+        // silence is how an entire binding's QML vocabulary came out empty on a machine whose Qt
+        // simply keeps these files elsewhere: every table below had zero rows, and the failure
+        // surfaced 57 targets away as `root type 'Item' is not a bound Qt type`. Missing one file is
+        // legitimate (a style shipped only by newer Qt), missing them ALL is a broken spec, and the
+        // two get different answers.
+        {
+            auto absent = qt.array.filter!(e => !exists(e.str)).map!(e => e.str).array;
+            foreach (a; absent) stderr.writefln("qmltypes: not found, skipped: %s", a);
+            if (absent.length == qt.array.length)
+                throw new Exception(("qmltypes: none of the %d registries in the spec exists — the QML "
+                                     ~ "tables would all be empty; first: %s")
+                                    .format(qt.array.length, qt.array[0].str));
+        }
         foreach (qtj; qt.array) {
             if (!exists(qtj.str)) continue;
             foreach (blk; readText(qtj.str).split("Component {")) {
