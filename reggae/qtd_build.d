@@ -863,8 +863,15 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
                     ~ " -DQTD_ENABLE_QML" : "");
     // The QtCore private directory goes to EVERY unit, not only qtdmoc: a bound header can include
     // `private/qobject_p.h` itself, and the spec's own entry for it names a Qt that is not here.
-    foreach (f; mocPrivateFlags(cflags))
-        if (f.startsWith("-I") && !specIncludes.canFind(f[2 .. $])) cxx ~= " " ~ fwdSlash(f);
+    // ...and every module's, for the same reason the derived spec gets them: a shim can reference
+    // a private type of any module the binding covers (QQmlChangeSet, QHashedString in the quick
+    // binding), and the spec's own entries for those name a Qt that is not on this machine.
+    string[] privDirs;
+    foreach (m; mods ~ ["Qt6Core"])
+        foreach (f; modulePrivateFlags(cflags, QtProbe.moduleDirOf(m)))
+            if (f.startsWith("-I") && !specIncludes.canFind(f[2 .. $]) && !privDirs.canFind(f[2 .. $]))
+                privDirs ~= f[2 .. $];
+    foreach (d; privDirs) cxx ~= " " ~ fwdSlash("-I" ~ d);
 
     // xiboca fully owns genDir: wipe it first so stale files from an earlier layout can't
     // linger (a flat qfoo.d beside the nested qt/pkg/qfoo.d would clash on the module).
