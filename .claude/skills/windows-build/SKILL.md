@@ -99,6 +99,17 @@ length limit `ar` does not), `objExt()` (`.obj`), `cxxRuntimeLibs()` (no `-lstdc
 (`moc.exe`), and `-L/LIBPATH:` for libclang handed over as `DFLAGS` — **not** as `LIB`, which dmd's
 `sc.ini` overwrites.
 
+## A changed COMMAND does not rebuild anything
+
+reggae's binary backend reschedules on changed inputs, not on a changed command line. Fix the way
+a binary is LINKED and the binary stays as it was — and the failure it caused stays with it. That
+cost two rounds here: `/WHOLEARCHIVE:` was already right while the oracle it applied to was still
+the one linked without it.
+
+After changing how something is compiled or linked, delete the artefact before measuring:
+
+    rm -f .build/*/qmlvalues* .build/*/*_check     # or wipe .build for a command-shape change
+
 ## Running a target
 
 Commands go through PowerShell (`tools/win/*.ps1`); the gates stay `.sh`. Before writing or
