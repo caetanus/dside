@@ -2084,7 +2084,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
     // against an oracle built from the old types, and passes. Demonstrated before this was fixed.
     auto oracle = Target(oracleBin, guarded(oracleBin ~ ".lock",
         "clang++ " ~ cflags ~ " -o " ~ oracleBin ~ " " ~ oracleCpp
-        ~ " -Wl,--whole-archive " ~ typesLib ~ " -Wl,--no-whole-archive "
+        ~ " " ~ wholeArchive(typesLib) ~ " "
         ~ qtLibsOf(["Qt6Qml", "Qt6Gui", "Qt6Core"]),
         null, oracleBin, [oracleCpp, typesLib]), [Target(oracleCpp), lib]);
 
@@ -2132,7 +2132,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 // --whole-archive on the types: their QQmlModuleRegistration is a static object
                 // nothing references, and without it the module isn't registered in this process —
                 // so an ATTACHED object (looked up through Qt's QML type registry) comes back null.
-                ~ " -L--whole-archive -L=" ~ typesLib ~ " -L--no-whole-archive "
+                ~ " " ~ wholeArchiveD(typesLib) ~ " "
                 ~ pkgLibs(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ cxxRuntimeFlag();
             auto app = Target(appBin, guardedLink(appBin ~ ".lock", appCmd, appBin,
                 [genD, appObj, typesLib, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"),

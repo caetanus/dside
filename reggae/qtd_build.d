@@ -318,6 +318,25 @@ string arCmd(string lib, string objs) {
 // The C++ runtime is a library you name on POSIX and part of the CRT on Windows, where asking for
 // it by name gets `lld-link: error: could not open 'stdc++.lib'`.
 // ...and the same answer as a linker fragment, for the many command strings that concatenate one.
+// LINK EVERY OBJECT OF AN ARCHIVE, whatever the linker calls it. A Qt type's
+// QQmlModuleRegistration is a static object nobody references, so without this the linker drops
+// it and the module simply is not there at run time:
+//
+//     module "QmltcTests" is not installed
+//
+// lld-link does not know `--whole-archive`: it says `ignoring unknown argument` and carries on,
+// which is how this produced a QML error rather than a link error.
+string wholeArchive(string lib) {
+    version (Windows) return "/WHOLEARCHIVE:" ~ lib;
+    else              return "-Wl,--whole-archive " ~ lib ~ " -Wl,--no-whole-archive";
+}
+
+// ...and the same for a D compiler's link line, where each token is passed with -L.
+string wholeArchiveD(string lib) {
+    version (Windows) return "-L/WHOLEARCHIVE:" ~ lib;
+    else              return "-L--whole-archive -L=" ~ lib ~ " -L--no-whole-archive";
+}
+
 string cxxRuntimeFlag() {
     version (Windows) return "";
     else              return " -L-lstdc++";
