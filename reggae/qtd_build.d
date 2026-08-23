@@ -947,7 +947,13 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
                 psStep("gen.ps1", ["-GenDir", genDir, "-Xiboca", xiboca, "-Spec", useSpec,
                                    "-Stamp", stamp]),
                 stamp, [useSpec, xiboca] ~ runtimeSrc),
-        [Target(specPath), gendTarget(root)] ~ runtimeSrc.map!(f => Target(f)).array);
+        // THE SPEC THE COMMAND ACTUALLY READS, which is the derived one where there is no
+        // pkg-config. Declaring the original meant reggae never rescheduled the step when the
+        // derived spec changed: the guard's own up-to-date check would have caught it, but the
+        // guard only runs if the command is scheduled at all. A corrected spec sat next to a
+        // binding generated from the broken one, and `xiboca` by hand found 23 classes where the
+        // build still had none.
+        [Target(useSpec), gendTarget(root)] ~ runtimeSrc.map!(f => Target(f)).array);
 
     // Compile every .cpp into libshims.a. qtdmoc.cpp additionally needs the Qt private
     // headers. Shims are C++ -> identical for ldc2/dmd, so this target is shared.
