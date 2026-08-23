@@ -1948,12 +1948,23 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
                 auto setArgs = readText(setFile).split("\n")
                     .filter!(l => !l.strip.startsWith("#")).join(" ")
                     .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
-                ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc,
-                    "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
-                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
-                    ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set"
-                    ~ " && echo \"qmltcd " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'",
-                    [app, oracle, tool]);
+                auto setList = readText(setFile).split("\n")
+                    .filter!(l => !l.strip.startsWith("#")).join(" ").strip.split.array;
+                string dsCmd;
+                version (Windows)
+                    dsCmd = psInline(root, "qmltcd-" ~ name ~ "-set-" ~ dc, [
+                        psRedirect(toolBin, ["--labels", qmlFile, name, "--dtypes", typesFile,
+                                             "apptypes"], props, false, true),
+                        psRedirect(appBin, setList, a ~ ".set"),
+                        psRedirect(oracleBin, [qmlFile] ~ setList ~ ["--props", props], b ~ ".set"),
+                        psDiff(a ~ ".set", b ~ ".set", "qmltcd " ~ name ~ " (" ~ dc ~ ", setters)"),
+                    ], bind.mods);
+                else
+                    dsCmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                        ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
+                        ~ " --props " ~ props ~ " > " ~ b ~ ".set && diff " ~ a ~ ".set " ~ b ~ ".set"
+                        ~ " && echo \"qmltcd " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'";
+                ts ~= Target.phony("qmltcd-" ~ name ~ "-set-" ~ dc, dsCmd, [app, oracle, tool]);
             }
         }
     }
@@ -2168,13 +2179,25 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
                 auto setArgs = readText(setFile).split("\n")
                     .filter!(l => !l.strip.startsWith("#")).join(" ")
                     .strip.split.map!(a => "\"" ~ a ~ "\"").join(" ");
-                ts ~= Target.phony("qmltcc-" ~ name ~ "-set-" ~ dc,
-                    "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
-                    ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
-                    ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b ~ ".set && diff "
-                    ~ a ~ ".set " ~ b ~ ".set"
-                    ~ " && echo \"qmltcc " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'",
-                    [app, oracle, tool]);
+                auto setList = readText(setFile).split("\n")
+                    .filter!(l => !l.strip.startsWith("#")).join(" ").strip.split.array;
+                string csCmd;
+                version (Windows)
+                    csCmd = psInline(root, "qmltcc-" ~ name ~ "-set-" ~ dc, [
+                        psRedirect(toolBin, ["--labels", qmlFile, name, "--cpptypes", typesFile,
+                                             "qt.corpustypes"], props, false, true),
+                        psRedirect(appBin, setList, a ~ ".set"),
+                        psRedirect(oracleBin, [qmlFile] ~ setList ~ ["--props", props,
+                                               "--attached-uri", "QmltcTests"], b ~ ".set"),
+                        psDiff(a ~ ".set", b ~ ".set", "qmltcc " ~ name ~ " (" ~ dc ~ ", setters)"),
+                    ], bind.mods);
+                else
+                    csCmd = "sh -c '" ~ mkProps ~ "QT_QPA_PLATFORM=offscreen " ~ appBin ~ " " ~ setArgs ~ " > " ~ a ~ ".set"
+                        ~ " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " " ~ setArgs
+                        ~ " --props " ~ props ~ " --attached-uri QmltcTests > " ~ b ~ ".set && diff "
+                        ~ a ~ ".set " ~ b ~ ".set"
+                        ~ " && echo \"qmltcc " ~ name ~ " (" ~ dc ~ ", setters): $(wc -l < " ~ a ~ ".set) lines match\"'";
+                ts ~= Target.phony("qmltcc-" ~ name ~ "-set-" ~ dc, csCmd, [app, oracle, tool]);
             }
         }
     }
