@@ -327,7 +327,10 @@ string arCmd(string lib, string objs) {
 // lld-link does not know `--whole-archive`: it says `ignoring unknown argument` and carries on,
 // which is how this produced a QML error rather than a link error.
 string wholeArchive(string lib) {
-    version (Windows) return "/WHOLEARCHIVE:" ~ lib;
+    // -Wl, on BOTH: this goes to the clang++ DRIVER, and a bare `/WHOLEARCHIVE:…` reads as an
+    // input file path to a gnu-style driver, which silently does nothing. The archive is still
+    // named separately — /WHOLEARCHIVE only asks for it to be pulled in whole.
+    version (Windows) return "-Wl,/WHOLEARCHIVE:" ~ lib ~ " " ~ lib;
     else              return "-Wl,--whole-archive " ~ lib ~ " -Wl,--no-whole-archive";
 }
 
