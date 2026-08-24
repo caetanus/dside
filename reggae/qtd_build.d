@@ -1336,7 +1336,10 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ " && " ~ arCmd("libsample.a", "*" ~ objExt());
     // freshness vs the umbrella (written at configure time): without it a second concurrent
     // scheduling would `rm -rf build` mid-link (empty newerThan == never skip).
-    auto sampleLib = Target(lsa, guarded(bdir ~ "/lsa.lock", lsaCmd, null, lsa, [buildPath(bdir, "sample_all.h")]), []);
+    auto sampleLib = Target(lsa, guarded(bdir ~ "/lsa.lock", lsaCmd,
+        psStep("libsample.ps1", ["-Src", LS, "-Min", MIN, "-Umbrella", buildPath(bdir, "sample_all.h"),
+                                 "-Build", build, "-Lib", lsa, "-Pic", cxxPic(), "-ObjExt", objExt()]),
+        lsa, [buildPath(bdir, "sample_all.h")]), []);
 
     // 2) generate the "sample" binding.
     auto stamp = buildPath(bdir, "gen.stamp");
@@ -1345,8 +1348,15 @@ Target[] libsampleTargets(string root, string pyside) {
     // ...with the runtime sources as inputs, exactly as the common builder has them (critics r13
     // #1): without this edge, editing the runtime leaves libsample testing the copy from before.
     auto lsRuntime = qtdRuntimeSources(root);
+    // The SAME gen.ps1 the bindings use: wipe the directory, run xiboca, stamp last. This
+    // pipeline is a second, hand-written copy of the common builder's steps, which is exactly why
+    // it kept missing what the common one already had — the runtime edge in round 13, the
+    // PowerShell dialect here.
     auto genT = Target(stamp,
-        guarded(bdir ~ "/gen.lock", genCmd, null, stamp, [lsa, xiboca] ~ lsRuntime),
+        guarded(bdir ~ "/gen.lock", genCmd,
+                psStep("gen.ps1", ["-GenDir", gen, "-Xiboca", xiboca, "-Spec", specPath,
+                                   "-Stamp", stamp]),
+                stamp, [lsa, xiboca] ~ lsRuntime),
         [sampleLib, gendTarget(root)] ~ lsRuntime.map!(f => Target(f)).array);
 
     // 3) shims (.cpp) -> libshims.a.
@@ -1361,7 +1371,12 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ `case "$b" in qtdmoc|qtdmoc_qml_stub) EX="` ~ priv ~ `";; *) EX=;; esac; `
         ~ "clang++ " ~ cxx ~ " $EX -c $c -o " ~ bdir ~ "/ocpp/$b" ~ objExt() ~ " || exit 1; done && "
         ~ arCmd(shimsLib, bdir ~ "/ocpp/*" ~ objExt());
-    auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd, null, shimsLib, [stamp]), [genT]);
+    auto shimsT = Target(shimsLib, guarded(bdir ~ "/shims.lock", shimsCmd,
+        psStep("shims.ps1", ["-GenDir", gen, "-ObjDir", bdir ~ "/ocpp", "-Lib", shimsLib,
+                             "-Cxx", cxx, "-Priv", priv, "-QmlEnabled", "no",
+                             "-StubSuffix", "_stub", "-ObjExt", objExt(),
+                             "-QmlFlag", bdir ~ "/qml-enabled"]),
+        shimsLib, [stamp]), [genT]);
     _shimsRegistry ~= ShimsEntry(shimsLib, false, shimsT, ["Qt6Core"], qtdExpandLinkMods(["Qt6Core"]), qtdQtRelease(["Qt6Core"]));   // libsample: no QtQml, QtCore only
     _genRegistry ~= genT;
 
@@ -1373,7 +1388,10 @@ Target[] libsampleTargets(string root, string pyside) {
         auto libCmd = "rm -rf " ~ od ~ " && mkdir -p " ~ od ~ " && cd " ~ gen ~ " && "
             ~ dc ~ " -c " ~ oq ~ "-od=" ~ od ~ ` -I. $(find . -name "*.d") && `
             ~ arCmd(lib, od ~ "/*" ~ objExt());
-        auto libT = Target(lib, guarded(bdir ~ "/bind_" ~ dc ~ ".lock", libCmd, null, lib, [stamp]), [genT]);
+        auto libT = Target(lib, guarded(bdir ~ "/bind_" ~ dc ~ ".lock", libCmd,
+            psStep("dlib.ps1", ["-GenDir", gen, "-ObjDir", od, "-Lib", lib, "-Dc", dc,
+                                "-ObjExt", objExt()], dc == "ldc2" ? ["-Oq"] : []),
+            lib, [stamp]), [genT]);
         // libsample.a + the shim archives have mutual refs -> a static --start/--end-group.
         auto grp = "-L--start-group -L=" ~ lib ~ " -L=" ~ shimsLib ~ " -L=" ~ lsa
             ~ " -L--end-group" ~ (cxxRuntimeLibs().length ? " -L-lstdc++" : "");
