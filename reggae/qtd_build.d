@@ -586,6 +586,32 @@ string guarded(string lock, string cmd, string winPs, string output, string[] ne
     return posixCmd("mkdir -p " ~ dirName(lock) ~ " && flock " ~ lock ~ " sh -c '" ~ esc ~ "'");
 }
 
+// WHERE THIS MACHINE'S Qt IS, for the callers that need the installation itself rather than one
+// module's flags. QtProbe is private; this is the one answer worth exporting.
+string qtPrefix() { return QtProbe.prefix(); }
+
+// AN `sh` GATE THAT RUNS ONE OF OUR OWN Qt-LINKED TOOLS. There is no rpath on Windows, so such a
+// tool finds Qt's DLLs through PATH or not at all — and "not at all" is a process that dies before
+// main. Every one of these scripts then reported something else entirely, because each had already
+// decided what a silent tool meant:
+//
+//     shadow-aot: … has no refused expression — nothing to AOT (the fixture must delegate)
+//     optlevels:  the ENGINE dumps nothing for AListView.qml — unjudgeable, not compared
+//
+// while the diagnostics file held `qmltc-d: error while loading shared libraries: Qt6Core.dll`.
+// The PATH goes in through sh, not through the command text: cmd.exe does not understand
+// `VAR=value cmd`, which is the same trap the -time-/-render- families fell into.
+//
+// MSYS form, because this value ends up INSIDE a `:`-separated PATH — `C:/Qt/...` would split at
+// the drive letter.
+string shGate(string cmd, string[] mods) {
+    version (Windows) {
+        if (!mods.length) return cmd;
+        return posixCmd("PATH=" ~ msysPath(buildPath(QtProbe.prefixOf(mods), "bin")) ~ ":$PATH "
+                        ~ cmd);
+    } else return cmd;
+}
+
 // The repo root, so the PowerShell halves can be found without threading it through every
 // signature. Set once, from the reggaefile, before any target is built.
 __gshared string _psRoot;

@@ -183,13 +183,35 @@ void main() {
 
     // C++ exception -> D: a thrown C++ exception is classified by the Lippincott shim and
     // re-raised as a D QtCppException, unwinding back through the C++ trampoline frame.
-    {
+    //
+    // NOT ON dmd/Win64, and the reason is the toolchain rather than this code. dmd there uses
+    // rt.deh_win64_posix — DWARF-style exception tables, as the module name says — while a
+    // clang-cl frame carries SEH unwind data and no DWARF LSDA. A D exception raised inside the
+    // C++ trampoline cannot describe the frames between itself and the D handler, finds none, and
+    // druntime calls terminate(). Measured with symbols under cdb, exit 0xC0000096 (`hlt`, which
+    // is what dmd emits for assert(0)):
+    //
+    //     rt.deh_win64_posix.terminate  <-  d_throwc  <-  qtd_throw_d  <-  qtd_test_throw
+    //     __FrameHandler3::CxxCallCatchBlock  <-  qtd_test_throw  <-  D main
+    //
+    // LDC has no such problem: on Windows it emits MSVC-compatible EH, so a D throw IS an SEH
+    // exception and composes with the C++ frames — the ldc2 twin of this target proves it, and
+    // that is why the line below says which compiler DID prove it. Registered as `known_gap`
+    // `cxx-exception-dmd-win64` in tests/expected-fails.json; making it work means not unwinding
+    // through C++ at all, which is an ABI change to every guarded call.
+    version (Windows) version (DigitalMars) enum EXC_UNWIND_UNSUPPORTED = true;
+    // The inner braces are not decoration: a `static if` body does NOT introduce a scope in D, so
+    // without them `caught` and `msg` shadow the ones the next block declares.
+    static if (!is(typeof(EXC_UNWIND_UNSUPPORTED))) {{
         bool caught = false; string msg;
         try { qtd_test_throw(); }
         catch (QtCppException e) { caught = true; msg = e.msg; }
         if (caught) writeln("  EXC       C++ exception -> QtCppException: ", msg);
         else { writeln("  EXCFAIL   C++ exception not translated to D"); fails++; }
-    }
+    }} else
+        writeln("  EXCGAP    C++ exception -> D is not reachable on dmd/Win64 (rt.deh_win64_posix",
+                " is DWARF-style, a clang-cl frame is SEH-only). The ldc2 twin of this target",
+                " proves the path; known_gap cxx-exception-dmd-win64.");
 
     // Error-return -> typed D exception: bad JSON throws JsonParseException; valid parses.
     {

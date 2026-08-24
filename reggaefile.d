@@ -52,6 +52,17 @@ string qtInstallQml() {
             }
         } catch (Exception) { }
     }
+    // ...and where NO probe is on PATH at all, ask the build's own resolution before falling back
+    // to a Linux distribution's literal. On Windows that is the normal case, on purpose: Qt's bin
+    // is kept off PATH so a dual-target build cannot load the wrong Qt's DLLs, so `qmake6` is not
+    // findable and every branch above fails. The literal then names a directory that does not
+    // exist, and every Controls-keyed gate emits no targets — a gate that DISAPPEARS, which is the
+    // exact failure this function's own header warns about. Measured: `qmltc-o3-gate-skipped` and
+    // no `qmltc-optlevels-controls-*` at all in a Windows matrix whose Qt ships all five styles.
+    {
+        auto p = buildPath(qtPrefix(), "qml");
+        if (p.length && exists(p)) { _qtQmlDir = p; return p; }
+    }
     _qtQmlDir = "/usr/lib/qt6/qml";
     return _qtQmlDir;
 }
@@ -334,10 +345,10 @@ Build reggaeBuild() {
                 // and accused the documentation of saying 39. A dependency that covers half of what
                 // a gate reads is how a check comes to describe a mixture of two builds.
                 auto olStyle = Target.phony("qmltc-optlevels-controls-" ~ style,
-                    "sh " ~ od ~ " " ~ buildPath(ctrl.bdir, "qmltc-d") ~ " "
+                    shGate("sh " ~ od ~ " " ~ buildPath(ctrl.bdir, "qmltc-d") ~ " "
                     ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " " ~ styleDir ~ " "
                     ~ buildPath(ctrl.bdir, "optlevels-" ~ style) ~ " " ~ ctrl.bdir ~ " "
-                    ~ ctrl.genDir ~ " ldc2 " ~ pkgLibs(ctrl.mods),
+                    ~ ctrl.genDir ~ " ldc2 " ~ pkgLibs(ctrl.mods), ctrl.mods),
                     [Target(od), Target(buildPath(root, "tests", "qmltc", "optlevels.sh")),
                      Target(buildPath(root, "tests", "qmltc", "optlevels-known.txt")),
                      qmltcTool(root, ctrl), ctrl.gen, qtdBindLib(ctrl, "ldc2"), ctrl.shims]);
@@ -410,9 +421,12 @@ Build reggaeBuild() {
         auto rbBin = buildPath(root, ".build", "runtime-boundary-bin");
         auto rbBase = buildPath(root, "tests", "runtime-boundary.baseline");
         auto rbb = Target(rbBin, "dmd -of=$out " ~ rbD, [Target(rbD)]);
+        // runExe, not `$in …`: reggae substitutes a native path with no extension, and cmd.exe
+        // answers `não é reconhecido como um comando interno ou externo`. Same for every gate
+        // below that starts with its own binary.
         all ~= Target.phony("runtime-boundary",
-            "$in " ~ buildPath(root, "runtime", "qtmoc", "qtdmoc.cpp") ~ " "
-            ~ buildPath(root, "runtime", "qtmoc", "qtmoc.d") ~ " " ~ rbBase, [rbb]);
+            runExe(root, "$in", "", buildPath(root, "runtime", "qtmoc", "qtdmoc.cpp") ~ " "
+            ~ buildPath(root, "runtime", "qtmoc", "qtmoc.d") ~ " " ~ rbBase), [rbb]);
     }
 
     // --- ABI LAYOUT PROBE (critics r4 #9, the oldest finding untouched until 2026-08-12): the
@@ -455,7 +469,8 @@ Build reggaeBuild() {
         auto ccBase = buildPath(root, "tests", "compiler-context.baseline");
         auto ccb = Target(ccBin, "dmd -of=$out " ~ ccD, [Target(ccD)]);
         all ~= Target.phony("compiler-context",
-            "$in " ~ buildPath(root, "tools", "qmltc", "qmltc_d.cpp") ~ " " ~ ccBase, [ccb]);
+            runExe(root, "$in", "", buildPath(root, "tools", "qmltc", "qmltc_d.cpp") ~ " " ~ ccBase),
+            [ccb]);
     }
 
     // --- expected-fails registry consumer: validate schema/kind and that every `risk` probe names
@@ -471,10 +486,26 @@ Build reggaeBuild() {
         // — the linter called the first one dangling, which is the linter being right about the
         // list it was given and the list being incomplete. The reggaefile knows them, so it says so.
         auto gpList = buildPath(root, ".build", "gap-probes.txt");
-        all ~= Target.phony("expected-fails-lint",
-            "sh -c \"" ~ buildPath(root, "build") ~ " --list > " ~ efList ~ " 2>/dev/null; "
-            ~ "cat " ~ gpList ~ " >> " ~ efList ~ " 2>/dev/null; "
-            ~ "$in " ~ efJson ~ " " ~ efList ~ "\"", [efb]);
+        // The Windows half does NOT use `$in`. reggae substitutes a native, backslashed path into
+        // the command TEXT, and cmd.exe eats backslashes there — the run said
+        //   sh: C:Userscaetanodside.buildexpected-fails-lint-bin: command not found
+        // with every separator gone. The path is known when the graph is built, so it is written
+        // into the step instead, and `efb` stays the dependency.
+        string efCmd;
+        version (Windows)
+            efCmd = psInline(root, "expected-fails-lint", [
+                psRedirect(buildPath(root, exeName("build")), ["--list"], efList, false, true),
+                "$l = @(Get-Content -LiteralPath " ~ psQ(efList) ~ ")",
+                "if (Test-Path -LiteralPath " ~ psQ(gpList) ~ ") { $l += @(Get-Content -LiteralPath "
+                    ~ psQ(gpList) ~ ") }",
+                "[System.IO.File]::WriteAllText(" ~ psQ(efList) ~ ", (($l -join \"`n\") + \"`n\"))",
+                psRunLine(efBin, [efJson, efList]),
+            ]);
+        else
+            efCmd = "sh -c \"" ~ buildPath(root, "build") ~ " --list > " ~ efList ~ " 2>/dev/null; "
+                  ~ "cat " ~ gpList ~ " >> " ~ efList ~ " 2>/dev/null; "
+                  ~ "$in " ~ efJson ~ " " ~ efList ~ "\"";
+        all ~= Target.phony("expected-fails-lint", efCmd, [efb]);
     }
 
     // --- CAN SOMEBODY ELSE USE THIS? An application built OUTSIDE the checkout, from the import
@@ -488,8 +519,8 @@ Build reggaeBuild() {
         if (exists(cs))
             foreach (dc; DCS)
                 all ~= Target.phony("consumer-smoke-" ~ dc,
-                    "sh " ~ cs ~ " " ~ ex.genDir ~ " " ~ ex.bdir ~ " " ~ dc ~ " "
-                    ~ pkgLibs(ex.mods ~ ["Qt6Core"]),
+                    shGate("sh " ~ cs ~ " " ~ ex.genDir ~ " " ~ ex.bdir ~ " " ~ dc ~ " "
+                    ~ pkgLibs(ex.mods ~ ["Qt6Core"]), ex.mods),
                     [Target(cs), Target(buildPath(root, "tests", "consumer", "hello.d")),
                      ex.gen, qtdBindLib(ex, dc), ex.shims]);
     }
@@ -562,7 +593,7 @@ Build reggaeBuild() {
             }
             foreach (dc; DCS)
                 all ~= Target.phony("dub-consumer-" ~ dc,
-                    "sh " ~ dcs ~ " " ~ prefix ~ " qtd-qtwidgets " ~ dc,
+                    shGate("sh " ~ dcs ~ " " ~ prefix ~ " qtd-qtwidgets " ~ dc, ex.mods),
                     [Target(dcs), Target(buildPath(root, "tests", "consumer", "hello.d")), inst]);
         }
     }
@@ -1048,7 +1079,8 @@ Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels
         // deps: the gate binary + the binding's gen (so the manifest is freshly regenerated).
         // --DRT-testmode=run-main: run the gate's regression-detection unittests, THEN the real check.
         ts ~= Target.phony("manifest-gate-" ~ labels[i],
-            gateBin ~ " --DRT-testmode=run-main " ~ baseline ~ " " ~ curMan ~ " " ~ labels[i], [gate, b.gen]);
+            runExe(root, gateBin, "", "--DRT-testmode=run-main " ~ baseline ~ " " ~ curMan
+                                     ~ " " ~ labels[i]), [gate, b.gen]);
     }
     return ts;
 }
@@ -1075,6 +1107,31 @@ Target[] lupdateCheckTargets(string root) {
         ~ " && " ~ bin ~ " " ~ fixt ~ " -ts " ~ pres ~ " >/dev/null"
         ~ " && grep -q KEEP_ME " ~ pres
         ~ " && echo 'lupdate-check OK: golden match + existing translation preserved across re-run'";
+    // WINDOWS: not this command, at any quoting. The sed pattern contains `><`
+    // (`type=.unfinished.><.translation>`) and cmd.exe parses `>` and `<` as redirection before sh
+    // ever sees the string — the whole step arrives mangled. Said in PowerShell instead, where the
+    // text lives in a file and no shell rewrites it.
+    version (Windows) {
+        auto win = psInline(root, "lupdate-check", [
+            "$dub = (Get-Command dub -ErrorAction Stop).Source",
+            "Run $dub build " ~ psQ("--root=" ~ dir) ~ " -q",
+            psRunLine(bin, [fixt, "-ts", outTs]),
+            psDiff(golden, outTs, "lupdate-check: extraction matches the golden"),
+            "Copy-Item -LiteralPath " ~ psQ(golden) ~ " -Destination " ~ psQ(pres) ~ " -Force",
+            // The FIRST unfinished entry only, like sed's `0,/re/`: -replace is global, so the
+            // substitution is done on the one match this finds.
+            "$t = [System.IO.File]::ReadAllText(" ~ psQ(pres) ~ ")",
+            "$m = [regex]::Match($t, '<translation type=\"unfinished\"></translation>')",
+            "if (-not $m.Success) { Write-Output 'lupdate-check: no unfinished entry to fill'; exit 1 }",
+            "$t = $t.Remove($m.Index, $m.Length).Insert($m.Index, '<translation>KEEP_ME</translation>')",
+            "[System.IO.File]::WriteAllText(" ~ psQ(pres) ~ ", $t)",
+            psRunLine(bin, [fixt, "-ts", pres]),
+            "if (-not (Select-String -LiteralPath " ~ psQ(pres) ~ " -SimpleMatch 'KEEP_ME' -Quiet))"
+                ~ " { Write-Output 'lupdate-check: the existing translation did not survive the re-run'; exit 1 }",
+            "Write-Output 'lupdate-check OK: golden match + existing translation preserved across re-run'",
+        ]);
+        return [Target.phony("lupdate-check", win, [])];
+    }
     return [Target.phony("lupdate-check", "sh -c \"" ~ cmd ~ "\"", [])];
 }
 
@@ -1330,9 +1387,9 @@ Target[] optLevelTargets(string root, QtdBinding bind) {
     foreach (e; dirEntries(dir, "*.qml", SpanMode.shallow).map!(x => x.name).array.sort) {
         auto name = baseName(e).stripExtension;
         auto outDir = buildPath(bind.bdir, "optlevels", name);
-        auto cmd = "sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
+        auto cmd = shGate("sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
                  ~ " " ~ e ~ " I" ~ name ~ " " ~ outDir ~ " " ~ bind.bdir ~ " " ~ bind.genDir
-                 ~ " ldc2 " ~ pkgLibs(bind.mods);
+                 ~ " ldc2 " ~ pkgLibs(bind.mods), bind.mods);
         // ...AND the two helper objects this script links against. It tested for them with `[ -f ]`
         // and linked whatever was on disk: while another target rewrote `qtd_render.o`, this link
         // consumed a partial file and failed with `-O1 does not link`, a message that names nothing
@@ -1360,11 +1417,11 @@ Target[] qmltcControlsRuntimeTargets(string root, QtdBinding bind) {
     Target[] ts;
     foreach (dc; DCS) {
         auto outDir = buildPath(bind.bdir, "ctlrt-" ~ dc);
-        auto cmd = "sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
+        auto cmd = shGate("sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
                  ~ " " ~ dir ~ " " ~ outDir ~ " " ~ dc ~ " " ~ bind.genDir ~ " " ~ appCpp
                  ~ " " ~ renderCpp ~ " " ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                  ~ " " ~ buildPath(bind.bdir, "libshims.a")
-                 ~ " '" ~ pkgCflags(bind.mods ~ ["Qt6Core"]) ~ "' " ~ pkgLibs(bind.mods);
+                 ~ " '" ~ pkgCflags(bind.mods ~ ["Qt6Core"]) ~ "' " ~ pkgLibs(bind.mods), bind.mods);
         ts ~= Target.phony("qmltc-controls-runtime-" ~ dc, cmd,
                            [tool, Target(script), Target(appCpp), Target(renderCpp),
                             bind.gen, qtdBindLib(bind, dc), bind.shims]);
@@ -1863,8 +1920,9 @@ Target[] shadowAotTargets(string root, QtdBinding quick) {
     Target[] ts;
     foreach (dc; DCS) {
         auto outDir = buildPath(quick.bdir, "shadowaot-" ~ dc);
-        auto cmd = "sh " ~ script ~ " " ~ tool ~ " " ~ qmlmap ~ " " ~ qmlFile ~ " QJsDelegated "
-                 ~ outDir ~ " " ~ quick.bdir ~ " " ~ quick.genDir ~ " " ~ dc ~ " " ~ gen ~ " " ~ cflags;
+        auto cmd = shGate("sh " ~ script ~ " " ~ tool ~ " " ~ qmlmap ~ " " ~ qmlFile ~ " QJsDelegated "
+                 ~ outDir ~ " " ~ quick.bdir ~ " " ~ quick.genDir ~ " " ~ dc ~ " " ~ gen ~ " " ~ cflags,
+                 quick.mods);
         ts ~= Target.phony("shadowaot-" ~ dc, cmd,
                            [Target(script), Target(qmlFile), qtdBindLib(quick, dc), quick.shims]);
     }
@@ -1886,13 +1944,13 @@ Target[] shadowAotTargets(string root, QtdBinding quick) {
     auto lgm = buildPath(root, "tests", "license-generated-output-mutations.sh");
     if (exists(lgm) && exists(lgo))
         ts ~= Target.phony("license-generated-output-mutations",
-            "sh " ~ lgm ~ " " ~ tool ~ " " ~ qmlFile ~ " " ~ qmlmap ~ " "
-            ~ buildPath(root, "tests", "qmltc", "quick") ~ " " ~ sampleGen,
+            shGate("sh " ~ lgm ~ " " ~ tool ~ " " ~ qmlFile ~ " " ~ qmlmap ~ " "
+            ~ buildPath(root, "tests", "qmltc", "quick") ~ " " ~ sampleGen, quick.mods),
             [Target(lgm), Target(lgo), Target(qmlFile), quick.gen, qmltcTool(root, quick)]);
     if (exists(lgo))
         ts ~= Target.phony("license-generated-output",
-            "sh " ~ lgo ~ " " ~ tool ~ " " ~ qmlFile ~ " " ~ qmlmap ~ " "
-            ~ buildPath(root, "tests", "qmltc", "quick") ~ " " ~ sampleGen,
+            shGate("sh " ~ lgo ~ " " ~ tool ~ " " ~ qmlFile ~ " " ~ qmlmap ~ " "
+            ~ buildPath(root, "tests", "qmltc", "quick") ~ " " ~ sampleGen, quick.mods),
             [Target(lgo), Target(qmlFile), quick.gen, qmltcTool(root, quick)]);
     return ts;
 }

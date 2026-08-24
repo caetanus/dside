@@ -17,12 +17,24 @@ shift 9
 CFLAGS="$*"
 
 rm -rf "$OUT"; mkdir -p "$OUT/sh" "$OUT/ld"
+# `|| true` because a REFUSED expression is the point and the tool exits non-zero for it. But a
+# tool that could not START also exits non-zero, and the check below then blamed the fixture:
+# `has no refused expression — nothing to AOT` while gen.diag held
+#   qmltc-d: error while loading shared libraries: Qt6Core.dll: cannot open shared object file
+# So the two are told apart before anything is concluded about the document.
 "$TOOL" --dump --shadow-dir "$OUT/sh" --shadow-url "qrc:/qtdshadow/" "$QMLFILE" "$CLS" \
         --qmlmap "$QMLMAP" > "$OUT/gen.d" 2>"$OUT/gen.diag" || true
+
+if grep -q "error while loading shared libraries\|is not recognized\|cannot execute" "$OUT/gen.diag" 2>/dev/null; then
+  echo "shadow-aot: the compiler did not run at all:" >&2
+  sed 's/^/    /' "$OUT/gen.diag" >&2
+  exit 1
+fi
 
 n=$(ls "$OUT/sh" 2>/dev/null | wc -l)
 if [ "$n" -eq 0 ]; then
   echo "shadow-aot: $QMLFILE has no refused expression — nothing to AOT (the fixture must delegate)" >&2
+  sed 's/^/    diag: /' "$OUT/gen.diag" >&2
   exit 1
 fi
 

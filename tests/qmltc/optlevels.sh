@@ -36,8 +36,18 @@ mkdir -p "$OUT"
 # application corpus that skips a member reached this line and reported nothing.
 "$TOOL" --objpaths "$QMLFILE" "$CLS" --qmlmap "$QMLMAP" -I "$(dirname "$QMLFILE")" \
         > "$OUT/objs" 2>/dev/null || true
-QT_QPA_PLATFORM=offscreen "$BDIR/qmlvalues" "$QMLFILE" --dumpall "$OUT/objs" 2>/dev/null \
+# 2>/dev/null used to swallow the one message that mattered. A qmlvalues that cannot START — no Qt
+# DLLs on PATH, which is the normal shape of a Windows failure — produces an empty dump, and the
+# check below then called the DOCUMENT unjudgeable. Keep the stderr and look at it first.
+QT_QPA_PLATFORM=offscreen "$BDIR/qmlvalues" "$QMLFILE" --dumpall "$OUT/objs" 2>"$OUT/engine.diag" \
   | sort > "$OUT/engine.txt"
+if [ ! -s "$OUT/engine.txt" ] \
+   && grep -q "error while loading shared libraries\|is not recognized\|cannot execute" \
+             "$OUT/engine.diag" 2>/dev/null; then
+  echo "optlevels: the engine binary did not run at all:" >&2
+  sed 's/^/    /' "$OUT/engine.diag" >&2
+  exit 1
+fi
 if [ ! -s "$OUT/engine.txt" ]; then
   # UNJUDGEABLE, not failed. The o3 gate has always given a document the engine cannot build
   # standalone its own column; this script called it a disagreement, and so reported Fusion's
