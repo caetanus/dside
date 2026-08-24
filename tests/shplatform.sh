@@ -24,3 +24,18 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
   MINGW*|MSYS*|CYGWIN*) QTD_PIC="" ;;
   *)                    QTD_PIC="-fPIC" ;;
 esac
+
+# THE INSTALLED Qt RELEASE, WITHOUT pkg-config. Qt's MSVC builds ship no .pc files at all, so on
+# Windows every `pkg-config --modversion` answers nothing and a gate keyed on it either says
+# "no Qt found" about an installation the build already resolved, or skips itself in silence. The
+# environment names the prefix (QTDIR6/QTDIR5, the same ones the build uses) and Qt writes its
+# release into qconfig.h as QT_VERSION_STR.
+qt_release_from_prefix() {
+    [ -n "${1:-}" ] || return 1
+    for h in "$1/include/QtCore/qconfig.h" "$1/include/QtCore/qtcoreversion.h"; do
+        [ -f "$h" ] || continue
+        v=$(sed -n 's/^#[[:space:]]*define[[:space:]]\+QT_VERSION_STR[[:space:]]\+"\([^"]*\)".*/\1/p' "$h" | head -1)
+        [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+    done
+    return 1
+}

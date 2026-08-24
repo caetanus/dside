@@ -46,15 +46,7 @@ MATRIX="$ROOT/docs/qt-license-matrix.tsv"
 # installation the build had already resolved — the wrong sentence about the wrong problem. The
 # environment names the prefix (QTDIR6/QTDIR5, which the build itself uses) and Qt writes its
 # release into qconfig.h as QT_VERSION_STR.
-qt_release_from_prefix() {
-    [ -n "${1:-}" ] || return 1
-    for h in "$1/include/QtCore/qconfig.h" "$1/include/QtCore/qtcoreversion.h"; do
-        [ -f "$h" ] || continue
-        v=$(sed -n 's/^#[[:space:]]*define[[:space:]]\+QT_VERSION_STR[[:space:]]\+"\([^"]*\)".*/\1/p' "$h" | head -1)
-        [ -n "$v" ] && { printf '%s' "$v"; return 0; }
-    done
-    return 1
-}
+. "$(dirname "$0")/shplatform.sh"
 QTVER=$(pkg-config --modversion Qt6Core 2>/dev/null || pkg-config --modversion Qt5Core 2>/dev/null || echo "")
 [ -n "$QTVER" ] || QTVER=$(qt_release_from_prefix "${QTDIR6:-}" || qt_release_from_prefix "${QTDIR:-}" || echo "")
 if [ -z "$QTVER" ]; then

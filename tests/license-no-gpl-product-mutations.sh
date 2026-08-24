@@ -18,8 +18,15 @@
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 GATE="$ROOT/tests/license-no-gpl-product.sh"
+. "$(dirname "$0")/shplatform.sh"
 QTVER=$(pkg-config --modversion Qt6Core 2>/dev/null || echo "")
-[ -n "$QTVER" ] || { echo "license-no-gpl-product-mutations: no Qt6 here" >&2; exit 0; }
+[ -n "$QTVER" ] || QTVER=$(qt_release_from_prefix "${QTDIR6:-}" || qt_release_from_prefix "${QTDIR:-}" || echo "")
+# ...and if there is still none, SAY WHICH QUESTION WENT UNASKED. This used to exit 0 with a line
+# on stderr, which is a battery of twelve contracts silently not run — and on Windows, where
+# pkg-config is never there, that was every single run.
+[ -n "$QTVER" ] || { echo "license-no-gpl-product-mutations: no Qt6 found (pkg-config, QTDIR6, QTDIR)" >&2
+                     echo "    12 contract(s) NOT exercised — this battery needs a Qt to key the matrix by" >&2
+                     exit 1; }
 
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 # THE ROW COUNT IS DECLARED, not merely reported. Every battery here printed the number IT had
@@ -33,6 +40,9 @@ bad=0; n=0
 scaffold() {   # scaffold <name> [omit-release]
     T="$WORK/$1"; rm -rf "$T"; mkdir -p "$T/tests" "$T/docs" "$T/generator"
     cp "$GATE" "$T/tests/license-no-gpl-product.sh"
+    # ...and what the gate SOURCES, or it dies for a reason that is not the one under test: every
+    # row came back "refused for the WRONG reason" the moment the gate grew a `. shplatform.sh`.
+    cp "$(dirname "$GATE")/shplatform.sh" "$T/tests/shplatform.sh"
     {
         [ "${2:-}" = omit-release ] || printf 'verified-for\t%s\tsynthetic fixture\n' "$QTVER"
         printf '%s\tQt6Core\tlgpl\tfixture\n' "$QTVER"
