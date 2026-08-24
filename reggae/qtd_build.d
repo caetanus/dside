@@ -1317,9 +1317,19 @@ Target[] libsampleTargets(string root, string pyside) {
     writeIfChanged(buildPath(bdir, "sample_all.h"),
         `#include "libsamplemacros.h"` ~ "\n" ~ hdrs.map!(h => `#include "` ~ h ~ `"`).join("\n") ~ "\n");
     // discovery-mode spec (paths known at configure time).
+    // ...WITH THE FLAGS, not only the module name. `pkg_config` says WHICH module this binding
+    // uses — the licence gates read that — but it cannot LOCATE anything where pkg-config is not
+    // installed, which is every Windows machine: xiboca said so and stopped. The Qt bindings solve
+    // this by deriving a spec; this one is written here, so it can simply carry them.
+    auto lsCflags = qtCflags(["Qt6Core"]).split(" ").filter!(f => f.length)
+                    .map!(f => `"` ~ f.replace(`\`, `/`) ~ `"`).join(", ");
+    auto lsLibs = qtLibsOf(["Qt6Core"]).split(" ").filter!(f => f.length)
+                    .map!(f => `"` ~ f.replace(`\`, `/`) ~ `"`).join(", ");
     writeIfChanged(specPath,
         `{ "qt_version": "0", "pkg_config": "Qt6Core", "out_dir": "` ~ gen ~ `",`
         ~ ` "d_package": "sample", "abi": "cxx", "source_filter": "` ~ build ~ `",`
+        ~ (lsCflags.length ? ` "cflags": [` ~ lsCflags ~ `],` : ``)
+        ~ (lsLibs.length   ? ` "libs": [` ~ lsLibs ~ `],` : ``)
         ~ ` "include_paths": ["` ~ build ~ `"], "headers": ["` ~ buildPath(build, "sample_all.h") ~ `"] }`);
 
     auto cflags = pkgCflags(["Qt6Core"]);
