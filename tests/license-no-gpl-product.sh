@@ -41,7 +41,22 @@ MATRIX="$ROOT/docs/qt-license-matrix.tsv"
 # against" — which the table did not say. The plan and docs/distributing-qt.md both tell the reader
 # to consult the licensing page and SBOM for the EXACT release; a gate that rounds the version off
 # proves that somebody wrote a minor number down.
+# ...AND pkg-config IS NOT THE ONLY WAY TO ASK. Qt's own MSVC builds ship no .pc files at all, so
+# on Windows every branch above answers nothing and the gate said `no Qt found` about an
+# installation the build had already resolved — the wrong sentence about the wrong problem. The
+# environment names the prefix (QTDIR6/QTDIR5, which the build itself uses) and Qt writes its
+# release into qconfig.h as QT_VERSION_STR.
+qt_release_from_prefix() {
+    [ -n "${1:-}" ] || return 1
+    for h in "$1/include/QtCore/qconfig.h" "$1/include/QtCore/qtcoreversion.h"; do
+        [ -f "$h" ] || continue
+        v=$(sed -n 's/^#[[:space:]]*define[[:space:]]\+QT_VERSION_STR[[:space:]]\+"\([^"]*\)".*/\1/p' "$h" | head -1)
+        [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+    done
+    return 1
+}
 QTVER=$(pkg-config --modversion Qt6Core 2>/dev/null || pkg-config --modversion Qt5Core 2>/dev/null || echo "")
+[ -n "$QTVER" ] || QTVER=$(qt_release_from_prefix "${QTDIR6:-}" || qt_release_from_prefix "${QTDIR:-}" || echo "")
 if [ -z "$QTVER" ]; then
     echo "license-no-gpl-product FAIL: no Qt found — cannot establish which licence matrix applies" >&2
     exit 1
@@ -97,7 +112,7 @@ for spec in "$ROOT"/generator/spec_cxx_*.json; do
     # release found first is the same error as certifying a Qt5 archive with a Qt6 verification —
     # it just fails in the opposite direction, refusing modules that ARE recorded for their own Qt.
     case "$pk" in
-      *Qt5*) srel=$(pkg-config --modversion Qt5Core 2>/dev/null || echo "") ;;
+      *Qt5*) srel=$(pkg-config --modversion Qt5Core 2>/dev/null || qt_release_from_prefix "${QTDIR5:-}" || echo "") ;;
       *)     srel=$QTVER ;;
     esac
     if [ -z "$srel" ] || ! release_recorded "$srel"; then
