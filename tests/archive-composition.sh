@@ -40,8 +40,14 @@ while IFS="	" read -r a wants; do
       *) echo "archive-composition FAIL: $name — spec says \`$wants\`, which is neither yes nor no" >&2
          bad=$((bad + 1)); continue ;;
     esac
-    have_qml_obj=$(ar t "$a" 2>/dev/null | grep -c '^qtdmoc_qml\.o$' || true)
-    have_stub=$(ar t "$a" 2>/dev/null | grep -c '^qtdmoc_qml_stub\.o$' || true)
+    # THE OBJECT SUFFIX IS THE PLATFORM'S, and `ar` is not the only archiver: MSVC objects are
+    # `.obj` and the archive is read with llvm-ar. Pinned to `.o`, this canary reported
+    #     libsample has neither qtdmoc_qml.o nor qtdmoc_qml_stub.o
+    # about an archive that carries qtdmoc_qml_stub.obj — a false red about the one thing it exists
+    # to check, on every Windows build.
+    AR=${AR:-ar}; command -v "$AR" >/dev/null 2>&1 || AR=llvm-ar
+    have_qml_obj=$("$AR" t "$a" 2>/dev/null | grep -cE '^qtdmoc_qml\.(o|obj)$' || true)
+    have_stub=$("$AR" t "$a" 2>/dev/null | grep -cE '^qtdmoc_qml_stub\.(o|obj)$' || true)
 
     if [ "$wants" = no ] && [ "$have_qml_obj" -ne 0 ]; then
         echo "archive-composition FAIL: $name has no QtQml and still carries qtdmoc_qml.o" >&2
