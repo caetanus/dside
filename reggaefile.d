@@ -1098,7 +1098,10 @@ Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels
 Target[] lupdateCheckTargets(string root) {
     if (execute(["which", "dub"]).status != 0) return [];
     auto dir = buildPath(root, "tools", "lupdate");
-    auto bin = buildPath(dir, "lupdate-d");
+    // exeName: on Windows dub produces `lupdate-d.exe`, and Invoke-Proc starts a process through
+    // CreateProcess, which has no PATHEXT rule — `proc: no such file` names the extensionless path.
+    // The sh half is unaffected (MSYS tries `.exe` itself), which is how this stayed hidden.
+    auto bin = buildPath(dir, exeName("lupdate-d"));
     auto fixt = buildPath(root, "tests", "lupdate", "fixture.d");
     auto golden = buildPath(root, "tests", "lupdate", "fixture.golden.ts");
     auto outTs = buildPath(root, ".build", "lupdate-fixture.ts");

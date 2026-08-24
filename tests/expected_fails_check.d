@@ -21,7 +21,17 @@ void main(string[] args) {
     bool[string] targets;
     foreach (line; readText(args[2]).splitLines) {
         auto s = line.strip;
-        if (s.startsWith("- ")) targets[s[2 .. $]] = true;
+        if (!s.startsWith("- ")) continue;
+        auto name = s[2 .. $];
+        // `./build --list` marks an optional target as `- name (optional)`, and the name recorded
+        // has to be the NAME. Stored whole, every optional target read as dangling — invisible for
+        // as long as the probes named here happened to be non-optional, and it surfaced only where
+        // one of them was optional on one platform and a gap probe on another
+        // (`license-no-gpl-product`: a gap probe where the Qt release is in the licence matrix,
+        // an optional target where it is not, which is every machine with a Qt we have not audited).
+        auto par = name.indexOf(" (");
+        if (par > 0) name = name[0 .. par];
+        targets[name] = true;
     }
 
     string[] errs;
