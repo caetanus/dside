@@ -590,6 +590,16 @@ string guarded(string lock, string cmd, string winPs, string output, string[] ne
 // module's flags. QtProbe is private; this is the one answer worth exporting.
 string qtPrefix() { return QtProbe.prefix(); }
 
+// WHICH PLATFORM THIS IS, for the checks whose answer is a property of the platform rather than of
+// the code — a coverage baseline, first of all: an X11-only type is absent on Windows for a reason
+// that is not a regression.
+string hostPlatform() {
+    version (Windows)      return "windows";
+    else version (OSX)     return "macos";
+    else version (linux)   return "linux";
+    else                   return "posix";
+}
+
 // AN `sh` GATE THAT RUNS ONE OF OUR OWN Qt-LINKED TOOLS. There is no rpath on Windows, so such a
 // tool finds Qt's DLLs through PATH or not at all — and "not at all" is a process that dies before
 // main. Every one of these scripts then reported something else entirely, because each had already

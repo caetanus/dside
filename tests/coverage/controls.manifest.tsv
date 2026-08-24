@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcelo A Caetano
 # SPDX-License-Identifier: BSL-1.0
+# baseline-for: platform=linux qt=6.11.1
 # cppClass	symbol	usr	fate
 QAbstractAnimation	bindableCurrentLoop	c:@S@QAbstractAnimation@F@bindableCurrentLoop#1	unmapped-type
 QAbstractAnimation	bindableCurrentTime	c:@S@QAbstractAnimation@F@bindableCurrentTime#	unmapped-type

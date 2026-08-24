@@ -112,11 +112,37 @@ unittest {
     assert(mal.length == 1, "a malformed (<4-col) line must be flagged");
 }
 
+// A BASELINE IS A PAIRING, NOT A UNIVERSAL TRUTH. It records what ONE platform's binding covers
+// against ONE Qt, and comparing across either axis is not a stricter check — it is a different
+// question, with no answer. Measured the first time this gate could run on Windows: 104 symbols
+// "DISAPPEARED", among them QNativeInterface::QX11Application (X11, which Windows does not have)
+// and QAbstractItemView::keyboardSearchFlags (added in Qt 6.11, against a 6.10.3 install).
+//
+// So the baseline declares the pairing it was taken from, the caller states the one in front of it,
+// and a mismatch is reported as NOT COMPARABLE rather than as a regression. Silence would be worse
+// than either: the point of this gate is that coverage cannot quietly shrink.
+string declaredPairing(string text) {
+    foreach (l; text.lineSplitter)
+        if (l.startsWith("# baseline-for:")) return l["# baseline-for:".length .. $].strip;
+    return "";
+}
+
 void main(string[] args) {
     string[] bDups, cDups, bMal, cMal, bBad, cBad;
     auto base = parse(readText(args[1]), bDups, bMal, bBad);
     auto cur  = parse(readText(args[2]), cDups, cMal, cBad);
     auto label = args.length > 3 ? args[3] : "";
+    // args[4], when given, is the pairing in front of us: `platform=<os> qt=<version>`.
+    auto want = declaredPairing(readText(args[1]));
+    auto have = args.length > 4 ? args[4].strip : "";
+    if (want.length && have.length && want != have) {
+        writefln("manifest-gate NOT COMPARABLE [%s]: the baseline is for `%s` and this is `%s`.",
+                 label, want, have);
+        writefln("  Coverage is a property of the pairing — an X11-only type or a 6.11 addition is"
+                 ~ " absent here for reasons that are not a regression. Generate a baseline for"
+                 ~ " this pairing to get the same protection on it.");
+        return;
+    }
     string[] disappeared, regressed, newDrops, newBound;
     classify(base, cur, disappeared, regressed, newDrops, newBound);
 

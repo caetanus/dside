@@ -1078,9 +1078,14 @@ Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels
         auto curMan = buildPath(b.genDir, "coverage-manifest.tsv");
         // deps: the gate binary + the binding's gen (so the manifest is freshly regenerated).
         // --DRT-testmode=run-main: run the gate's regression-detection unittests, THEN the real check.
+        // ...and the PAIRING this manifest was generated from. A baseline records one platform's
+        // coverage against one Qt; handed a different pair the gate says NOT COMPARABLE instead of
+        // reporting 104 absent X11-and-6.11 symbols as a regression.
+        auto pairing = "platform=" ~ hostPlatform() ~ " qt=" ~ qtModVersion(b.mods.length ? b.mods[0]
+                                                                                          : "Qt6Core");
         ts ~= Target.phony("manifest-gate-" ~ labels[i],
             runExe(root, gateBin, "", "--DRT-testmode=run-main " ~ baseline ~ " " ~ curMan
-                                     ~ " " ~ labels[i]), [gate, b.gen]);
+                                     ~ " " ~ labels[i] ~ " \"" ~ pairing ~ "\""), [gate, b.gen]);
     }
     return ts;
 }
