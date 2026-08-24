@@ -13,6 +13,7 @@ description: Building and testing this project on Windows (MSVC ABI) — the VM,
     /c/Qt/6.10.3/msvc2022_64           # Qt6 x64
     /c/Qt/5.15.2/msvc2019_64           # Qt5 x64 (installed with aqtinstall, see below)
     /c/Python312                       # needed by the .sh gates
+    /usr/bin/diff, /usr/bin/cmp        # MSYS2's diffutils — NOT installed by default
 
 A run needs, and the last two matter:
 
@@ -31,6 +32,12 @@ official mirrors and takes under a minute.
     aqt install-qt windows desktop 5.15.2 win64_msvc2019_64      # run from C:\Qt
 
 In Qt 5.15 `qtdeclarative`/`qttools` are part of the base package — passing them with `-m` fails.
+
+MSYS2 ships without `diffutils`, and several gates compare files with `diff`/`cmp`. Missing, the
+shell says `diff: command not found` and the gate reports its own conclusion instead — the same
+shape as a tool that cannot start:
+
+    pacman -S --noconfirm --needed diffutils
 
 ## Everything the environment hands us is an MSYS path
 

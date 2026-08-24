@@ -4,8 +4,10 @@ SPDX-License-Identifier: BSL-1.0
 -->
 # Windows support — roadmap
 
-Status: **not started** (Linux is the only verified platform). This is a design
-roadmap, not a record of work done.
+Status: **built and measured.** Both tiers below were carried out; the full matrix now runs on a
+Windows VM against Qt 6.10.3 (MSVC) and Qt 5.15.2, with ldc2 and dmd. What the plan got right and
+what it got wrong is recorded at the end, under *What actually happened*. Read that section first
+if you are looking for the state of the port rather than the reasoning that led to it.
 
 **Scope: x64 ONLY.** win32 is explicitly out (owner's decision). This matters: win32's
 `__thiscall`/`__stdcall`/`__cdecl` zoo was the scary part of every "call a member via a
@@ -463,3 +465,146 @@ Every target command in `qtd_build.d` is a POSIX `sh -c` snippet (`rm -rf`, `mkd
 2. **Tier 2 (MSVC) only after** proving the two deep risks (MS x64 sret/`this` ABI on the
    shims, and archive-DCE without `--start-group`). If either fails, the design changes —
    don't build the mechanics on an unproven ABI.
+
+---
+
+# What actually happened
+
+Written after the port was built and both matrices ran. The plan above was mostly right about the
+*ABI*; almost every hour actually went somewhere else. What follows is the record, symptom first,
+because in nearly every case the symptom named the wrong thing.
+
+## The machine
+
+    ssh <vm>                            MSYS/git-bash, no Visual Studio installed
+    C:/Users/caetano/dside              the clone
+    C:/Users/caetano/llvm/bin           clang++, lld-link, llvm-nm, llvm-lib
+    C:/Qt/6.10.3/msvc2022_64            Qt6 x64            (aqtinstall)
+    C:/Qt/5.15.2/msvc2019_64            Qt5 x64            (aqtinstall)
+    C:/Python312                        the .sh gates need it
+
+Qt's own `bin` is deliberately NOT on PATH: a dual-target build has two Qts, and only the target
+knows which it needs. Everything that runs a Qt-linked program puts the right one there itself —
+`run-exe.ps1`, `run-capture.ps1`, `psInline`, and `shGate` for the `sh` gates.
+
+## The ABI, which the plan predicted correctly
+
+| | Itanium (Linux) | MS x64 |
+|---|---|---|
+| member returning by value | `f(sret, this, …)` | **`f(this, sret, …)`** |
+| inline member of an exported class | absent from the .so | **exported** — reimplementing it is a duplicate symbol |
+| "this class is exported" | `clang_getCursorVisibility` == Default | `__declspec(dllimport)`; visibility answers **Invalid for every class** |
+| `delete p` on a polymorphic type | dtor, then the CALLER's `operator delete` | vtable slot 0 (`??_G`); the free happens **inside the defining DLL** |
+
+The sret ordering did not look like an ABI problem: the GC raised `OutOfMemoryError`, allocating an
+array whose length came from uninitialised stack. The export question had to be answered in **three
+separate places**, and the third one — the private-header filter in `emit.d` — silently dropped 38
+`QQuick*` classes, which emptied `qmlmap.tsv`, which made `qmltc-d` skip every document, which
+failed 57 targets with `root type 'Item' is not a bound Qt type`. Finding it took forcing the
+*wrong* candidate to `true` and watching the count not move.
+
+## What the plan did not predict, and what most of the work was
+
+**`cmd.exe` is always in the middle.** reggae runs each command through `std.process.executeShell`,
+which on Windows is `%COMSPEC% /C` — and modern D takes the shell from a compile-time constant, so
+`COMSPEC` cannot redirect it. cmd then parses `|`, `&`, `>`, `<`, `^` and eats backslashes before
+any inner shell sees the string. Concretely, over one night:
+
+* four whole test families (`-render-`, `-time-`, `-key-`, `-click-`) handed `QT_QPA_PLATFORM=…
+  prog | grep …` to cmd and got `'QT_QPA_PLATFORM' is not recognized`;
+* `lupdate-check`'s `sed` pattern contains `><` and arrived mangled at any quoting;
+* `expected-fails-lint` put `$in` — a native, backslashed path — in the command TEXT and cmd
+  produced `C:Userscaetanodside.buildexpected-fails-lint-bin`;
+* one `dirEntries` join left exactly one native separator in a path, and exactly one separator
+  disappeared: `tests/qmltc/appATile.qml`.
+
+The rule that came out of it: **paths go in arguments, never in command text**, and a step that
+composes anything (a pipe, a redirect, a sequence) is written as a `.ps1` where cmd never sees it.
+
+**A gate that cannot run says something else.** Three scripts had already decided what a silent
+tool meant. `shadow-aot` reported *"the fixture must delegate"*, `optlevels` reported *"the ENGINE
+dumps nothing — unjudgeable"*, and both times the diagnostics file held
+`error while loading shared libraries: Qt6Core.dll`. There is no rpath on Windows. They now tell
+"did not run" apart from "ran and found nothing" before concluding anything about the document.
+
+**A gate keyed on a literal path DISAPPEARS.** `qtInstallQml()` probes `qmake6`/`qtpaths6` and falls
+back to `/usr/lib/qt6/qml`. On Windows no probe is on PATH (by design, see above), so the fallback
+answered with a directory that does not exist and every Controls-keyed gate emitted **no targets at
+all** — the failure mode that function's own header warns about, happening in the one place nobody
+had looked.
+
+**MSYS rewrites arguments that look like paths.** `--shadow-url qrc:/qtdshadow/` reached the
+compiler as `:C:/msys64/qtdshadow/`. `MSYS2_ARG_CONV_EXCL='*'` in `tests/shplatform.sh`, which also
+holds the `-fPIC`-vs-MSVC answer.
+
+## Two real defects the port found, both present on Linux
+
+**`lupdate-d` had a use-after-free.** `unquote()` returned a slice of dparse's token text, and the
+`StringCache` that owns it is a **local** of `extractD` — freed on return. Phobos's `replace`
+returns its input unchanged when nothing matches, so the unescape did not launder it either. On
+Linux the pages stay mapped and the `.ts` comes out correct for as long as nobody looks; on Windows
+the sort that orders the messages read a pointer of `-26` and the process died with `0xC0000005`
+*after* writing a correct file. With the debug heap disabled (`_NO_DEBUG_HEAP=1`, which is what made
+it vanish under the debugger):
+
+    lupdate_d!memcmp+0x30  <-  __cmp!char  <-  tsDoc.sort  <-  D main
+
+**The compiled document's URL was string concatenation.** `"file://" + absoluteFilePath()` only
+produces a valid URL where an absolute path begins with `/`. On Windows it makes `C:` the URL's
+*authority*. Measured against the engine:
+
+    engine   file:///C:/Users/…/QDeclObjType.qml
+    ours     file://c/Users/…/QDeclObjType.qml
+
+`QUrl::fromLocalFile` at all three sites. Anything resolving a relative URL inside a compiled
+document (`source: "icon.png"`) was resolving it against that.
+
+## The one thing that does not work, and why it is not a patch
+
+`uicheck-dmd`. A D exception cannot unwind out of a clang-cl frame under **dmd on Win64**: dmd uses
+`rt.deh_win64_posix` — DWARF-style exception tables, as the module name says — and a clang-cl frame
+carries SEH unwind data and no DWARF LSDA. The unwinder cannot describe the frames between the
+throw and the D handler, finds none, and druntime calls `terminate()` (exit `0xC0000096`, which is
+`hlt`, which is what dmd emits for `assert(0)`). Measured with symbols under `cdb`:
+
+    D2rt15deh_win64_posix9terminateFZv  <-  d_throwc  <-  qtd_throw_d  <-  qtd_test_throw
+    __FrameHandler3::CxxCallCatchBlock  <-  qtd_test_throw  <-  D main
+
+LDC is unaffected — on Windows it emits MSVC-compatible EH, so a D throw *is* an SEH exception and
+composes with the C++ frames — and the ldc2 twin of every affected target proves the path. So
+`uicheck` reports `EXCGAP` there and names the compiler that did prove it, rather than the matrix
+going red for a limitation that is not ours.
+
+Registered as `known_gap` **`cxx-exception-dmd-win64`**. Making it work means not unwinding through
+C++ at all: the trampoline records and returns, the D side checks and throws. That is an ABI change
+to every guarded call and a real piece of work, not a reshuffle of the `catch` — moving the raise
+out of the catch block does not help, because the frames it must cross still have no DWARF data.
+
+**On Windows, LDC is the supported compiler for exception translation.** Everything else works on
+both.
+
+## Coverage baselines are a pairing
+
+The first time `manifest-gate` could run on Windows it reported 104 symbols DISAPPEARED — among
+them `QNativeInterface::QX11Application` and `QAbstractItemView::keyboardSearchFlags` (Qt 6.11,
+against a 6.10.3 install). Coverage is a property of *(platform, Qt)*; comparing across either axis
+is a different question with no answer. A baseline now declares its pairing and a mismatch is
+reported as **NOT COMPARABLE**. Generating Windows baselines is the remaining work to get the same
+regression protection there.
+
+## Verifying anything on Windows
+
+**Read the target's OUTPUT, not its exit code.** That rule is here because a runner that could not
+start any binary reported 13 of 13 targets passing: `&` cannot run an extensionless program, the
+error is not terminating, and `exit $LASTEXITCODE` with `$null` exits zero. Everything goes through
+`Invoke-Proc` (`tools/win/proc.ps1`) now, which uses `System.Diagnostics.Process` — CreateProcess
+has no PATHEXT rule, and a process that cannot start is a failure that says so.
+
+**A changed COMMAND does not rebuild anything** in reggae's binary backend. Fix the way a binary is
+linked and the binary stays as it was, with the failure it caused. Delete the artefact before
+measuring.
+
+**Never edit a build input while the matrix runs.** `tools/test-report.sh` aborts and says so if
+`./build` is rebuilt underneath it, because every row after that point describes the rebuild rather
+than the target. That guard fired twice in one night, both times correctly, both times because of
+an edit made while a run was in flight.

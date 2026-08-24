@@ -805,7 +805,16 @@ extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url,
                      qPrintable(c->errorString()));
         return 0;
     }
-    QObject* sh = c->create();
+    // beginCreate / completeCreate, NOT create(). `create()` completes the object, which is when
+    // the engine evaluates its bindings — and the shadow's whole value is a binding that reads the
+    // objects we have not handed over yet. It evaluated against a null `root`:
+    //     qrc:/qtdshadow/QJsDelegated_e0.qml:22: TypeError: Cannot read property 'key' of null
+    // Split in two, every property is in place before any binding runs, which is also what the
+    // note below about the target was reaching for and could not get from create().
+    QQmlContext* ctx = qmlContext(obj);
+    if (!ctx) ctx = c->creationContext();
+    if (!ctx) ctx = qtd_qml_engine()->rootContext();
+    QObject* sh = c->beginCreate(ctx);
     if (!sh) {
         std::fprintf(stderr, "qtd_bind_shadow: shadow '%s' failed to build: %s\n", url,
                      qPrintable(c->errorString()));
@@ -818,6 +827,7 @@ extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url,
     // writing before the handed-over names are in place would push one wrong value first.
     sh->setProperty("prop", QString::fromUtf8(prop));
     sh->setProperty("target", QVariant::fromValue(obj));
+    c->completeCreate();
     return 1;
 #else
     (void) o; (void) prop; (void) url; (void) names; (void) objs; (void) n; return 0;
