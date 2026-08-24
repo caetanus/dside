@@ -1422,8 +1422,12 @@ Target[] libsampleTargets(string root, string pyside) {
                                 "-ObjExt", objExt()], dc == "ldc2" ? ["-Oq"] : []),
             lib, [stamp]), [genT]);
         // libsample.a + the shim archives have mutual refs -> a static --start/--end-group.
+        // ...AND Qt6Core. The shim archive carries qtdmoc, which uses QMetaObjectBuilder, and on
+        // Linux nothing pulled that member in — --gc-sections and archive semantics meant the
+        // sample binaries linked no Qt at all, which is luck rather than design. lld-link does pull
+        // it, and said so for QString, QByteArray, QArrayData and QMetaObjectBuilder in turn.
         auto grp = "-L--start-group -L=" ~ lib ~ " -L=" ~ shimsLib ~ " -L=" ~ lsa
-            ~ " -L--end-group" ~ (cxxRuntimeLibs().length ? " -L-lstdc++" : "");
+            ~ " -L--end-group " ~ pkgLibs(["Qt6Core"]);
         auto cases = dirEntries(buildPath(here, "cases"), "*.d", SpanMode.shallow).map!(e => e.name).array
             ~ buildPath(here, "cornercases.d");
         cases.sort();
