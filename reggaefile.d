@@ -127,7 +127,9 @@ Build reggaeBuild() {
     // --- smuggled example apps against the non-wrap QtWidgets binding (Qt6) ---
     auto ex = qtdBinding(root, "spec_cxx_qtwidgets.json", ["Qt6Widgets"]);
     ctorGuardBindings ~= ex;
-    foreach (app; dirEntries(buildPath(root, "tests", "examples"), "*.d", SpanMode.shallow).map!(e => e.name).array.sort)
+    // fwdSlash for the same reason as the qml corpora below: dirEntries joins natively and these
+    // names end up inside command strings that cmd.exe reads before sh does.
+    foreach (app; dirEntries(buildPath(root, "tests", "examples"), "*.d", SpanMode.shallow).map!(e => fwdSlash(e.name)).array.sort)
         foreach (dc; DCS)
             all ~= qtdTest(baseName(app).stripExtension ~ "-" ~ dc, app, ex, dc);
 
@@ -1137,7 +1139,11 @@ Target[] lupdateCheckTargets(string root) {
             "if (-not (Select-String -LiteralPath " ~ psQ(pres) ~ " -SimpleMatch 'KEEP_ME' -Quiet))"
                 ~ " { Write-Output 'lupdate-check: the existing translation did not survive the re-run'; exit 1 }",
             "Write-Output 'lupdate-check OK: golden match + existing translation preserved across re-run'",
-        ]);
+        // ...and Qt6's bin on PATH, which is what the `mods` argument does. The merge step shells
+        // out to Qt's own `lconvert`, and qtTool() looks for it under /usr/lib/qt6/bin and /usr/bin
+        // before falling back to the bare name — so on Windows only the bare name can answer, and
+        // only if PATH has it: `Failed to spawn process "lconvert"`.
+        ], ["Qt6Core"]);
         return [Target.phony("lupdate-check", win, [])];
     }
     return [Target.phony("lupdate-check", "sh -c \"" ~ cmd ~ "\"", [])];
@@ -1392,7 +1398,11 @@ Target[] optLevelTargets(string root, QtdBinding bind) {
     auto tool = qmltcTool(root, bind);
     auto toolBin = buildPath(bind.bdir, "qmltc-d");
     Target[] ts;
-    foreach (e; dirEntries(dir, "*.qml", SpanMode.shallow).map!(x => x.name).array.sort) {
+    // fwdSlash: dirEntries joins with the NATIVE separator, and this path travels inside a command
+    // string that cmd.exe parses on the way to sh — where a backslash does not survive any quoting.
+    // Exactly one separator was native and exactly one disappeared:
+    //     optlevels: the ENGINE dumps nothing for C:/Users/.../tests/qmltc/appATile.qml
+    foreach (e; dirEntries(dir, "*.qml", SpanMode.shallow).map!(x => fwdSlash(x.name)).array.sort) {
         auto name = baseName(e).stripExtension;
         auto outDir = buildPath(bind.bdir, "optlevels", name);
         auto cmd = shGate("sh " ~ script ~ " " ~ toolBin ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv")
@@ -1557,7 +1567,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
     }
 
     Target[] ts;
-    auto corpus = dirEntries(corpusDir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
+    auto corpus = dirEntries(corpusDir, "*.qml", SpanMode.shallow).map!(e => fwdSlash(e.name)).array;
     corpus.sort();
     // Feature not implemented yet — see the gate below. `skip` is a different thing: a document the
     // ENGINE of this Qt cannot load, where there is no oracle to compare against at all.
@@ -2022,7 +2032,7 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
         ~ "-DQTD_QMLVALUES_NO_MAIN -c " ~ oracleCpp ~ " -o $out", [Target(oracleCpp)]);
 
     Target[] ts;
-    auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
+    auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => fwdSlash(e.name)).array;
     corpus.sort();
     foreach (dc; DCS) {
         auto dcLibs = pkgLibs(bind.mods) ~ cxxRuntimeFlag();
@@ -2256,7 +2266,7 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
         appObj, [buildPath(here, "qtd_qmltc_app.cpp")]), [Target(buildPath(here, "qtd_qmltc_app.cpp"))]);
 
     Target[] ts;
-    auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => e.name).array;
+    auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => fwdSlash(e.name)).array;
     corpus.sort();
     // Documents whose FEATURE the compiler does not implement yet. The fixture is committed so the
     // bar is written down and the diff is measured the day it lands -- but a differential cannot be

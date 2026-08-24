@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
+#
+# WHAT AN `sh` GATE HAS TO KNOW ABOUT THE PLATFORM IT IS RUNNING ON. Sourced, not executed:
+#
+#     . "$(dirname "$0")/../shplatform.sh"
+#
+# Two facts, both measured on the Windows VM, both invisible until the tools they affect finally
+# ran there.
+#
+# MSYS REWRITES ARGUMENTS THAT LOOK LIKE PATHS. `--shadow-url qrc:/qtdshadow/` reached the compiler
+# as `:C:/msys64/qtdshadow/` — the `:` followed by `/` is exactly the shape its POSIX-to-Windows
+# conversion exists for — and the tool answered
+#     Cannot read files from resource directory ":C:/msys64/qtdshadow/"
+# about a path nobody wrote. Every path these gates handle arrives from the build already native,
+# so none of them wants the conversion.
+MSYS2_ARG_CONV_EXCL='*'
+export MSYS2_ARG_CONV_EXCL
+
+# -fPIC IS REQUIRED ON ELF AND REFUSED ON THE MSVC TARGET (`clang++: error: unsupported option
+# '-fPIC' for target 'x86_64-pc-windows-msvc'`). The build answers this with cxxPic(); a gate that
+# composes its own compile line has to ask it too.
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*) QTD_PIC="" ;;
+  *)                    QTD_PIC="-fPIC" ;;
+esac

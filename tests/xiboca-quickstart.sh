@@ -19,6 +19,7 @@
 # container conversion that drops entries), and neither shows up in a generator
 # that only writes files. The golden comparison is what closes that.
 set -eu
+. "$(dirname "$0")/shplatform.sh"
 . "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 XIBOCA="$1"; WORK="$2"
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -70,14 +71,14 @@ cd "$WORK"
     || fail "moc failed on shape.h"
 
 # Your code, moc's output, and the generated shims.
-clang++ -std=c++17 -fPIC -c "$ROOT/examples/userlib/shape.cpp" -I"$ROOT/examples/userlib" $CFLAGS \
+clang++ -std=c++17 $QTD_PIC -c "$ROOT/examples/userlib/shape.cpp" -I"$ROOT/examples/userlib" $CFLAGS \
     || fail "your own C++ did not compile"
-clang++ -std=c++17 -fPIC -c moc_shape.cpp -I"$ROOT/examples/userlib" $CFLAGS \
+clang++ -std=c++17 $QTD_PIC -c moc_shape.cpp -I"$ROOT/examples/userlib" $CFLAGS \
     || fail "the moc output did not compile"
 # -I the project too: the emitted shims `#include "shape.h"`, because a shim that
 # calls your constructor has to see your declaration.
 for f in gen/*.cpp; do
-    clang++ -std=c++17 -fPIC -c "$f" -I. -I"$ROOT/examples/userlib" $CFLAGS 2>"$WORK/cxx.err" \
+    clang++ -std=c++17 $QTD_PIC -c "$f" -I. -I"$ROOT/examples/userlib" $CFLAGS 2>"$WORK/cxx.err" \
         || fail "generated $(basename "$f") did not compile" "$(head -3 "$WORK/cxx.err")"
 done
 

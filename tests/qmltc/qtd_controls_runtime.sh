@@ -14,6 +14,7 @@
 # A floor on the count is part of the gate: without it, refusing every root would pass.
 set -u
 TOOL=$1; QMLMAP=$2; DIR=$3; OUT=$4; DC=$5; GENDIR=$6; APPCPP=$7; RENDERCPP=$8; LIBBIND=$9
+. "$(dirname "$0")/../shplatform.sh"
 shift 9
 LIBSHIMS=$1; shift
 CXXFLAGS=$1; shift
@@ -25,8 +26,8 @@ mkdir -p "$OUT" || exit 1
 # Compiled HERE rather than borrowed from the differential suite's build nodes: a target that does
 # not depend on its real inputs re-reports a stale verdict, and these two .cpp are real inputs.
 APPOBJ=$OUT/app.o; RENDEROBJ=$OUT/render.o
-clang++ $CXXFLAGS -std=c++17 -fPIC -O2 -c "$APPCPP" -o "$APPOBJ" || exit 1
-clang++ $CXXFLAGS -std=c++17 -fPIC -O2 -c "$RENDERCPP" -o "$RENDEROBJ" || exit 1
+clang++ $CXXFLAGS -std=c++17 $QTD_PIC -O2 -c "$APPCPP" -o "$APPOBJ" || exit 1
+clang++ $CXXFLAGS -std=c++17 $QTD_PIC -O2 -c "$RENDERCPP" -o "$RENDEROBJ" || exit 1
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software
 
 built=0; failed=0

@@ -12,6 +12,7 @@
 #
 #   shadow_aot.sh <qmltc-d> <qmlmap.tsv> <file.qml> <ClassName> <outdir> <builddir> <gendir> <dc> <cachegen> <cflags...>
 set -e
+. "$(dirname "$0")/../shplatform.sh"
 TOOL="$1"; QMLMAP="$2"; QMLFILE="$3"; CLS="$4"; OUT="$5"; BDIR="$6"; GDIR="$7"; DC="$8"; CACHEGEN="$9"
 shift 9
 CFLAGS="$*"
@@ -55,8 +56,8 @@ printf '</qresource></RCC>\n' >> "$OUT/shadows.qrc"
 (cd "$OUT" && "$CACHEGEN" --resource-name qmlcache_qtdshadow -o ld/qmlcache_loader.cpp \
                           --resource shadows.qrc "$@")
 
-clang++ $CFLAGS -std=c++17 -fPIC -O2 -c "$OUT/all_units.cpp" -o "$OUT/units.o"
-clang++ $CFLAGS -std=c++17 -fPIC -O2 -c "$OUT/ld/qmlcache_loader.cpp" -o "$OUT/loader.o"
+clang++ $CFLAGS -std=c++17 $QTD_PIC -O2 -c "$OUT/all_units.cpp" -o "$OUT/units.o"
+clang++ $CFLAGS -std=c++17 $QTD_PIC -O2 -c "$OUT/ld/qmlcache_loader.cpp" -o "$OUT/loader.o"
 
 "$DC" -of="$OUT/app" "$OUT/gen.d" "$OUT/units.o" "$OUT/loader.o" \
       "$BDIR/qtd_qmltc_app.o" "$BDIR/qtd_render.o" -I"$GDIR" \
