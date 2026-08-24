@@ -1333,7 +1333,14 @@ Target[] libsampleTargets(string root, string pyside) {
         ~ ` "include_paths": ["` ~ build ~ `"], "headers": ["` ~ buildPath(build, "sample_all.h") ~ `"] }`);
 
     auto cflags = pkgCflags(["Qt6Core"]);
-    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2";
+    // -DLIBSAMPLE_BUILD ON THE SHIMS TOO, because libsample is a STATIC archive here. Upstream's
+    // macro is `dllexport` while building and `dllimport` otherwise, and only the archive step
+    // defined it — so every shim referenced `__imp_??0Intersection@@QEAA@XZ` while the archive
+    // holds the plain `??0…`, and lld-link said so in as many words:
+    //     a relevant symbol '??0Intersection@@QEAA@XZ' is available in libsample.a but cannot be
+    //     used because it is not an import library
+    // Invisible on Linux, where both branches of that macro are `visibility("default")`.
+    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -DLIBSAMPLE_BUILD";
     auto priv = mocPrivateFlags(cflags).join(" ");
     auto xiboca = gendPath(root);
 
