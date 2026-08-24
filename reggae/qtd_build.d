@@ -1311,8 +1311,20 @@ Target[] libsampleTargets(string root, string pyside) {
     mkdirRecurse(bdir);
 
     // all-headers umbrella (libsamplemacros first, then every sample header).
+    // HEADERS MSVC'S STL CANNOT COMPILE OUT OF CONTEXT. `SimpleFile` holds a
+    // `unique_ptr<SimpleFilePrivate>` to a type only forward-declared, and its defaulted move
+    // operations make the deleter's destructor instantiate right there:
+    //     memory:3308: static_assert(0 < sizeof(_Ty), "can't delete an incomplete type")
+    // libstdc++ does not instantiate it in a translation unit that never destroys one, which is
+    // why the same header is fine on Linux and why libsample.a itself builds on both — only
+    // simplefile.cpp has the definition. Upstream's test library was not written to be consumed
+    // from anywhere else; excluding the header here removes the class from discovery rather than
+    // from the archive, and the exclusion is named so it can be revisited.
+    string[] stlIncompatible;
+    version (Windows) stlIncompatible = ["simplefile.h"];
     auto hdrs = dirEntries(LS, "*.h", SpanMode.shallow).map!(e => baseName(e.name))
-        .filter!(h => h != "libminimalmacros.h" && h != "libsamplemacros.h").array;
+        .filter!(h => h != "libminimalmacros.h" && h != "libsamplemacros.h")
+        .filter!(h => !stlIncompatible.canFind(h)).array;
     hdrs.sort();
     writeIfChanged(buildPath(bdir, "sample_all.h"),
         `#include "libsamplemacros.h"` ~ "\n" ~ hdrs.map!(h => `#include "` ~ h ~ `"`).join("\n") ~ "\n");
