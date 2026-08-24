@@ -124,3 +124,19 @@ debugging any of it, read the `powershell-commands` skill — several of its tra
 
 **Verify a Windows target by reading its OUTPUT, not its exit code.** That rule is here because a
 runner that could not start any binary reported 13 of 13 passing.
+
+## A long run must OUTLIVE the ssh session that starts it
+
+`setsid nohup … &` from MSYS does not. Three full matrices died at 1063, 1109 and 1120 rows with
+nothing in the error file and no totals line — the shell that started them was reaped with the
+connection, and the report simply stopped mid-list. It looks exactly like a run that finished.
+
+Two things that do survive:
+
+    tmux new -d -s m 'TARGET_TIMEOUT=900 sh tools/test-report.sh > out.tsv 2> out.err'
+
+    powershell -File C:/Users/caetano/runreport.ps1        # Start-Process -NoNewWindow -PassThru
+
+`tmux` is not in MSYS2's default install (and `screen` is not packaged at all) — `pacman -S tmux`.
+Either way, POLL THE ROW COUNT and require the `# totals:` line: a report without it is a report
+that was killed, not one that passed.
