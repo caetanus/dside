@@ -83,6 +83,16 @@ EOF
 # They stay byte-identical rather than being stamped, because `runtime-provenance` requires exactly
 # that (a copy that had drifted from its origin once produced a false ALL PASS) — the two demands
 # only look contradictory until the record moves out of the file and into the manifest.
+# `cmp` IS NOT EVERYWHERE. MSYS2 ships without diffutils, and a missing cmp is indistinguishable
+# from "the files differ": the loop below matched nothing, verbatim.txt came out EMPTY, and
+# license-package then reported five runtime copies as files that "travel alone" without saying
+# what produced them — the right verdict about a package this script had quietly built wrong.
+command -v cmp >/dev/null || {
+    echo "install: cmp is not on PATH — the verbatim manifest cannot be built." >&2
+    echo "    Every runtime copy would look unexplained to license-package. On MSYS2:" >&2
+    echo "        pacman -S --noconfirm --needed diffutils" >&2
+    exit 1
+}
 : > "$PREFIX/verbatim.txt"
 for f in "$PREFIX"/source/*.d "$PREFIX"/source/*.cpp; do
   [ -f "$f" ] || continue
