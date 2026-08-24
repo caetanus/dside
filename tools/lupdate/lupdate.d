@@ -30,13 +30,27 @@ final class IdGrab : ASTVisitor {
     }
 }
 
+// THE RESULT IS COPIED, and that is the whole point of the `.idup`. `s` is dparse's token text,
+// which lives in the StringCache that extractD declares as a LOCAL: the cache frees its blocks when
+// extractD returns, and every Msg still holding a slice of them is a dangling pointer. Phobos's
+// `replace` returns its input UNCHANGED when nothing matches, so the four calls below do not
+// launder it either — a literal with no escape came straight out of the freed cache.
+//
+// Use-after-free on both platforms; only Windows faulted. Linux keeps the pages mapped and the
+// bytes readable, so the .ts came out right for as long as nobody looked. On Windows the sort that
+// orders the messages read a pointer of -26 and the process died with 0xC0000005 AFTER writing a
+// correct file — which is why it looked like a crash at exit.
+//
+//     lupdate_d!memcmp+0x30   <-  __cmp!char  <-  tsDoc.sort  <-  D main
+//
+// IdGrab and the module name already idup'd theirs; this was the path that did not.
 string unquote(string s) {   // "Hello" / `raw` / q{...} -> the text (basic: strip matching quotes)
     if (s.length >= 2 && (s[0] == '"' || s[0] == '`') && s[$-1] == s[0]) {
         s = s[1 .. $-1];
         // minimal unescape for the common cases in .ui-free hand-written tr()
         s = s.replace(`\"`, `"`).replace(`\\`, `\`).replace(`\n`, "\n").replace(`\t`, "\t");
     }
-    return s;
+    return s.idup;
 }
 
 // The source string of a direct `"literal".tr` receiver (not a deep grab, so `f("x").tr`
