@@ -759,11 +759,19 @@ Build reggaeBuild() {
             quickstart = [Target.phony("xiboca-quickstart",
                                 "sh " ~ qs ~ " " ~ buildPath(root, "xiboca", "xiboca") ~ " "
                                        ~ buildPath(root, ".build", "xiboca-quickstart"),
+                                // ...AND THE RUNTIME SOURCES IT COPIES VERBATIM. Third pipeline to
+                                // need this edge and third to be missing it: the common builder had
+                                // it, libsample got it in round 13, and the quickstart is a fourth
+                                // hand-written copy of the same steps. Without it, editing
+                                // runtime/qtmoc/qtdmoc.cpp left this directory holding the previous
+                                // revision and runtime-provenance said so — which is the whole
+                                // reason that gate exists, working exactly as intended.
                                 [Target(qs), Target(uspec), gendTarget(root),
                                  Target(buildPath(ulib, "shape.h")),
                                  Target(buildPath(ulib, "shape.cpp")),
                                  Target(buildPath(ulib, "app.d")),
-                                 Target(buildPath(ulib, "expected.txt"))])];
+                                 Target(buildPath(ulib, "expected.txt"))]
+                                ~ qtdRuntimeSources(root).map!(f => Target(f)).array)];
             all ~= quickstart;
         }
     }

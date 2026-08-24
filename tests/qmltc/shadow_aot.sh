@@ -80,8 +80,15 @@ QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software "$OUT/app" > "$OUT/ours" 2>"
 QT_QPA_PLATFORM=offscreen "$BDIR/qmlvalues" "$QMLFILE" --props "$OUT/props" > "$OUT/eng" 2>/dev/null
 sort "$OUT/ours" > "$OUT/ours.s"; sort "$OUT/eng" > "$OUT/eng.s"
 
-if [ -s "$OUT/run.err" ]; then
-  echo "shadow-aot: the run was not silent:" >&2; head -5 "$OUT/run.err" >&2; exit 1
+# `QThreadStorage: entry N destroyed before end of thread` is not the run speaking: the harness
+# creates a DELIBERATELY LEAKED, process-lifetime QGuiApplication (tests/qmltc/qtd_qmltc_app.cpp
+# says so), and on Windows Qt's thread-data teardown notices the entries that are still set. Linux
+# says nothing about the same object. Measured: a pure C++ Qt program built here is silent, so the
+# line belongs to that decision and not to Qt — which is why it is named here rather than filtered
+# by a pattern broad enough to hide a real one.
+grep -v "^QThreadStorage: entry .* destroyed before end of thread" "$OUT/run.err" > "$OUT/run.err.real" || true
+if [ -s "$OUT/run.err.real" ]; then
+  echo "shadow-aot: the run was not silent:" >&2; head -5 "$OUT/run.err.real" >&2; exit 1
 fi
 diff "$OUT/eng.s" "$OUT/ours.s"
 echo "shadow-aot OK: $n shadow(s) as BYTECODE (no .qml readable), values match the engine"

@@ -53,7 +53,11 @@ for f in "$DIR"/*.qml; do
         # Match the CODE, which is the same everywhere, and the two prose forms beside it. Without
         # this, seven of Qt's controls whose root the compiler refuses — ApplicationWindow, the
         # whole Calendar family, SpinBox — were counted as build failures.
-        if grep -qE "undefined reference to .main.|LNK1561|undefined symbol: _?(main|WinMain)" \
+        # ...and a THIRD spelling, because lld-link does not name main at all: with no entry point
+        # it cannot infer the subsystem and says `subsystem must be defined`. Same fact, three
+        # linkers, three sentences — which is why the codes and the distinctive phrases are matched
+        # rather than one of them.
+        if grep -qE "undefined reference to .main.|LNK1561|subsystem must be defined|undefined symbol: _?(main|WinMain)" \
                 "$OUT/rt_$n.link"; then continue; fi
         echo "controls-runtime: $n DOES NOT BUILD:"; head -5 "$OUT/rt_$n.link"; failed=$((failed + 1))
         continue
