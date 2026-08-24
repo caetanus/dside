@@ -45,9 +45,12 @@ while IFS="	" read -r a wants; do
     #     libsample has neither qtdmoc_qml.o nor qtdmoc_qml_stub.o
     # about an archive that carries qtdmoc_qml_stub.obj — a false red about the one thing it exists
     # to check, on every Windows build.
+    # ...and llvm-ar lists FULL PATHS where GNU ar lists bare names, so the name is matched at its
+    # last separator rather than at the start of the line. Anchored with `^`, nothing ever matched
+    # on Windows and the canary reported every archive as missing the unit it plainly contains.
     AR=${AR:-ar}; command -v "$AR" >/dev/null 2>&1 || AR=llvm-ar
-    have_qml_obj=$("$AR" t "$a" 2>/dev/null | grep -cE '^qtdmoc_qml\.(o|obj)$' || true)
-    have_stub=$("$AR" t "$a" 2>/dev/null | grep -cE '^qtdmoc_qml_stub\.(o|obj)$' || true)
+    have_qml_obj=$("$AR" t "$a" 2>/dev/null | grep -cE '(^|[/\\])qtdmoc_qml\.(o|obj)$' || true)
+    have_stub=$("$AR" t "$a" 2>/dev/null | grep -cE '(^|[/\\])qtdmoc_qml_stub\.(o|obj)$' || true)
 
     if [ "$wants" = no ] && [ "$have_qml_obj" -ne 0 ]; then
         echo "archive-composition FAIL: $name has no QtQml and still carries qtdmoc_qml.o" >&2
