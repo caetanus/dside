@@ -15,7 +15,13 @@ set -e
 . "$(dirname "$0")/../shplatform.sh"
 TOOL="$1"; QMLMAP="$2"; QMLFILE="$3"; CLS="$4"; OUT="$5"; BDIR="$6"; GDIR="$7"; DC="$8"; CACHEGEN="$9"
 shift 9
-CFLAGS="$*"
+# The compile flags as ONE argument, then the link libraries. They used to be one blob and the link
+# line carried `-L-lQt6Quick … -L-lstdc++` written by hand — the Linux spelling, which on Windows is
+# `could not open 'Qt6Core.lib'` for every one of them and `stdc++.lib` for a library that does not
+# exist there at all. The build already answers this per platform (pkgLibs + cxxRuntimeLibs); it
+# just was not being asked.
+CFLAGS="$1"; shift
+LIBS="$*"
 
 rm -rf "$OUT"; mkdir -p "$OUT/sh" "$OUT/ld"
 # `|| true` because a REFUSED expression is the point and the tool exits non-zero for it. But a
@@ -62,8 +68,7 @@ clang++ $CFLAGS -std=c++17 $QTD_PIC -O2 -c "$OUT/ld/qmlcache_loader.cpp" -o "$OU
 "$DC" -of="$OUT/app" "$OUT/gen.d" "$OUT/units.o" "$OUT/loader.o" \
       "$BDIR/qtd_qmltc_app.o" "$BDIR/qtd_render.o" -I"$GDIR" \
       -L--start-group -L="$BDIR/libbinding_$DC.a" -L="$BDIR/libshims.a" -L--end-group \
-      -L-lQt6Quick -L-lQt6OpenGL -L-lQt6QmlModels -L-lQt6Qml -L-lQt6Network -L-lQt6Gui \
-      -L-lQt6Core -L-lstdc++
+      $LIBS
 
 # ...and NOTHING may read the source. A qrc: url cannot reach these files anyway; moving them is
 # the belt-and-braces half, because a test that would also pass by reading the .qml proves nothing

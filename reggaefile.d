@@ -1938,8 +1938,12 @@ Target[] shadowAotTargets(string root, QtdBinding quick) {
     Target[] ts;
     foreach (dc; DCS) {
         auto outDir = buildPath(quick.bdir, "shadowaot-" ~ dc);
+        // cflags as ONE argument and the libraries after it: the script's link line used to spell
+        // the Qt libraries by hand in the Linux form, which is `could not open 'Qt6Core.lib'` on
+        // Windows. pkgLibs already knows the platform's answer.
         auto cmd = shGate("sh " ~ script ~ " " ~ tool ~ " " ~ qmlmap ~ " " ~ qmlFile ~ " QJsDelegated "
-                 ~ outDir ~ " " ~ quick.bdir ~ " " ~ quick.genDir ~ " " ~ dc ~ " " ~ gen ~ " " ~ cflags,
+                 ~ outDir ~ " " ~ quick.bdir ~ " " ~ quick.genDir ~ " " ~ dc ~ " " ~ gen
+                 ~ " '" ~ cflags ~ "' " ~ pkgLibs(quick.mods),
                  quick.mods);
         ts ~= Target.phony("shadowaot-" ~ dc, cmd,
                            [Target(script), Target(qmlFile), qtdBindLib(quick, dc), quick.shims]);
