@@ -22,7 +22,7 @@ set -eu
 . "$(dirname "$0")/shplatform.sh"
 . "$(dirname -- "$0")/pybin.sh"          # $PY: the python that actually runs
 XIBOCA="$1"; WORK="$2"
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(qtd_abs "$(dirname -- "$0")/..")   # native spelling: this feeds python, clang++ and xiboca
 SPEC="$ROOT/generator/spec_userlib.json"
 EXPECT="$ROOT/examples/userlib/expected.txt"
 

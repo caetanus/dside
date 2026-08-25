@@ -39,3 +39,13 @@ qt_release_from_prefix() {
     done
     return 1
 }
+
+# A DIRECTORY IN THE SPELLING A NATIVE PROGRAM CAN OPEN. `cd … && pwd` answers `/c/Users/…` under
+# MSYS, and python, clang++, ldc2 and xiboca are all native Windows programs that know nothing
+# about `/c`. Handing them the MSYS form is not a path error they can explain — python said
+#     FileNotFoundError: '/c/Users/caetano/dside/generator/spec_userlib.json'
+# about a file that is plainly there. `pwd -W` is the same directory said the other way, and the
+# MSYS shell reads `C:/…` perfectly well, so ONE form serves both sides.
+qtd_abs() {  # $1 = directory
+    ( CDPATH= cd -- "$1" && { pwd -W 2>/dev/null || pwd; } )
+}
