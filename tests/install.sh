@@ -131,8 +131,13 @@ EOF
 # lib/ under their POSIX names, so on Windows the package names the FILES.
 case "$(uname -s 2>/dev/null || echo unknown)" in
   MINGW*|MSYS*|CYGWIN*)
-    lf_ldc='"-L$PACKAGE_DIR/lib/libbinding_ldc2.a", "-L$PACKAGE_DIR/lib/libshims.a"'
-    lf_dmd='"-L$PACKAGE_DIR/lib/libbinding_dmd.a", "-L$PACKAGE_DIR/lib/libshims.a"'
+    # NO `-L` PREFIX HERE. dub adds the compiler's own pass-to-linker escape to every lflags entry,
+    # so an entry is what the LINKER sees: `-L$PACKAGE_DIR/lib/libshims.a` reached link.exe as
+    # `-LC:/…/libshims.a`, which it reads as a search PATH — the archive was never an input and the
+    # link ended with 8130 unresolved externals. On POSIX the entries below are `-L<dir>`/`-l<name>`
+    # for the same reason: that is ld's spelling, not the compiler's.
+    lf_ldc='"$PACKAGE_DIR/lib/libbinding_ldc2.a", "$PACKAGE_DIR/lib/libshims.a"'
+    lf_dmd='"$PACKAGE_DIR/lib/libbinding_dmd.a", "$PACKAGE_DIR/lib/libshims.a"'
     cxxlib=""   # the MSVC runtime is the compiler's default; there is no libstdc++ to name
     ;;
   *)
