@@ -608,3 +608,59 @@ measuring.
 `./build` is rebuilt underneath it, because every row after that point describes the rebuild rather
 than the target. That guard fired twice in one night, both times correctly, both times because of
 an edit made while a run was in flight.
+
+## Where the port stands, measured
+
+Linux, twice on the same commit:
+
+    # totals: 1199 pass, 0 fail, 0 skip
+
+Windows, on that same commit: **1197 of the 1200 targets confirmed passing** — 1119 recorded by the
+report before it was cut short, and 78 more run by hand afterwards, including all 58 `sample_*`
+(the libsample corner-case suite, which did not exist on Windows at all until this round) and
+`dub-consumer`, which builds an application OUTSIDE the checkout against the packaged binding.
+
+Three are long meta-gates that could not be run to completion there. None of them is product code —
+each is a battery that checks another gate, each passes on Linux, and each of the gates they check
+passes individually on Windows:
+
+| target | Linux | Windows |
+|---|---|---|
+| `license-package-mutations` | 289 s | killed at 2400 s |
+| `expected-fails-run` | 776 s | not completed |
+| `docs-numbers` | 339 s | not completed |
+
+The reason is not a defect, it is I/O: `license-package-mutations` copies a 34 MB package and
+re-hashes 800 files thirty-five times, and NTFS is far slower than ext4 at many-small-file work.
+
+## Two harness problems this exposed, both measured
+
+**A long run does not survive its shell.** `tools/test-report.sh` invokes `./build` once per target,
+on purpose, so every row is an isolated verdict. Past a few thousand forks the MSYS emulated `fork`
+stops working:
+
+    [main] sh dofork: child -1 - forked process died unexpectedly,
+           exit code 0xC0000142, errno 11        (STATUS_DLL_INIT_FAILED)
+    tools/test-report.sh: fork: retry: Resource temporarily unavailable
+
+That is why three full matrices ended at 1063, 1109 and 1120 rows with no totals line and nothing in
+the error file. `autorebase.bat` helps and does not cure it.
+
+**And `ps` does not see these processes.** MSYS's `ps` reported zero while `Get-Process` listed six
+`build.exe` from six different hours — every run believed dead was alive, competing for the machine
+and for the same `.build` directory. Observe Windows processes with PowerShell, never with `ps`.
+
+**Both point at the same fix**, which is also the one that makes the matrix fast:
+
+    1200 targets, 212 min, 10.6 s average — and a `./build` with NOTHING to do costs 7.9 s
+    ./build -n <target>    7.6-8.0 s   the rerun check is not the cost
+    ./build <5 targets>    7.6 s       five targets for the price of one
+
+Batching is the whole win: twenty per invocation turns 160 minutes of startup into ~10 and cuts the
+fork count by the same factor. What it costs is knowing which target in a failing batch failed —
+recovered by re-running that batch one target at a time, which is cheap because failures are rare.
+
+`reggae -b ninja` is not the shortcut it looks like: the ninja backend refuses this build's shape —
+`Cannot have a custom rule with no $in or $out` — and almost every test here is a `Target.phony`
+whose verdict is what it prints, not a file it writes. Sixty-seven sites would have to grow real
+outputs, and a stamp file existing is not the same claim as a command having run.
