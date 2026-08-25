@@ -27,13 +27,37 @@ GATE="$ROOT/tests/license-package.sh"
 
 [ -d "$PKG" ] || { echo "license-package-mutations FAIL: $PKG does not exist" >&2; exit 1; }
 
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+# BESIDE THE PACKAGE, not in /tmp: the copies below hard-link `lib/`, and a hard link cannot cross
+# a filesystem — `Invalid cross-device link` for every archive, silently followed by a full copy.
+# Working on the same volume is also simply less copying.
+WORK=$(mktemp -d "$(dirname "$PKG")/mutations-XXXXXX" 2>/dev/null) || WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
 
 # name | expected message fragment | mutation (runs with $P as the package copy)
+# Break a hard link before writing through it: replace the file with a private copy of itself.
+# Without this, a mutation that overwrites or appends to an archive would edit the REAL package —
+# the one every other row of this table is judged against.
+unshare() {  # $1 = a file inside $P
+    [ -f "$1" ] || return 0
+    cp -f "$1" "$1.private" && mv -f "$1.private" "$1"
+}
+
 run_mutation() {
     name=$1; want=$2; shift 2
     P="$WORK/$name"
-    rm -rf "$P"; cp -r "$PKG" "$P"
+    # THE ARCHIVES ARE 35 OF THE 42 MB AND ALMOST NO MUTATION TOUCHES THEM. Copied whole, this
+    # table moves 1.2 GB to ask thirty-five questions that are mostly about text files, and on
+    # Windows that is the difference between minutes and not finishing at all — killed at 900 s,
+    # twice. `lib/` is hard-linked instead, and the two mutations that write INTO an archive call
+    # `unshare` first, so a shared inode is never written through. Everything else is a real copy.
+    rm -rf "$P"; mkdir -p "$P"
+    for e in "$PKG"/*; do
+        case "${e##*/}" in lib) continue ;; esac
+        cp -r "$e" "$P/"
+    done
+    # ...and if the link cannot be made (another filesystem, or a system without them), fall back
+    # to a real copy — after clearing what the failed attempt left, or `cp -r` would nest it.
+    cp -rl "$PKG/lib" "$P/lib" 2>/dev/null || { rm -rf "$P/lib"; cp -r "$PKG/lib" "$P/lib"; }
     ( P="$P"; eval "$*" )
     out=$(sh "$GATE" "$P" "$ARCHIVES" "$BDIR" 2>&1) && {
         echo "license-package-mutations FAIL: \`$name\` was ACCEPTED by license-package." >&2
@@ -105,7 +129,7 @@ run_mutation undeclared-archive-remanifested "the build graph says it should hol
     'cp "$P/lib/libshims.a" "$P/lib/libundeclared.a"; remanifest "$P"'
 # ROUND 18 #5 and #6, the two the auditor reproduced on the real package.
 run_mutation substituted-archive "is not the archive the build produced" \
-    'other=$(ls /usr/lib/lib*.a 2>/dev/null | head -1); cp -f "$other" "$P/lib/libshims.a"; remanifest "$P"'
+    'other=$(ls /usr/lib/lib*.a 2>/dev/null | head -1); unshare "$P/lib/libshims.a"; cp -f "$other" "$P/lib/libshims.a"; remanifest "$P"'
 run_mutation late-spdx           "carries no SPDX identifier" \
     'f="$P/source/qtdctor.cpp"; grep -v "SPDX-License-Identifier" "$f" > "$f.t" && mv "$f.t" "$f"; echo "// SPDX-License-Identifier: BSL-1.0" >> "$f"; remanifest "$P"'
 run_mutation dubjson-gpl         "declares \`GPL-3.0-only\`" \
@@ -159,7 +183,7 @@ run_mutation false-verbatim      "claims to be a verbatim copy" \
 run_mutation gpl-corpus          'contains `cpptypes`'                  'mkdir -p "$P/source/cpptypes" && touch "$P/source/cpptypes/x.h"'
 run_mutation stray-object        "objects, tests and fixtures"          'touch "$P/lib/stray.o"'
 run_mutation abs-path            "contains the absolute build path"     'echo "built in '"$ROOT"'" >> "$P/NOTICE"'
-run_mutation abs-path-binary     "contains the absolute build path"     'printf "%s" "'"$ROOT"'/generated" >> "$P/lib/libshims.a"'
+run_mutation abs-path-binary     "contains the absolute build path"     'unshare "$P/lib/libshims.a"; printf "%s" "'"$ROOT"'/generated" >> "$P/lib/libshims.a"'
 
 if [ "$n" -ne "$EXPECT_ROWS" ]; then
     echo "license-package-mutations FAIL: $n row(s) ran, and this table declares $EXPECT_ROWS." >&2
