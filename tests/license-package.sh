@@ -243,7 +243,14 @@ if [ -f "$PKG/MANIFEST.sha256" ]; then
     ( cd "$PKG" && cut -f3 MANIFEST.sha256 | tr '\n' '\0' | xargs -0 -r wc -c        2>/dev/null ) > "$_sz"
     awk -v dg="$_dg" -v sz="$_sz" '
       BEGIN {
-        while ((getline l < dg) > 0) { i = index(l, "  "); if (i) D[substr(l, i + 2)] = substr(l, 1, i - 1) }
+        # `<hash>  <path>` on POSIX and `<hash> *<path>` on MSYS, where coreutils marks binary
+        # mode with an asterisk. Keyed on the two-space form alone, every lookup missed on Windows
+        # and the gate said the record a package keeps of itself was false — about a package whose
+        # digests were correct.
+        while ((getline l < dg) > 0) {
+          i = index(l, " ")
+          if (i) { pth = substr(l, i + 1); sub(/^[ *]+/, "", pth); D[pth] = substr(l, 1, i - 1) }
+        }
         while ((getline l < sz) > 0) {
           sub(/^[ \t]+/, "", l); i = index(l, " ")
           if (i && substr(l, i + 1) != "total") S[substr(l, i + 1)] = substr(l, 1, i - 1)
