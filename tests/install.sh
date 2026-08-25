@@ -34,8 +34,17 @@ for a in "$BDIR"/libbinding_*.a "$BDIR/libshims.a"; do [ -f "$a" ] && cp "$a" "$
 # or GPL. Found by license-package, which now refuses the pair.
 qlibs=""
 qlibs_human=""
+# TWO SPELLINGS, because a Qt module is `-lQt6Widgets` where pkg-config answers and a full path to
+# `Qt6Widgets.lib` where it does not. Reading only the first left `libs` EMPTY on Windows — the
+# package named no Qt at all and the consumer's link ended with 7476 unresolved QObject symbols.
+qtlibdir=""
 for l in $LIBS; do
-  case "$l" in -l*) n=${l#-l} ;; *) continue ;; esac
+  case "$l" in
+    -l*)   n=${l#-l} ;;
+    *.lib) n=$(basename "$l" .lib)
+           [ -n "$qtlibdir" ] || qtlibdir=$(dirname "$l") ;;
+    *)     continue ;;
+  esac
   qlibs="$qlibs\"$n\", "
   qlibs_human="${qlibs_human:+$qlibs_human, }$n"
 done
@@ -136,8 +145,12 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
     # `-LC:/…/libshims.a`, which it reads as a search PATH — the archive was never an input and the
     # link ended with 8130 unresolved externals. On POSIX the entries below are `-L<dir>`/`-l<name>`
     # for the same reason: that is ld's spelling, not the compiler's.
-    lf_ldc='"$PACKAGE_DIR/lib/libbinding_ldc2.a", "$PACKAGE_DIR/lib/libshims.a"'
-    lf_dmd='"$PACKAGE_DIR/lib/libbinding_dmd.a", "$PACKAGE_DIR/lib/libshims.a"'
+    # ...and where Qt's own import libraries are. On POSIX the linker's default search path finds
+    # `-lQt6Widgets`; on Windows nothing does, so the directory is named. It is Qt's prefix, not the
+    # checkout — the package is already tied to that exact release, and says so in qtd-build.txt.
+    qtpath=${qtlibdir:+\"/LIBPATH:$qtlibdir\", }
+    lf_ldc="${qtpath}\"\$PACKAGE_DIR/lib/libbinding_ldc2.a\", \"\$PACKAGE_DIR/lib/libshims.a\""
+    lf_dmd="${qtpath}\"\$PACKAGE_DIR/lib/libbinding_dmd.a\", \"\$PACKAGE_DIR/lib/libshims.a\""
     cxxlib=""   # the MSVC runtime is the compiler's default; there is no libstdc++ to name
     ;;
   *)
