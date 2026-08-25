@@ -51,12 +51,12 @@ done
 # `command not found` — which the build then reports as the quickstart failing. The prefix has all
 # three: the include directory, the release (QT_VERSION_STR in qconfig.h) and the two include
 # flags every Qt program needs.
+PFX="${QTDIR6:-${QTDIR:-}}"
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Core 2>/dev/null; then
     INC=$(pkg-config --variable=includedir Qt6Core)
     VER=$(pkg-config --modversion Qt6Core)
     CFLAGS="$(pkg-config --cflags Qt6Core) -I$INC/QtCore/$VER -I$INC/QtCore/$VER/QtCore"
 else
-    PFX="${QTDIR6:-${QTDIR:-}}"
     [ -n "$PFX" ] || fail "no pkg-config and no QTDIR6/QTDIR" \
                           "one of the two has to say where Qt is"
     INC="$PFX/include"
@@ -69,7 +69,17 @@ fi
 
 # The spec, with out_dir redirected into the work directory. Everything else — the
 # headers, the filter, the package name — is the spec a reader is shown, unedited.
-"$PY" - "$SPEC" "$WORK/spec.json" "$WORK/gen" <<'PY'
+# ...and the FLAGS with it. The shipped spec names `pkg_config` — which says WHICH module this
+# binding uses, and is what the licence gates read — but naming a module does not locate it where
+# pkg-config is not installed, and xiboca says so and stops. This script has already worked out
+# both answers above; handing them over is all that was missing.
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Core 2>/dev/null; then
+    QLIBS=$(pkg-config --libs Qt6Core)
+else
+    QLIBS="$PFX/lib/Qt6Core.lib"
+    [ -f "$QLIBS" ] || QLIBS="-L$PFX/lib -lQt6Core"
+fi
+"$PY" - "$SPEC" "$WORK/spec.json" "$WORK/gen" "$CFLAGS" "$QLIBS" <<'PY'
 import json, sys, os
 spec = json.load(open(sys.argv[1]))
 src = os.path.dirname(os.path.abspath(sys.argv[1]))
@@ -77,6 +87,8 @@ for k in ("include_paths",):
     if k in spec:
         spec[k] = [p if os.path.isabs(p) else os.path.normpath(os.path.join(src, p)) for p in spec[k]]
 spec["out_dir"] = os.path.abspath(sys.argv[3])
+spec["cflags"] = sys.argv[4].split()
+spec["libs"] = sys.argv[5].split()
 json.dump(spec, open(sys.argv[2], "w"), indent=2)
 PY
 
