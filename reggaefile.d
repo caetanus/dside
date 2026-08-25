@@ -770,8 +770,11 @@ Build reggaeBuild() {
         auto uspec = buildPath(root, "generator", "spec_userlib.json");
         if (exists(qs) && exists(uspec) && exists(buildPath(ulib, "shape.cpp"))) {
             quickstart = [Target.phony("xiboca-quickstart",
-                                "sh " ~ qs ~ " " ~ buildPath(root, "xiboca", "xiboca") ~ " "
-                                       ~ buildPath(root, ".build", "xiboca-quickstart"),
+                                // shGate: the example it builds is a Qt program, and there is no
+                                // rpath on Windows — it linked, started, and died with
+                                // `Qt6Core.dll: cannot open shared object file`.
+                                shGate("sh " ~ qs ~ " " ~ buildPath(root, "xiboca", exeName("xiboca")) ~ " "
+                                       ~ buildPath(root, ".build", "xiboca-quickstart"), ["Qt6Core"]),
                                 // ...AND THE RUNTIME SOURCES IT COPIES VERBATIM. Third pipeline to
                                 // need this edge and third to be missing it: the common builder had
                                 // it, libsample got it in round 13, and the quickstart is a fourth
