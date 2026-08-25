@@ -232,24 +232,37 @@ if [ -f "$PKG/MANIFEST.sha256" ]; then
     for f in $gone; do
         fail "the manifest lists \`$f\`, which is not in the package"
     done
+    # EVERY DIGEST AND EVERY SIZE IN TWO COMMANDS, not four processes per file. This loop used to
+    # run sha256sum, cut, wc and tr for each of 832 entries — some three thousand processes, which
+    # on MSYS is most of the 86 s one pass of this gate cost there, and therefore most of the
+    # reason the 35-mutation battery could never finish on Windows. The comparison is unchanged:
+    # size first (round 16 #5 wrote 999999 for LICENSE and nothing noticed, because the column was
+    # parsed and never compared), then the digest, and still at most three reported.
+    _dg=$(mktemp); _sz=$(mktemp); _pb=$(mktemp)
+    ( cd "$PKG" && cut -f3 MANIFEST.sha256 | tr '\n' '\0' | xargs -0 -r sha256sum 2>/dev/null ) > "$_dg"
+    ( cd "$PKG" && cut -f3 MANIFEST.sha256 | tr '\n' '\0' | xargs -0 -r wc -c        2>/dev/null ) > "$_sz"
+    awk -v dg="$_dg" -v sz="$_sz" '
+      BEGIN {
+        while ((getline l < dg) > 0) { i = index(l, "  "); if (i) D[substr(l, i + 2)] = substr(l, 1, i - 1) }
+        while ((getline l < sz) > 0) {
+          sub(/^[ \t]+/, "", l); i = index(l, " ")
+          if (i && substr(l, i + 1) != "total") S[substr(l, i + 1)] = substr(l, 1, i - 1)
+        }
+      }
+      BEGIN { FS = "\t" }
+      { want = $1; size = $2; path = $3
+        if (!(path in S)) next                      # absent here: the listed/actual check owns that
+        if (S[path] != size) { printf "`%s` is %s bytes and the manifest says %s\t\n", path, S[path], size; next }
+        if (D[path] != want) printf "`%s` does not match its manifest digest\tthe package'"'"'s own record of itself is measurably false\n", path
+      }
+    ' "$PKG/MANIFEST.sha256" > "$_pb"
     tampered=0
-    while IFS="	" read -r want size path; do
-        [ -f "$PKG/$path" ] || continue
-        got=$(sha256sum "$PKG/$path" | cut -d' ' -f1)
-        # ...and the SIZE, which was parsed and then ignored — round 16 #5 wrote 999999 for LICENSE
-        # and nothing noticed. A column that is never compared is decoration, in a file whose whole
-        # purpose is to be compared.
-        gotsz=$(wc -c < "$PKG/$path" | tr -d ' ')
-        if [ "$gotsz" != "$size" ]; then
-            tampered=$((tampered + 1))
-            [ "$tampered" -le 3 ] && fail "\`$path\` is $gotsz bytes and the manifest says $size"
-            continue
-        fi
-        [ "$got" = "$want" ] && continue
+    while IFS="	" read -r msg detail; do
+        [ -n "$msg" ] || continue
         tampered=$((tampered + 1))
-        [ "$tampered" -le 3 ] && fail "\`$path\` does not match its manifest digest" \
-            "the package's own record of itself is measurably false"
-    done < "$PKG/MANIFEST.sha256"
+        [ "$tampered" -le 3 ] && fail "$msg" "$detail"
+    done < "$_pb"
+    rm -f "$_dg" "$_sz" "$_pb"
     nman=$(wc -l < "$PKG/MANIFEST.sha256")
     rm -f "$listed" "$actual"
 fi
