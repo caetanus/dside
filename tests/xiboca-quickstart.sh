@@ -130,7 +130,13 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
   MINGW*|MSYS*|CYGWIN*) CXXLIB="" ;;
   *)                    CXXLIB="-L-lstdc++" ;;
 esac
-ldc2 -of=app dobj/*.o ./*.o $CXXLIB $QTLIBS 2>"$WORK/link.err" \
+# THE OBJECT SUFFIX IS THE PLATFORM'S, and a glob that matches nothing is passed through
+# LITERALLY: with `.obj` on disk, `dobj/*.o` reached the linker as the string `dobj\*.o` and
+# lld-link answered `invalid argument`. Listed rather than globbed, so both suffixes are found and
+# an empty list is an empty list.
+OBJS=$(find dobj . -maxdepth 1 \( -name '*.o' -o -name '*.obj' \) | tr '\n' ' ')
+[ -n "$OBJS" ] || fail "no objects to link" "neither *.o nor *.obj under $WORK"
+ldc2 -of=app $OBJS $CXXLIB $QTLIBS 2>"$WORK/link.err" \
     || fail "the binding did not link" "$(grep -m3 'undefined' "$WORK/link.err" || head -3 "$WORK/link.err")"
 
 ./app > out.txt 2>&1 || fail "the example crashed" "$(tail -3 out.txt)"
