@@ -15,7 +15,12 @@
 set -eu
 PREFIX="$1"; PKG="$2"; DC="$3"
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PREFIX=$(CDPATH= cd -- "$PREFIX" && pwd)
+# `pwd -W` WHERE THERE IS ONE. dub is a native Windows program and does not know `/c/...`: handed
+# the MSYS form it reported
+#     No package file found in /c/Users/.../pkg\, expected one of dub.json/dub.sdl/package.json
+# about a directory whose dub.json license-package had just counted. The `-W` form is the same
+# directory said in the only spelling dub can open. Plain `pwd` everywhere else, where it is right.
+PREFIX=$(CDPATH= cd -- "$PREFIX" && { pwd -W 2>/dev/null || pwd; })
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/qtd-dubapp-XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
