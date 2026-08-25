@@ -29,6 +29,25 @@ BDIR=$1
 CDIR="$BDIR/o3gate"
 ODIR="$BDIR"
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$(dirname -- "$0")/shplatform.sh"
+
+# THESE NUMBERS ARE A PAIRING, like a coverage baseline. They count Qt's OWN Controls documents, so
+# they are a property of the Qt that is installed: 6.10.3 ships a different corpus from 6.11.1 and
+# legitimately gives different totals (measured: 106 at -O1 against the documented 110). Comparing
+# across releases is not a stricter check, it is a different question — the same conclusion the
+# manifest gates reached about coverage.
+#
+# The document says which release it was measured against; where that is not the release in front
+# of us, the gate says NOT COMPARABLE and stops, rather than accusing a correct document.
+DOC_QT=$(sed -n 's/^<!-- measured-against: qt \([0-9.]*\) -->$/\1/p' "$ROOT/docs/qmltc-d.md" | head -1)
+HAVE_QT=$(pkg-config --modversion Qt6Core 2>/dev/null \
+          || qt_release_from_prefix "${QTDIR6:-}" || qt_release_from_prefix "${QTDIR:-}" || echo "")
+if [ -n "$DOC_QT" ] && [ -n "$HAVE_QT" ] && [ "$DOC_QT" != "$HAVE_QT" ]; then
+    echo "docs-numbers NOT COMPARABLE: the figures were measured against Qt $DOC_QT and this is Qt $HAVE_QT."
+    echo "    They count Qt's own Controls documents, so a different release is a different corpus."
+    echo "    Re-measure on this release to compare here."
+    exit 0
+fi
 
 bad=0
 fail() { echo "docs-numbers FAIL: $1" >&2; [ -n "${2:-}" ] && echo "    $2" >&2; bad=$((bad + 1)); }

@@ -36,12 +36,32 @@ SP="$1"; ST="$2"
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 L=${3:-${QTD_BUILD:-$ROOT/.build/qt-6.11-cxx-controls}}
 G=${4:-${QTD_GEN:-$ROOT/generated/qt-6.11/cxx-controls}}
+# ...and the PREFIX before the Linux literal. Neither qtpaths is on PATH on Windows — Qt's bin is
+# deliberately kept off it — so every probe answered nothing, `B` became a directory that does not
+# exist, and this gate judged ZERO documents and reported UNPLACED=0. A gate that passes on
+# emptiness is the shape this project keeps having to close; the check below closes it here.
 QMLDIR=${QTD_QML_DIR:-$(qtpaths6 --query QT_INSTALL_QML 2>/dev/null \
-                     || qtpaths --query QT_INSTALL_QML 2>/dev/null || echo /usr/lib/qt6/qml)}
+                     || qtpaths --query QT_INSTALL_QML 2>/dev/null || echo "")}
+if [ -z "$QMLDIR" ] || [ ! -d "$QMLDIR" ]; then
+    for _c in "${QTDIR6:-}/qml" "${QTDIR:-}/qml" /usr/lib/qt6/qml; do
+        [ -n "$_c" ] && [ -d "$_c" ] && { QMLDIR=$_c; break; }
+    done
+fi
 case "$ST" in
   /*) B="$ST"; ST=$(basename "$ST") ;;
    *) B=$QMLDIR/QtQuick/Controls/$ST ;;
 esac
+# NOTHING TO JUDGE IS NOT A PASS. Measured on Windows: with the wrong QML directory this loop saw
+# no documents, wrote `compiled=0 UNPLACED=0` and exited 0 — and docs-numbers then reported the
+# documentation as wrong about a corpus the gate had never opened.
+if [ ! -d "$B" ]; then
+    echo "o3: $B does not exist — there is no corpus to judge (QMLDIR=$QMLDIR)" >&2
+    exit 1
+fi
+if [ "$(find "$B" -name '*.qml' 2>/dev/null | head -1)" = "" ]; then
+    echo "o3: $B holds no .qml — there is no corpus to judge" >&2
+    exit 1
+fi
 D="$SP/o3_$ST"; mkdir -p "$D"
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software
 OUT="$SP/o3_$ST.txt"; : > "$OUT"

@@ -2,6 +2,8 @@
 SPDX-FileCopyrightText: 2026 Marcelo A Caetano
 SPDX-License-Identifier: BSL-1.0
 -->
+
+<!-- measured-against: qt 6.11.1 -->
 # qmltc-d — a QML → D compiler
 
 `qmltc-d` turns a `.qml` document into a D class. A binding stops being a JavaScript expression the

@@ -141,7 +141,11 @@ ldc2 -of=app $OBJS $CXXLIB $QTLIBS 2>"$WORK/link.err" \
 
 ./app > out.txt 2>&1 || fail "the example crashed" "$(tail -3 out.txt)"
 
-if ! diff -u "$EXPECT" out.txt > diff.txt; then
+# `--strip-trailing-cr`, because the LINE TERMINATOR is not what this compares. D's `writeln` goes
+# through the C runtime's text mode, which on Windows writes CRLF; the golden file has LF, and the
+# diff then reported all six lines as changed while every printed VALUE was identical. What this
+# test is about is what the binding computes, not how the platform ends a line.
+if ! diff -u --strip-trailing-cr "$EXPECT" out.txt > diff.txt; then
     fail "the example ran and printed something else" "$(head -12 diff.txt)"
 fi
 
