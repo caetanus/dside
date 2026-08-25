@@ -184,44 +184,127 @@ if [ "${#targets[@]}" -eq 0 ]; then echo "# ERROR: "$BUILD" --list produced no d
 buildstamp() { stat -c %Y "$BUILD" 2>/dev/null || echo 0; }
 stamp0=$(buildstamp)
 
-for t in "${targets[@]}"; do
-  case "$t" in $filter) ;; *) continue ;; esac
-  if [ "$(buildstamp)" != "$stamp0" ]; then
-    echo "# ABORTED: $BUILD was rebuilt during the run — a build input changed under it." >&2
-    echo "# Every row after that point would describe the rebuild, not the target." >&2
-    exit 3
-  fi
-  log="$logdir/$t.log"
-  start=$(date +%s%3N)
-  # A BOUND PER TARGET. A step that hangs stops the record execution dead — three Windows runs
-  # stalled on one target with no output and no child process, and a matrix that never finishes
-  # reports nothing at all. `timeout` turns that into a row that says `hang`, and the run goes on.
-  # Generous by default: the slowest legitimate target here takes about two minutes.
-  rc=0; timeout "${TARGET_TIMEOUT:-900}" "$BUILD" "$t" >"$log" 2>&1 || rc=$?
+# ONE INVOCATION PER TARGET IS 8 SECONDS OF STARTUP, 1200 TIMES.
+#
+# Measured on a completed run: 1200 targets, 212 minutes, 10.6 s average — and a `$BUILD <target>`
+# with NOTHING to do costs 7.9 s, because the binary rebuilds its description of a 1200-target
+# graph before deciding there is nothing to do. `-n` does not help (7.6-8.0 s: the rerun check is
+# not the cost). Five targets in ONE invocation cost 7.6 s — the same as one.
+#
+# It is also what breaks the run outright on Windows. MSYS's emulated `fork` stops working after a
+# few thousand children:
+#     dofork: child -1 - forked process died unexpectedly, exit code 0xC0000142, errno 11
+#     fork: retry: Resource temporarily unavailable
+# and three full matrices ended at 1063, 1109 and 1120 rows with no totals line and nothing in the
+# error file — a report that was killed looks exactly like one that finished.
+#
+# So targets run in BATCHES, and each row is still decided from that target's OWN output: with
+# `-s` the backend runs them one at a time and announces each with
+#     [build] Shell command generating <target>
+# which is where a batch log is cut. Anything the batch does not answer cleanly — a non-zero exit,
+# a target with no announcement — sends the WHOLE batch back through one-target-at-a-time, so a
+# failure is always attributed by the same evidence as before.
+#
+# `BATCH=1` restores the old shape exactly, which is what to use when the `ms` column has to be
+# per-target: inside a batch it is the batch's own elapsed time, and the header says so.
+BATCH="${BATCH:-20}"
+[ "$BATCH" -ge 1 ] 2>/dev/null || BATCH=20
+
+# The subset this run will actually visit, after the filter.
+sel=()
+for t in "${targets[@]}"; do case "$t" in $filter) sel+=("$t") ;; esac; done
+printf '# scheduling: %d target(s), batches of %d (BATCH=1 for one invocation per target)\n' \
+       "${#sel[@]}" "$BATCH"
+
+# Decide one target's row from its own log slice. Sets `st` and `logcol`.
+verdict() {  # $1 = target, $2 = its log, $3 = rc of the invocation that produced it
+  local t="$1" log="$2" rc="$3"
   if [ "$rc" -eq 124 ]; then
     st=hang; fail=$((fail+1)); logcol="$log"
     echo "# target exceeded ${TARGET_TIMEOUT:-900}s and was killed" >> "$log"
   elif [ "$rc" -eq 0 ]; then
-    # A capability-gated target (qmlaot/qmltypes with the tool absent) runs but prints SKIP and
-    # does no work — record it as skip, not a green pass it didn't actually perform (r8 #8/#10).
     if grep -qiE '(^|[^a-z])skip(ping|ped)?([^a-z]|$)' "$log"; then
       st=skip; skip=$((skip+1)); rm -f "$log"; logcol=-
-    # A TARGET THAT PRODUCED NOTHING DID NOT RUN. Exit status alone is not evidence: on Windows a
-    # runner that could not START any binary reported thirteen targets passing, and every one of
-    # their logs held nothing but the build's own progress lines. A green with no output of its own
-    # is reported as `mute` and counts as a failure.
-    # `run-exe:` is the Windows runner's own bookkeeping (which binary it started, and the exit
-    # code if non-zero) — it is not the target speaking, so it must not count as output here.
     elif [ "$(grep -cvE '^\[build\]|^run-exe:|^$' "$log")" -eq 0 ]; then
       st=mute; fail=$((fail+1)); logcol="$log"
     else
       st=pass; pass=$((pass+1)); rm -f "$log"; logcol=-
     fi
   else st=fail; fail=$((fail+1)); logcol="$log"; fi
-  ms=$(( $(date +%s%3N) - start ))
+}
+
+emit() {  # $1 = target, $2 = ms
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\n' \
-    "$t" "$(category "$t")" "$(compiler "$t")" "$(qtaxis "$t")" "$(optional "$t")" "$st" "$ms" "$logcol"
+    "$1" "$(category "$1")" "$(compiler "$1")" "$(qtaxis "$1")" "$(optional "$1")" \
+    "$st" "$2" "$logcol"
+}
+
+# One target, its own invocation — the exact shape this report has always had.
+run_one() {  # $1 = target
+  local t="$1" log start rc
+  log="$logdir/$t.log"
+  start=$(date +%s%3N)
+  # A BOUND PER TARGET. A step that hangs stops the record execution dead — three Windows runs
+  # stalled on one target with no output and no child process, and a matrix that never finishes
+  # reports nothing at all. `timeout` turns that into a row that says `hang`, and the run goes on.
+  rc=0; timeout "${TARGET_TIMEOUT:-900}" "$BUILD" "$t" >"$log" 2>&1 || rc=$?
+  verdict "$t" "$log" "$rc"
+  emit "$t" "$(( $(date +%s%3N) - start ))"
+}
+
+# Cut a batch log into one file per target, at the backend's own announcements. Returns non-zero
+# if any target of the batch was never announced — which is the caller's signal to stop trusting
+# the batch and run its targets one at a time.
+split_batch() {  # $1 = batch log, $2.. = targets
+  local blog="$1"; shift
+  local t line prev="" ok=0
+  # awk writes each slice as it goes: a marker line for a target in THIS batch opens a new file.
+  awk -v names="$*" -v dir="$logdir" '
+    BEGIN { n = split(names, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1; out = "" }
+    {
+      if (match($0, /^\[build\] Shell command generating /)) {
+        nm = substr($0, RLENGTH + 1)
+        if (nm in want) { if (out != "") close(out); out = dir "/" nm ".log"; printf "" > out }
+      }
+      if (out != "") print >> out
+    }
+    END { if (out != "") close(out) }
+  ' "$blog"
+  for t in "$@"; do [ -f "$logdir/$t.log" ] || ok=1; done
+  return $ok
+}
+
+i=0
+while [ "$i" -lt "${#sel[@]}" ]; do
+  if [ "$(buildstamp)" != "$stamp0" ]; then
+    echo "# ABORTED: $BUILD was rebuilt during the run — a build input changed under it." >&2
+    echo "# Every row after that point would describe the rebuild, not the target." >&2
+    exit 3
+  fi
+  batch=("${sel[@]:$i:$BATCH}")
+  i=$(( i + ${#batch[@]} ))
+  if [ "${#batch[@]}" -eq 1 ]; then run_one "${batch[0]}"; continue; fi
+
+  blog="$logdir/batch.log"
+  start=$(date +%s%3N)
+  # The batch's bound is the sum of its targets' budgets, CAPPED: twenty times 900 s is five hours
+  # to notice one hang, and a batch that runs out is not lost — it falls back to one invocation per
+  # target, each with its own full budget. So the cap costs a batch's startup, never a verdict.
+  bt=$(( ${TARGET_TIMEOUT:-900} * ${#batch[@]} ))
+  [ "$bt" -le "${BATCH_TIMEOUT:-1800}" ] || bt="${BATCH_TIMEOUT:-1800}"
+  rc=0; timeout "$bt" "$BUILD" -s "${batch[@]}" >"$blog" 2>&1 || rc=$?
+  ms=$(( $(date +%s%3N) - start ))
+  if [ "$rc" -ne 0 ] || ! split_batch "$blog" "${batch[@]}"; then
+    # Not trustworthy as a batch: every target of it gets its own invocation, its own log and its
+    # own exact time. Costs the startup back for this batch only, and failures are rare.
+    rm -f "$blog"
+    for t in "${batch[@]}"; do rm -f "$logdir/$t.log"; run_one "$t"; done
+    continue
+  fi
+  rm -f "$blog"
+  for t in "${batch[@]}"; do verdict "$t" "$logdir/$t.log" 0; emit "$t" "$ms"; done
 done
+
 printf '# totals: %d pass, %d fail, %d skip (optional/advisory targets excluded; run them by name)\n' "$pass" "$fail" "$skip"
 # This IS the record execution (r8 #8): exit non-zero if anything failed, so CI can gate on the
 # report itself instead of running a second, separate matrix pass whose result it then discards.
