@@ -46,9 +46,26 @@ for cand in "$LIBEXEC/moc" /usr/lib/qt6/moc /usr/lib64/qt6/moc /usr/lib/qt6/libe
 done
 [ -n "$MOC" ] || fail "no Qt6 moc found" "looked in libexecdir=$LIBEXEC and the usual qt6 paths"
 
-INC=$(pkg-config --variable=includedir Qt6Core)
-VER=$(pkg-config --modversion Qt6Core)
-CFLAGS="$(pkg-config --cflags Qt6Core) -I$INC/QtCore/$VER -I$INC/QtCore/$VER/QtCore"
+# ...AND THE SAME THREE ANSWERS WITHOUT pkg-config. Qt's MSVC builds ship no .pc files, so under
+# `set -eu` a bare `pkg-config` call is not "no flags", it is the script dying at line 49 with
+# `command not found` — which the build then reports as the quickstart failing. The prefix has all
+# three: the include directory, the release (QT_VERSION_STR in qconfig.h) and the two include
+# flags every Qt program needs.
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Core 2>/dev/null; then
+    INC=$(pkg-config --variable=includedir Qt6Core)
+    VER=$(pkg-config --modversion Qt6Core)
+    CFLAGS="$(pkg-config --cflags Qt6Core) -I$INC/QtCore/$VER -I$INC/QtCore/$VER/QtCore"
+else
+    PFX="${QTDIR6:-${QTDIR:-}}"
+    [ -n "$PFX" ] || fail "no pkg-config and no QTDIR6/QTDIR" \
+                          "one of the two has to say where Qt is"
+    INC="$PFX/include"
+    VER=$(sed -n 's/^#[[:space:]]*define[[:space:]]\+QT_VERSION_STR[[:space:]]\+"\([^"]*\)".*/\1/p' \
+              "$INC/QtCore/qconfig.h" 2>/dev/null | head -1)
+    [ -n "$VER" ] || fail "cannot read QT_VERSION_STR from $INC/QtCore/qconfig.h" \
+                          "the release keys the private-header directory below"
+    CFLAGS="-I$INC -I$INC/QtCore -DQT_CORE_LIB -I$INC/QtCore/$VER -I$INC/QtCore/$VER/QtCore"
+fi
 
 # The spec, with out_dir redirected into the work directory. Everything else — the
 # headers, the filter, the package name — is the spec a reader is shown, unedited.
