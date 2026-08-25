@@ -72,11 +72,17 @@ header_expr() {   # the SPDX expression a file DECLARES, or empty
 #
 # The questions are unchanged: which SPDX expression does the header declare (same pattern, same
 # `_HEADER_LINES` window, same trimming), and does the file carry a `// provenance:` line.
+# ...and it reads a WINDOW, not the whole file. head -n 5 was the old bound; without one, this
+# pass read all 35 MB of archives looking for a line that only ever appears near the top of a
+# source file — the deepest `// provenance:` in the package is line 14. 40 is the window, and it
+# fails CLOSED: a provenance line pushed past it reads as absent and the gate says so, loudly.
+_SCAN_WINDOW=40
 scan_files() {   # $@ = files -> "<path>\t<spdx>\t<0|1 provenance>"
     [ $# -gt 0 ] || return 0
-    awk -v hdr="$_HEADER_LINES" '
+    awk -v hdr="$_HEADER_LINES" -v win="$_SCAN_WINDOW" '
       function emit() { if (f != "") printf "%s\t%s\t%d\n", f, spdx, prov }
       FNR == 1 { emit(); f = FILENAME; spdx = ""; prov = 0 }
+      FNR > win { nextfile }
       FNR <= hdr && spdx == "" {
           if (match($0, /^[ \t]*([#*]|\/\/|<!--|--|;)?[ \t]*SPDX-License-Identifier:/)) {
               s = substr($0, RSTART + RLENGTH)
