@@ -125,6 +125,23 @@ Qt modules this binding was generated against: ${qlibs_human:-see qtd-build.txt}
 Generator revision: $GENREV (packaged at $PKGREV)
 EOF
 
+# THE LINK LINE IS THE PLATFORM'S. `-lname` and `--start-group` are GNU ld's; lld-link answers
+#     could not open 'binding_ldc2.lib': no such file or directory
+# for each of them, and `stdc++` does not exist on Windows at all. The archives are copied into
+# lib/ under their POSIX names, so on Windows the package names the FILES.
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*)
+    lf_ldc='"-L$PACKAGE_DIR/lib/libbinding_ldc2.a", "-L$PACKAGE_DIR/lib/libshims.a"'
+    lf_dmd='"-L$PACKAGE_DIR/lib/libbinding_dmd.a", "-L$PACKAGE_DIR/lib/libshims.a"'
+    cxxlib=""   # the MSVC runtime is the compiler's default; there is no libstdc++ to name
+    ;;
+  *)
+    lf_ldc='"-L$PACKAGE_DIR/lib", "--start-group", "-lbinding_ldc2", "-lshims", "--end-group"'
+    lf_dmd='"-L$PACKAGE_DIR/lib", "--start-group", "-lbinding_dmd", "-lshims", "--end-group"'
+    cxxlib='"stdc++"'
+    ;;
+esac
+
 cat > "$PREFIX/dub.json" <<EOF
 {
   "name": "$PKG",
@@ -133,9 +150,9 @@ cat > "$PREFIX/dub.json" <<EOF
   "copyright": "Copyright (c) 2026 Marcelo A Caetano",
   "targetType": "sourceLibrary",
   "importPaths": ["source"],
-  "lflags-ldc": ["-L\$PACKAGE_DIR/lib", "--start-group", "-lbinding_ldc2", "-lshims", "--end-group"],
-  "lflags-dmd": ["-L\$PACKAGE_DIR/lib", "--start-group", "-lbinding_dmd", "-lshims", "--end-group"],
-  "libs": [${qlibs}"stdc++"]
+  "lflags-ldc": [${lf_ldc}],
+  "lflags-dmd": [${lf_dmd}],
+  "libs": [${qlibs%, }${cxxlib:+, }${cxxlib}]
 }
 EOF
 # THE CLOSED SET. Written LAST, because it describes everything else, and it lists every file the
