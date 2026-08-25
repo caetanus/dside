@@ -62,6 +62,33 @@ header_expr() {   # the SPDX expression a file DECLARES, or empty
       sed 's/.*SPDX-License-Identifier: *//; s/[[:space:]]*$//; s/ *-->.*//' || true
 }
 
+# THE SAME TWO QUESTIONS, ASKED ONCE FOR ALL THE FILES INSTEAD OF SIX PROCESSES EACH.
+#
+# header_expr is head+grep+sed — three processes — and the source walk adds two more per file for
+# the provenance line and the manifest lookup. Over 829 files that is some five thousand processes
+# per pass, and a process is expensive on MSYS: ONE pass of this gate takes 196 s on Windows
+# against 320 s for the whole 35-mutation battery on Linux. The battery therefore could not finish
+# at all there — killed at 2400 s, twice.
+#
+# The questions are unchanged: which SPDX expression does the header declare (same pattern, same
+# `_HEADER_LINES` window, same trimming), and does the file carry a `// provenance:` line.
+scan_files() {   # $@ = files -> "<path>\t<spdx>\t<0|1 provenance>"
+    [ $# -gt 0 ] || return 0
+    awk -v hdr="$_HEADER_LINES" '
+      function emit() { if (f != "") printf "%s\t%s\t%d\n", f, spdx, prov }
+      FNR == 1 { emit(); f = FILENAME; spdx = ""; prov = 0 }
+      FNR <= hdr && spdx == "" {
+          if (match($0, /^[ \t]*([#*]|\/\/|<!--|--|;)?[ \t]*SPDX-License-Identifier:/)) {
+              s = substr($0, RSTART + RLENGTH)
+              sub(/^[ \t]*/, "", s); sub(/[ \t]*-->.*$/, "", s); sub(/[ \t]+$/, "", s)
+              spdx = s
+          }
+      }
+      /^\/\/ provenance:/ { prov = 1 }
+      END { emit() }
+    ' "$@"
+}
+
 bad=0
 fail() {
     echo "license-package FAIL: $1" >&2
@@ -236,8 +263,8 @@ done
 # So every expression in the package is extracted and compared against what this product is allowed
 # to be. The allowlist is short on purpose: this is OUR artifact, and anything else in it is either
 # a mistake or a licensing event that must be decided deliberately, not absorbed by a gate.
-badexpr=$(find "$PKG" -type f 2>/dev/null | while read -r _f; do header_expr "$_f"; done |
-          grep -v '^$' | sort -u | grep -v '^BSL-1.0$' || true)
+_SCAN=$(scan_files $(find "$PKG" -type f 2>/dev/null) 2>/dev/null || true)
+badexpr=$(printf '%s\n' "$_SCAN" | cut -f2 | grep -v '^$' | sort -u | grep -v '^BSL-1.0$' || true)
 if [ -n "$badexpr" ]; then
     for e in $badexpr; do
         fail "the package contains a file licensed \`$e\`" \
@@ -258,13 +285,18 @@ fi
 # code that no generator produced — it carries our SPDX header, and a provenance line on it would be
 # a lie. The two are told apart by CONTENT (byte-identical to a file under runtime/), never by name.
 nsrc=0; ncopy=0; nospdx=0; noprov=0
-for f in $(find "$PKG/source" \( -name '*.d' -o -name '*.cpp' -o -name '*.h' \) 2>/dev/null); do
+# The header and the provenance line come from the ONE scan above (see scan_files); the loop below
+# asks the same two questions of that table instead of opening five processes per file. `verbatim.txt`
+# is read once for the same reason.
+_VERB=$(cat "$PKG/verbatim.txt" 2>/dev/null || true)
+for _row in $(printf '%s\n' "$_SCAN" | awk -F'\t' '$1 ~ /\/source\/.*\.(d|cpp|h)$/ { print $1 "|" $2 "|" $3 }'); do
+    f=${_row%%|*}; _rest=${_row#*|}; _spdx=${_rest%%|*}; _prov=${_rest##*|}
     nsrc=$((nsrc + 1))
-    if [ -z "$(header_expr "$f")" ]; then
+    if [ -z "$_spdx" ]; then
         nospdx=$((nospdx + 1))
         if [ "$nospdx" -le 3 ]; then fail "$(basename "$f") carries no SPDX identifier"; fi
     fi
-    if grep -q "^// provenance:" "$f"; then continue; fi
+    if [ "$_prov" = 1 ]; then continue; fi
     # The exemption is read from the package's OWN manifest, not from `runtime/` in the repository.
     # Consulting the repo made the gate pass a package that failed Phase 3's exit criterion — "the
     # consumer can determine licence and provenance using only the installed package" — because the
@@ -276,7 +308,7 @@ for f in $(find "$PKG/source" \( -name '*.d' -o -name '*.cpp' -o -name '*.h' \) 
     # And the manifest is CONFRONTED, not believed: install.sh writes it and this reads it, so on
     # its own it is a note the package hands itself. Where the named origin exists — it does in the
     # build, it will not in a consumer's unpacked copy — the bytes must match it.
-    claim=$(grep "^source/$(basename "$f") <- " "$PKG/verbatim.txt" 2>/dev/null | head -1 || true)
+    claim=$(printf '%s\n' "$_VERB" | grep "^source/$(basename "$f") <- " | head -1 || true)
     if [ -n "$claim" ]; then
         origin=${claim#* <- }; origin=${origin%% @ *}
         # AN ORIGIN THAT DOES NOT EXIST IS NOT AN EXEMPTION. `cmp` ran only when the named file was
