@@ -121,8 +121,16 @@ done
 ldc2 -c -I gen -od=dobj gen/userlib/*.d gen/cxxrt.d gen/qtmoc.d "$ROOT/examples/userlib/app.d" \
     2>"$WORK/d.err" || fail "the emitted D did not compile" "$(head -5 "$WORK/d.err")"
 
-QTLIBS=$(pkg-config --libs Qt6Core | sed 's/-l/-L-l/g; s/-L-L/-L-L/g')
-ldc2 -of=app dobj/*.o ./*.o -L-lstdc++ $QTLIBS 2>"$WORK/link.err" \
+# THE LINK LINE IS THE PLATFORM'S. `-lstdc++` names a library that does not exist on Windows —
+# lld-link says `could not open 'stdc++.lib'` — and the MSVC C++ runtime is the compiler's default
+# there, so there is nothing to name. `$QLIBS` was already worked out above in whichever spelling
+# this machine speaks; ldc2 needs each token behind its own `-L`.
+QTLIBS=$(for l in $QLIBS; do printf -- '-L%s ' "$l"; done)
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*) CXXLIB="" ;;
+  *)                    CXXLIB="-L-lstdc++" ;;
+esac
+ldc2 -of=app dobj/*.o ./*.o $CXXLIB $QTLIBS 2>"$WORK/link.err" \
     || fail "the binding did not link" "$(grep -m3 'undefined' "$WORK/link.err" || head -3 "$WORK/link.err")"
 
 ./app > out.txt 2>&1 || fail "the example crashed" "$(tail -3 out.txt)"
