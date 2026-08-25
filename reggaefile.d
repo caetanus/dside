@@ -304,11 +304,24 @@ Build reggaeBuild() {
             // default build — it is run by expected-fails-run, which expects the failure. Putting
             // it in `all` turned `./build` red, which is the gate reporting the gap as a
             // regression: right fact, wrong channel.
-            if (exists(lbl))
-                gapProbes ~= Target.phony("qmltc-pedantic-imagine-label",
-                    buildPath(ctrl.bdir, "qmltc-d") ~ " --pedantic --dump " ~ lbl ~ " ILabel"
-                    ~ " --qmlmap " ~ buildPath(ctrl.genDir, "qmlmap.tsv") ~ " -I " ~ imagineDir
-                    ~ " > /dev/null", [qmltcTool(root, ctrl), ctrl.gen]);
+            if (exists(lbl)) {
+                // A PROBE STILL HAS TO RUN THE TOOL. This handed an extensionless binary and a
+                // `>` straight to cmd.exe, which answered `O sistema não pode encontrar o caminho
+                // especificado` — and expected-fails-run then reported the gap as failing for the
+                // wrong reason, which is exactly the confusion a failure signature exists to stop.
+                auto ilArgs = ["--pedantic", "--dump", lbl, "ILabel",
+                               "--qmlmap", buildPath(ctrl.genDir, "qmlmap.tsv"), "-I", imagineDir];
+                string ilCmd;
+                version (Windows)
+                    ilCmd = psInline(root, "qmltc-pedantic-imagine-label",
+                                     [psRedirect(buildPath(ctrl.bdir, "qmltc-d"), ilArgs,
+                                                 buildPath(ctrl.bdir, "imagine-label.d"))],
+                                     ctrl.mods);
+                else
+                    ilCmd = buildPath(ctrl.bdir, "qmltc-d") ~ " " ~ ilArgs.join(" ") ~ " > /dev/null";
+                gapProbes ~= Target.phony("qmltc-pedantic-imagine-label", ilCmd,
+                                          [qmltcTool(root, ctrl), ctrl.gen]);
+            }
         }
 
         // ...and the same compiler pointed at QML NOBODY HERE WROTE: Qt's own Basic style files,

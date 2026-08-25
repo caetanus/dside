@@ -282,7 +282,8 @@
         {
           "target": "license-no-gpl-product",
           "exit": 1,
-          "match": "was built with Qt 5.15.19"
+          "match": "was built with Qt 5.15.19",
+          "unjudgeable_when": "is not a release this licence matrix was verified"
         }
       ]
     },

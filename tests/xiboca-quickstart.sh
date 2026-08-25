@@ -35,7 +35,13 @@ rm -rf "$WORK"; mkdir -p "$WORK/gen"
 # hit from inside a Qt6 build.
 LIBEXEC=$(pkg-config --variable=libexecdir Qt6Core 2>/dev/null || true)
 MOC=""
-for cand in "$LIBEXEC/moc" /usr/lib/qt6/moc /usr/lib64/qt6/moc /usr/lib/qt6/libexec/moc; do
+# ...AND THE PREFIX, because pkg-config answers nothing where Qt ships no .pc files — which is
+# every Windows install. The build resolves Qt from QTDIR6/QTDIR and this asks the same place;
+# `moc` there is `moc.exe`, and a test for the file has to ask for the right name or a tool that
+# is plainly present reads as missing.
+for cand in "$LIBEXEC/moc" /usr/lib/qt6/moc /usr/lib64/qt6/moc /usr/lib/qt6/libexec/moc \
+            "${QTDIR6:-}/bin/moc.exe" "${QTDIR:-}/bin/moc.exe" \
+            "${QTDIR6:-}/bin/moc" "${QTDIR:-}/bin/moc"; do
     [ -x "$cand" ] && { MOC="$cand"; break; }
 done
 [ -n "$MOC" ] || fail "no Qt6 moc found" "looked in libexecdir=$LIBEXEC and the usual qt6 paths"

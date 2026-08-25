@@ -48,7 +48,12 @@ for e in l:
         # and a string its diagnostic must contain. Without it, a missing tool, a broken import, a
         # crash or a CLI change all read as "the gap is still open" — an expected-fail with no
         # signature, which is the thing this file exists to stop being.
-        print("gap\t%s\t%s\t%s\t%s" % (e["id"], t["target"], t["exit"], t["match"]))
+        # `unjudgeable_when`, when present: the fragment that says this MACHINE cannot ask the
+        # question. A probe keyed to a Qt release the licence matrix records cannot be judged where
+        # the installed release is not recorded — the gate there fails for a broader reason and
+        # never reaches the artifacts the gap is about. Reported and counted, never silently passed.
+        print("gap\t%s\t%s\t%s\t%s\t%s" % (e["id"], t["target"], t["exit"], t["match"],
+                                             t.get("unjudgeable_when", "")))
 PY
 )
 
@@ -57,8 +62,8 @@ if [ -z "$targets" ]; then
   exit 1
 fi
 
-n=0; bad=0
-echo "$targets" | while IFS="	" read -r dir id tgt want_exit want_match; do
+n=0; bad=0; unj=0
+echo "$targets" | while IFS="	" read -r dir id tgt want_exit want_match no_judge; do
   [ -n "$tgt" ] || continue
   n=$((n + 1))
   if [ "$dir" = gap ]; then
@@ -72,6 +77,10 @@ echo "$targets" | while IFS="	" read -r dir id tgt want_exit want_match; do
     elif [ "$rc" != "$want_exit" ]; then
       printf 'expected-fails-run: %s failed with exit %s, and `%s` contracts exit %s. It failed for the wrong reason.\n' "$tgt" "$rc" "$id" "$want_exit" >&2
       bad=$((bad + 1))
+    elif [ -n "${no_judge:-}" ] && printf '%s' "$out" | grep -qF -- "$no_judge"; then
+      printf 'expected-fails-run: %s is UNJUDGEABLE here — `%s` is keyed to a Qt release this\n' "$tgt" "$id" >&2
+      printf '    machine does not have, and the gate stops earlier: %s\n' "$no_judge" >&2
+      unj=$((unj + 1))
     elif ! printf '%s' "$out" | grep -qF -- "$want_match"; then
       printf 'expected-fails-run: %s failed as contracted but its diagnostic does not contain `%s` — `%s` describes a different failure.\n' "$tgt" "$want_match" "$id" >&2
       bad=$((bad + 1))
@@ -82,10 +91,11 @@ echo "$targets" | while IFS="	" read -r dir id tgt want_exit want_match; do
     bad=$((bad + 1))
   fi
   # The count has to survive the subshell the pipe creates, hence the file rather than a variable.
-  printf '%s %s\n' "$n" "$bad" > "${TMPDIR:-/tmp}/qtd-efr.$$"
+  printf '%s %s %s\n' "$n" "$bad" "$unj" > "${TMPDIR:-/tmp}/qtd-efr.$$"
 done
 
-read -r n bad < "${TMPDIR:-/tmp}/qtd-efr.$$" || { n=0; bad=0; }
+read -r n bad unj < "${TMPDIR:-/tmp}/qtd-efr.$$" || { n=0; bad=0; unj=0; }
 rm -f "${TMPDIR:-/tmp}/qtd-efr.$$"
 [ "${bad:-0}" -eq 0 ] || exit 1
-echo "expected-fails-run OK: $n probe target(s) executed, every documented risk still covered, and every documented gap still open"
+printf 'expected-fails-run OK: %s probe target(s) executed, every documented risk still covered, and every documented gap still open' "$n"
+[ "${unj:-0}" -eq 0 ] && echo "" || printf ' (%s unjudgeable on this machine, named above)\n' "$unj"

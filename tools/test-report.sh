@@ -223,7 +223,14 @@ verdict() {  # $1 = target, $2 = its log, $3 = rc of the invocation that produce
     st=hang; fail=$((fail+1)); logcol="$log"
     echo "# target exceeded ${TARGET_TIMEOUT:-900}s and was killed" >> "$log"
   elif [ "$rc" -eq 0 ]; then
-    if grep -qiE '(^|[^a-z])skip(ping|ped)?([^a-z]|$)' "$log"; then
+    # THE MARKER OPENS A LINE, it is not a word somewhere in one. A capability-gated target says
+    # so as its verdict — `qmltc-o3-gate: skipped — no QtQuick.Controls under …`, `cross-preflight
+    # SKIP: no wine` — and anything looser reads a sentence ABOUT a check as the whole target being
+    # skipped. Measured: `nonqobject: block-freed check skipped — the MS x64 ABI frees inside Qt's
+    # DLL` is a passing target stating which sub-check that ABI does not allow, and ten Windows
+    # rows came back `skip` while their logs also said OK. A capability skip phrased some other way
+    # now reads as `mute` instead, which is a failure and therefore loud — the safe direction.
+    if grep -qiE '^([A-Za-z0-9_.-]+:?[[:space:]]+)?(SKIP|skipped|skipping)\b' "$log"; then
       st=skip; skip=$((skip+1)); rm -f "$log"; logcol=-
     elif [ "$(grep -cvE '^\[build\]|^run-exe:|^$' "$log")" -eq 0 ]; then
       st=mute; fail=$((fail+1)); logcol="$log"
