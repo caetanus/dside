@@ -39,10 +39,14 @@ qlibs_human=""
 # package named no Qt at all and the consumer's link ended with 7476 unresolved QObject symbols.
 qtlibdir=""
 for l in $LIBS; do
-  case "$l" in
-    -l*)   n=${l#-l} ;;
-    *.lib) n=$(basename "$l" .lib)
-           [ -n "$qtlibdir" ] || qtlibdir=$(dirname "$l") ;;
+  # The build hands every token through the compiler's `-L` escape and un-escapes only the `-l`
+  # form, so on Windows a token is `-LC:/Qt/.../Qt6Widgets.lib`. Strip it before asking what this
+  # is — `basename -LC:/…` reads the `-L` as an option and says so.
+  p=${l#-L}
+  case "$p" in
+    -l*)   n=${p#-l} ;;
+    *.lib) n=$(basename -- "$p" .lib)
+           [ -n "$qtlibdir" ] || qtlibdir=$(dirname -- "$p") ;;
     *)     continue ;;
   esac
   qlibs="$qlibs\"$n\", "
@@ -156,7 +160,7 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
   *)
     lf_ldc='"-L$PACKAGE_DIR/lib", "--start-group", "-lbinding_ldc2", "-lshims", "--end-group"'
     lf_dmd='"-L$PACKAGE_DIR/lib", "--start-group", "-lbinding_dmd", "-lshims", "--end-group"'
-    cxxlib='"stdc++"'
+    cxxlib=''   # `-lstdc++` is already one of $LIBS here; naming it again listed it twice
     ;;
 esac
 
