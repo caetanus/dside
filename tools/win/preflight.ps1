@@ -79,7 +79,7 @@ Need 'dmd'  ([bool](Get-Command dmd  -EA SilentlyContinue)) `
      'https://downloads.dlang.org/releases/2.x/ (windows .7z, use bin64)'
 
 Write-Output 'Qt -----------------------------------------------------------------------'
-foreach ($pair in @(@('QTDIR6', 'C:/Qt/6.10.3/msvc2022_64'), @('QTDIR5', 'C:/Qt/5.15.2/msvc2019_64'))) {
+foreach ($pair in @(@('QTDIR6', 'C:/Qt/6.11.1/msvc2022_64'), @('QTDIR5', 'C:/Qt/5.15.2/msvc2019_64'))) {
     $var = $pair[0]; $def = $pair[1]
     $val = [Environment]::GetEnvironmentVariable($var)
     if (-not $val) { $val = $def }

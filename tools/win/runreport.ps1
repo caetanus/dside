@@ -29,7 +29,7 @@ param(
     [string] $Repo    = $(if ($env:QTD_REPO) { $env:QTD_REPO } else { "C:/Users/caetano/dside" }),
     [string] $Tsv     = "C:/Users/caetano/win-report.tsv",
     [string] $Err     = "C:/Users/caetano/win-report.err",
-    [string] $Qt6     = $(if ($env:QTDIR6) { $env:QTDIR6 } else { "C:/Qt/6.10.3/msvc2022_64" }),
+    [string] $Qt6     = $(if ($env:QTDIR6) { $env:QTDIR6 } else { "C:/Qt/6.11.1/msvc2022_64" }),
     [string] $Qt5     = $(if ($env:QTDIR5) { $env:QTDIR5 } else { "C:/Qt/5.15.2/msvc2019_64" }),
     [string] $Timeout = "900",
     [string] $Batch   = "20",
