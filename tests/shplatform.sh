@@ -20,12 +20,8 @@ export MSYS2_ARG_CONV_EXCL
 # -fPIC IS REQUIRED ON ELF AND REFUSED ON THE MSVC TARGET (`clang++: error: unsupported option
 # '-fPIC' for target 'x86_64-pc-windows-msvc'`). The build answers this with cxxPic(); a gate that
 # composes its own compile line has to ask it too.
-# ...AND THE FRAME POINTER, on Windows. dmd's Win64 exception handling walks the RBP chain
-# (rt/deh_win64_posix.d), and x64 omits it by default — one C++ frame between a D `throw` and its
-# `catch` was enough to lose the exception. Measured on a minimal case: the same C++ source caught
-# by dmd with `-fno-omit-frame-pointer` and lost without it.
 case "$(uname -s 2>/dev/null || echo unknown)" in
-  MINGW*|MSYS*|CYGWIN*) QTD_PIC="-fno-omit-frame-pointer" ;;
+  MINGW*|MSYS*|CYGWIN*) QTD_PIC="" ;;
   *)                    QTD_PIC="-fPIC" ;;
 esac
 

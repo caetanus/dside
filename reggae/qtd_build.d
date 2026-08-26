@@ -593,26 +593,20 @@ string guarded(string lock, string cmd, string winPs, string output, string[] ne
 // module's flags. QtProbe is private; this is the one answer worth exporting.
 string qtPrefix() { return QtProbe.prefix(); }
 
-// THE C++ FRAMES A D EXCEPTION HAS TO UNWIND THROUGH MUST KEEP THEIR FRAME POINTER.
+// -fno-omit-frame-pointer DOES NOT FIX dmd/Win64 EXCEPTIONS, and it is worth saying why here so
+// nobody tries it again. dmd's Win64 unwinder walks the RBP CHAIN (rt/deh_win64_posix.d captures
+// RBP and follows it looking for D handler tables), and on the MSVC target that flag means "keep
+// rbp as the frame BASE register", not "maintain the classic linked chain". Measured, two prologues
+// compiled by the same clang++ with the same flags:
 //
-// dmd's Win64 exception handling walks the stack by following the RBP chain — `_d_throwc` in
-// rt/deh_win64_posix.d captures RBP and follows it looking for D handler tables — and x64 code
-// omits that chain by default, unwinding through .pdata/.xdata instead. One C++ frame between the
-// throw and the D `catch` was therefore enough to lose the exception: druntime ran out of frames
-// and called terminate(), which is `hlt`, which is exit 0xC0000096.
+//     works: push %rbp; sub $0x50,%rsp;  lea 0x50(%rsp),%rbp   <- rbp lands ON the saved-rbp slot
+//     fails: push %rbp; push %rsi; sub $0x378,%rsp; lea 0x80(%rsp),%rbp   <- rbp in mid-frame
 //
-// Measured, minimal case, same C++ object either way:
-//     clang++ -c                          -> dmd: object.Exception … escapes, rc=1
-//     clang++ -c -fno-omit-frame-pointer  -> dmd: caught: from D,        rc=0
-// (ldc2 catches it both ways: on Windows it emits MSVC-compatible EH and the OS unwinder walks
-// the tables.) The same file's own header explains WHY only Win64 is like this — since v2.070
-// POSIX uses DWARF EH instead, "as it provides better compatibility with C++".
-//
-// So this is a compile flag, not an ABI decision. It costs one register in the shims.
-string cxxUnwindable() {
-    version (Windows) return "-fno-omit-frame-pointer";
-    else              return "";
-}
+// A simple function happens to give a real chain; one with more locals does not. So the flag makes
+// exception correctness depend on how complex each function is, which is worse than not having it.
+// LDC has none of this: on Windows it emits MSVC-compatible EH and the OS unwinder walks the tables.
+string cxxUnwindable() { return ""; }
+
 
 // WHICH PLATFORM THIS IS, for the checks whose answer is a property of the platform rather than of
 // the code — a coverage baseline, first of all: an X11-only type is absent on Windows for a reason

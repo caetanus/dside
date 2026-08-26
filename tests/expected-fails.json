@@ -286,6 +286,14 @@
           "unjudgeable_when": "is not a release this licence matrix was verified"
         }
       ]
+    },
+    {
+      "id": "cxx-exception-dmd-win64",
+      "kind": "known_gap",
+      "area": "exceptions/windows",
+      "reason": "dmd's Win64 unwinder walks the RBP CHAIN — rt/deh_win64_posix.d captures RBP and follows it looking for D handler tables — and the MSVC target does not maintain one. `-fno-omit-frame-pointer` is not a fix: on that target it means 'keep rbp as the frame BASE', not 'keep the classic chain'. Measured, two prologues from the same clang++ with the same flags: `push rbp; sub 0x50,rsp; lea 0x50(rsp),rbp` lands rbp on the saved-rbp slot and IS traversable, while `push rbp; push rsi; sub 0x378,rsp; lea 0x80(rsp),rbp` puts it mid-frame and is not — so a simple C++ function works and a larger one does not, which is worse than plainly not working. Under cdb: rt.deh_win64_posix.terminate <- d_throwc <- qtd_throw_d <- qtd_test_throw <- D main, one C++ frame in between; raising after the catch instead of inside it changes nothing. LDC is unaffected (MSVC-compatible EH, the OS unwinder walks the tables) and its twin of every affected target proves the path; uicheck reports EXCGAP on dmd/Win64 instead of failing.",
+      "since": "2026-08-23, branch codegen-tools",
+      "remove_when": "dmd's Win64 druntime unwinds by .pdata/.xdata like the platform does, instead of by the RBP chain — or the trampolines stop unwinding through C++ at all (error-return at the boundary, as the json/png wrappers already do), which is an ABI change to every guarded call"
     }
   ]
 }
