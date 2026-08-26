@@ -72,8 +72,17 @@ foreach ($p in @($Repo, $Qt6, $Qt5)) {
 Set-Location -LiteralPath $Repo
 foreach ($f in @($Tsv, $Err)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
 
+# `*` IS NOT PASSED, IT IS OMITTED — and the difference is a report that measures nothing. The
+# MSYS runtime expands wildcards in the command line when an MSYS program is started by a native
+# Windows process, so `sh.exe tools/test-report.sh *` reached the script as
+#     tools/test-report.sh CONTRIBUTING.md LICENSE README.md …
+# the filter became a filename, no target matched, and the run signed off `0 pass, 0 fail, 0 skip`
+# with the commit and the Qt release in its header. The report now refuses an empty selection; this
+# is the other half, and it is why the default filter is expressed by ABSENCE rather than by `*`.
+$argv = @("tools/test-report.sh")
+if ($Filter -ne "*") { $argv += $Filter }
 $p = Start-Process -FilePath "C:/msys64/usr/bin/sh.exe" `
-     -ArgumentList @("tools/test-report.sh", $Filter) `
+     -ArgumentList $argv `
      -RedirectStandardOutput $Tsv -RedirectStandardError $Err -NoNewWindow -PassThru
 Write-Output ("pid=" + $p.Id + " tsv=" + $Tsv + " err=" + $Err)
 if ($Wait) {

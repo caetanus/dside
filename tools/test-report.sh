@@ -243,6 +243,18 @@ BATCH="${BATCH:-20}"
 # The subset this run will actually visit, after the filter.
 sel=()
 for t in "${targets[@]}"; do case "$t" in $filter) sel+=("$t") ;; esac; done
+# A SELECTION OF NOTHING IS NOT A PASS. This printed `# totals: 0 pass, 0 fail, 0 skip` — a
+# well-formed report, signed with the commit and the Qt release, about a run that visited no
+# target at all. It happened because the MSYS runtime EXPANDS WILDCARDS in the command line when
+# an MSYS program is launched from a native Windows process: `sh.exe tools/test-report.sh *` from
+# PowerShell arrived as `tools/test-report.sh CONTRIBUTING.md LICENSE …`, so the filter was a
+# filename and matched no target. The launcher no longer passes `*` (tools/win/runreport.ps1), but
+# the report is what must refuse: any filter that selects nothing is an operator error, and the
+# one thing it must never do is look like success.
+if [ "${#sel[@]}" -eq 0 ]; then
+    echo "# ERROR: the filter '$filter' selected 0 of ${#targets[@]} target(s) — nothing to report" >&2
+    exit 2
+fi
 printf '# scheduling: %d target(s), batches of %d (BATCH=1 for one invocation per target)\n' \
        "${#sel[@]}" "$BATCH"
 
