@@ -272,17 +272,17 @@
     },
     {
       "id": "qt5-parity-release-not-audited",
-      "title": "the Qt5 parity artifacts are built with 5.15.19 and the licence matrix records 5.15.17",
+      "title": "the Qt5 parity artifacts are built with whatever 5.15 patch the machine has and the licence matrix records 5.15.17",
       "kind": "known_gap",
       "area": "licensing/qt-matrix",
       "since": "2026-08-17",
-      "reason": "Round 18 #2: the product gate verified whichever Qt release it queried first (Qt6) and then applied a module-only allowlist to every line of the link manifest — including two archives built with Qt 5.15.19, a release nobody had read. The matrix is now keyed by (release, module) and every artifact is judged against the release that produced it, so those two archives and the four Qt5 specs are refused by name.\n\nThat refusal is CORRECT and is why this entry exists rather than a new matrix row. The rows for Qt5 say 5.15.17 because that is the release whose licensing was actually read; writing 5.15.19 on them would have been inventing the record, and it was nearly done automatically by a rewrite script before being caught.\n\nTwo honest resolutions, both requiring a decision this build cannot make: read Qt's licensing for 5.15.19 and record it, or stop building Qt5 parity artifacts. Note that the Qt5 archives are NOT installed — the package is built from the Qt6 qtwidgets binding — so the exposure is a test artifact, not a shipped one; that is a reason to fix it calmly, not a reason to call it verified.",
-      "remove_when": "5.15.19 is read and recorded in docs/qt-license-matrix.tsv, or the Qt5 parity build is retired",
+      "reason": "Round 18 #2: the product gate verified whichever Qt release it queried first (Qt6) and then applied a module-only allowlist to every line of the link manifest — including two archives built with Qt 5.15.19, a release nobody had read. The matrix is now keyed by (release, module) and every artifact is judged against the release that produced it, so those two archives and the four Qt5 specs are refused by name.\n\nThat refusal is CORRECT and is why this entry exists rather than a new matrix row. The rows for Qt5 say 5.15.17 because that is the release whose licensing was actually read; writing 5.15.19 on them would have been inventing the record, and it was nearly done automatically by a rewrite script before being caught.\n\nTwo honest resolutions, both requiring a decision this build cannot make: read Qt's licensing for 5.15.19 and record it, or stop building Qt5 parity artifacts. Note that the Qt5 archives are NOT installed — the package is built from the Qt6 qtwidgets binding — so the exposure is a test artifact, not a shipped one; that is a reason to fix it calmly, not a reason to call it verified.\n\nTHE PATCH NUMBER IS THE MACHINE'S, so the probe must not name one. This signature read `was built with Qt 5.15.19` — the Linux Qt5 — and on Windows the same gate said `was built with Qt 5.15.2`, so expected-fails-run reported the entry as describing a protection that is not there. It was there; the signature was a property of one machine. Matching `was built with Qt 5.15.` keeps the phrasing, the module family and the failing gate pinned, and lets the release be whatever this installation is — which is what the gap actually says. Measured 2026-08-26 on Qt 5.15.2/MSVC.",
+      "remove_when": "the 5.15 patch release the parity build uses is read and recorded in docs/qt-license-matrix.tsv — for every machine that runs the matrix, since each brings its own — or the Qt5 parity build is retired",
       "gap_probes": [
         {
           "target": "license-no-gpl-product",
           "exit": 1,
-          "match": "was built with Qt 5.15.19",
+          "match": "was built with Qt 5.15.",
           "unjudgeable_when": "is not a release this licence matrix was verified"
         }
       ]
