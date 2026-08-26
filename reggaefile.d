@@ -93,6 +93,12 @@ Build reggaeBuild() {
     // expected-fails-run names them and expects the failure, and a failing target in the default
     // build would report the gap as a regression — right fact, wrong channel.
     Target[] gapProbes;
+    // ...and gates that CANNOT COMPARE on this machine. Not a gap and not a failure: a coverage
+    // baseline belongs to one (platform, Qt) pairing, and asked about another the gate says NOT
+    // COMPARABLE and exits 0. Mandatory, that is a green row for a check that ran no comparison —
+    // which is exactly what `manifest-gate-controls` was on Windows. Advisory-by-name is the honest
+    // shape until a baseline for this pairing exists.
+    Target[] advisoryGates;
     Target[] docsNumberSources;   // the o3/optlevels targets, for the documentation gate
     string docsNumberBdir;
 
@@ -396,7 +402,11 @@ Build reggaeBuild() {
         // spec tripped nothing — which is how binding the QtQuick animations (a real and intended
         // coverage change) landed without the manifest ever being consulted. A binding nobody holds
         // to a symbol contract is a binding whose fates can rot unnoticed.
-        all ~= manifestGateTargets(root, [ctrl], ["controls"], ["controls.manifest.tsv"]);
+        {
+            auto cg = manifestGateTargets(root, [ctrl], ["controls"], ["controls.manifest.tsv"]);
+            if (manifestGateComparable(root, ctrl, "controls.manifest.tsv")) all ~= cg;
+            else                                                            advisoryGates ~= cg;
+        }
         // ...and the registry's own floor: every QML type it can NAME must be TYPEABLE. `Text` was
         // named and had no property rows for as long as nobody compared the two tables, and the
         // refusals that caused ("declared type '?'") read like a compiler gap rather than a
@@ -438,9 +448,14 @@ Build reggaeBuild() {
     //     for, and advisory-by-name otherwise.
     auto manifestGates = manifestGateTargets(root, [ex, qml], ["qtwidgets", "qml"],
                                              ["qtwidgets.manifest.tsv", "qml.manifest.tsv"]);
+    // ...and the SAME PLATFORM, which the Qt-minor test alone does not say. See baselinePairing:
+    // a gate whose baseline was taken elsewhere answers NOT COMPARABLE and exits 0, so making it
+    // mandatory buys a green row instead of a check.
     bool gatesEnforceable = bindingQtMinor(ex.genDir).length
         && bindingQtMinor(ex.genDir) == installedQtMinor("Qt6Widgets")
-        && bindingQtMinor(qml.genDir) == installedQtMinor("Qt6Qml");
+        && bindingQtMinor(qml.genDir) == installedQtMinor("Qt6Qml")
+        && manifestGateComparable(root, ex,  "qtwidgets.manifest.tsv")
+        && manifestGateComparable(root, qml, "qml.manifest.tsv");
 
     // --- RUNTIME BOUNDARY RATCHET (critics r9 #2 / r11 #5): the audit has asked since round 9 for
     //     the QML compiler's runtime to leave the shared meta-object unit, and it is the one
@@ -1003,10 +1018,12 @@ Build reggaeBuild() {
     if (gatesEnforceable)
         return Build(chain(all.map!(t => createTopLevelTarget(t)),
                            manifestGates.map!(t => createTopLevelTarget(t)),
+                           advisoryGates.map!(t => optional(t)),
                            gapProbes.map!(t => optional(t)),
                            aggregates.map!(t => optional(t))));
     return Build(chain(all.map!(t => createTopLevelTarget(t)),
                        manifestGates.map!(t => optional(t)),
+                       advisoryGates.map!(t => optional(t)),
                        gapProbes.map!(t => optional(t)),
                        aggregates.map!(t => optional(t))));
 }
@@ -1105,6 +1122,35 @@ Target[] registryGateTarget(string root, QtdBinding bind, string label) {
     return [Target.phony("registry-gate-" ~ label,
                          "sh " ~ script ~ " " ~ buildPath(bind.genDir, "qmlmap.tsv"),
                          [Target(script), bind.gen])];
+}
+
+// THE PAIRING A BASELINE WAS TAKEN FROM, read from the baseline itself. `manifest_gate.d` already
+// compares this against the pairing in front of it and answers NOT COMPARABLE; the build has to ask
+// the same question EARLIER, because a gate that cannot compare must not be a mandatory target.
+// It was one: on Windows `manifest-gate-controls` ran, printed
+//     manifest-gate NOT COMPARABLE [controls]: the baseline is for `platform=linux qt=6.11.1`
+//     and this is `platform=windows qt=6.10.3`.
+// and exited 0, so the record execution carried a green row for a check that compared nothing. The
+// other two gates escaped only by accident — they were advisory because the Qt MINOR differed, and
+// had that machine had Qt 6.11 they would have become mandatory and equally vacuous.
+string baselinePairing(string root, string baseline) {
+    import std.string : lineSplitter;
+    auto p = buildPath(root, "tests", "coverage", baseline);
+    if (!exists(p)) return "";
+    foreach (l; readText(p).lineSplitter)
+        if (l.startsWith("# baseline-for:")) return l["# baseline-for:".length .. $].strip;
+    return "";
+}
+
+// ...and the pairing in front of us, spelled exactly as manifestGateTargets passes it on.
+string currentPairing(QtdBinding b) {
+    return "platform=" ~ hostPlatform() ~ " qt=" ~ qtModVersion(b.mods.length ? b.mods[0] : "Qt6Core");
+}
+
+// A gate is ENFORCEABLE when it can actually compare: same platform, same Qt, as the baseline says.
+bool manifestGateComparable(string root, QtdBinding b, string baseline) {
+    auto want = baselinePairing(root, baseline);
+    return want.length && want == currentPairing(b);
 }
 
 Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels, string[] baselines) {
