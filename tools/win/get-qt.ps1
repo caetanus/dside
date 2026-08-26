@@ -59,7 +59,12 @@ if (-not (Test-Path -LiteralPath $Python)) { throw "get-qt: no $Python - py7zr u
 if ($LASTEXITCODE -ne 0) { throw "get-qt: $Python has no py7zr (pip install py7zr)" }
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("qtdl-" + $v)
-New-Item -ItemType Directory -Force -Path $tmp, $Dest | Out-Null
+# THE ARCHIVES CARRY NO PREFIX. They unpack straight to bin/, include/, lib/, doc/ - the
+# `<version>/<arch>/` layout is something the INSTALLER imposes, not something the archives
+# contain. Unpacked into C:/Qt they would scatter a Qt tree over the directory that holds the
+# other installations; the destination is therefore the prefix itself.
+$prefix = Join-Path $Dest ($Version + "/" + $sfx)
+New-Item -ItemType Directory -Force -Path $tmp, $prefix | Out-Null
 
 # One repository: read its Updates.xml, return a map of package name -> @{Version, Archives}.
 function Get-Repo($url) {
@@ -95,9 +100,7 @@ function Get-Package($repo, $map, $name) {
             throw "get-qt: sha256 mismatch for $a (published $want, got $have)"
         }
         Write-Output ("  unpack " + $a)
-        # The archives carry `<version>/<arch>/…` at the top, so -Dest is C:/Qt and the release
-        # lands beside the ones already there.
-        & $Python -m py7zr x $out $Dest
+        & $Python -m py7zr x $out $prefix
         if ($LASTEXITCODE -ne 0) { throw "get-qt: py7zr failed on $a" }
     }
 }
@@ -118,7 +121,6 @@ if (-not $SkipWebEngine) {
     Get-Package $ext (Get-Repo $ext) "extensions.qtwebengine.$v.$Arch"
 }
 
-$prefix = Join-Path $Dest ($Version + "/" + $sfx)
 if (-not (Test-Path -LiteralPath (Join-Path $prefix "include/QtCore/qconfig.h"))) {
     throw "get-qt: unpacked, but $prefix has no include/QtCore/qconfig.h"
 }
