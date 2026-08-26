@@ -47,9 +47,13 @@ if [ -z "$QMLDIR" ] || [ ! -d "$QMLDIR" ]; then
         [ -n "$_c" ] && [ -d "$_c" ] && { QMLDIR=$_c; break; }
     done
 fi
+# A PATH IS ALSO `C:/…`. Only `/*` was recognised as absolute, so on Windows the app corpus — which
+# IS passed as a path — was read as a style NAME and appended to the Controls directory:
+#   C:/Qt/…/QtQuick/Controls/C:/Users/…/tests/qmltc/app
+# The gate then judged nothing and, until the empty-corpus check above, said so as a pass.
 case "$ST" in
-  /*) B="$ST"; ST=$(basename "$ST") ;;
-   *) B=$QMLDIR/QtQuick/Controls/$ST ;;
+  /*|[A-Za-z]:/*|[A-Za-z]:\\*) B="$ST"; ST=$(basename "$ST") ;;
+  *) B=$QMLDIR/QtQuick/Controls/$ST ;;
 esac
 # NOTHING TO JUDGE IS NOT A PASS. Measured on Windows: with the wrong QML directory this loop saw
 # no documents, wrote `compiled=0 UNPLACED=0` and exited 0 — and docs-numbers then reported the
