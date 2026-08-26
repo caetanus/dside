@@ -448,7 +448,14 @@ struct QtdBinding {
 string bindingQtMinor(string genDir) {
     // Walk from the RIGHT and require a digit after "qt-": the project directory itself is
     // called qt-dlang-gen, which a plain startsWith("qt-") happily matched first.
-    auto parts = genDir.split(dirSeparator);
+    //
+    // SPLIT ON `/`, NOT ON dirSeparator. Every path this build composes goes through the buildPath
+    // at the top of this file, which normalises to forward slashes on every platform — so on
+    // Windows, where dirSeparator is `\`, the whole path came back as ONE part, nothing started
+    // with "qt-", and this returned "". The manifest gates key their enforceability on the answer,
+    // so they could never be mandatory there whatever Qt was installed: a check silently switched
+    // off by a path separator.
+    auto parts = genDir.split("/");
     foreach_reverse (part; parts) {
         if (!part.startsWith("qt-") || part.length <= 3) continue;
         auto rest = part["qt-".length .. $];
