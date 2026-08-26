@@ -30,10 +30,15 @@ param(
     # reggaefile.d + generator/spec*.json — nothing else is asked for anywhere.
     [string[]] $Modules = @("qtwebchannel", "qtpositioning", "qtshadertools"),
     # WebEngine lives in a DIFFERENT repository (extensions/, not desktop/) and is the single
-    # largest download here. `-WithWebEngine:$false` skips it; the webengine-* targets then have no
+    # largest download here. `-SkipWebEngine` leaves it out; the webengine-* targets then have no
     # Qt6WebEngineCore to bind and disappear from the graph, which the matrix will show as missing
     # rows rather than as failures.
-    [bool]     $WithWebEngine = $true,
+    #
+    # A SWITCH, not a [bool]: invoked through `powershell -File`, every argument arrives as a
+    # STRING, and `-WithWebEngine:$false` reached the parameter as the literal text `$false`:
+    #     Nao e possivel converter o valor "System.String" no tipo "System.Boolean".
+    # A switch has no value to convert.
+    [switch]   $SkipWebEngine,
     [string]   $Base = "https://download.qt.io/online/qtsdkrepository/windows_x86"
 )
 
@@ -100,7 +105,7 @@ $map = Get-Repo $desktop
 Get-Package $desktop $map "qt.qt6.$v.$Arch"
 foreach ($m in $Modules) { Get-Package $desktop $map "qt.qt6.$v.addons.$m.$Arch" }
 
-if ($WithWebEngine) {
+if (-not $SkipWebEngine) {
     # A SEPARATE REPOSITORY, and it is not an oversight in Qt's layout: WebEngine ships under
     # extensions/ with its own versioning. Asking the desktop repo for it answers "not in this
     # repository", which is why this says so explicitly rather than silently skipping.
