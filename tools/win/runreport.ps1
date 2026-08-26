@@ -32,7 +32,13 @@ param(
     [string] $Qt6     = $(if ($env:QTDIR6) { $env:QTDIR6 } else { "C:/Qt/6.10.3/msvc2022_64" }),
     [string] $Qt5     = $(if ($env:QTDIR5) { $env:QTDIR5 } else { "C:/Qt/5.15.2/msvc2019_64" }),
     [string] $Timeout = "900",
-    [string] $Batch   = "20"
+    [string] $Batch   = "20",
+    # A GLOB, for re-running the targets a fix was about without paying for 1200. The report takes
+    # one as its first argument; the default runs everything, which is what a record execution is.
+    [string] $Filter  = "*",
+    # ...and `-Wait` for exactly that case: a subset finishes in minutes, so blocking and printing
+    # the rows beats polling a file. A full matrix should never use it — see point 1 above.
+    [switch] $Wait
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,8 +72,14 @@ foreach ($p in @($Repo, $Qt6, $Qt5)) {
 Set-Location -LiteralPath $Repo
 foreach ($f in @($Tsv, $Err)) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
 
-$p = Start-Process -FilePath "C:/msys64/usr/bin/sh.exe" -ArgumentList @("tools/test-report.sh") `
+$p = Start-Process -FilePath "C:/msys64/usr/bin/sh.exe" `
+     -ArgumentList @("tools/test-report.sh", $Filter) `
      -RedirectStandardOutput $Tsv -RedirectStandardError $Err -NoNewWindow -PassThru
 Write-Output ("pid=" + $p.Id + " tsv=" + $Tsv + " err=" + $Err)
+if ($Wait) {
+    $p.WaitForExit()
+    Get-Content -LiteralPath $Tsv
+    Get-Content -LiteralPath $Err | Select-Object -Last 20
+}
 # POLL THE ROW COUNT AND REQUIRE `# totals:`. A report without that line is a report that was
 # killed, not one that passed — which is the whole reason point 1 above is written down.
