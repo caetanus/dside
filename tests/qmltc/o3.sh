@@ -66,6 +66,20 @@ if [ "$(find "$B" -name '*.qml' 2>/dev/null | head -1)" = "" ]; then
     echo "o3: $B holds no .qml — there is no corpus to judge" >&2
     exit 1
 fi
+# THE LINK LINE IS THE PLATFORM'S. `-lQt6Core` is GNU ld's; lld-link answers `could not open
+# 'Qt6Core.lib'` for each of them, and `stdc++` does not exist on Windows at all. Where pkg-config
+# is absent the modules are named by FILE, out of the prefix the build already resolved.
+_qtmods="Qt6QuickControls2Impl Qt6QuickTemplates2 Qt6Quick Qt6OpenGL Qt6QmlModels Qt6Qml Qt6Network Qt6Gui Qt6Core"
+QTD_QTLIBS=""
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Core 2>/dev/null; then
+    for m in $_qtmods; do QTD_QTLIBS="$QTD_QTLIBS -L-l$m"; done
+    QTD_QTLIBS="$QTD_QTLIBS -L-lstdc++"
+else
+    _pfx="${QTDIR6:-${QTDIR:-}}"
+    for m in $_qtmods; do
+        [ -f "$_pfx/lib/$m.lib" ] && QTD_QTLIBS="$QTD_QTLIBS -L$_pfx/lib/$m.lib"
+    done
+fi
 D="$SP/o3_$ST"; mkdir -p "$D"
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software
 OUT="$SP/o3_$ST.txt"; : > "$OUT"
@@ -84,8 +98,7 @@ build_at() {  # build_at <levelflag> <tag> <name> <file>  -> $D/<name>_<tag>.png
   "$L/qmltc-d" --dump "$1" "$4" "I$3" --qmlmap "$G/qmlmap.tsv" -I "$B" > "$D/${3}_$2.d" 2>"$D/${3}_$2.diag" || true
   ldc2 -of="$D/${3}_$2.bin" "$D/${3}_$2.d" "$L/qtd_qmltc_app.o" "$L/qtd_render.o" -I"$G" \
     -L--start-group -L="$L/libbinding_ldc2.a" -L="$L/libshims.a" -L--end-group \
-    -L-lQt6QuickControls2Impl -L-lQt6QuickTemplates2 -L-lQt6Quick -L-lQt6OpenGL -L-lQt6QmlModels \
-    -L-lQt6Qml -L-lQt6Network -L-lQt6Gui -L-lQt6Core -L-lstdc++ > "$D/${3}_$2.link" 2>&1 </dev/null || return 1
+    $QTD_QTLIBS > "$D/${3}_$2.link" 2>&1 </dev/null || return 1
   # A CRASH IS NOT A LINK FAILURE, and saying "does not build or run" for both is how five of them
   # hid in plain sight: every green run printed five `Segmentation fault` lines from this line and
   # placed the documents at -O0, so the gate passed and the behaviour was the engine's. They were
