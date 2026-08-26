@@ -251,7 +251,7 @@ verdict() {  # $1 = target, $2 = its log, $3 = rc of the invocation that produce
   local t="$1" log="$2" rc="$3"
   if [ "$rc" -eq 124 ]; then
     st=hang; fail=$((fail+1)); logcol="$log"
-    echo "# target exceeded ${TARGET_TIMEOUT:-900}s and was killed" >> "$log"
+    echo "# target exceeded $(budget "$t")s and was killed" >> "$log"
   elif [ "$rc" -eq 0 ]; then
     # THE MARKER OPENS A LINE, it is not a word somewhere in one. A capability-gated target says
     # so as its verdict — `qmltc-o3-gate: skipped — no QtQuick.Controls under …`, `cross-preflight
@@ -276,6 +276,19 @@ emit() {  # $1 = target, $2 = ms
     "$st" "$2" "$logcol"
 }
 
+# AN AGGREGATE IS NOT A TARGET, and one number cannot bound both. `expected-fails-run` builds and
+# runs the ~28 probes of expected-fails.json; measured alone on Windows it costs 1000 s against a
+# 900 s limit, so it reported `hang` — a false failure about a gate that was passing. It survives
+# the matrix only because a BATCH gets a batch's budget, which is what made the trap invisible:
+# nobody meets it until they re-run the gate by name, which is exactly what one does after fixing
+# something. The aggregates listed in category() get the multiple they actually need.
+budget() {  # $1 = target -> seconds
+  case "$1" in
+    expected-fails-run|binding-core|qmltc-smoke|qmltc-corpus) echo $(( ${TARGET_TIMEOUT:-900} * 4 )) ;;
+    *) echo "${TARGET_TIMEOUT:-900}" ;;
+  esac
+}
+
 # One target, its own invocation — the exact shape this report has always had.
 run_one() {  # $1 = target
   local t="$1" log start rc
@@ -284,7 +297,7 @@ run_one() {  # $1 = target
   # A BOUND PER TARGET. A step that hangs stops the record execution dead — three Windows runs
   # stalled on one target with no output and no child process, and a matrix that never finishes
   # reports nothing at all. `timeout` turns that into a row that says `hang`, and the run goes on.
-  rc=0; timeout "${TARGET_TIMEOUT:-900}" "$BUILD" "$t" >"$log" 2>&1 || rc=$?
+  rc=0; timeout "$(budget "$t")" "$BUILD" "$t" >"$log" 2>&1 || rc=$?
   verdict "$t" "$log" "$rc"
   emit "$t" "$(( $(date +%s%3N) - start ))"
 }
