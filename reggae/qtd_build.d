@@ -614,6 +614,15 @@ string hostPlatform() {
 //
 // MSYS form, because this value ends up INSIDE a `:`-separated PATH — `C:/Qt/...` would split at
 // the drive letter.
+// The same PATH, as a PREFIX for a command that is already inside its own `sh -c '…'`. Wrapping
+// such a command in shGate would nest the quoting; this just puts the assignment in front of it.
+string shQtPath(string[] mods) {
+    version (Windows) {
+        if (!mods.length) return "";
+        return "PATH=" ~ msysPath(buildPath(QtProbe.prefixOf(mods), "bin")) ~ ":$PATH ";
+    } else return "";
+}
+
 string shGate(string cmd, string[] mods) {
     version (Windows) {
         if (!mods.length) return cmd;

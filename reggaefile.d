@@ -1380,7 +1380,7 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
                 // NOT `| tee /dev/stderr`: MSYS's tee cannot open it (`No such file or directory`)
                 // and the pipeline's status would be grep's anyway. The summary goes to a file in
                 // the gate's own scratch area, is shown, and is then the thing that is judged.
-                "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ appDir ~ " " ~ bind.bdir ~ " "
+                "sh -c '" ~ shQtPath(bind.mods) ~ "sh " ~ script ~ " " ~ outDir ~ " " ~ appDir ~ " " ~ bind.bdir ~ " "
                 ~ bind.genDir ~ " > " ~ buildPath(outDir, "summary_app.txt")
                 ~ "; cat " ~ buildPath(outDir, "summary_app.txt") ~ " >&2"
                 ~ "; grep -q UNPLACED=0 " ~ buildPath(outDir, "summary_app.txt") ~ "'", null, "", []),
@@ -1404,7 +1404,7 @@ Target[] o3GateTargets(string root, QtdBinding bind) {
         // One compiler only: the levels are a property of the GENERATED code, not of who compiles
         // it, and the ldc2/dmd split is already covered everywhere else.
         auto cmd = guarded(buildPath(outDir, "o3_" ~ style ~ ".lock"),
-                 "sh -c 'sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " " ~ bind.bdir ~ " "
+                 "sh -c '" ~ shQtPath(bind.mods) ~ "sh " ~ script ~ " " ~ outDir ~ " " ~ style ~ " " ~ bind.bdir ~ " "
                  ~ bind.genDir ~ " > " ~ buildPath(outDir, "summary_" ~ style ~ ".txt")
                  ~ "; cat " ~ buildPath(outDir, "summary_" ~ style ~ ".txt") ~ " >&2"
                  ~ "; grep -q UNPLACED=0 " ~ buildPath(outDir, "summary_" ~ style ~ ".txt") ~ "'", null, "", []);
