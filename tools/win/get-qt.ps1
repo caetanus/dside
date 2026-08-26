@@ -43,7 +43,11 @@ $ProgressPreference    = 'SilentlyContinue'
 $v    = $Version -replace '\.', ''          # 6.11.1 -> 6111
 $sfx  = $Arch -replace '^win64_', ''        # win64_msvc2022_64 -> msvc2022_64
 $tar  = "$env:SystemRoot\System32\tar.exe"
-if (-not (Test-Path -LiteralPath $tar)) { throw "get-qt: no $tar — needed to read the .7z archives" }
+# ASCII ONLY INSIDE CODE, comments aside: PowerShell reads a .ps1 with no BOM in the ANSI code
+# page, and an em dash in a STRING literal came back as bytes that closed the quote early:
+#     Token 'needed' inesperado na expressao ou instrucao.
+# The other scripts here have kept their punctuation because theirs is all in comments.
+if (-not (Test-Path -LiteralPath $tar)) { throw "get-qt: no $tar - needed to read the .7z archives" }
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("qtdl-" + $v)
 New-Item -ItemType Directory -Force -Path $tmp, $Dest | Out-Null
