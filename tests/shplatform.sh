@@ -25,8 +25,8 @@ export MSYS2_ARG_CONV_EXCL
 # `catch` was enough to lose the exception. Measured on a minimal case: the same C++ source caught
 # by dmd with `-fno-omit-frame-pointer` and lost without it.
 case "$(uname -s 2>/dev/null || echo unknown)" in
-  MINGW*|MSYS*|CYGWIN*) QTD_PIC="";      QTD_FP="-fno-omit-frame-pointer" ;;
-  *)                    QTD_PIC="-fPIC"; QTD_FP="" ;;
+  MINGW*|MSYS*|CYGWIN*) QTD_PIC="-fno-omit-frame-pointer" ;;
+  *)                    QTD_PIC="-fPIC" ;;
 esac
 
 # THE INSTALLED Qt RELEASE, WITHOUT pkg-config. Qt's MSVC builds ship no .pc files at all, so on

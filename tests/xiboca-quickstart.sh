@@ -106,14 +106,14 @@ cd "$WORK"
     || fail "moc failed on shape.h"
 
 # Your code, moc's output, and the generated shims.
-clang++ -std=c++17 $QTD_PIC $QTD_FP -c "$ROOT/examples/userlib/shape.cpp" -I"$ROOT/examples/userlib" $CFLAGS \
+clang++ -std=c++17 $QTD_PIC -c "$ROOT/examples/userlib/shape.cpp" -I"$ROOT/examples/userlib" $CFLAGS \
     || fail "your own C++ did not compile"
-clang++ -std=c++17 $QTD_PIC $QTD_FP -c moc_shape.cpp -I"$ROOT/examples/userlib" $CFLAGS \
+clang++ -std=c++17 $QTD_PIC -c moc_shape.cpp -I"$ROOT/examples/userlib" $CFLAGS \
     || fail "the moc output did not compile"
 # -I the project too: the emitted shims `#include "shape.h"`, because a shim that
 # calls your constructor has to see your declaration.
 for f in gen/*.cpp; do
-    clang++ -std=c++17 $QTD_PIC $QTD_FP -c "$f" -I. -I"$ROOT/examples/userlib" $CFLAGS 2>"$WORK/cxx.err" \
+    clang++ -std=c++17 $QTD_PIC -c "$f" -I. -I"$ROOT/examples/userlib" $CFLAGS 2>"$WORK/cxx.err" \
         || fail "generated $(basename "$f") did not compile" "$(head -3 "$WORK/cxx.err")"
 done
 

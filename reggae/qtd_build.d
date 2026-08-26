@@ -292,8 +292,11 @@ bool havePkgConfigForBuild() {
 //     clang++: error: unsupported option '-fPIC' for target 'x86_64-pc-windows-msvc'
 //
 // So the flag is named here rather than spelled at each of the twenty-odd compile lines.
+// THE CODE-GENERATION FLAGS THIS PLATFORM'S C++ NEEDS. Named for the first of them; every C++
+// compile in this build already asks here, which is why the second one lives here too rather than
+// at each call site — there are eight, and the ninth would have been missed.
 string cxxPic() {
-    version (Windows) return "";
+    version (Windows) return cxxUnwindable();   // no -fPIC on Windows; see cxxUnwindable
     else              return "-fPIC";
 }
 
@@ -607,7 +610,7 @@ string qtPrefix() { return QtProbe.prefix(); }
 //
 // So this is a compile flag, not an ABI decision. It costs one register in the shims.
 string cxxUnwindable() {
-    version (Windows) return " -fno-omit-frame-pointer";
+    version (Windows) return "-fno-omit-frame-pointer";
     else              return "";
 }
 
@@ -944,8 +947,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // -ffunction-sections/-fdata-sections put each shim (and each of the ~1500 exception
     // guards) in its own linker section, so the final link's --gc-sections drops the ones an
     // app doesn't call. Without this, libshims.a is one .o -> pulling any shim pulls ALL.
-    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -ffunction-sections -fdata-sections"
-             ~ cxxUnwindable();
+    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -ffunction-sections -fdata-sections";
     // Extra include paths from the spec: private-header subdirs a private-API binding needs so the
     // aggregated shims (qtdctor/qtvirt/...) that reference private types (QQuickGradient etc.) compile.
     // A RELATIVE path in the spec is relative to the SPEC, not to whoever compiles: xiboca runs from
@@ -1383,7 +1385,7 @@ Target[] libsampleTargets(string root, string pyside) {
     //     a relevant symbol '??0Intersection@@QEAA@XZ' is available in libsample.a but cannot be
     //     used because it is not an import library
     // Invisible on Linux, where both branches of that macro are `visibility("default")`.
-    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -DLIBSAMPLE_BUILD" ~ cxxUnwindable();
+    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -DLIBSAMPLE_BUILD";
     auto priv = mocPrivateFlags(cflags).join(" ");
     auto xiboca = gendPath(root);
 
