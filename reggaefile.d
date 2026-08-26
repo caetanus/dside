@@ -32,6 +32,27 @@ private __gshared bool _qtQmlAsked;
 string qtInstallQml() {
     if (_qtQmlAsked) return _qtQmlDir;
     _qtQmlAsked = true;
+    // THE Qt THE ENVIRONMENT NAMED WINS OVER ANY PROBE ON PATH. QTDIR6/QTDIR5/QTDIR is how a
+    // machine with more than one Qt says WHICH ONE this build is against, and every other part of
+    // the build already obeys it — the includes, the import libraries, the generated bindings. The
+    // QML corpus these gates judge has to be the same installation, or the gate measures one Qt
+    // with another Qt's yardstick.
+    //
+    // It did. On the Windows VM `QTDIR6=C:/Qt/6.10.3/msvc2022_64` while MSYS ships its own
+    // `/mingw64/bin/qmake6`, so the probes below answered `C:/msys64/mingw64/share/qt6/qml` and
+    // `qmltc-optlevels-controls-Basic` was handed a MinGW Qt's Controls. It did not pass quietly —
+    //     optlevels-dir: NOTHING was checked in …/QtQuick/Controls/Basic — every document was
+    //     handed over, which makes this gate vacuous
+    // — but only because that gate refuses to be vacuous; a gate without that rule would have
+    // reported a coverage number for the wrong corpus. Measured 2026-08-26.
+    //
+    // The probes are not wrong, they are for the OTHER machine: where nobody named a prefix,
+    // `qmake6` on PATH IS the Qt in use, which is exactly the Linux case. So: prefix if named,
+    // probe if not.
+    if (qtPrefix().length) {
+        auto p = buildPath(qtPrefix(), "qml");
+        if (exists(p)) { _qtQmlDir = p; return p; }
+    }
     // THE EXPLICITLY-6 TOOLS FIRST. This asked `qtpaths` — which carries no version in its name —
     // before `qmake6`, and on this machine the unsuffixed family is Qt 5: `qmake -query QT_VERSION`
     // answers 5.15.19 while `qmake6` answers 6.11.1. Where `qtpaths` exists and belongs to Qt5, a
@@ -52,17 +73,11 @@ string qtInstallQml() {
             }
         } catch (Exception) { }
     }
-    // ...and where NO probe is on PATH at all, ask the build's own resolution before falling back
-    // to a Linux distribution's literal. On Windows that is the normal case, on purpose: Qt's bin
-    // is kept off PATH so a dual-target build cannot load the wrong Qt's DLLs, so `qmake6` is not
-    // findable and every branch above fails. The literal then names a directory that does not
-    // exist, and every Controls-keyed gate emits no targets — a gate that DISAPPEARS, which is the
-    // exact failure this function's own header warns about. Measured: `qmltc-o3-gate-skipped` and
-    // no `qmltc-optlevels-controls-*` at all in a Windows matrix whose Qt ships all five styles.
-    {
-        auto p = buildPath(qtPrefix(), "qml");
-        if (p.length && exists(p)) { _qtQmlDir = p; return p; }
-    }
+    // ...and where a prefix WAS named but has no `qml` directory, and no probe answered either,
+    // the literal below names a directory that does not exist and every Controls-keyed gate emits
+    // no targets — a gate that DISAPPEARS, which is the exact failure this function's own header
+    // warns about. Measured before the prefix took priority above: `qmltc-o3-gate-skipped` and no
+    // `qmltc-optlevels-controls-*` at all in a Windows matrix whose Qt ships all five styles.
     _qtQmlDir = "/usr/lib/qt6/qml";
     return _qtQmlDir;
 }

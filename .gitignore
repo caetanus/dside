@@ -42,3 +42,10 @@ compile_commands.json
 # xwin downloads the MSVC CRT and the Windows SDK into ITS WORKING DIRECTORY. Run it from
 # outside the checkout (see tools/win/cross-preflight.sh); this keeps an accident out of the tree.
 .xwin-cache/
+
+# A NATIVE TOOL LEAVES ITS EXECUTABLE BESIDE ITS SOURCE ON WINDOWS: lupdate-d builds in place, and
+# `.exe`/`.pdb` are exactly the pair the linker writes. Untracked, they make `git status --porcelain`
+# non-empty, and the test report's own header then stamps every record execution on that machine
+# `DIRTY` — about a tree whose only difference from the commit is build output.
+/tools/lupdate/*.exe
+/tools/lupdate/*.pdb
