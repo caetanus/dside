@@ -464,6 +464,17 @@ string bindingQtMinor(string genDir) {
     return "";
 }
 
+// ...and the rewrite itself. Only a segment shaped `qt-<digit>…` is touched: the checkout is
+// called qt-dlang-gen, which a plain startsWith("qt-") would have renamed.
+string retagQtMinor(string genDir, string have) {
+    if (!have.length) return genDir;
+    auto parts = genDir.split("/");
+    foreach (ref p; parts)
+        if (p.startsWith("qt-") && p.length > 3 && p[3] >= '0' && p[3] <= '9')
+            p = "qt-" ~ have;
+    return parts.join("/");
+}
+
 string installedQtMinor(string pkgMod) {
     auto v = qtModVersion(pkgMod).split(".");
     return v.length >= 2 ? v[0] ~ "." ~ v[1] : "";
@@ -940,7 +951,25 @@ void writeIfChanged(string path, string content) {
 QtdBinding qtdBinding(string root, string spec, string[] mods) {
     auto specPath = buildPath(root, "generator", spec);
     auto j = parseJSON(readText(specPath));
-    auto genDir = buildNormalizedPath(dirName(specPath), j["out_dir"].str);
+    // THE VERSION SEGMENT IS THE Qt THAT IS HERE, NOT A LITERAL IN THE SPEC. The shipped specs say
+    // `"out_dir": "../generated/qt-6.11/cxx-controls"`, and `generated/` is not versioned — so that
+    // `qt-6.11` records nothing. On a machine with another Qt the tree kept the name, and
+    // bindingQtMinor, which reads the version off this path, answered `6.11` about a release that
+    // was not installed. Two things followed from that one literal:
+    //
+    //   - the coverage gates compared the SPEC's Qt against the machine's and stayed advisory, so
+    //     the answer to "why is this off?" was to install a particular Qt rather than to fix the
+    //     path. This project is meant to be agnostic to the Qt release; a machine should never
+    //     need a specific one.
+    //   - artefacts from two Qt releases shared a directory. Qt's private API carries its release
+    //     in the mangled name, so the link failed with `QtPrivate_6_10_3` about an object nobody
+    //     had a reason to suspect.
+    //
+    // Derived, both go away: each release gets its own tree, and the version in the path is a fact
+    // rather than a claim. The cost is disk — switching Qt no longer overwrites, it adds — and
+    // switching back is then free.
+    auto genDir = retagQtMinor(buildNormalizedPath(dirName(specPath), j["out_dir"].str),
+                               installedQtMinor(mods.length ? mods[0] : "Qt6Core"));
     // Unique per binding: the qt-x.y dir + the binding name (cxx-qtwidgets-wrap alone
     // collides between Qt5 and Qt6, which share a basename).
     auto bdir = buildPath(root, ".build", baseName(dirName(genDir)) ~ "-" ~ baseName(genDir));
