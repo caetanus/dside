@@ -286,14 +286,6 @@
           "unjudgeable_when": "is not a release this licence matrix was verified"
         }
       ]
-    },
-    {
-      "id": "cxx-exception-dmd-win64",
-      "kind": "known_gap",
-      "area": "exceptions/windows",
-      "reason": "dmd on Win64 uses rt.deh_win64_posix (DWARF-style exception tables) while a clang-cl frame carries SEH unwind data and no DWARF LSDA, so a D exception raised from the Lippincott shim cannot describe the frames between itself and the D handler: druntime finds none and calls terminate() (exit 0xC0000096, dmd's `hlt` for assert(0)). Measured with symbols under cdb on uicheck-dmd. LDC is unaffected — on Windows it emits MSVC-compatible EH — so the ldc2 twin of every affected target proves the path. uicheck reports EXCGAP there instead of failing.",
-      "since": "2026-08-23, branch codegen-tools",
-      "remove_when": "dmd's Win64 druntime interoperates with MSVC SEH, or the trampolines stop unwinding through C++ (error-return at the boundary, the way the json/png wrappers already do) — an ABI change to every guarded call"
     }
   ]
 }

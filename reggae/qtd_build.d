@@ -590,6 +590,27 @@ string guarded(string lock, string cmd, string winPs, string output, string[] ne
 // module's flags. QtProbe is private; this is the one answer worth exporting.
 string qtPrefix() { return QtProbe.prefix(); }
 
+// THE C++ FRAMES A D EXCEPTION HAS TO UNWIND THROUGH MUST KEEP THEIR FRAME POINTER.
+//
+// dmd's Win64 exception handling walks the stack by following the RBP chain — `_d_throwc` in
+// rt/deh_win64_posix.d captures RBP and follows it looking for D handler tables — and x64 code
+// omits that chain by default, unwinding through .pdata/.xdata instead. One C++ frame between the
+// throw and the D `catch` was therefore enough to lose the exception: druntime ran out of frames
+// and called terminate(), which is `hlt`, which is exit 0xC0000096.
+//
+// Measured, minimal case, same C++ object either way:
+//     clang++ -c                          -> dmd: object.Exception … escapes, rc=1
+//     clang++ -c -fno-omit-frame-pointer  -> dmd: caught: from D,        rc=0
+// (ldc2 catches it both ways: on Windows it emits MSVC-compatible EH and the OS unwinder walks
+// the tables.) The same file's own header explains WHY only Win64 is like this — since v2.070
+// POSIX uses DWARF EH instead, "as it provides better compatibility with C++".
+//
+// So this is a compile flag, not an ABI decision. It costs one register in the shims.
+string cxxUnwindable() {
+    version (Windows) return " -fno-omit-frame-pointer";
+    else              return "";
+}
+
 // WHICH PLATFORM THIS IS, for the checks whose answer is a property of the platform rather than of
 // the code — a coverage baseline, first of all: an X11-only type is absent on Windows for a reason
 // that is not a regression.
@@ -923,7 +944,8 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // -ffunction-sections/-fdata-sections put each shim (and each of the ~1500 exception
     // guards) in its own linker section, so the final link's --gc-sections drops the ones an
     // app doesn't call. Without this, libshims.a is one .o -> pulling any shim pulls ALL.
-    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -ffunction-sections -fdata-sections";
+    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -ffunction-sections -fdata-sections"
+             ~ cxxUnwindable();
     // Extra include paths from the spec: private-header subdirs a private-API binding needs so the
     // aggregated shims (qtdctor/qtvirt/...) that reference private types (QQuickGradient etc.) compile.
     // A RELATIVE path in the spec is relative to the SPEC, not to whoever compiles: xiboca runs from
@@ -1361,7 +1383,7 @@ Target[] libsampleTargets(string root, string pyside) {
     //     a relevant symbol '??0Intersection@@QEAA@XZ' is available in libsample.a but cannot be
     //     used because it is not an import library
     // Invisible on Linux, where both branches of that macro are `visibility("default")`.
-    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -DLIBSAMPLE_BUILD";
+    auto cxx = cflags ~ " -std=c++17 " ~ cxxPic() ~ " -O2 -DLIBSAMPLE_BUILD" ~ cxxUnwindable();
     auto priv = mocPrivateFlags(cflags).join(" ");
     auto xiboca = gendPath(root);
 
