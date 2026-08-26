@@ -18,8 +18,10 @@
 # knows the module set this build needs and nothing else, which is the point — a machine rebuilt
 # from it has exactly the Qt the matrix was measured against.
 #
-# Extraction is `tar.exe` from System32 (bsdtar/libarchive), which reads 7-Zip. No 7-Zip install,
-# no MSYS package: the one extractor that is on every Windows 10/11 already.
+# Extraction is `python -m py7zr`. System32's tar.exe reads the 7-Zip CONTAINER and then says
+#     tar.exe: LZMA codec is unsupported
+# on the very first archive, which is every archive Qt publishes. py7zr is already on the machine
+# as an aqtinstall dependency, and it is the same library aqt would have unpacked with.
 param(
     [string]   $Version = "6.11.1",
     [string]   $Arch    = "win64_msvc2022_64",
@@ -39,7 +41,8 @@ param(
     #     Nao e possivel converter o valor "System.String" no tipo "System.Boolean".
     # A switch has no value to convert.
     [switch]   $SkipWebEngine,
-    [string]   $Base = "https://download.qt.io/online/qtsdkrepository/windows_x86"
+    [string]   $Base = "https://download.qt.io/online/qtsdkrepository/windows_x86",
+    [string]   $Python = "C:/Python312/python.exe"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,12 +50,13 @@ $ProgressPreference    = 'SilentlyContinue'
 
 $v    = $Version -replace '\.', ''          # 6.11.1 -> 6111
 $sfx  = $Arch -replace '^win64_', ''        # win64_msvc2022_64 -> msvc2022_64
-$tar  = "$env:SystemRoot\System32\tar.exe"
 # ASCII ONLY INSIDE CODE, comments aside: PowerShell reads a .ps1 with no BOM in the ANSI code
 # page, and an em dash in a STRING literal came back as bytes that closed the quote early:
 #     Token 'needed' inesperado na expressao ou instrucao.
 # The other scripts here have kept their punctuation because theirs is all in comments.
-if (-not (Test-Path -LiteralPath $tar)) { throw "get-qt: no $tar - needed to read the .7z archives" }
+if (-not (Test-Path -LiteralPath $Python)) { throw "get-qt: no $Python - py7zr unpacks the archives" }
+& $Python -m py7zr --help *> $null
+if ($LASTEXITCODE -ne 0) { throw "get-qt: $Python has no py7zr (pip install py7zr)" }
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("qtdl-" + $v)
 New-Item -ItemType Directory -Force -Path $tmp, $Dest | Out-Null
@@ -93,8 +97,8 @@ function Get-Package($repo, $map, $name) {
         Write-Output ("  unpack " + $a)
         # The archives carry `<version>/<arch>/…` at the top, so -Dest is C:/Qt and the release
         # lands beside the ones already there.
-        & $tar -x -f $out -C $Dest
-        if ($LASTEXITCODE -ne 0) { throw "get-qt: tar failed on $a" }
+        & $Python -m py7zr x $out $Dest
+        if ($LASTEXITCODE -ne 0) { throw "get-qt: py7zr failed on $a" }
     }
 }
 
