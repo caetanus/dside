@@ -1133,6 +1133,16 @@ Target[] registryGateTarget(string root, QtdBinding bind, string label) {
 // and exited 0, so the record execution carried a green row for a check that compared nothing. The
 // other two gates escaped only by accident — they were advisory because the Qt MINOR differed, and
 // had that machine had Qt 6.11 they would have become mandatory and equally vacuous.
+// A BASELINE PER PAIRING, chosen by the platform in front of us: `qml.windows.manifest.tsv` when
+// it exists, `qml.manifest.tsv` otherwise. One file per binding could only ever hold one pairing,
+// so every platform but the one it was recorded on got NOT COMPARABLE and no coverage contract at
+// all. Recording a second one is what gives that platform the same protection; see
+// tools/record-coverage-baseline.sh.
+string baselineName(string root, string baseline) {
+    auto alt = baseline.replace(".manifest.tsv", "." ~ hostPlatform() ~ ".manifest.tsv");
+    return exists(buildPath(root, "tests", "coverage", alt)) ? alt : baseline;
+}
+
 string baselinePairing(string root, string baseline) {
     import std.string : lineSplitter;
     auto p = buildPath(root, "tests", "coverage", baseline);
@@ -1149,7 +1159,7 @@ string currentPairing(QtdBinding b) {
 
 // A gate is ENFORCEABLE when it can actually compare: same platform, same Qt, as the baseline says.
 bool manifestGateComparable(string root, QtdBinding b, string baseline) {
-    auto want = baselinePairing(root, baseline);
+    auto want = baselinePairing(root, baselineName(root, baseline));
     return want.length && want == currentPairing(b);
 }
 
@@ -1161,7 +1171,7 @@ Target[] manifestGateTargets(string root, QtdBinding[] bindings, string[] labels
     auto gate = Target(gateBin, "dmd -unittest -of=$out " ~ gateD, [Target(gateD)]);
     Target[] ts;
     foreach (i, b; bindings) {
-        auto baseline = buildPath(root, "tests", "coverage", baselines[i]);
+        auto baseline = buildPath(root, "tests", "coverage", baselineName(root, baselines[i]));
         auto curMan = buildPath(b.genDir, "coverage-manifest.tsv");
         // deps: the gate binary + the binding's gen (so the manifest is freshly regenerated).
         // --DRT-testmode=run-main: run the gate's regression-detection unittests, THEN the real check.
