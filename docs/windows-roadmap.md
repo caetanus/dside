@@ -5,7 +5,9 @@ SPDX-License-Identifier: BSL-1.0
 # Windows support — roadmap
 
 Status: **built and measured.** Both tiers below were carried out; the full matrix now runs on a
-Windows VM against Qt 6.10.3 (MSVC) and Qt 5.15.2, with ldc2 and dmd. What the plan got right and
+Windows VM against Qt 6.11.1 (MSVC) and Qt 5.15.2, with ldc2 and dmd — the same 1199 targets the
+Linux matrix schedules, which is a newer statement than "it builds": for a while the two lists
+differed, and the difference was three coverage gates that could not compare and said so. What the plan got right and
 what it got wrong is recorded at the end, under *What actually happened*. Read that section first
 if you are looking for the state of the port rather than the reasoning that led to it.
 

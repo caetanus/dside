@@ -88,6 +88,43 @@ Build reggaeBuild() {
     // step's two dialects can sit at the same call site without threading the root through
     // every signature that composes a command.
     setPsRoot(root);
+
+    // A Qt THAT CHANGED UNDER THE ARTEFACTS IS NOT A REBUILD, and nothing in the graph notices.
+    // The build directories are named after the SPEC's Qt (`.build/qt-6.11-cxx-corpustypes`), so
+    // installing a different Qt on the machine invalidates no target at all — the objects stay,
+    // and Qt's private API carries its release in the mangled name:
+    //
+    //     lld-link: error: undefined symbol:
+    //       __declspec(dllimport) public: __cdecl QObjectPrivate::QObjectPrivate(enum QtPrivate_6_10_3)
+    //       >>> referenced by libcorpustypes.a(testprivateproperty.o)
+    //
+    // Nine targets failed that way on Windows the first time the VM's Qt moved from 6.10.3 to
+    // 6.11.1, and the message names a symbol rather than the stale artefact it came from. Failing
+    // closed here costs one `rm -rf .build`; not failing costs an afternoon of reading link errors.
+    {
+        import std.file : mkdirRecurse, write;
+        import std.path : dirName;
+        auto stamp = buildPath(root, ".build", "qt-release.txt");
+        auto now = "qt6=" ~ qtModVersion("Qt6Core")
+                 ~ " qt5=" ~ (qtHasModule("Qt5Core") ? qtModVersion("Qt5Core") : "none");
+        if (exists(stamp)) {
+            auto was = readText(stamp).strip;
+            if (was != now)
+                throw new Exception(
+                    "the Qt on this machine changed under .build: it was `" ~ was ~ "` and is now `"
+                    ~ now ~ "`.
+"
+                    ~ "Objects compiled against the old private API are still there and will fail to
+"
+                    ~ "link with a message about QtPrivate_<old version>, naming a symbol rather than
+"
+                    ~ "the stale artefact. Remove .build and build again.");
+        } else {
+            mkdirRecurse(dirName(stamp));
+            write(stamp, now ~ "\n");
+        }
+    }
+
     Target[] all;
     // Targets that must FAIL while a documented gap is open (critics r13 #6). They are OPTIONAL:
     // expected-fails-run names them and expects the failure, and a failing target in the default

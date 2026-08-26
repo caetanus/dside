@@ -79,12 +79,14 @@ Need 'dmd'  ([bool](Get-Command dmd  -EA SilentlyContinue)) `
      'https://downloads.dlang.org/releases/2.x/ (windows .7z, use bin64)'
 
 Write-Output 'Qt -----------------------------------------------------------------------'
+$qt6 = ''
 foreach ($pair in @(@('QTDIR6', 'C:/Qt/6.11.1/msvc2022_64'), @('QTDIR5', 'C:/Qt/5.15.2/msvc2019_64'))) {
     $var = $pair[0]; $def = $pair[1]
     $val = [Environment]::GetEnvironmentVariable($var)
     if (-not $val) { $val = $def }
+    if ($var -eq 'QTDIR6') { $qt6 = $val }
     Need ($var + ' -> ' + $val) (Test-Path -LiteralPath $val) `
-         ('aqt install-qt windows desktop <version> <spec> — or set ' + $var + ' to an existing prefix')
+         ('tools/win/get-qt.ps1 -Version <x.y.z> — or set ' + $var + ' to an existing prefix')
 }
 
 Write-Output 'Python -------------------------------------------------------------------'
@@ -106,10 +108,16 @@ Write-Output 'Corpora and fixtures ---------------------------------------------
 $pyside = 'C:\Users\caetano\pyside-setup'
 Need 'pyside-setup checkout' (Test-Path -LiteralPath $pyside) `
      'git clone https://code.qt.io/pyside/pyside-setup — libsample builds from its test sources'
-# The rendering comparisons pick a real font; on a machine with none of them Qt falls back and the
-# comparison fails on glyph metrics, which reads as a binding defect.
-$fonts = Get-ChildItem 'C:\Windows\Fonts' -Filter 'DejaVu*' -EA SilentlyContinue
-Need 'DejaVu fonts' ([bool]$fonts) 'https://dejavu-fonts.github.io/ — install DejaVuSans at least'
+# IN THE Qt PREFIX, not in C:\Windows\Fonts. Qt ships no fonts any more and its offscreen platform
+# reads `<prefix>/lib/fonts`; a machine with DejaVu installed system-wide and nothing in that
+# directory answers
+#     QFontDatabase: Cannot find font directory C:/Qt/6.11.1/msvc2022_64/lib/fonts.
+# and the target fails on "the run was not silent". This check looked at the system directory and
+# reported ok about a Qt that had no fonts at all - which is what a fresh install is.
+$fontDir = Join-Path $qt6 'lib/fonts'
+$fonts = Get-ChildItem $fontDir -Filter '*.ttf' -EA SilentlyContinue
+Need ("fonts in " + $fontDir) ([bool]$fonts) `
+     'copy DejaVu*.ttf there (https://dejavu-fonts.github.io/); Qt no longer ships fonts'
 
 Write-Output 'Performance --------------------------------------------------------------'
 # NOT correctness, but the difference between a matrix that finishes in an evening and one that

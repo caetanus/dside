@@ -74,7 +74,11 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 
 ## Build / platform
 - reggae binary backend; ldc2 + dmd; Qt5 + Qt6 parity; à-la-carte binaries.
-- Windows/MSVC-x64: deferred — see `docs/windows-roadmap.md`.
+- Windows/MSVC-x64: the same 1199 targets as Linux, measured on a VM against Qt 6.11.1 and
+  Qt 5.15.2 with ldc2 and dmd — see `docs/windows-roadmap.md`. Two things stay platform-shaped:
+  the coverage baselines are per (platform, Qt) pairing (`tests/coverage/*.windows.manifest.tsv`),
+  and dmd cannot unwind a D exception through a C++ frame on Win64 (`cxx-exception-dmd-win64` in
+  `tests/expected-fails.json`; ldc2 is unaffected and its twin of every affected target passes).
 
 ## In progress / next
 - **Flip the last two specs**: WebEngine and `corpustypes` still generate without the wrapper. They

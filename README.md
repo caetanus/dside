@@ -22,9 +22,12 @@ and `.qmltypes` validation (its reader, QtQmlCompiler, is Qt6-only) — the `.qm
 generation itself is Qt-agnostic. Not every target is a full matrix cell either: the
 manifest gates and `lupdate-check` are single-config.
 
-> **Platform: Linux / POSIX is Tier 1.** The build orchestrates `clang++`/`ldc2`/`dmd`
-> through reggae with POSIX shell (`flock`, `find`, globs). Windows/MSVC-x64 is a
-> documented, not-yet-working roadmap — see `docs/windows-roadmap.md`.
+> **Platform: Linux / POSIX and Windows / MSVC-x64 both run the whole matrix.** The build
+> orchestrates `clang++`/`ldc2`/`dmd` through reggae; the gates are POSIX shell and run under
+> MSYS on Windows, with PowerShell for the halves `sh` cannot do (`tools/win/`). Last measured
+> at commit `17950d2`, both against Qt 6.11.1 and Qt 5.15: **Linux 1199 pass / 0 fail / 0 skip**,
+> Windows the same 1199 targets. Setting a Windows machine up is `tools/win/preflight.ps1`
+> (what it needs) and `tools/win/get-qt.ps1` (the Qt); see `docs/windows-roadmap.md`.
 
 ## What it is (and isn't)
 
