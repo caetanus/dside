@@ -39,15 +39,33 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 #
 # The document says which release it was measured against; where that is not the release in front
 # of us, the gate says NOT COMPARABLE and stops, rather than accusing a correct document.
-DOC_QT=$(sed -n 's/^<!-- measured-against: qt \([0-9.]*\) -->$/\1/p' "$ROOT/docs/qmltc-d.md" | head -1)
+# ...AND THE PLATFORM, for the same reason and measured the same way. With both machines on Qt
+# 6.11.1 the release stopped telling them apart and the figures still differed: `TextField` is
+# DEMOTED on Linux ("1 value(s) differ at -Ox") and COMPILED on Windows, in Imagine and in Material
+# alike, so the totals read 248/36 there and 250/34 here. That is one document behaving differently
+# on two platforms, not a stale table — and accusing the table of being wrong would be the fourth
+# time in this repository that a (platform, Qt) number was written down as if it were universal.
+DOC_PAIR=$(sed -n 's/^<!-- measured-against: \(.*\) -->$/\1/p' "$ROOT/docs/qmltc-d.md" | head -1)
+DOC_QT=$(printf '%s' "$DOC_PAIR" | sed -n 's/.*qt=\([0-9.]*\).*/\1/p')
+DOC_PLAT=$(printf '%s' "$DOC_PAIR" | sed -n 's/.*platform=\([a-z]*\).*/\1/p')
 HAVE_QT=$(pkg-config --modversion Qt6Core 2>/dev/null \
           || qt_release_from_prefix "${QTDIR6:-}" || qt_release_from_prefix "${QTDIR:-}" || echo "")
-if [ -n "$DOC_QT" ] && [ -n "$HAVE_QT" ] && [ "$DOC_QT" != "$HAVE_QT" ]; then
-    echo "docs-numbers NOT COMPARABLE: the figures were measured against Qt $DOC_QT and this is Qt $HAVE_QT."
-    echo "    They count Qt's own Controls documents, so a different release is a different corpus."
-    echo "    Re-measure on this release to compare here."
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*) HAVE_PLAT=windows ;;
+  Darwin)               HAVE_PLAT=macos ;;
+  Linux)                HAVE_PLAT=linux ;;
+  *)                    HAVE_PLAT=posix ;;
+esac
+notcomparable() {
+    echo "docs-numbers NOT COMPARABLE: the figures were measured on $1 and this is $2."
+    echo "    They count Qt's own Controls documents compiled by this compiler, so both halves of"
+    echo "    the pairing decide the corpus. Re-measure here to compare here."
     exit 0
-fi
+}
+[ -n "$DOC_QT" ] && [ -n "$HAVE_QT" ] && [ "$DOC_QT" != "$HAVE_QT" ] \
+    && notcomparable "Qt $DOC_QT" "Qt $HAVE_QT"
+[ -n "$DOC_PLAT" ] && [ "$DOC_PLAT" != "$HAVE_PLAT" ] \
+    && notcomparable "$DOC_PLAT" "$HAVE_PLAT"
 
 bad=0
 fail() { echo "docs-numbers FAIL: $1" >&2; [ -n "${2:-}" ] && echo "    $2" >&2; bad=$((bad + 1)); }
