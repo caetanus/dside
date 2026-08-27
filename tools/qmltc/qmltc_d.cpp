@@ -8864,7 +8864,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     for (auto &ah : rawAttachedHandlers) {
         auto dot = ah.first.find('.');
         std::string tn = ah.first.substr(0, dot), sig = ah.first.substr(dot + 1);
-        auto *at = g_attached[tn];
+        // THE ATTACHED TYPE MAY BE ONE THE REGISTRY KNOWS AND WE DO NOT BIND, and this line used
+        // to be `auto *at = g_attached[tn];`. `std::map::operator[]` INSERTS a null for a missing
+        // key and hands it back, so `at->signalSig` below dereferenced it and the tool died:
+        //
+        //     Item { Keys.onPressed: console.log("x") }   -> SIGSEGV, zero output
+        //
+        // for `Keys`, for `Drag`, on the root or on a child — every `<Attached>.on<Signal>` there
+        // is, because the collection site accepts `g_attached.count(head) ||
+        // g_qmlAttachedCxx.count(head)` and only the first of those two means "we bind it". Since
+        // the tool writes to stdout, a build wiring it up got an EMPTY FILE rather than an error.
+        // Reported from the outside as bugs.md #1, where it read as `focus:` plus `Keys.*`; the
+        // `focus` was a coincidence of the documents it was found in.
+        //
+        // The three other `g_attached[...]` reads are safe: their name comes from attachedNameOf,
+        // which answers "" for a type we do not bind.
+        auto ait = g_attached.find(tn);
+        const DType *at = ait == g_attached.end() ? nullptr : ait->second;
         Statement *bodyStmt = ah.second;
         StatementList *fnBody = nullptr;
         if (auto *es = cast<ExpressionStatement *>(bodyStmt))
@@ -8875,8 +8891,26 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          inPath, ah.first.c_str(), cls.c_str());
             ++partial; continue;
         }
-        auto ss = at->signalSig.find(sig);
-        std::string cppsig = ss != at->signalSig.end() ? ss->second : (sig + "()");
+        // ...and the SIGNATURE, which an unbound type has no table for. The registry carries the
+        // attached type's properties and their NOTIFY names (qmlattached.tsv) and nothing else, so
+        // a notify handler can still be wired — Qt's rule makes it parameterless — while a real
+        // signal like `Keys.pressed(QQuickKeyEvent*)` cannot. Guessing `pressed()` there would
+        // connect to nothing and the handler would silently never run, which is worse than saying
+        // so: this refuses it the way every other unsupported shape in this tool is refused.
+        std::string cppsig;
+        if (at) {
+            auto ss = at->signalSig.find(sig);
+            cppsig = ss != at->signalSig.end() ? ss->second : (sig + "()");
+        } else if (auto nt = g_qmlAttachedNotify.find(tn); nt != g_qmlAttachedNotify.end()) {
+            for (auto &kv : nt->second)
+                if (kv.second == sig) { cppsig = sig + "()"; break; }
+        }
+        if (cppsig.empty()) {
+            std::fprintf(stderr, "qmltc-d: %s: handler '%s' on an attached type this binding does not"
+                                 " cover in %s not yet supported — skipped (later phase)\n",
+                         inPath, ah.first.c_str(), cls.c_str());
+            ++partial; continue;
+        }
         std::string slot = "__ha_" + tn + "_" + sig;
         attachedHandlerSlots += "    @Slot void " + slot + "() {\n" + hbody + "    }\n";
         handlerWire += "        connectMeta(" + attachedExpr(tn) + ", \"" + cppsig
