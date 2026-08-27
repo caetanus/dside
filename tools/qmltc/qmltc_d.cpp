@@ -8891,30 +8891,31 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          inPath, ah.first.c_str(), cls.c_str());
             ++partial; continue;
         }
-        // ...and the SIGNATURE, which an unbound type has no table for. The registry carries the
-        // attached type's properties and their NOTIFY names (qmlattached.tsv) and nothing else, so
-        // a notify handler can still be wired — Qt's rule makes it parameterless — while a real
-        // signal like `Keys.pressed(QQuickKeyEvent*)` cannot. Guessing `pressed()` there would
-        // connect to nothing and the handler would silently never run, which is worse than saying
-        // so: this refuses it the way every other unsupported shape in this tool is refused.
-        std::string cppsig;
-        if (at) {
-            auto ss = at->signalSig.find(sig);
-            cppsig = ss != at->signalSig.end() ? ss->second : (sig + "()");
-        } else if (auto nt = g_qmlAttachedNotify.find(tn); nt != g_qmlAttachedNotify.end()) {
-            for (auto &kv : nt->second)
-                if (kv.second == sig) { cppsig = sig + "()"; break; }
-        }
-        if (cppsig.empty()) {
-            std::fprintf(stderr, "qmltc-d: %s: handler '%s' on an attached type this binding does not"
-                                 " cover in %s not yet supported — skipped (later phase)\n",
-                         inPath, ah.first.c_str(), cls.c_str());
-            ++partial; continue;
-        }
+        // ...and the SIGNATURE. A type we BIND has a table; one the registry merely knows does
+        // not, and `Keys.pressed(QQuickKeyEvent*)` cannot be guessed from the name. It does not
+        // have to be: the attached object exists at run time and carries its own meta-object, so
+        // connectMetaByName resolves the signal from THAT — the same escape the tool already uses
+        // for a child of a type outside the binding (`Timer { onTriggered: … }`).
+        //
+        // Qt connects a signal to a slot taking FEWER arguments, so a parameterless slot is a
+        // legitimate target for `pressed(QQuickKeyEvent*)`. A body that reads the event's members
+        // is refused earlier, by compileStmt failing on an unknown symbol — which is the honest
+        // place for that limit, not here.
+        //
+        // Before this, an unbound attached type meant the handler was SKIPPED: the document
+        // compiled and the keyboard did nothing. Reported from the outside on a real application
+        // (bugs.md #1), where these are Main.qml and Config.qml rather than fixtures.
         std::string slot = "__ha_" + tn + "_" + sig;
         attachedHandlerSlots += "    @Slot void " + slot + "() {\n" + hbody + "    }\n";
-        handlerWire += "        connectMeta(" + attachedExpr(tn) + ", \"" + cppsig
-                     + "\", this, \"" + slot + "()\");\n";
+        if (at) {
+            auto ss = at->signalSig.find(sig);
+            std::string cppsig = ss != at->signalSig.end() ? ss->second : (sig + "()");
+            handlerWire += "        connectMeta(" + attachedExpr(tn) + ", \"" + cppsig
+                         + "\", this, \"" + slot + "()\");\n";
+        } else {
+            handlerWire += "        connectMetaByName(" + attachedExpr(tn) + ", \"" + sig
+                         + "\", this, \"" + slot + "()\");\n";
+        }
     }
 
     // Handlers ON a grouped property (`group.onCountChanged: …`): the signal belongs to the GROUP

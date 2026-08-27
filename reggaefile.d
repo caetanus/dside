@@ -196,8 +196,15 @@ Build reggaeBuild() {
     // reference was dropped, and ~QThread deadlocked at exit waiting for the thread running it.
     // Needs a REAL GC collection, which needs the reference gone from a conservatively scanned
     // stack; the first version of this test passed because nothing was ever collected.
-    foreach (dc; DCS)
+    foreach (dc; DCS) {
         all ~= qtdTest("borrowed-" ~ dc, t("wrapper", "borrowed.d"), ex, dc);
+        // ...and the application constructor as a MIXIN rather than 32 copies of a pragma(mangle)
+        // (bugs.md #5). The argument is Qt's library directory: what matters is not that the
+        // derivation compiles but that the string it produces is DEFINED by the library that
+        // ships, and this file must not guess where that is.
+        all ~= qtdTest("appmixin-" ~ dc, t("wrapper", "appmixin.d"), ex, dc,
+                       "", [], qtLibDir("Qt6Widgets"));
+    }
     // ...and a probe that asserts a documented GAP is still real, so the day it is closed the
     // inventory says so instead of quietly describing something that no longer happens. Read
     // tests/wrapper/dangle.d before "fixing" it: its failure is good news with instructions.
@@ -1691,6 +1698,9 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
 
     // Documents whose KEYBOARD behaviour is compared: send this key to both sides and diff the property.
 struct Keyed { string name; int key; string prop; }
+// ...and the one-sided list, which is NOT empty: see the target that reads it for why an oracle
+// is neither available nor needed for this question.
+static immutable Keyed[] keyedOurs = [Keyed("QKeysAttached", 65, "seen")];
 // EMPTY on purpose, and the state is precise. Both halves are plumbed (qtd_key_item here, `--key` in
 // the oracle, `--key` in the generated main), QKey.qml compiles clean, and the observable works: a
 // declared `property int len: text.length`, because binding `text` itself makes the engine's binding
@@ -1928,6 +1938,39 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                           ~ " && echo \"" ~ tlabel ~ " matches the engine and differs from t=0\"";
                 ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-time-" ~ dc, tcmd,
                                    [app] ~ rndDep ~ [tool]);
+            }
+            // KEYBOARD, ONE SIDE ONLY: does OUR compiled document react to the key at all? The
+            // differential above cannot ask this — the engine-created object does not receive the
+            // key in this harness, which is a fault of the harness and is why `keyed` is empty —
+            // but "the property moved when the key arrived" is a complete claim about the compiler
+            // and needs no oracle. It is the assertion an APPLICATION cares about: a handler that
+            // is silently skipped compiles clean, dumps the same values, and does nothing.
+            //
+            // Measured by hand before this target existed, on QKeysAttached: `seen 0` with no key
+            // and `seen 1` with --key 65. Reported from the outside (bugs.md #1) on a real reader's
+            // Main.qml, where the handler being dropped was the whole problem.
+            foreach (kk; keyedOurs) if (kk.name == name) {
+                auto renv5 = "QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software ";
+                auto oO = genD ~ ".keyours.on", zO = genD ~ ".keyours.off";
+                auto olabel = "qmltc" ~ tag ~ " " ~ name ~ " (" ~ dc ~ ", key-ours): " ~ kk.prop;
+                string ocmd;
+                version (Windows)
+                    ocmd = psInline(root, "qmltc" ~ tag ~ "-" ~ name ~ "-keyours-" ~ dc, [
+                        "$env:QT_QUICK_BACKEND = 'software'",
+                        psRedirect(appBin, ["--key", kk.key.to!string], oO, false, false,
+                                   kk.prop ~ "\t"),
+                        psRedirect(appBin, [], zO, false, false, kk.prop ~ "\t"),
+                        psDiffer(oO, zO, olabel ~ " moved when the key arrived"),
+                    ], bind.mods);
+                else
+                    ocmd = renv5 ~ appBin ~ " --key " ~ kk.key.to!string
+                          ~ " | grep '^" ~ kk.prop ~ "\t' > " ~ oO
+                          ~ " && " ~ renv5 ~ appBin
+                          ~ " | grep '^" ~ kk.prop ~ "\t' > " ~ zO
+                          ~ " && ! diff -q " ~ oO ~ " " ~ zO ~ " > /dev/null"
+                          ~ " && echo \"" ~ olabel ~ " moved when the key arrived\"";
+                ts ~= Target.phony("qmltc" ~ tag ~ "-" ~ name ~ "-keyours-" ~ dc, ocmd,
+                                   [app] ~ [tool]);
             }
             // KEYBOARD: same key to both sides, compare the property it should have changed. Focus and
             // the bound type's own C++ key handling are machinery nothing else in this suite touches —

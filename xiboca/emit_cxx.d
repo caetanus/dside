@@ -3778,8 +3778,52 @@ string cxxRuntime(string manifest) {
     // ctor. Parameterized value types should prefer plain `T(args)`; reach for make!T only when
     // that can't apply. (Object types use `new T(args)`, never a factory.)
     auto mk = "T make(T, A...)(auto ref A args) { return T.__make(args); }\n";
+    // THE APPLICATION CONSTRUCTOR, DERIVED INSTEAD OF COPIED. The one Qt actually uses —
+    // `(int& argc, char** argv, int)` — carries an internal third argument and is not part of the
+    // bound API, so every program declares it by hand with pragma(mangle). Measured in this tree:
+    // 32 files carry that declaration, tests/support/appctor.d centralises the mangled STRING but
+    // not the declaration, and it has no entry for QGuiApplication at all — so writing a QtQuick
+    // program, the direction this project targets, meant inventing a symbol that the one file
+    // created to prevent exactly that did not contain.
+    //
+    // The symbol is a function of the class name, so none of it needs a table:
+    //
+    //     Itanium:  _ZN <len(name)> <name> C1ERiPPci
+    //     MSVC:     ??0 <name> @@QEAA@AEAHPEAPEADH@Z
+    //
+    // Reported from the outside as bugs.md #5, with a working implementation; this is it, in the
+    // generated runtime so it ships with the binding rather than beside the tests.
+    auto app = q{
+string qtdAppCtorSymbol(string cls, bool msvc) {
+    import std.conv : to;
+    return msvc ? "??0" ~ cls ~ "@@QEAA@AEAHPEAPEADH@Z"
+                : "_ZN" ~ cls.length.to!string ~ cls ~ "C1ERiPPci";
+}
+
+/// mixin(qtdApplication!"QGuiApplication"); then `auto app = createApp("name");`
+string qtdApplication(string cls)() {
+    version (Windows) enum sym = qtdAppCtorSymbol(cls, true);
+    else              enum sym = qtdAppCtorSymbol(cls, false);
+    return `pragma(mangle, "` ~ sym ~ `") extern(C++) private void __qtdAppCtor(void*, ref int, char**, int);
+    ` ~ cls ~ ` createApp(string name = "app") {
+        // __gshared, and this is the part a user cannot be expected to know: Qt keeps a REFERENCE
+        // to argc and reads argv for the whole process lifetime. Locals in main() compile, run,
+        // and misbehave the day something calls QCoreApplication.arguments().
+        __gshared int __argc = 1;
+        __gshared char[64] __arg0;
+        __gshared char*[2] __argv;
+        auto n = name.length < __arg0.length ? name.length : __arg0.length - 1;
+        __arg0[0 .. n] = name[0 .. n];
+        __arg0[n] = '\0';
+        __argv = [__arg0.ptr, null];
+        auto raw = __cpp_new(__` ~ cls ~ `_size);
+        __qtdAppCtor(raw, __argc, __argv.ptr, 0);
+        return ` ~ cls ~ `.wrap(raw);
+    }`;
+}
+} ~ "\n";
     return manifest ~ "\nmodule cxxrt;\n"
         ~ `pragma(mangle, "` ~ abiSym("cpp_new") ~ `") extern(C++) void* __cpp_new(size_t);` ~ "\n"
         ~ `pragma(mangle, "` ~ abiSym("cpp_delete") ~ `") extern(C++) void __cpp_delete(void*);` ~ "\n"
-        ~ mk ~ exc;
+        ~ mk ~ app ~ exc;
 }

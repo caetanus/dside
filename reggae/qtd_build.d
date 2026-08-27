@@ -464,6 +464,18 @@ string bindingQtMinor(string genDir) {
     return "";
 }
 
+// WHERE Qt'S LIBRARIES ARE, as a directory. `pkgLibs` composes link FLAGS, which is the wrong
+// shape for a check that has to read a library file with a symbol reader. pkg-config knows it
+// where there is one; the prefix answers where there is not, which is every Windows machine.
+string qtLibDir(string mod) {
+    if (QtProbe.usePkgConfig) {
+        auto r = execute(["pkg-config", "--variable=libdir", mod]);
+        if (r.status == 0 && r.output.strip.length) return r.output.strip;
+    }
+    auto p = QtProbe.prefix(mod);
+    return p.length ? buildPath(p, "lib") : "";
+}
+
 // ...and the rewrite itself. Only a segment shaped `qt-<digit>…` is touched: the checkout is
 // called qt-dlang-gen, which a plain startsWith("qt-") would have renamed.
 string retagQtMinor(string genDir, string have) {
@@ -1358,10 +1370,13 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
 
 // A test target: build the app, then run it headless. Building the phony runs the test.
 // `$in` is the app binary's real path (wherever reggae placed the dependency's output).
+// `runArgs` is what the BUILD knows and the test must not guess — a directory, a prefix, a path
+// to something Qt installed. Without it a test that needs one either hard-codes a machine's
+// layout or probes for it, and both are how a check comes to describe the wrong installation.
 Target qtdTest(string name, string appMain, QtdBinding b, string dc, string extra = "",
-               Target[] extraDeps = []) {
+               Target[] extraDeps = [], string runArgs = "") {
     auto app = qtdApp(name ~ "-bin", appMain, b, dc, extra, extraDeps);
-    return Target.phony(name, runOffscreen(b.root, "$in", "", b.mods), [app]);
+    return Target.phony(name, runOffscreen(b.root, "$in", runArgs, b.mods), [app]);
 }
 
 // The shiboken libsample corner-case harness, ported to reggae. Needs a pyside-setup clone
