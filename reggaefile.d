@@ -849,6 +849,22 @@ Build reggaeBuild() {
                                 // runtime/qtmoc/qtdmoc.cpp left this directory holding the previous
                                 // revision and runtime-provenance said so — which is the whole
                                 // reason that gate exists, working exactly as intended.
+                                //
+                                // THE EDGE IS NOT ENOUGH, AND SAYING SO HERE IS THE POINT. It makes
+                                // THIS target rebuild when the runtime changes; it does not make
+                                // runtime-provenance RUN it first. Both are phony, and measured on
+                                // 2026-08-27 a record execution visited the checker at row 1196 and
+                                // this producer at row 1201:
+                                //     runtime-provenance FAIL: .build/xiboca-quickstart/gen/qtdmoc.cpp
+                                //     is NOT the current qtdmoc.cpp
+                                // The copy really was stale — 06:04 against a source edited at 21:17 —
+                                // so the gate was right and the tree was wrong; what is wrong is that
+                                // a matrix can reach the checker before the producer at all. Asking
+                                // for runtime-provenance alone does not run this target either (7.2 s
+                                // against the 23.6 s this one costs), so a phony dependency of a
+                                // phony is not scheduled. The fix is for this to produce a real file
+                                // and for the gate to depend on THAT; until then a runtime edit can
+                                // cost one false red in the row order.
                                 [Target(qs), Target(uspec), gendTarget(root),
                                  Target(buildPath(ulib, "shape.h")),
                                  Target(buildPath(ulib, "shape.cpp")),
