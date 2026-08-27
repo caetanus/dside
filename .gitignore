@@ -49,3 +49,7 @@ compile_commands.json
 # `DIRTY` — about a tree whose only difference from the commit is build output.
 /tools/lupdate/*.exe
 /tools/lupdate/*.pdb
+
+# The bug reports written from OUTSIDE the binding (bugs.md) are the reporter working file,
+# not a project artifact. It was swept into the tree by a `git add -A` and taken back out.
+/bugs.md
