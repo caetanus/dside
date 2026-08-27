@@ -78,7 +78,7 @@ report self-test failure that three parallel runs never reached.
 
 Inventoried as **structured state** in `tests/expected-fails.json` (id / area / reason /
 since / remove-when): `uic-private-widgets`, `virtual-container-return`,
-`moveonly-byvalue-params`, `cxx-exception-dmd-win64`, plus the QML/moc private-API risks.
+`moveonly-byvalue-params`, plus the QML/moc private-API risks.
 `windows-msvc` — "Windows/MSVC-x64 is a documented roadmap, not tested" — was removed once its
 own `remove_when` came true: the same 1199 targets run on both platforms, and the whole list,
 `(optional)` markers included, is identical.

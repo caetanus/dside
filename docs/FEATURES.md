@@ -77,8 +77,10 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 - Windows/MSVC-x64: the same 1199 targets as Linux, measured on a VM against Qt 6.11.1 and
   Qt 5.15.2 with ldc2 and dmd — see `docs/windows-roadmap.md`. Two things stay platform-shaped:
   the coverage baselines are per (platform, Qt) pairing (`tests/coverage/*.windows.manifest.tsv`),
-  and dmd cannot unwind a D exception through a C++ frame on Win64 (`cxx-exception-dmd-win64` in
-  `tests/expected-fails.json`; ldc2 is unaffected and its twin of every affected target passes).
+  and C++ exceptions reach D by a different route there — the guard stores and the D forwarder
+  raises, because dmd's Win64 unwinder walks an RBP chain the MSVC target does not keep. Both
+  compilers take that route on Windows, and `uicheck` reports the same `EXC` verdict on both
+  platforms and both compilers.
 
 ## In progress / next
 - **Flip the last two specs**: WebEngine and `corpustypes` still generate without the wrapper. They
