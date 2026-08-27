@@ -1037,8 +1037,23 @@ Build reggaeBuild() {
         // byte-identical to its origin a minute later. Same failure mode as libsample's, one
         // writer later.
         auto gens = qtdGenRegistry() ~ quickstart;
+        // THE DIRECTORIES IT MUST FIND COPIES IN, named rather than globbed. The gate used to
+        // compare whatever happened to be on disk, so a producer whose output was missing simply
+        // was not counted: measured, deleting .build/xiboca-quickstart turned `OK: 52` into
+        // `OK: 49` and stayed green. Handing it the list makes an absent producer a failure, which
+        // is what it was for, and it is the only defence the gate has against the ordering problem
+        // recorded at the quickstart target — the checker can still run first, but now it says so.
+        auto genDirs = qtdGenDirs();
+        // ...AND THE QUICKSTART'S, KEYED ON THE SAME THING THE TARGET ITSELF IS. Keying it on
+        // `quickstart.length` read 0 here even though the target exists — this block and the one
+        // that fills that variable are both inside buildAggregates() and the order between them is
+        // not what the line numbers suggest. Asking the filesystem the same question the target
+        // asks removes the dependence on evaluation order, which is the whole bug in one line.
+        if (exists(buildPath(root, "tests", "xiboca-quickstart.sh")))
+            genDirs ~= buildPath(root, ".build", "xiboca-quickstart", "gen");
         if (exists(pv) && gens.length)
-            all ~= Target.phony("runtime-provenance", "sh " ~ pv, Target(pv) ~ gens);
+            all ~= Target.phony("runtime-provenance",
+                                "sh " ~ pv ~ " " ~ genDirs.join(" "), Target(pv) ~ gens);
     }
 
     // --- ARCHIVE COMPOSITION CANARY (critics r13 #3): runtime-boundary counts QML types in a

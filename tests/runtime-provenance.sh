@@ -17,6 +17,21 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SRC="$ROOT/runtime"
 
+# THE DIRECTORIES THE BUILD SAYS IT WROTE, passed as arguments. Without them this compared
+# whatever happened to be on disk: delete a producer's output and the gate counted fewer copies
+# and still said OK — measured, 52 became 49 and stayed green. A check that shrinks silently is
+# the same defect as a corpus gate that checks nothing, and this file exists to catch a build
+# INPUT that is out of date, so it cannot also be the thing that quietly stops looking.
+missing=0
+for d in "$@"; do
+    [ -d "$d" ] || {
+        echo "runtime-provenance FAIL: $d does not exist" >&2
+        echo "    the build says a generator writes there, so either it has not run in this tree" >&2
+        echo "    or its output was removed; either way the copies it owns went unchecked." >&2
+        missing=$((missing + 1))
+    }
+done
+
 bad=0
 checked=0
 for origin in "$SRC"/qtmoc/qtdmoc.cpp "$SRC"/qtmoc/qtdmoc_qml.cpp "$SRC"/qtmoc/qtmoc.d \
@@ -37,8 +52,15 @@ for origin in "$SRC"/qtmoc/qtdmoc.cpp "$SRC"/qtmoc/qtdmoc_qml.cpp "$SRC"/qtmoc/q
 done
 
 if [ "$checked" -eq 0 ]; then
-    echo "runtime-provenance: no generated copies found — nothing has been generated yet" >&2
-    exit 0
+    # NOT `exit 0`. "Nothing has been generated yet" is indistinguishable from "the generators
+    # ran and wrote nothing", and this gate is the one that would notice the second.
+    echo "runtime-provenance FAIL: no generated copies found at all" >&2
+    echo "    nothing has been generated in this tree, so nothing was verified." >&2
+    exit 1
 fi
+[ "$missing" -eq 0 ] || exit 1
 [ "$bad" -eq 0 ] || exit 1
-echo "runtime-provenance OK: $checked verbatim copy(ies) are byte-identical to their origin"
+# THE COVERAGE IS PART OF THE VERDICT. `OK: 52` and `OK: 49` read the same to a person scanning a
+# report, and the difference between them was a producer whose output had vanished. Saying how many
+# directories were declared makes a shrinking check visible in the row itself.
+echo "runtime-provenance OK: $checked verbatim copy(ies) in $# declared directory(ies) are byte-identical to their origin"

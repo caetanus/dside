@@ -1205,6 +1205,7 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // proves something about the artefacts that exist, which is not the claim it prints.
     _shimsRegistry ~= ShimsEntry(shimsLib, hasQml, shims, mods, qtdExpandLinkMods(mods), qtdQtRelease(mods));
     _genRegistry ~= gen;
+    qtdRegisterGenDir(genDir);
     return QtdBinding(gen, shims, root, genDir, bdir, mods, spec);
 }
 
@@ -1226,6 +1227,14 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
 // — it removes the very edge that makes it mean anything.
 __gshared Target[] _genRegistry;
 Target[] qtdGenRegistry() { return _genRegistry; }
+
+// ...AND THE DIRECTORIES THOSE STEPS WRITE INTO, which runtime-provenance needs as EXPECTATIONS
+// rather than as a glob. Measured 2026-08-27: delete .build/xiboca-quickstart and ask for the
+// gate, and it answers `OK: 49 verbatim copy(ies)` where it had said 52 — a smaller check
+// reported as a passing one, which is the same vacuous green as a corpus gate that checks nothing.
+__gshared string[] _genDirs;
+string[] qtdGenDirs() { return _genDirs; }
+void qtdRegisterGenDir(string d) { if (!_genDirs.canFind(d)) _genDirs ~= d; }
 
 string[] qtdRuntimeSources(string root) {
     return ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp", "qtmoc/qtmoc.d",
