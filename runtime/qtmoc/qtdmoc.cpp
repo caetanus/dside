@@ -529,8 +529,16 @@ extern "C" void qtd_ensure_module(const char* uri) {
     static std::unordered_map<std::string, bool> done;
     if (!done.emplace(uri, true).second) return;
     QQmlComponent c(qtd_qml_engine());
+    // `qrc:`, NOT `file:///…`. These URLs are SYNTHETIC — a name for a document that has no file,
+    // needed only so the engine has a base to report errors against. Spelled `file:///name.qml`
+    // they are a drive-less absolute path, which is a real path on POSIX and not one on Windows:
+    // Qt's Windows filesystem engine turns it into an empty native path and says
+    //     Empty filename passed to function
+    // on stderr, once per document. Measured with a six-line probe: the same setData with a
+    // `qrc:` URL is silent, and `qrc:` never reaches a filesystem at all. Nothing here resolves
+    // anything relative to this base, so the scheme is free to be the one that touches no disk.
     c.setData(QByteArray("import ") + uri + "\nimport QtQml\nQtObject {}",
-              QUrl(QStringLiteral("file:///qtd_module_bootstrap.qml")));
+              QUrl(QStringLiteral("qrc:/qtd_module_bootstrap.qml")));
     if (QObject* o = c.create()) delete o;
 #else
     (void) uri;
@@ -846,7 +854,9 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
 #ifdef QTD_HAVE_QML
     if (!uri || !typeName || !QCoreApplication::instance()) return nullptr;
     QQmlEngine* e = qtd_qml_engine();
-    QUrl url(QString::fromUtf8(docUrl && *docUrl ? docUrl : "file:///qtd_delegate.qml"));
+    // ...and the same for the fallback name of a delegate with no document of its own. See the
+    // note on qtd_ensure_module: a drive-less `file:///` path is what makes Qt warn on Windows.
+    QUrl url(QString::fromUtf8(docUrl && *docUrl ? docUrl : "qrc:/qtd_delegate.qml"));
     // HOSTED IN A DOCUMENT, because a QQmlComponent built with setData has NO CREATION CONTEXT and
     // Qt dereferences it without checking. `QQuickItemLayer::activateEffect()` calls
     // `m_effectComponent->beginCreate(m_effectComponent->creationContext())`, and beginCreate takes
