@@ -32,14 +32,6 @@
       "remove_when": "the shim forwards value params by std::move"
     },
     {
-      "id": "windows-msvc",
-      "kind": "permanent_exclusion",
-      "area": "platform",
-      "reason": "Linux/POSIX is Tier 1; Windows/MSVC-x64 is a documented roadmap (docs/windows-roadmap.md), not tested.",
-      "since": "always",
-      "remove_when": "the windows-roadmap tiers are implemented and green"
-    },
-    {
       "id": "qml-private-qqmlprivate",
       "kind": "risk",
       "area": "qml/private-api",
