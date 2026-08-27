@@ -184,33 +184,25 @@ void main() {
     // C++ exception -> D: a thrown C++ exception is classified by the Lippincott shim and
     // re-raised as a D QtCppException, unwinding back through the C++ trampoline frame.
     //
-    // NOT ON dmd/Win64, and the reason is precise: dmd's Win64 unwinder walks the RBP CHAIN
-    // (rt/deh_win64_posix.d captures RBP and follows it looking for D handler tables), and the
-    // MSVC target does not maintain one. `-fno-omit-frame-pointer` does not help — there it means
-    // "keep rbp as the frame BASE", not "keep the classic chain". Measured, two prologues from the
-    // same clang++ with the same flags:
-    //     works: push rbp; sub 0x50,rsp;  lea 0x50(rsp),rbp        rbp ON the saved-rbp slot
-    //     fails: push rbp; push rsi; sub 0x378,rsp; lea 0x80(rsp),rbp   rbp in mid-frame
-    // So a simple C++ function happens to be traversable and a larger one is not, which is a worse
-    // property than plainly not working. Under cdb the failure is
+    // AND NOW ON dmd/Win64 TOO, by not unwinding through the C++ frame at all. The reason it did
+    // not work is precise: dmd's Win64 unwinder walks the RBP CHAIN (rt/deh_win64_posix.d captures
+    // RBP and follows it looking for D handler tables) and the MSVC target does not maintain one.
+    // `-fno-omit-frame-pointer` does not help — there it means "keep rbp as the frame BASE", not
+    // "maintain the classic chain", so a small C++ function happened to be traversable and a larger
+    // one was not. Under cdb the failure was
     //     rt.deh_win64_posix.terminate <- d_throwc <- qtd_throw_d <- qtd_test_throw <- D main
-    // with ONE C++ frame in between and nothing else. Raising after the catch instead of inside it
-    // was tried and changes nothing, for the same reason.
+    // with ONE C++ frame in between and nothing else.
     //
-    // LDC is unaffected: on Windows it emits MSVC-compatible EH, so the OS unwinder walks the
-    // tables — and its twin of this target proves the path. `known_gap cxx-exception-dmd-win64`.
-    version (Windows) version (DigitalMars) enum EXC_NEEDS_RBP_CHAIN = true;
-    // The inner braces are not decoration: a `static if` body does NOT introduce a scope in D, so
-    // without them `caught` and `msg` shadow the ones the next block declares.
-    static if (!is(typeof(EXC_NEEDS_RBP_CHAIN))) {{
+    // On Windows the C++ side now STORES the classified exception and returns; the D side raises
+    // it here, with no C++ frame between the throw and the catch. ldc2 takes the same route there
+    // — a gap that depends on which D compiler you use is not a binding. POSIX is untouched.
+    {
         bool caught = false; string msg;
-        try { qtd_test_throw(); }
+        try { qtd_test_throw(); version (Windows) qtdCheckCxx(); }
         catch (QtCppException e) { caught = true; msg = e.msg; }
         if (caught) writeln("  EXC       C++ exception -> QtCppException: ", msg);
         else { writeln("  EXCFAIL   C++ exception not translated to D"); fails++; }
-    }} else
-        writeln("  EXCGAP    C++ exception -> D needs an RBP chain that the MSVC target does not",
-                " keep; dmd/Win64 only. The ldc2 twin of this target proves the path.");
+    }
 
     // Error-return -> typed D exception: bad JSON throws JsonParseException; valid parses.
     {

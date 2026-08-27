@@ -41,11 +41,22 @@
 static std::string u8(const QString &q) { return std::string(q.toUtf8().constData()); }
 
 // Exercises the Lippincott path the generator emits: a C++ exception in a trampoline is
-// classified and re-raised as a D QtCppException via qtd_throw_d, unwinding back to D.
+// classified and re-raised as a D QtCppException. This shim is hand-written and must mirror what
+// emit_cxx.d emits, INCLUDING the platform split — otherwise it tests a path the binding does not
+// take. On POSIX the D exception unwinds back through this frame; on Windows it is stored and the
+// D caller raises it, because dmd's Win64 unwinder walks an RBP chain the MSVC target does not
+// keep. See the note beside qtd_store_cxx in the generated cxxrt.d.
 extern "C" void qtd_throw_d(const char *type, const char *msg);
+extern "C" void qtd_store_cxx(const char *type, const char *msg);
 extern "C" void qtd_test_throw() {
     try { throw std::out_of_range("synthetic C++ exception"); }
-    catch (const std::exception &e) { qtd_throw_d(typeid(e).name(), e.what()); }
+    catch (const std::exception &e) {
+#ifdef _WIN32
+        qtd_store_cxx(typeid(e).name(), e.what());
+#else
+        qtd_throw_d(typeid(e).name(), e.what());
+#endif
+    }
 }
 
 // A widget's visible text: the first of text / title / windowTitle that is set.

@@ -2643,12 +2643,26 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 string[] callArgs = ["cast(void*)&" ~ raw];
                 if (!isStat) callArgs ~= "cast(void*) this";
                 foreach (i; 0 .. na) callArgs ~= pcall[i];
-                auto retkw = retD == "void" ? "" : "return ";
+                // ...AND THE CHECK AFTER IT, ON WINDOWS. The guard's catch cannot raise a D
+                // exception there — dmd's Win64 unwinder needs an RBP chain the MSVC target does
+                // not keep — so it stores and this raises, with no C++ frame in between. The
+                // `version (Windows)` is in the GENERATED code so one emitted tree is correct on
+                // either platform, and POSIX keeps the path that is proven on ldc and dmd alike.
+                string bodyD;
+                if (!EXCEPTIONS)
+                    bodyD = format("%s%s(%s);", retD == "void" ? "" : "return ", gn,
+                                   callArgs.join(", "));
+                else if (retD == "void")
+                    bodyD = format("%s(%s); version (Windows) qtdCheckCxx();",
+                                   gn, callArgs.join(", "));
+                else
+                    bodyD = format("auto __r = %s(%s); version (Windows) qtdCheckCxx(); return __r;",
+                                   gn, callArgs.join(", "));
                 // extern(D): the forwarder is a D-only method — without it, an extern(C++)
                 // member mangles to the very Qt symbol __raw points at (collision + it would
                 // redefine the C++ method).
-                methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
-                    kw, retD, dname(mn), psPub.join(", "), cst, retkw, gn, callArgs.join(", "));
+                methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s }",
+                    kw, retD, dname(mn), psPub.join(", "), cst, bodyD);
             } else {
                 // pragma(mangle) with clang's exact symbol -> identical on ldc & dmd
                 // (D's own extern(C++) mangling diverges on Itanium substitutions).
@@ -3375,10 +3389,45 @@ string ctorCpp(string manifest, string includeLine) {
           ~ "    try { throw; }\n"
           ~ "    catch (const std::exception& e) { qtd_throw_d(typeid(e).name(), e.what()); }\n"
           ~ "    catch (...) { qtd_throw_d(\"\", \"unknown C++ exception\"); }\n"
-          ~ "    __builtin_unreachable();\n}\n");
+          ~ "    __builtin_unreachable();\n}\n"
+          // ...AND THE WINDOWS ROUTE, which does not unwind through this frame at all. See the
+          // note beside qtd_store_cxx in cxxrt.d: dmd's Win64 unwinder walks an RBP chain the
+          // MSVC target does not keep, so the exception is STORED here and raised by the D
+          // forwarder after the call returns. Windows takes this for ldc2 as well — a gap that
+          // depends on which D compiler you use is not a binding.
+          ~ "extern \"C\" void qtd_store_cxx(const char* type, const char* msg);\n"
+          ~ "static void qtd_store_current() {\n"
+          ~ "    try { throw; }\n"
+          ~ "    catch (const std::exception& e) { qtd_store_cxx(typeid(e).name(), e.what()); }\n"
+          ~ "    catch (...) { qtd_store_cxx(\"\", \"unknown C++ exception\"); }\n}\n"
+          // The error path still has to return a value, and `T{}` cannot be written for every T
+          // (`void*{}` is not valid C++). A template sidesteps the syntax, and `if constexpr`
+          // keeps a type that cannot be value-initialised from breaking the whole unit's compile.
+          ~ "template<class T> static inline T qtd_zero() {\n"
+          ~ "    if constexpr (std::is_default_constructible_v<T>) return T();\n"
+          ~ "    else std::abort();\n}\n"
+          // VARIADIC, because a return type can carry a comma: `QHash<int, QByteArray>` reaches
+          // the preprocessor as TWO arguments and a fixed-arity macro answers
+          //     too many arguments provided to function-like macro invocation
+          // about a type that is one token to C++ and two to the thing that runs before it.
+          ~ "#ifdef _WIN32\n"
+          ~ "#  define QTD_CATCH(...) } catch (...) { qtd_store_current(); return qtd_zero<__VA_ARGS__>(); }\n"
+          ~ "#  define QTD_CATCHV     } catch (...) { qtd_store_current(); }\n"
+          ~ "#else\n"
+          ~ "#  define QTD_CATCH(...) } catch (...) { qtd_lippincott(); }\n"
+          ~ "#  define QTD_CATCHV     } catch (...) { qtd_lippincott(); }\n"
+          ~ "#endif\n");
     // Wrap a trampoline body so a C++ exception becomes a D one (no-op when EXCEPTIONS off).
     string tryO = EXCEPTIONS ? "try { " : "";
-    string tryC = EXCEPTIONS ? " } catch (...) { qtd_lippincott(); }" : "";
+    // The close is now a function of the RETURN TYPE: on Windows the catch has to produce one.
+    // A reference return keeps the throwing form — `T()` is not a thing for `const T&` — which
+    // leaves those, and only those, gapped on dmd/Win64.
+    string tryC(string cppRet) {
+        if (!EXCEPTIONS) return "";
+        if (cppRet == "void") return " QTD_CATCHV";
+        if (cppRet.canFind("&")) return " } catch (...) { qtd_lippincott(); }";
+        return " QTD_CATCH(" ~ cppRet ~ ")";
+    }
     string body;
     foreach (c; CTORCOPY)
         body ~= format(
@@ -3395,7 +3444,7 @@ string ctorCpp(string manifest, string includeLine) {
     foreach (c; CTORSHIM)
         body ~= format("void %s(void* self%s) { %sqtd_mk<%s>(self%s);%s }\n",
             c.shimFn, c.cppParams.length ? ", " ~ c.cppParams.join(", ") : "", tryO,
-            c.cppName, c.argNames.length ? ", " ~ c.argNames.join(", ") : "", tryC);
+            c.cppName, c.argNames.length ? ", " ~ c.argNames.join(", ") : "", tryC("void"));
     // Inline methods on object types: out-of-line trampoline calling self->method(args).
     foreach (m; METHODSHIM) {
         auto ret = m.cppRet == "void" ? "" : "return ";
@@ -3409,12 +3458,12 @@ string ctorCpp(string manifest, string includeLine) {
         auto ps = m.isStatic ? m.cppParams.join(", ")
             : (m.cppParams.length ? "void* self, " ~ m.cppParams.join(", ") : "void* self");
         body ~= format("%s %s(%s) { %s%s%s;%s }\n",
-            m.cppRet, m.shimFn, ps, tryO, ret, call, tryC);
+            m.cppRet, m.shimFn, ps, tryO, ret, call, tryC(m.cppRet));
     }
     // Iterator range ops: deref (** = the proxy, converts to value_type), prefix ++, and !=.
     foreach (op; ITEROPS) {
         body ~= format("%s qtd_ideref_%s(void* self) { %sreturn **static_cast<%s*>(self);%s }\n",
-            op.eCpp, op.iName, tryO, op.iCpp, tryC);
+            op.eCpp, op.iName, tryO, op.iCpp, tryC(op.eCpp));
         body ~= format("void qtd_iincr_%s(void* self) { ++*static_cast<%s*>(self); }\n",
             op.iName, op.iCpp);
         body ~= format("bool qtd_ine_%s(void* a, void* b) { return *static_cast<%s*>(a) != *static_cast<%s*>(b); }\n",
@@ -3432,13 +3481,12 @@ string ctorCpp(string manifest, string includeLine) {
         if (!g.isStatic) { decl ~= "void* self"; castTs ~= "void*"; callAs ~= "self"; }
         foreach (i, t; g.cppTypes) { decl ~= format("%s a%d", t, i); castTs ~= t; callAs ~= format("a%d", i); }
         auto ret = g.cppRet == "void" ? "" : "return ";
-        body ~= format("%s %s(void* fn%s%s) { try { %sreinterpret_cast<%s(*)(%s)>(fn)(%s); }"
-                ~ " catch (...) { qtd_lippincott(); } }\n",
+        body ~= format("%s %s(void* fn%s%s) { try { %sreinterpret_cast<%s(*)(%s)>(fn)(%s);%s }\n",
             g.cppRet, g.name, decl.length ? ", " : "", decl.join(", "),
-            ret, g.cppRet, castTs.join(", "), callAs.join(", "));
+            ret, g.cppRet, castTs.join(", "), callAs.join(", "), tryC(g.cppRet));
     }
     return manifest ~ "\n#include <new>\n#include <memory>\n#include <type_traits>\n"
-        ~ "#include <exception>\n#include <typeinfo>\n" ~ includeLine
+        ~ "#include <exception>\n#include <typeinfo>\n#include <cstdlib>\n" ~ includeLine
         ~ tmpl ~ "extern \"C\" {\n" ~ body ~ "}\n";
 }
 
@@ -3699,6 +3747,30 @@ string cxxRuntime(string manifest) {
         // D exception that unwinds back through the C++ frame to the D caller (ldc + dmd).
         ~ "extern(C) void qtd_throw_d(const(char)* type, const(char)* msg) {\n"
         ~ "    throw new QtCppException(qtd_fromCStr(type), qtd_fromCStr(msg));\n"
+        ~ "}\n"
+        // ...AND THE OTHER HALF, FOR THE PLATFORM WHERE THAT UNWIND DOES NOT WORK. dmd's Win64
+        // exception handling walks the RBP CHAIN (rt/deh_win64_posix.d) and the MSVC target does
+        // not maintain one, so a D exception raised inside a C++ catch never reaches the D caller:
+        //     rt.deh_win64_posix.terminate <- d_throwc <- qtd_throw_d <- <one C++ frame> <- main
+        // ldc2 is unaffected there (MSVC-compatible EH), but a gap that depends on which D
+        // compiler you use is not a binding, so Windows takes this route for BOTH.
+        //
+        // The C++ side STORES instead of throwing and returns normally; the D forwarder checks
+        // right after the call and raises there, with no C++ frame between the throw and the
+        // catch. POSIX is untouched — its path is proven on ldc AND dmd and there is no reason to
+        // put a branch in it.
+        ~ "private struct QtdCxxPending { bool set; string type, msg; }\n"
+        ~ "private QtdCxxPending __qtdPending;\n"
+        ~ "extern(C) void qtd_store_cxx(const(char)* type, const(char)* msg) {\n"
+        ~ "    __qtdPending = QtdCxxPending(true, qtd_fromCStr(type), qtd_fromCStr(msg));\n"
+        ~ "}\n"
+        // Thread-local by D's default for module state, which is what this needs: two threads in
+        // Qt can each be inside a guarded call, and a shared slot would hand one thread the
+        // other's exception.
+        ~ "void qtdCheckCxx() {\n"
+        ~ "    if (!__qtdPending.set) return;\n"
+        ~ "    auto p = __qtdPending; __qtdPending = QtdCxxPending.init;\n"
+        ~ "    throw new QtCppException(p.type, p.msg);\n"
         ~ "}\n";
     // make!T(args): the JUSTIFIED value-type factory. D forbids a no-arg struct this(), and a
     // CoW value type's `.init` leaves a null d-pointer — so a value type that can't be built by a
