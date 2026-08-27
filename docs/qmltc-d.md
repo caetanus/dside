@@ -471,6 +471,30 @@ different harness and remains open.**
 
 Named, reproduced, and demoted by the gate rather than hidden:
 
+- **A bare name that belongs to an ENCLOSING object is neither compiled nor delegated.** This is
+  the largest single gap measured against a real application, and it is one line to reproduce:
+
+  ```qml
+  Item { property string p: "#fff"; Rectangle { color: p } }       // skipped
+  Item { id: root; property string p: "#fff"; Rectangle { color: root.p } }   // compiles
+  ```
+
+  Qualified by an id, or through `parent`, the read compiles AND wires its notify — the emitted D
+  is `connectMeta(__outer, "pChanged()", …)` plus `setProp(this, "color", __outer.p)`. Written the
+  way QML documents actually write it, the binding is dropped: not compiled, and `jsDelegate`
+  refuses it too, because the name is in none of that function's tables (it is not this object's
+  declared or base property, not a type, not a context name, and `objPathExpr` cannot make an
+  object path out of it).
+
+  `objPathHead` already walks `g_outerChain` for properties that are OBJECTS; there is no
+  equivalent for a scalar read, and `OuterFrame` already carries the `propType` the lookup would
+  need. Measured on a nine-document reader (`Main.qml`, `Search.qml`, `Settings.qml`, …): 634
+  diagnostics, of which roughly 140 are this shape alone — every child reading `theme.paper`,
+  `theme.ink`, `theme.muted` off a `property var theme` declared on the root.
+
+  What it costs an application is not a compile error: the document compiles, the file is written,
+  and the binding silently is not there.
+
 - **An id resolves one level down, not across the component.** QML resolves an id anywhere in its
   component; `g_childIds` holds direct children only. `tests/qmltc/app/ASignalCross.qml` compiles
   its handlers and still demotes, because its emitter names a grandchild's id.
