@@ -1953,6 +1953,39 @@ static bool readName(const std::string &n, std::string &out) {
             std::string pre;
             for (size_t k = 0; k < g_outerChain.size(); ++k) {
                 pre += "__outer.";
+                // ...AND THE ONES THE ENCLOSING DOCUMENT DECLARES, which the registry cannot know.
+                // The loop below asks g_qmlProps — what the outer object's TYPE has — so `pressed`
+                // on a ScrollBar resolved and `property string p` on the same object did not. That
+                // is the shape real documents are written in: a theme, a palette, a config bag
+                // declared on the root and read by name from every child. Measured on a nine-file
+                // reader, roughly 140 of its 634 diagnostics were this one lookup missing.
+                //
+                // The rule is the one `parent.<name>` already keeps (see the FieldMember path): a
+                // declared property is a FIELD of the outer class, an assigned base property goes
+                // through the meta-object. `@`-prefixed entries are objects and vars — a head, not
+                // a scalar — and objPathHead answers those.
+                {
+                    const OuterFrame &fr = g_outerChain[k];
+                    auto dp = fr.propType.find(n);
+                    if (dp != fr.propType.end() && !dp->second.empty() && dp->second[0] != '@'
+                            && !fr.baseProps.count(n)) {
+                        g_outerUsed = true;
+                        if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                        out = pre + n;
+                        return true;
+                    }
+                    auto bp2 = fr.baseProps.find(n);
+                    if (bp2 != fr.baseProps.end()
+                            && (bp2->second == "string" || bp2->second == "double"
+                                || bp2->second == "bool" || bp2->second == "int")) {
+                        g_outerUsed = true;
+                        if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                        const char *rdb = bp2->second == "string" ? "propStr(" : bp2->second == "double"
+                                        ? "propDouble(" : bp2->second == "bool" ? "propBool(" : "propInt(";
+                        out = rdb + pre.substr(0, pre.size() - 1) + ", \"" + n + "\")";
+                        return true;
+                    }
+                }
                 const std::string &oq = g_outerChain[k].qmlType;
                 auto qp2 = g_qmlProps.find(oq);
                 if (qp2 == g_qmlProps.end()) continue;
@@ -2355,6 +2388,18 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     std::string pre3;
     for (size_t k = 0; k < g_outerChain.size(); ++k) {
         pre3 += "__outer.";
+        // ...and a HEAD the enclosing document declares: `property var theme` on the root, read as
+        // `theme.paper` from a child. This walk asked objPropQml — the registry's view of the outer
+        // object's TYPE — so an id-qualified `root.theme.paper` resolved and the bare form did not.
+        // Same rule as the self case a few lines up: `@` marks a declared object or var.
+        if (auto dp3 = g_outerChain[k].propType.find(n2);
+                dp3 != g_outerChain[k].propType.end() && dp3->second.size() > 1
+                && dp3->second[0] == '@' && !shadowedByLocalType(n2)) {
+            g_outerUsed = true;
+            if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+            oe = pre3 + dIdent(n2); oq = dp3->second.substr(1);
+            return true;
+        }
         if (objPropQml(g_outerChain[k].qmlType, n2, oq)) {
             if (auto d1 = g_outerChain[k].childTypes.find(n2);
                     d1 != g_outerChain[k].childTypes.end() && g_qmlCxxType.count(d1->second))
