@@ -549,10 +549,24 @@ static std::string qname(UiQualifiedId *id) {
 // rather than an accessor. Naming them here keeps the version check out of the walking code.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 static QString paramTypeName(UiParameterList *p) { return p->type->toString(); }
+// A FUNCTION'S DECLARED PARAMETER TYPE — `function f(a: real, b: int)`. The parser has carried it
+// all along; nothing read it, so the inference below had to reduce the type from USE alone and
+// refused the function when it could not. Qt draws the same line the other way round ("Functions
+// without type annotations won't be compiled"), which means an annotated one is exactly the case
+// it does compile. Reading it is not a guess: it is what the document says.
+static QString formalTypeName(PatternElement *e) {
+    if (!e) return QString();
+    auto *ta = e->typeAnnotation;
+    return ta && ta->type && ta->type->typeId ? QString::fromStdString(qname(ta->type->typeId))
+                                              : QString();
+}
 static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember(); }
 static bool isRequiredMem(UiPublicMember *p) { return p->isRequired(); }
 #else
 static QString paramTypeName(UiParameterList *p) { return QString::fromStdString(qname(p->type)); }
+// Qt 5's PatternElement carries no type annotation, so there is nothing to read and the inference
+// below is all there is. Same answer as an unannotated function on Qt 6.
+static QString formalTypeName(PatternElement *) { return QString(); }
 static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember; }
 static bool isRequiredMem(UiPublicMember *p) { return p->requiredToken.isValid(); }
 #endif
@@ -4376,6 +4390,10 @@ static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpre
         if (f->element) {
             std::string pn = qs(f->element->bindingIdentifier.toString());
             std::string ty;
+            // THE DECLARATION WINS, and it is not evidence to be weighed — it is the answer. The
+            // inference below exists for functions that have none.
+            if (QString dt = formalTypeName(f->element); !dt.isEmpty())
+                if (const char *d = dtypeOf(dt); d && d[0]) ty = d;
             for (auto *st = fn->body; st && ty.empty(); st = st->next)
                 ty = paramTypeFromBody(pn, st->statement, pt0);   // body evidence wins
             // Inference is only sound when the type graph REDUCES to a definite type: the body
@@ -9761,7 +9779,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s delegated to the engine\n",
                              inPath, name.c_str(), cls.c_str());
             }
-            methods += "    void " + name + "(" + sig + ") {\n" + fbody + "    }\n";
+            // @Slot, SO THE META-OBJECT KNOWS IT. A QML function is callable from QML, and a
+            // child calling one on the object that encloses it has no D-level handle on the
+            // method — the call goes by NAME through invokeMixed. Emitted plain, the name was not
+            // in the meta-object and the runtime said
+            //     qtd: no invokable 'takeVars' with 4 argument(s) on QInvokeArgs
+            // after marshalling the arguments correctly, which is a failure one hop past the one
+            // bugs.md 8 is about and would have hidden it.
+            methods += "    @Slot void " + name + "(" + sig + ") {\n" + fbody + "    }\n";
             if (sig.empty()) node.methods0.push_back(name);
         }
     }

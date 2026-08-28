@@ -1255,6 +1255,19 @@ void* listAt(T)(T o, string prop, int i) { return qtd_list_at(qobjOf(o), (prop ~
 
 private extern(C) void* qtd_invoke_mixed(void*, const(char)*, int, const(int)*, const(void*)*);
 private extern(C) void* qtd_invoke_mixed_obj(void*, const(char)*, int, const(int)*, const(void*)*);
+/// // A NUMBER OR A BOOL IS A VALUE, and in invokeMixed it reached the OBJECT branch: everything that
+/// was neither a string nor a colour fell through to qobjOf, which is for QObjects, so
+/// `outer.take(d)` with a `double d` instantiated qobjOf!double and LDC answered
+///     qtmoc.d(286): Error: invalid cast from `double` to `void*`
+/// and ONLY when an object file was actually written — `ldc2 -c -o-` stops at semantic analysis
+/// and reports zero errors on the same file. Reported from the outside (bugs.md 8) with that
+/// distinction spelled out, which is what made it findable at all.
+///
+/// A LITERAL never hit it: the generator wraps one in numText() before the call. So the two
+/// spellings of the same argument disagreed about whose job the conversion is. They cross the same
+/// way now — and through the same numText, because `to!string` formats a double with six
+/// significant digits and does not round-trip, which the sibling was quietly doing.
+/// An INTEGER keeps to!string: %.17g would render a long past 2^53 as a rounded double.
 /// Call a Q_INVOKABLE by name with mixed arguments — TEXT (QMetaType converts it to the declared
 /// parameter type) and OBJECTS, which no text can stand in for. Qt's Fusion style computes its
 /// colours as `Fusion.buttonColor(control.palette, …)`; the palette has to travel as a pointer.
@@ -1270,6 +1283,12 @@ string invokeMixed(T, A...)(T recv, string method, A args) {
         // than on the type name: this unit cannot name QColor (it is a binding type).
         } else static if (__traits(compiles, a.rgba())) {
             keep[i] = colorName(a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        } else static if (is(typeof(a) == bool)) {
+            keep[i] = (a ? "true" : "false") ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        } else static if (__traits(isIntegral, typeof(a))) {
+            import std.conv : to; keep[i] = a.to!string ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        } else static if (__traits(isFloating, typeof(a))) {
+            keep[i] = numText(cast(double) a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
         } else {
             kinds[i] = 1; vals[i] = qobjOf(a);
         }
@@ -1288,8 +1307,12 @@ void* invokeMixedObj(T, A...)(T recv, string method, A args) {
     static foreach (i, a; args) {
         static if (is(typeof(a) == string)) { keep[i] = a ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr; }
         else static if (__traits(compiles, a.rgba())) { keep[i] = colorName(a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr; }
-        else static if (is(typeof(a) : long) || is(typeof(a) : double)) {
+        else static if (is(typeof(a) == bool)) {
+            keep[i] = (a ? "true" : "false") ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        } else static if (__traits(isIntegral, typeof(a))) {
             import std.conv : to; keep[i] = a.to!string ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        } else static if (__traits(isFloating, typeof(a))) {
+            keep[i] = numText(cast(double) a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
         } else { kinds[i] = 1; vals[i] = qobjOf(a); }
     }
     return qtd_invoke_mixed_obj(qobjOf(recv), (method ~ "\0").ptr, cast(int) A.length,
