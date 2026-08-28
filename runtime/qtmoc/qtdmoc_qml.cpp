@@ -114,6 +114,47 @@ extern "C" void* qtd_context_prop_qs(void* o, const char* name) {
     return new QString();
 }
 
+// A HANDLER BODY THE COMPILER COULD NOT COMPILE, run by the engine when the signal fires.
+//
+// The sibling below (qtd_bind_js) delegates an EXPRESSION and keeps it live; a handler body needs
+// neither liveness nor a value — it needs to run once, in a scope the compiler does not have. That
+// scope is the whole point: QML resolves a name up the CONTEXT CHAIN, so a component's body can
+// name an id belonging to the document that instantiated it. Measured on a real reader:
+//
+//     // Leaf.qml, which declares no `root` and no `toggleSelection`
+//     onClicked: root.toggleSelection(verse.number)
+//
+// `root` is Main.qml's id, reachable only because the engine gave this object a context whose
+// parent is Main's. The compiler compiles each document alone and cannot know that; the engine
+// does not have to know it, it just looks the name up where it already is.
+//
+// Wrapped in a function so a BLOCK body (`{ a(); b() }`) and a bare expression are the same thing
+// to QQmlExpression, which otherwise parses only the second.
+extern "C" int qtd_run_js(void* o, const char* src) {
+#ifdef QTD_HAVE_QML
+    if (!o || !src) return 0;
+    QObject* obj = static_cast<QObject*>(o);
+    QQmlContext* ctx = qmlContext(obj);
+    if (!ctx) {
+        std::fprintf(stderr, "qtd_run_js: %s has no QQmlContext — handler not run\n",
+                     obj->metaObject()->className());
+        return 0;
+    }
+    QQmlExpression e(ctx, obj, QString("(function(){ ") + QString::fromUtf8(src) + "\n})()");
+    e.evaluate();
+    if (e.hasError()) {
+        // LOUD, for the same reason the delegated binding is: a handler that silently does nothing
+        // is indistinguishable from one that was never connected.
+        std::fprintf(stderr, "qtd_run_js: delegated handler on %s threw: %s\n",
+                     obj->metaObject()->className(), qPrintable(e.error().toString()));
+        return 0;
+    }
+    return 1;
+#else
+    (void) o; (void) src; return 0;
+#endif
+}
+
 extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
                            const char** names, void** objs, int n) {
 #ifdef QTD_HAVE_QML

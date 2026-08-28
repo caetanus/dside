@@ -1375,6 +1375,13 @@ int bindJs(T, A...)(T o, string prop, string src, string[] ids, A objs) {
                        ns.ptr, ps.ptr, cast(int) A.length);
 }
 
+private extern(C) int qtd_run_js(void*, const(char)*);
+/// Run a handler body the compiler could not compile, in the engine's scope, when the signal
+/// fires. See qtd_run_js in qtdmoc_qml.cpp for why a body may need a scope the compiler lacks.
+int runJs(T)(T o, string src) {
+    return qtd_run_js(qobjOf(o), (src ~ "\0").ptr);
+}
+
 private extern(C) int qtd_bind_shadow(void*, const(char)*, const(char)*, const(char)**, void**, int);
 /// PHASE 2: the same delegation, from a SHADOW compiled at build time. The expression lives in a
 /// generated QML document — a real one, with the original document's imports — and the value is

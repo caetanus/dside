@@ -7770,9 +7770,45 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (!isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp))
                 && bodyOk && g_selfIsEngineInst && !sigParams)
             connByName = true;
+        // ...AND A BODY WE CANNOT COMPILE IS HANDED TO THE ENGINE, exactly as a binding is. The
+        // signal being identifiable and the body compiling are two independent questions, and this
+        // used to fail both under one message: 45 of a real reader's diagnostics said "signal
+        // handler not yet supported" without naming the handler, the line, or which half was
+        // missing. Three plausible reproductions all compiled before the smallest document — one
+        // handler, one refusal — gave the answer:
+        //
+        //     // Leaf.qml, which declares no `root` and no `toggleSelection`
+        //     onClicked: root.toggleSelection(verse.number)
+        //
+        // `root` is Main.qml's id. QML resolves a name up the CONTEXT CHAIN, so a component names
+        // ids belonging to whoever instantiated it; the compiler sees one document at a time and
+        // cannot. The engine does not need to be told — the object already carries that context.
+        //
+        // A handler with PARAMETERS is not delegated: the parameters live in the slot's signature
+        // and would have to be published on a context for the body to see them, which is the
+        // binding path's problem and not solved here. Those still refuse.
+        bool sigKnown = connByName || isCustom || baseNotifyOk
+                     || (!notifyProp.empty() && isProp(notifyProp));
+        if (!bodyOk && sigKnown && !sigParams) {
+            std::string bsrc = srcRaw(h.stmt);
+            if (!bsrc.empty()) {
+                hbody = "        runJs(this, " + dstr(QString::fromStdString(bsrc)) + ");\n";
+                bodyOk = true;
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s:%s: handler 'on%s' in %s delegated to the engine: '%s'\n",
+                             inPath, posOf(h.stmt).c_str(), h.sig.c_str(), cls.c_str(),
+                             srcOf(h.stmt).c_str());
+            }
+        }
         if ((!connByName && !isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp)))
                 || !bodyOk) {
-            std::fprintf(stderr, "qmltc-d: %s: signal handler in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
+            // ...and WHICH of the two is missing, because they are different gaps and the cluster
+            // was unreadable while they shared a sentence.
+            std::fprintf(stderr, "qmltc-d: %s:%s: handler 'on%s' in %s not yet supported — %s"
+                                 " — skipped (later phase)\n",
+                         inPath, posOf(h.stmt).c_str(), h.sig.c_str(), cls.c_str(),
+                         !bodyOk ? "the body does not compile and could not be delegated"
+                                 : "the signal could not be identified");
             ++partial; continue;
         }
         // A base property's notify is Qt's, not one we synthesise, so it must NOT go on
@@ -8055,6 +8091,30 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 if (auto *b0 = cast<IdentifierExpression *>(fmv->base)) {
                     o = resolveObj(b0);
                     if (!o.empty()) pr = qs(fmv->name.toString());
+                    // ...and `theme.paper` where `theme` is a property the ENCLOSING document
+                    // declares. resolveObj answers ids, children and siblings — a property is none
+                    // of those, and a `var` holding a JS object is not an object it could return
+                    // anyway. Written `root.theme.paper` the branch below resolves it to
+                    // (object=__outer, group=theme, member=paper) and emits copyGroupProp, which
+                    // reads both hops through the meta-object and therefore works for a var. The
+                    // bare spelling is the same three things; only the parse differs.
+                    //
+                    // This is the single most common shape in the application this was measured
+                    // on: `readonly property var theme` on the root, read as `theme.paper`,
+                    // `theme.ink`, `theme.muted` by every child.
+                    if (o.empty()) {
+                        std::string bn0 = qs(b0->name.toString()), pre0;
+                        for (size_t k = 0; k < g_outerChain.size(); ++k) {
+                            pre0 += "__outer.";
+                            if (!g_outerChain[k].propType.count(bn0)) continue;
+                            g_outerUsed = true;
+                            if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                            o = pre0.substr(0, pre0.size() - 1);
+                            g = bn0;
+                            pr = qs(fmv->name.toString());
+                            break;
+                        }
+                    }
                 } else if (auto *fmb = cast<FieldMemberExpression *>(fmv->base)) {
                     // `control.palette.text` — a member of a value-typed group on another object.
                     if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
@@ -8569,6 +8629,45 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            + ba.first + "()\");\n";
                     continue;
                 }
+                // ...and a head that belongs to an ENCLOSING object. The lookup above asks
+                // g_qmlNotify for THIS object's type, so a property the outer DOCUMENT declares —
+                // a theme, a palette — was reported as having no notify even though the outer
+                // class emits one: the generated D carries `@Property("themeChanged") QmlVar
+                // theme;` beside `Signal!() themeChanged;`. Without this the binding is compiled
+                // and DEAD — it paints the first value and never moves, so switching the theme in
+                // the application this was measured on repaints nothing.
+                //
+                // The dependency arrives written as it is read (`__outer.theme.paper`), so the
+                // hops are counted off the front; ONE `__outer.` is frame ZERO.
+                {
+                    std::string rest = d; size_t hops = 0;
+                    while (rest.rfind("__outer.", 0) == 0) { rest = rest.substr(8); ++hops; }
+                    std::string headN = hops ? rest.substr(0, rest.find('.')) : dEff;
+                    std::string preN; bool wired = false;
+                    for (size_t k = hops ? hops - 1 : 0; k < g_outerChain.size() && !wired; ++k) {
+                        preN.clear();
+                        for (size_t i = 0; i <= k; ++i) preN += "__outer.";
+                        const OuterFrame &fr = g_outerChain[k];
+                        std::string oeN = preN.substr(0, preN.size() - 1);
+                        if (fr.propType.count(headN)) {
+                            g_outerUsed = true;
+                            if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                            conns += "        connectMeta(" + oeN + ", \"" + headN
+                                   + "Changed()\", this, \"__rcb_" + ba.first + "()\");\n";
+                            wired = true;
+                        } else if (auto qnO = g_qmlNotify.find(fr.qmlType); qnO != g_qmlNotify.end()) {
+                            auto ntO = qnO->second.find(headN);
+                            if (ntO != qnO->second.end() && !ntO->second.empty()) {
+                                g_outerUsed = true;
+                                if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                                conns += "        connectMeta(" + oeN + ", \"" + ntO->second
+                                       + "\", this, \"__rcb_" + ba.first + "()\");\n";
+                                wired = true;
+                            }
+                        }
+                    }
+                    if (wired) continue;
+                }
                 std::fprintf(stderr, "qmltc-d: %s: base binding '%s' in %s depends on '%s', which has "
                              "no known notify — it would not update (later phase)\n",
                              inPath, ba.first.c_str(), cls.c_str(), d.c_str());
@@ -8932,9 +9031,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (auto *fe = es->expression->asFunctionDefinition()) fnBody = fe->body;
         std::string hbody;
         if (!(fnBody ? compileStmtList(fnBody, ptype, hbody) : compileStmt(bodyStmt, ptype, hbody))) {
-            std::fprintf(stderr, "qmltc-d: %s: handler '%s' on an attached property in %s not yet supported — skipped (later phase)\n",
-                         inPath, ah.first.c_str(), cls.c_str());
-            ++partial; continue;
+            // ...and the same delegation the ordinary handlers get: the signal is connectable by
+            // name (see below), so only the BODY was missing, and a body the compiler cannot read
+            // is exactly what the engine is for. Measured on a real reader, every one of the nine
+            // handlers left refused after the ordinary path learned this was a `Keys.*` whose body
+            // names something across documents.
+            std::string bsrc = srcRaw(bodyStmt);
+            if (bsrc.empty()) {
+                std::fprintf(stderr, "qmltc-d: %s:%s: handler '%s' on an attached property in %s"
+                                     " not yet supported — the body does not compile and has no"
+                                     " source to delegate — skipped (later phase)\n",
+                             inPath, posOf(bodyStmt).c_str(), ah.first.c_str(), cls.c_str());
+                ++partial; continue;
+            }
+            hbody = "        runJs(this, " + dstr(QString::fromStdString(bsrc)) + ");\n";
+            ++g_delegated;
+            std::fprintf(stderr, "qmltc-d: %s:%s: handler '%s' on an attached property in %s"
+                                 " delegated to the engine: '%s'\n",
+                         inPath, posOf(bodyStmt).c_str(), ah.first.c_str(), cls.c_str(),
+                         srcOf(bodyStmt).c_str());
         }
         // ...and the SIGNATURE. A type we BIND has a table; one the registry merely knows does
         // not, and `Keys.pressed(QQuickKeyEvent*)` cannot be guessed from the name. It does not
@@ -9159,6 +9274,53 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \""
                        + slot + "()\");\n";
                 continue;
+            }
+            // ...and a head that belongs to an ENCLOSING object. The lookup above asks
+            // g_qmlNotify for THIS object's type, so a property the outer DOCUMENT declares — a
+            // theme, a palette — was reported as having no notify even though the outer class
+            // emits one: the generated D carries `@Property("themeChanged") QmlVar theme;` right
+            // beside `Signal!() themeChanged;`. Without this the binding is compiled and DEAD: it
+            // paints the first value and never moves, which in the application this was measured
+            // on means switching the theme repaints nothing.
+            {
+                // THE DEPENDENCY IS WRITTEN AS IT IS READ, so an outer one arrives already
+                // prefixed: `__outer.theme.paper`. Reducing to the first dot leaves `__outer`,
+                // which is not a property of anything — the hops have to be counted off first and
+                // the name taken from what follows them.
+                std::string rest = d; size_t hops = 0;
+                while (rest.rfind("__outer.", 0) == 0) { rest = rest.substr(8); ++hops; }
+                std::string headN = rest.substr(0, rest.find('.'));
+                // ...and ONE `__outer.` is frame ZERO: the prefix counts hops, the vector counts
+                // frames, and they are off by one. Starting the walk at `hops` looked right and
+                // skipped the frame that declares the property.
+                std::string preN; bool wired = false;
+                for (size_t k = hops ? hops - 1 : 0; k < g_outerChain.size() && !wired; ++k) {
+                    preN.assign((k + 1) * 8, '\0');
+                    preN.clear();
+                    for (size_t i = 0; i <= k; ++i) preN += "__outer.";
+                    const OuterFrame &fr = g_outerChain[k];
+                    std::string oeN = preN.substr(0, preN.size() - 1);
+                    const std::string &dEffN = hops ? headN : dEff;
+                    if (fr.propType.count(dEffN)) {
+                        g_outerUsed = true;
+                        if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                        conns += "        connectMeta(" + oeN + ", \"" + dEffN
+                               + "Changed()\", this, \"" + slot + "()\");\n";
+                        wired = true;
+                    } else if (auto qnO = g_qmlNotify.find(fr.qmlType); qnO != g_qmlNotify.end()) {
+                        // ...and a BASE property of the outer, whose notify the registry does know
+                        // and whose name is not always `<prop>Changed`.
+                        auto ntO = qnO->second.find(dEffN);
+                        if (ntO != qnO->second.end() && !ntO->second.empty()) {
+                            g_outerUsed = true;
+                            if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                            conns += "        connectMeta(" + oeN + ", \"" + ntO->second
+                                   + "\", this, \"" + slot + "()\");\n";
+                            wired = true;
+                        }
+                    }
+                }
+                if (wired) continue;
             }
             std::fprintf(stderr, "qmltc-d: %s: %s in %s depends on '%s', which has no known notify "
                          "— it would not update (later phase)\n", inPath, what.c_str(), cls.c_str(), d.c_str());
