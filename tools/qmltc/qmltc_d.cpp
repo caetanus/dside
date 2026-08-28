@@ -161,6 +161,29 @@ static const std::set<std::string> &dKeywords() {
         "version","void","wchar","while","with","__gshared","__traits","__vector","__parameters" };
     return kw;
 }
+// A PREFIX GOES ON THE ID, NOT ON THE CALL AROUND IT.
+//
+// A child the ENGINE builds is reached through `instOf(<field>)` — a free function that answers
+// null while the wrapper is not constructed yet — and the sibling walks prepend the outer hops to
+// whatever the field holds. When the field had already been rewritten to `instOf(_dc0)`, that
+// produced
+//
+//     tryConnectMeta(__outer.instOf(_dc0), "hoveredChanged()", this, "__rcb_running()");
+//
+// which names a method nothing has and leaves `_dc0` undefined in the class that reads it. The
+// same reference written WITHOUT the wrapper two lines away (`setPropAny(__outer._dc3, …)`) was
+// correct, which is the tell: the prefix was applied at the wrong point in the expression rather
+// than omitted.
+//
+// Reported from the outside (bugs.md 7a) as the thing that stopped three of an application's
+// documents from compiling at all — the generator emitted D and the D did not build.
+static std::string outerQualify(const std::string &pre, const std::string &field) {
+    if (pre.empty()) return field;
+    if (field.rfind("instOf(", 0) == 0 && field.size() > 8 && field.back() == ')')
+        return "instOf(" + pre + field.substr(7, field.size() - 8) + ")";
+    return pre + field;
+}
+
 static std::string dIdent(const std::string &n) {
     return dKeywords().count(n) ? n + "_" : n;
 }
@@ -1383,6 +1406,23 @@ static void prescanChildIds(UiObjectInitializer *init, const std::string &prefix
         UiObjectInitializer *ci = nullptr;
         std::string field, cid, ctypeResolved;
         if (auto *dod = cast<UiObjectDefinition *>(m->member)) {
+            // A GROUPED PROPERTY IS NOT A CHILD, and it parses as one. `anchors { left: … }` is a
+            // UiObjectDefinition exactly like `Column { … }` is; QML tells them apart by CASE, and
+            // compileObject only learns that when desugarBracedGroups rewrites the tree — which
+            // happens AFTER this pre-scan has already counted. So the counter drifted from the
+            // emitter by one for every braced group before a child, and the id it promised named a
+            // sibling that is not there:
+            //
+            //     Item { anchors { … }        // counted _dc0 here, not a child at all
+            //            Column { id: column } }   // promised _dc1, emitted as _dc0
+            //     -> connectMeta(_dc1._dc1, …)   Error: no property `_dc1` for type `Leaf_dc1`
+            //
+            // Reported from the outside (bugs.md 7b) as "one __outer hop short and repeats the
+            // name". It is neither a hop nor a repeat: it is the same index counted twice over two
+            // different member lists. Same test the desugaring uses, so the two cannot drift again.
+            std::string tnG = qname(dod->qualifiedTypeNameId);
+            if (!tnG.empty() && std::islower((unsigned char) tnG[0])
+                    && tnG.find('.') == std::string::npos) continue;
             ci = dod->initializer;
             field = prefix + "_dc" + std::to_string(dcn++);
             if (!ci) continue;
@@ -1673,7 +1713,7 @@ static void resolveReadSrc(ExpressionNode *e, std::string &obj, std::string &grp
                 if (sc == g_outerChain[k].childIds.end() || sc->second.second.empty()) continue;
                 g_outerUsed = true;
                 if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-                return preS + sc->second.first;
+                return outerQualify(preS, sc->second.first);
             }
         }
         return "";
@@ -2146,7 +2186,7 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
                 if (sc == g_outerChain[k].childIds.end() || sc->second.second.empty()) continue;
                 g_outerUsed = true;
                 if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-                oe = preS + sc->second.first; oq = sc->second.second;
+                oe = outerQualify(preS, sc->second.first); oq = sc->second.second;
                 return true;
             }
         }
@@ -2392,9 +2432,13 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
         // `theme.paper` from a child. This walk asked objPropQml — the registry's view of the outer
         // object's TYPE — so an id-qualified `root.theme.paper` resolved and the bare form did not.
         // Same rule as the self case a few lines up: `@` marks a declared object or var.
+        // ...but NOT a `var`. Its value is not in the field — the field is a marker and the
+        // runtime owns the value — so handing it back as a path head made the member read compile
+        // to `__outer.selection.length` and D answered `no property 'length' for ... QmlVar`. The
+        // same rule readName keeps for a bare `var`, and the reason the group-copy path exists.
         if (auto dp3 = g_outerChain[k].propType.find(n2);
                 dp3 != g_outerChain[k].propType.end() && dp3->second.size() > 1
-                && dp3->second[0] == '@' && !shadowedByLocalType(n2)) {
+                && dp3->second[0] == '@' && dp3->second != "@var" && !shadowedByLocalType(n2)) {
             g_outerUsed = true;
             if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
             oe = pre3 + dIdent(n2); oq = dp3->second.substr(1);
@@ -2417,7 +2461,7 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
             g_depIsSibling = true;
             g_outerUsed = true;
             if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-            oe = pre3 + sc->second.first; oq = sc->second.second;
+            oe = outerQualify(pre3, sc->second.first); oq = sc->second.second;
             return true;
         }
     }
@@ -2906,7 +2950,13 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (outerHop(qs(base->name.toString()), pre, &fr)) {
                 std::string mem = qs(fm->name.toString());
                 std::string obj = pre.substr(0, pre.size() - 1);   // drop the trailing '.'
-                if (!fr->baseProps.count(mem) && fr->propType.count(mem)) { out = pre + mem; return true; }
+                // ...EXCEPT A `var`, whose value is not in the field: the field is a marker and the runtime owns
+                // the value, so handing it back made a member read compile to `__outer.selection.length` and
+                // D answered `no property 'length' for ... QmlVar`. Same rule readName keeps for a bare one.
+                if (!fr->baseProps.count(mem)) {
+                    auto pv = fr->propType.find(mem);
+                    if (pv != fr->propType.end() && pv->second != "@var") { out = pre + mem; return true; }
+                }
                 if (auto qp = g_qmlProps.find(fr->qmlType); qp != g_qmlProps.end()) {
                     auto t = qp->second.find(mem);
                     if (t != qp->second.end()) {
@@ -3072,7 +3122,13 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             const OuterFrame &fr = g_outerChain[0];
             g_outerUsed = true;
             if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;
-            if (!fr.baseProps.count(mem) && fr.propType.count(mem)) { out = "__outer." + mem; return true; }
+            // ...EXCEPT A `var`, whose value is not in the field: the field is a marker and the runtime owns
+                // the value, so handing it back made a member read compile to `__outer.selection.length` and
+                // D answered `no property 'length' for ... QmlVar`. Same rule readName keeps for a bare one.
+                if (!fr.baseProps.count(mem)) {
+                auto pv2 = fr.propType.find(mem);
+                if (pv2 != fr.propType.end() && pv2->second != "@var") { out = "__outer." + mem; return true; }
+            }
             if (auto qp = g_qmlProps.find(fr.qmlType); qp != g_qmlProps.end()) {
                 auto t = qp->second.find(mem);
                 if (t != qp->second.end()) ty = t->second;
@@ -4776,6 +4832,18 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
             std::string name = qs(lhs->name.toString());
             auto it = ptype.find(name);
             if (it == ptype.end()) return false;
+            // A `var` HAS NO FIELD TO WRITE. Its value lives in the runtime and the D member is a
+            // marker, so `selection = []` compiled to exactly that and D answered
+            //     cannot implicitly convert expression `[]` of type `void[]` to `QmlVar`
+            // Reads have refused a bare `var` since readName was written; the write did not, and a
+            // refusal here is what hands the whole function to the engine, which owns the value
+            // anyway. Same rule, other direction.
+            // ...asking BOTH tables, because the local one carries the QML type and g_propType
+            // carries the compiler's mark. Guarding only the local map left `selection = []`
+            // emitted exactly as before.
+            if (it->second == "@var" || it->second == "var") return false;
+            if (auto pv = g_propType.find(name); pv != g_propType.end() && pv->second == "@var")
+                return false;
             std::string op = aop;
             if (op == "+=" && it->second == "string") op = "~=";   // string concat-assign
             std::string rhs;
@@ -9672,8 +9740,26 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // Void body (assignments / calls). Parameters allowed but only over property/param refs.
             std::string fbody;
             if (!compileStmtList(fn->body, ptWithParams, fbody)) {
-                std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
-                ++partial; continue;
+                // ...SO THE FUNCTION IS DELEGATED, not dropped. A skipped function does not fail
+                // alone: everything that CALLS it is compiled and then refers to something that is
+                // not there, which is how a real reader's Main.qml ended with
+                //     Error: undefined identifier `saveAppearance`
+                // three times over, from handlers that had themselves just started compiling. The
+                // callee's body names `bible`, an object the application publishes on the context
+                // — invisible here and ordinary to the engine.
+                //
+                // Only for a void, parameterless function: with parameters the body would have to
+                // see them, which means publishing them on a context, and that is the binding
+                // path's problem rather than this one's.
+                std::string fsrc = sig.empty() ? srcRaw(fn->body) : std::string();
+                if (fsrc.empty()) {
+                    std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
+                    ++partial; continue;
+                }
+                fbody = "        runJs(this, " + dstr(QString::fromStdString(fsrc)) + ");\n";
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s delegated to the engine\n",
+                             inPath, name.c_str(), cls.c_str());
             }
             methods += "    void " + name + "(" + sig + ") {\n" + fbody + "    }\n";
             if (sig.empty()) node.methods0.push_back(name);
