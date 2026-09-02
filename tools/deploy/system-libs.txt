@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
+#
+# LIBRARIES A BUNDLE MUST NOT CARRY, one soname prefix per line, `#` starts a comment.
+#
+# This list is the deployment POLICY and it lives in a file rather than in the code, because it is
+# the one part of the tool that is a judgement call: everything else qtd-deploy reports is read out
+# of the binaries and out of Qt's own installation. Shipping a copy of one of these is how a bundle
+# breaks on a machine that is not the build machine — two glibcs cannot coexist in one process, and
+# a private libGL will not talk to the user's driver.
+#
+# The set is the manylinux policy's, which is the most-tested answer to this question that exists.
+# Entries match on the soname PREFIX up to the version, so `libc` covers `libc.so.6`.
+
+# The C runtime and its inseparable companions. A process has exactly one of each, chosen by the
+# loader from the system; a bundled copy is loaded IN ADDITION and the two disagree about the heap.
+libc
+libm
+libdl
+librt
+libpthread
+ld-linux
+ld64
+
+# The compiler runtimes. Bundling these is legal and occasionally done, but a newer system copy is
+# always compatible with an older one and never the reverse, so taking the system's is correct.
+libgcc_s
+libstdc++
+
+# The graphics and windowing stack belongs to the MACHINE. libGL is the user's driver, and an X11
+# or Wayland client library has to match the display server it is talking to.
+libGL
+libGLX
+libGLdispatch
+libEGL
+libOpenGL
+libX11
+libXext
+libXrender
+libXau
+libXdmcp
+libxcb
+libwayland
+
+# Kernel-adjacent and session services, for the same reason.
+libudev
+libdrm
+libgbm

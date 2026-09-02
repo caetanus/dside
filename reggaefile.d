@@ -246,6 +246,26 @@ Build reggaeBuild() {
     foreach (dc; DCS)
         all ~= qtdTest("qrc-" ~ dc, t("qrc", "qrc_test.d"), ex, dc, qrcExtra);
 
+    // --- deployment: what an installer has to carry, and whether the copy actually resolves ---
+    // The mapping half is arithmetic on the binaries and Qt's own plugin descriptions, and would
+    // pass a check that only counted files. What this target asserts instead is that the bundle
+    // RUNS without the machine's Qt — the two outcomes are indistinguishable on the build machine
+    // and differ on the user's disk, which is the failure this is for.
+    {
+        auto bs = buildPath(root, "tests", "deploy", "bundle.sh");
+        Target[] toolSrc = [Target(bs),
+                            Target(buildPath(root, "tools", "deploy", "qtd_deploy.d")),
+                            Target(buildPath(root, "tools", "deploy", "binfmt.d")),
+                            Target(buildPath(root, "tools", "deploy", "system-libs.txt"))];
+        foreach (dc; DCS)
+            all ~= Target.phony("deploy-bundle-" ~ dc,
+                "sh " ~ bs ~ " " ~ dc ~ " " ~ ex.genDir ~ " " ~ ex.bdir
+                ~ " \"" ~ pkgLibs(ex.mods) ~ "\" " ~ buildPath(root, ".build", "deploy-" ~ dc)
+                ~ " " ~ root ~ " " ~ buildPath(root, "tests", "deploy", "deployapp.d"),
+                toolSrc ~ [Target(buildPath(root, "tests", "deploy", "deployapp.d")),
+                           qtdBindLib(ex, dc), ex.shims]);
+    }
+
     // --- QtWebEngineCore: link+run a smoke test against the real .so (whole-program) ---
     auto we = qtdBinding(root, "spec_cxx_webengine.json", ["Qt6WebEngineCore"]);
     foreach (dc; DCS)
@@ -309,6 +329,21 @@ Build reggaeBuild() {
             // meta-object chain, and Qt uses it to decide policy on objects handed to it.
             all ~= qtdTest("subclasscast-" ~ dc, buildPath(root, "tests", "qml", "subclasscast_test.d"),
                            quick, dc);
+            // ...and the deployment question for a QML program, which is a different question from
+            // the widgets one: the engine resolves module directories at run time, and the Qt Quick
+            // Controls STYLE is picked at run time too, by neither the linker nor the qmldir.
+            auto bqs = buildPath(root, "tests", "deploy", "bundle.sh");
+            all ~= Target.phony("deploy-qml-" ~ dc,
+                "sh " ~ bqs ~ " " ~ dc ~ " " ~ quick.genDir ~ " " ~ quick.bdir
+                ~ " \"" ~ pkgLibs(quick.mods) ~ "\" " ~ buildPath(root, ".build", "deployqml-" ~ dc)
+                ~ " " ~ root ~ " " ~ buildPath(root, "tests", "deploy", "deployqml.d")
+                ~ " " ~ buildPath(root, "tests", "deploy", "controls.qml"),
+                [Target(bqs), Target(buildPath(root, "tests", "deploy", "deployqml.d")),
+                 Target(buildPath(root, "tests", "deploy", "controls.qml")),
+                 Target(buildPath(root, "tools", "deploy", "qtd_deploy.d")),
+                 Target(buildPath(root, "tools", "deploy", "binfmt.d")),
+                 Target(buildPath(root, "tools", "deploy", "system-libs.txt")),
+                 qtdBindLib(quick, dc), quick.shims]);
         }
     }
     // QtQuick.Templates — the C++ side of QtQuick.Controls, and the vocabulary real QML documents

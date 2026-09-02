@@ -81,6 +81,81 @@ GPL-only modules appear, and a list written for 6.9 is not a statement about 6.1
 
 Whatever you bundle, the rule is the same: if a Qt binary leaves your machine, you distributed Qt.
 
+## `qtd-deploy`: the inventory, and a tree that resolves
+
+The checklist below ends with *"every bundled plugin, translation, font and helper binary is in the
+notice inventory"*, and that list is not something to assemble by hand. `tools/deploy/` builds
+`qtd-deploy`, which produces it by reading rather than guessing:
+
+```
+qtd-deploy map    app                          # the manifest, as TSV (or --json)
+qtd-deploy bundle app --out dist               # ...and a tree laid out so it runs
+```
+
+- **Libraries** come out of the binary itself — `PT_DYNAMIC` on ELF, the import and delay-load
+  directories on PE — so the answer does not require running the program and a Windows tree can be
+  mapped from Linux. `ldd` can do neither.
+- **Plugins** cannot come from the binary, because nothing links them: an application without
+  `libqxcb.so` dies with *no Qt platform plugin could be initialized*, and no linker recorded the
+  dependency. Qt installs a machine-readable description of which plugins belong to which module
+  (`lib/cmake/Qt6Gui/Qt6QXcbIntegrationPluginTargets-*.cmake`, and the Qt 5 spelling of the same
+  thing), so the tool reads *that*, for the modules the binary actually links. A table written into
+  the tool would be a table about one Qt installation.
+- **QML modules** come from the imports in your `.qml` sources (`--qml`), and then from three more
+  places, each of which was found by a bundle that failed without it:
+  - the module's own `qmldir`, including the `optional import X auto` and `default import X auto`
+    forms — reading only `depends` and `import` missed every Qt Quick Controls style;
+  - the imports written inside **Qt's own** QML files, because `QtQuick.Controls.impl` and
+    `QtQuick.Templates` appear in no `qmldir` at all;
+  - and again for plugins, because a QML module's plugin brings Qt modules with it
+    (`libqtquickcontrols2plugin.so` brings Qt6QuickTemplates2), and those modules have plugins of
+    their own. The collection repeats until the answer stops changing.
+
+  **Every declared Controls style ships**, and `--qml-style` narrows it. That is deliberate and it
+  is the one place this tool is inclusive by default: the style is chosen at run time by
+  `QQuickStyle`, from `QT_QUICK_CONTROLS_STYLE` or a `qtquickcontrols2.conf` compiled into the
+  plugin as a Qt resource — neither readable from the module directory. On the machine this was
+  written on, `QtQuick/Controls/qmldir` says `default import QtQuick.Controls.Basic` and the style
+  actually loaded is **Fusion**. A bundle carrying the qmldir's answer started, loaded no root
+  object, and printed nothing at all. The five extra styles are about 7 MB against a 150 MB bundle.
+- **Which libraries not to carry** is the one judgement call, and it lives in
+  `tools/deploy/system-libs.txt` rather than in the code: glibc, the compiler runtimes, and the
+  graphics and windowing stack belong to the machine, and a bundled copy of any of them is how a
+  bundle breaks on a computer that is not the build machine.
+
+The layout is measured, not imposed. Qt's own libraries carry `RUNPATH=$ORIGIN` and its plugins
+carry `RUNPATH=$ORIGIN/../../../`; they already know how to find each other, so `bundle` reproduces
+the *distance* between `lib/` and `plugins/` that the installed prefix has, and none of them needs
+editing. On PE there is no run path at all and DLLs are looked for beside the executable, so there
+the libraries go into the executable's directory instead — the choice follows the binary format,
+not the machine running the tool.
+
+What remains is the part everyone gets wrong. Distribution libraries ship **no run path at all** —
+in a bundle of this repository's own `hello`, 103 of 118 — and `DT_RUNPATH` applies only to the
+object that carries it, so the search for `libfreetype.so.6` made on behalf of `libfontconfig.so.1`
+consults nothing and reaches the system copy. `DT_RPATH` on the **executable** is inherited by
+everything loaded beneath it and covers all of them at once. So link your application with
+
+```
+-L-rpath='$ORIGIN/../lib' -L--disable-new-dtags
+```
+
+and `qtd-deploy` will report it if you did not. What it rewrites is the case `auditwheel` exists
+for: a third-party library whose run path names a directory on the machine it was built on. Those
+are shortened to `$ORIGIN` in place — an absolute build path is never shorter, so it always fits.
+It will not rewrite what it cannot: a `.dynstr` entry cannot grow, and a tool that silently
+declined would ship a bundle that resolves here and nowhere else.
+
+`deploy-bundle-{ldc2,dmd}` and `deploy-qml-{ldc2,dmd}` are the checks, and they assert the thing
+that matters rather than that files were copied: the bundled application is started from elsewhere
+with the environment cleared, and `LD_DEBUG=libs` is read back to confirm that **no** library
+outside the policy came from the system and that the platform plugin came out of the bundle. The
+QML pair loads a Qt Quick Controls document, which is the case that fails when a style is missing —
+and fails silently, which is why the assertion is on the root object and not on the exit status.
+
+On Windows the proof is the one that platform allows: the bundled executable is run with the Qt
+directories taken out of `PATH`, so a missing DLL or plugin has nothing to fall back to.
+
 ## Components with obligations beyond Qt's own
 
 - **Qt WebEngine** embeds Chromium and pulls in a large third-party stack with its own licences

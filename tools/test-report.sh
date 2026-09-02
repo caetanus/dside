@@ -98,6 +98,10 @@ category() {
     # defines it. A gate: it fails the build the day the derivation and the shipped Qt disagree,
     # which is the whole reason it is not just a compile.
     appmixin-*) echo gate ;;
+    # Deployment: what an installer has to carry, and whether the copied tree RESOLVES. Its own
+    # category rather than `gate`, because unlike a gate it exercises a shipped TOOL end to end —
+    # map the binary, bundle it, start it with the machine's Qt out of reach.
+    deploy-bundle-*|deploy-qml-*) echo deploy ;;
     *) echo other ;;
   esac
 }
@@ -157,6 +161,8 @@ if [ "$selftest" = yes ]; then
   ck compiler-context                gate      qt6 -
   ck abi-layout                      gate      qt6 -
   ck abi-layout-qt5                  gate      qt5 -
+  ck deploy-bundle-ldc2              deploy    qt6 ldc2
+  ck deploy-qml-dmd                  deploy    qt6 dmd
   ck tr-ldc2                         i18n      qt6 ldc2
   ck qrc-ldc2                        misc      qt6 ldc2
   ck xiboca-quickstart               gate      qt6 -
