@@ -1037,7 +1037,7 @@ Build reggaeBuild() {
         // which is what it did: `qtdmoc.cpp is NOT the current qtdmoc.cpp` about a file that was
         // byte-identical to its origin a minute later. Same failure mode as libsample's, one
         // writer later.
-        auto gens = qtdGenRegistry() ~ xibocaQuickstartTargets(root);
+        auto gens = qtdGenRegistry() ~ xibocaQuickstartWork(root);
         // THE DIRECTORIES IT MUST FIND COPIES IN, named rather than globbed. The gate used to
         // compare whatever happened to be on disk, so a producer whose output was missing simply
         // was not counted: measured, deleting .build/xiboca-quickstart turned `OK: 52` into
@@ -2592,10 +2592,18 @@ string catCmd(string f) {
     else              return "cat " ~ f;
 }
 
-private __gshared Target[] _quickstartCache;
+private __gshared Target[] _quickstartCache;   // the NAME, for the aggregate list
+private __gshared Target[] _quickstartWork;    // the FILE, for whoever must run it first
 private __gshared bool _quickstartBuilt;
-Target[] xibocaQuickstartTargets(string root) {
-    if (_quickstartBuilt) return _quickstartCache;
+/// The named target, and the only one that belongs in the aggregate list. Handing the FILE to
+/// `all` as well listed it under its own path — `.build/xiboca-quickstart/quickstart.stamp` — and
+/// the report's self-test refused it as unclassified, which is what that check is for.
+Target[] xibocaQuickstartTargets(string root) { _buildQuickstart(root); return _quickstartCache; }
+/// ...and the file target, which `runtime-provenance` depends on so the producer is SCHEDULED
+/// rather than merely rebuilt when the runtime changes.
+Target[] xibocaQuickstartWork(string root) { _buildQuickstart(root); return _quickstartWork; }
+private void _buildQuickstart(string root) {
+    if (_quickstartBuilt) return;
     _quickstartBuilt = true;
         auto qs = buildPath(root, "tests", "xiboca-quickstart.sh");
         auto ulib = buildPath(root, "examples", "userlib");
@@ -2652,7 +2660,8 @@ Target[] xibocaQuickstartTargets(string root) {
             // worker records its own verdict and the alias prints it, which also means the line
             // appears on a run where the stamp was already current and the worker did not execute.
             auto alias_ = Target.phony("xiboca-quickstart", catCmd(qsLog), [qsWork]);
-            _quickstartCache = [qsWork, alias_];
+            _quickstartWork = [qsWork];
+            _quickstartCache = [alias_];
         }
-    return _quickstartCache;
+    return;
 }
