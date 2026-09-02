@@ -951,9 +951,43 @@ bool isValueRecord(CXType t) {
     auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(t)));
     if (decl.kind != CXCursor_ClassDecl && decl.kind != CXCursor_StructDecl) return false;
     if (isQObject(decl)) return false;
-    foreach (m; children(decl))
-        if ((m.kind == CXCursor_CXXMethod || m.kind == CXCursor_Destructor) && clang_CXXMethod_isVirtual(m))
-            return false;
+    // A VTABLE DOES NOT MAKE A VALUE AN OBJECT — but almost everything with one IS an object, and
+    // telling the two apart in general is the problem PySide answers with a hand-written
+    // typesystem rather than with a rule. Three structural rules were tried here and each one
+    // misclassified a different family on the next build: QObject itself (isQObject walks BASES,
+    // so the root answers false), then QTreeWidgetItem (virtual destructor, heap-owned), then
+    // QSpacerItem and QPainter (Q_DISABLE_COPY). Every one of them compiled and then failed as
+    //     none of the overloads of `this` are callable using argument types `(QObject)`
+    //     addSpacerItem(QSpacerItem* a0) is not callable
+    // because a type the binding emits as a WRAPPER became a pointer to a struct.
+    //
+    // So the exception is NAMED, and named by structure rather than by a list: QPaintDevice is
+    // Qt's paint-target interface, and its subclasses — QImage, QPixmap, QBitmap, QPicture — are
+    // values that happen to carry its vtable. That is 400 of the 419 symbols the old rule refused,
+    // including every grabWindow, and it is the whole of what bugs.md 3 asked for. The general
+    // question stays open on purpose: a wrong answer there costs a wrapper that no longer accepts
+    // a wrapper, which is worse than a symbol that stays unmapped.
+    // TRANSITIVELY: QBitmap reaches QPaintDevice through QPixmap, and a direct-bases-only walk
+    // left QBitmap an object while QPixmap was a value — so `QPixmap::mask`, `QBitmap::transformed`
+    // and `QCursor::bitmap` all went back to unmapped-type while their neighbours bound.
+    bool derivesFrom(CXCursor d, string want) {
+        foreach (b; children(d)) {
+            if (b.kind != CXCursor_CXXBaseSpecifier) continue;
+            auto bd = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCursorType(b)));
+            if (lastNs(clang_getTypeSpelling(clang_getCursorType(b)).str) == want) return true;
+            if (bd.kind == CXCursor_ClassDecl || bd.kind == CXCursor_StructDecl)
+                if (derivesFrom(bd, want)) return true;
+        }
+        return false;
+    }
+    const paintDevice = derivesFrom(decl, "QPaintDevice");
+    if (!paintDevice)
+        foreach (m; children(decl))
+            if ((m.kind == CXCursor_CXXMethod || m.kind == CXCursor_Destructor)
+                    && clang_CXXMethod_isVirtual(m))
+                return false;
+    // ...and abstract is never a value: `T(const T&)` does not exist and C++ cannot return one.
+    if (clang_CXXRecord_isAbstract(decl)) return false;
     return true;
 }
 
@@ -1741,6 +1775,17 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             if (mn in baseM) continue;
             bool isOp = mn.startsWith("operator");
             if (isOp && isInline(c)) continue;   // inline operator -> no symbol (TODO: translate)
+            // ...AND THE MANIFEST HEARS ABOUT IT EITHER WAY. This emitter recorded only in its
+            // `catch`, so a VALUE TYPE's method that mapped fine was emitted into the binding and
+            // never counted — the coverage manifest has always under-reported value types, and
+            // nobody noticed while the interesting ones were failing.
+            //
+            // It surfaced the moment they stopped failing: relaxing isValueRecord moved 14 methods
+            // (QCursor::bitmap/mask, QIcon::pixmap, QBrush::texture, …) from `unmapped-type` to
+            // bound, and the gate reported them DISAPPEARED. The bindings were there — 4479 bound
+            // became 4538 — but the record lost them, which reads exactly like the opposite.
+            string _fate = "bound"; string _why;
+            scope(exit) recordSym(cppName, mn, _fate, c, _why);
             try {
                 string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
                 if (imp.length) impSet[imp] = true;
@@ -1852,7 +1897,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     auto ov = strOverload(mn, retD, kw, cst, pds, seenStrOv);
                     if (ov.length) rawDecls ~= ov;
                 }
-            } catch (Unmappable e) { recordSym(cppName, clang_getCursorSpelling(c).str, "unmapped-type", c, e.msg); }
+            } catch (Unmappable e) { _fate = "unmapped-type"; _why = e.msg; }   // the scope(exit) counts it
         }
         // Inline verification deferred to a single batch at the end (verifyInlinesBatched)
         // — compiling one ldc2 per class here was the generation bottleneck.
