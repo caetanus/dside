@@ -434,8 +434,20 @@ extern "C" int qtd_prop_set_list(void* o, const char* n, const char* typeName,
     QVariantList vs;
     vs.reserve(count);
     const bool asText = !typeName || !*typeName || !std::strcmp(typeName, "QString");
-    QMetaType mt = asText ? QMetaType(QMetaType::QString) : QMetaType::fromName(typeName);
-    if (!asText && !mt.isValid()) return 0;
+    // BOTH QT MAJORS NAME A METATYPE DIFFERENTLY, and the Qt6 spelling is not a superset: Qt5 has
+    // `QMetaType::type(const char*)` returning an int and `QVariant::convert(int)`, Qt6 has
+    // `QMetaType::fromName` and `convert(QMetaType)`. Written for Qt6 only, this did not compile
+    // against Qt 5.15 at all — `no matching member function for call to 'convert'` — and took the
+    // whole qtwidgets-wrap shim archive with it, so 22 Qt5 targets failed on a file none of them
+    // is about.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QMetaType mt = asText ? QMetaType(QMetaType::QString) : QMetaType::fromName(typeName);
+    const bool ok = asText || mt.isValid();
+#else
+    const int mt = asText ? int(QMetaType::QString) : QMetaType::type(typeName);
+    const bool ok = asText || mt != QMetaType::UnknownType;
+#endif
+    if (!ok) return 0;
     for (int i = 0; i < count; ++i) {
         QVariant one = QString::fromUtf8(items[i] ? items[i] : "");
         if (!asText && !one.convert(mt)) return 0;
