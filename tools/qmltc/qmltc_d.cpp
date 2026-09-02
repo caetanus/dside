@@ -8520,7 +8520,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                            : !copyAssign.empty() ? copyAssign
                            : g_baseIsD ? ("        " + ba.first + " = " + val + ";\n")
                                        : ("        setProp(this, \"" + ba.first + "\", " + val + ");\n");
-        baseWire += assign;
+        // THE WIRE'S GUARD IS A LINE FILTER, and this statement is not always one line.
+        // `guardWire` wraps a wire line when it is a `setProp(`/`setPropObj(` write that reads
+        // through an object; a conditional copy compiles to a BLOCK —
+        //
+        //     if (propAny!bool(propObj(this, "parent"), "current")) {
+        //         copyGroupProp(__outer…, "theme", "paper", this, "color");
+        //     } else { … }
+        //
+        // — which matches none of those tests, so it went into the wire body raw while the
+        // re-evaluation slot for the SAME expression was wrapped two lines below. `parent` is null
+        // during construction, `propAny` throws QmlNullDeref for a property that is not there, and
+        // with nothing catching it the exception left `__qmltcWire`, unwound through every
+        // `__qmltcKids` above it and killed the application at startup — measured on a real
+        // reader, whose window never opened. Wrapped here, at the point the statement is built,
+        // rather than by teaching the line filter about blocks.
+        baseWire += assign.find('\n') == assign.size() - 1 ? assign : bindGuard(assign);
         // ...and if the expression READS anything, it is a BINDING, not an assignment: it has to
         // recompute when a dependency changes. This was emitted as a one-shot with no connect and
         // no diagnostic, so `width: pad * 10` kept its first value forever and looked correct

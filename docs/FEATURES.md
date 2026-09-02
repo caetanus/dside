@@ -47,6 +47,26 @@ minimal `.cpp` trampolines; reggae owns all compilation. Verified on **ldc2 + dm
 ## qrc — CTFE
 - `mixin(qrcRegister(import("x.qrc")))` → Qt `.rcc` blob registered at runtime (no `rcc` tool).
 
+## Deployment — `qtd-deploy` (`tools/deploy/`)
+- **`map`** — the manifest an installer needs, read rather than run: libraries out of `PT_DYNAMIC`
+  (ELF) or the import + delay-load directories (PE), so a Windows tree can be mapped from Linux;
+  plugins out of Qt's own `Qt6<Mod>*PluginTargets*.cmake` (and the Qt 5 spelling) for the modules
+  the binary links, because nothing links a plugin; QML modules out of the app's `import` lines,
+  closed over each `qmldir`. What never to bundle is a data file, `tools/deploy/system-libs.txt`.
+- **`bundle`** — mirrors the prefix's geometry so Qt's own `$ORIGIN` run paths stay correct, rewrites
+  a third-party run path that names the build machine (the `auditwheel` case), and lays PE out the
+  other way because a DLL is found beside its executable. Distribution libraries carry no run path
+  at all, so the executable's **inherited `DT_RPATH`** is what covers them.
+- **QML is the harder half** — modules come from the app's imports, then from each `qmldir`'s
+  `depends` / `import` / `optional import` / `default import`, then from the imports inside Qt's own
+  QML (`QtQuick.Controls.impl` is in no qmldir), and plugin collection repeats to a fixed point
+  because a QML plugin brings Qt modules with it. Every declared Controls style ships (`--qml-style`
+  narrows): the style is picked at run time by `QQuickStyle`, and here the qmldir says Basic while
+  Fusion is what loads.
+- **`deploy-bundle-{ldc2,dmd}`, `deploy-qml-{ldc2,dmd}`** assert the bundle *resolves*: started from
+  elsewhere with the environment cleared, `LD_DEBUG=libs` shows 0 libraries from the system and the
+  platform plugin coming out of the bundle.
+
 ## Exceptions
 - C++/Qt exception → D `QtCppException` (Lippincott + **per-signature guards**, complete coverage);
   error-return wrappers for out-param errors (bad JSON/PNG). Gated by `"exceptions"`.

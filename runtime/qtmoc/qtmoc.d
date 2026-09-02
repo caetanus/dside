@@ -631,6 +631,27 @@ T newQObject(T, Args...)(Args ctorArgs) {
         "qtmoc: " ~ T.stringof ~ " precisa da UDA @QObject");
     validateMeta!T();   // @Slot void + existing/compatible NOTIFY (compile time)
     T o = new T(ctorArgs);
+    // A CLASS THAT CARRIES QtdWidget IS ALREADY BUILT, and everything below would build it a
+    // SECOND time. That mixin's constructor creates the real carrier — a `<Base>_subclass`, a
+    // QQuickRectangle with QQuickRectangle's meta-object — registers it, and runs `__qmltcWire`
+    // against it. Going on from here calls `qtd_moc_new`, which makes a QtdMocObject whose
+    // meta-object descends from QObject, PUTS THAT IN THE REGISTRY in place of the item, and wires
+    // the document a second time against it. Both halves were observed on a real reader:
+    //
+    //   qtd_attach_value_source: no property 'color' on Main      (the second wire, wrong object)
+    //   setProp failed: no writable property "width" taking a double
+    //
+    // and once that exception was out of the way, the caller's own
+    // `QQuickItem.wrap(qobjOf(ui)).setParentItem(view.contentItem())` took the QtdMocObject for an
+    // item and went into QQuickItem::setParentItem with a pointer that is not one — SIGSEGV, under
+    // gdb, frame #0 in libQt6Quick. `qobjOf` answering something that is not the object the caller
+    // built is the defect; the two failures above are what it looks like from outside.
+    //
+    // `__qtdBuild` is the marker because it is what QtdWidget itself declares. `_adopt` — the test
+    // three lines below — is NOT: it comes from the wrapper layer, and guarding on it read false
+    // and changed nothing.
+    static if (__traits(hasMember, T, "__qtdBuild")) return o;
+    else {
     enum sigs  = signalSigs!T;
     enum slts  = slotSigs!T;
     // The forwarding ones are appended AFTER the stored ones, so a property index is still the
@@ -656,6 +677,7 @@ T newQObject(T, Args...)(Args ctorArgs) {
     static if (__traits(hasMember, T, "_adopt")) o._adopt(qobj);   // WRAPPER: _cpp + pin
     wireQObject(o, qobj);
     return o;
+    }
 }
 
 // Binds the Signal fields to (qobj, index) and registers the slot/prop dispatch of `o`.
@@ -690,7 +712,8 @@ private void wireQObject(T)(T o, void* qobj) {
     // connect its binding dependencies and compute initial values here (it CANNOT in its own
     // ctor, which runs before wiring). qmltc-d emits `__qmltcWire`; a no-op for every hand-written
     // @QObject (none declare it), so this is inert for the existing suite.
-    static if (__traits(hasMember, T, "__qmltcWire")) o.__qmltcWire();
+    //
+static if (__traits(hasMember, T, "__qmltcWire")) o.__qmltcWire();
 }
 
 // ---- QML type registration --------------------------------------------------
@@ -1156,6 +1179,36 @@ void bindEval(scope void delegate() f) {
 /// typo there used to be invisible — the same silent failure connectMeta was fixed for.
 void setProp(T)(T o, string name, int v) {
     if (!qtd_prop_set_int(qobjOf(o), (name ~ "\0").ptr, v)) __propWriteFailed(name, "int");
+}
+private extern(C) int qtd_prop_set_list(void*, const(char)*, const(char)*, const(char)**, int);
+/// Writes a LIST-valued property: `model: ["a", "b"]`, `columns: [1, 2, 3]`.
+///
+/// One overload for every element type, because the elements cross as TEXT and QMetaType converts
+/// on the other side — the channel a colour and an enum key already use. An array literal used to
+/// compile to a D `string[]`/`int[]`/`double[]` with no `setProp` to take it, so a document using
+/// the commonest form of a static model emitted code that did not compile.
+// `!is(E == immutable char)` because a `string` IS an array of those, and without it this overload
+// competed with the scalar-string one on every single-string write in the corpus.
+void setProp(T, E)(T o, string name, E[] v)
+        if (!is(E == class) && !is(immutable E == immutable char)) {
+    import std.conv : to;
+    import std.string : toStringz;
+    const(char)*[] cs;
+    string[] keep;                       // the .toStringz results have to outlive the call
+    keep.reserve(v.length); cs.reserve(v.length);
+    foreach (e; v) {
+        static if (is(E == string)) keep ~= e;
+        else                        keep ~= e.to!string;
+        cs ~= keep[$ - 1].toStringz;
+    }
+    // The ELEMENT type as Qt names it, so the conversion happens where the meta-types are.
+    static if (is(E == string))      enum tn = "QString";
+    else static if (is(E == int))    enum tn = "int";
+    else static if (is(E == bool))   enum tn = "bool";
+    else static if (is(E == double)) enum tn = "double";
+    else                             enum tn = E.stringof;
+    if (!qtd_prop_set_list(qobjOf(o), (name ~ "\0").ptr, tn, cs.ptr, cast(int) cs.length))
+        __propWriteFailed(name, tn ~ "[]");
 }
 private extern(C) int qtd_prop_set_any(void*, const(char)*, const(char)*);
 /// Write a property on an object whose TYPE WE DO NOT KNOW, creating it if the meta-object has no

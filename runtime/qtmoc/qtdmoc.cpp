@@ -417,6 +417,32 @@ double qtd_prop_get_double(void* o, const char* n) { if (!o) return 0; return st
 int qtd_prop_set_double(void* o, const char* n, double v) { return qtd_prop_write(o, n, v); }
 bool qtd_prop_get_bool(void* o, const char* n) { if (!o) return false; return static_cast<QObject*>(o)->property(n).toBool(); }
 int qtd_prop_set_bool(void* o, const char* n, bool v) { return qtd_prop_write(o, n, v); }
+// A LIST-VALUED property: `model: ["a", "b"]`, `columns: [1, 2, 3]`. One channel for every element
+// type rather than one per type, because the element crosses as TEXT and QMetaType converts it —
+// the same route every scalar here already travels, and the reason a colour needs no colour-shaped
+// function. `typeName` empty (or "QString") keeps the strings as strings, which is what a model
+// wants; anything else is converted element by element and an element that will not convert makes
+// the whole write fail rather than yielding a list with a hole in it.
+//
+// Without this the compiler emitted `setProp(this, "model", ["a", "b"])` — a D `string[]` for
+// which no overload existed — so a document using the commonest form of a static model produced
+// output that did not compile. That is the worst of the three outcomes: not a refusal, not a
+// value, but a build failure in someone else's project with no diagnostic pointing back here.
+extern "C" int qtd_prop_set_list(void* o, const char* n, const char* typeName,
+                                 const char** items, int count) {
+    if (!o || !n) return 0;
+    QVariantList vs;
+    vs.reserve(count);
+    const bool asText = !typeName || !*typeName || !std::strcmp(typeName, "QString");
+    QMetaType mt = asText ? QMetaType(QMetaType::QString) : QMetaType::fromName(typeName);
+    if (!asText && !mt.isValid()) return 0;
+    for (int i = 0; i < count; ++i) {
+        QVariant one = QString::fromUtf8(items[i] ? items[i] : "");
+        if (!asText && !one.convert(mt)) return 0;
+        vs.push_back(one);
+    }
+    return qtd_prop_write(o, n, QVariant(vs));
+}
 // A QObject*-valued property — a GROUPED property (`group.count: 42` in QML) is one of these:
 // the group is a real child object reached through the parent's meta-object, and its members are
 // ordinary properties on it. Returns null if the property is absent or not an object.
