@@ -843,12 +843,21 @@ Build reggaeBuild() {
         auto ulib = buildPath(root, "examples", "userlib");
         auto uspec = buildPath(root, "generator", "spec_userlib.json");
         if (exists(qs) && exists(uspec) && exists(buildPath(ulib, "shape.cpp"))) {
-            quickstart = [Target.phony("xiboca-quickstart",
+            // A REAL FILE, so the checker can depend on something reggae SCHEDULES. The note below
+            // recorded the defect and named this fix; it cost a second false red on 2026-08-28, in
+            // the same row order, about two files that were byte-identical to their origin when the
+            // gate was asked again a minute later. A phony dependency of a phony is not scheduled,
+            // so the work moves into a target with an output and the name stays as an alias over it.
+            auto qsStamp = buildPath(root, ".build", "xiboca-quickstart", "quickstart.stamp");
+            auto qsWork = Target(qsStamp,
                                 // shGate: the example it builds is a Qt program, and there is no
                                 // rpath on Windows — it linked, started, and died with
                                 // `Qt6Core.dll: cannot open shared object file`.
                                 shGate("sh " ~ qs ~ " " ~ buildPath(root, "xiboca", exeName("xiboca")) ~ " "
-                                       ~ buildPath(root, ".build", "xiboca-quickstart"), ["Qt6Core"]),
+                                       ~ buildPath(root, ".build", "xiboca-quickstart")
+                                       // ...ON SUCCESS ONLY: a failed run must leave no stamp, or the
+                                       // next build would treat the failure as done.
+                                       ~ " && touch $out", ["Qt6Core"]),
                                 // ...AND THE RUNTIME SOURCES IT COPIES VERBATIM. Third pipeline to
                                 // need this edge and third to be missing it: the common builder had
                                 // it, libsample got it in round 13, and the quickstart is a fourth
@@ -877,8 +886,11 @@ Build reggaeBuild() {
                                  Target(buildPath(ulib, "shape.cpp")),
                                  Target(buildPath(ulib, "app.d")),
                                  Target(buildPath(ulib, "expected.txt"))]
-                                ~ qtdRuntimeSources(root).map!(f => Target(f)).array)];
-            all ~= quickstart;
+                                ~ qtdRuntimeSources(root).map!(f => Target(f)).array);
+            quickstart = [qsWork];
+            // `cd .` rather than `true`: the alias carries no work, and the no-op has to be one
+            // in BOTH shells this build drives — `true` is not a cmd.exe builtin.
+            all ~= Target.phony("xiboca-quickstart", "cd .", [qsWork]);
         }
     }
 
