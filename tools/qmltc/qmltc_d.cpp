@@ -6044,6 +6044,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // A `var` property whose initial value is an OBJECT: collected here and emitted where the late
     // buffers exist, further down.
     std::vector<std::pair<std::string, std::string>> varObjInit;
+    // ...and the ones the ENGINE produces, collected here because lateWire does not exist yet
+    // where they are found. Drained beside varObjInit, in the same late phase and for the same
+    // reason: a value that reads through `parent` or a sibling is not there any earlier.
+    std::vector<std::string> varJsInit;
     // ...and a value-type property whose initial value crosses as TEXT (QMetaType converts on the
     // way in, which is the channel the colours have always used).
     std::vector<std::pair<std::string, std::string>> varTextInit;
@@ -6795,6 +6799,28 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // silence this branch was written to remove — Qt's Imagine OpacityMask writes
                     // `source: control.indeterminate ? … : …`, a ternary, and it went quiet the
                     // moment `variant` started reaching here.
+                    // ...and when it is not a path, the ENGINE can still produce it. A `var`
+                    // holding a JS literal is the ordinary application shape — a theme table, a
+                    // palette, a config bag:
+                    //
+                    //     readonly property var themes: [ { name: "Claro", paper: "#ffffff", … }, … ]
+                    //     readonly property var theme: themes[themeIndex]
+                    //
+                    // Refused, the property is declared and stays empty, and every binding that
+                    // reads through it throws at run time: measured on a real reader, six
+                    // delegated bindings answering `TypeError: Cannot read property 'background'
+                    // of undefined` and a window with no text in it. The value belongs to the
+                    // runtime anyway — that is what `@var` means here — so handing the literal to
+                    // the engine is not a workaround, it is the same channel the value already
+                    // lives on.
+                    else if (std::string js; jsDelegate(ves->expression, name, js)) {
+                        varJsInit.push_back(js);
+                        g_ctxUsed = true;
+                        ++g_delegated;
+                        std::fprintf(stderr, "qmltc-d: %s: the initial value of `var` property '%s' in"
+                                     " %s delegated to the engine: '%s'\n", inPath, name.c_str(),
+                                     cls.c_str(), srcOf(ves->expression).c_str());
+                    }
                     else {
                         std::fprintf(stderr, "qmltc-d: %s: the initial value of `var` property '%s' in "
                                      "%s is not an object path — the property is DECLARED, its value "
@@ -10033,6 +10059,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                       + vt.second + ");\n") + "    }\n";
             lateWire += "        " + slot + "();\n";
         }
+        for (auto &vj : varJsInit) lateWire += vj;
         for (auto &vo : varObjInit) {
             std::string slot = "__rcv_" + vo.first;
             handlerSlots += "    @Slot void " + slot + "() {\n"
