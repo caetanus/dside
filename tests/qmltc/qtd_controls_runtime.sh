@@ -44,7 +44,13 @@ for f in "$DIR"/*.qml; do
     fi
     # A refused root emits no main on purpose, so there is nothing to run: that is reported by the
     # tool on stderr and is not a failure here. Anything else that will not link IS one.
-    if ! $DC -of="$OUT/rt_$n.bin" "$OUT/rt_$n.d" "$APPOBJ" "$RENDEROBJ" -I"$GENDIR" \
+    # LC_ALL=C, because the sentence below is MATCHED and GNU ld translates it. On this machine it
+    # started answering `referência não definida para "main"`, so the eight controls whose root the
+    # compiler refuses — ApplicationWindow, the Calendar family, SpinBox — stopped being recognised
+    # as refusals and were counted as build failures: `61 of Qt's Basic controls produce an object,
+    # 8 failed`, with 61 unchanged and the floor met. The count was right and the classification
+    # was not. Forcing the locale is the fix that does not need a translation per language.
+    if ! LC_ALL=C $DC -of="$OUT/rt_$n.bin" "$OUT/rt_$n.d" "$APPOBJ" "$RENDEROBJ" -I"$GENDIR" \
             -L--start-group -L="$LIBBIND" -L="$LIBSHIMS" -L--end-group $LIBS \
             > "$OUT/rt_$n.link" 2>&1 < /dev/null; then
         # A LINKER'S PROSE IS NOT PORTABLE, and on Windows it is not even in English: the same

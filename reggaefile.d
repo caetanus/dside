@@ -873,61 +873,8 @@ Build reggaeBuild() {
     // one — headers plus source_filter, the mode every outside user starts from.
     // It is ALSO a writer of runtime copies (.build/xiboca-quickstart/gen), which is why the
     // target is kept in `quickstart` for runtime-provenance to depend on.
-    {
-        auto qs = buildPath(root, "tests", "xiboca-quickstart.sh");
-        auto ulib = buildPath(root, "examples", "userlib");
-        auto uspec = buildPath(root, "generator", "spec_userlib.json");
-        if (exists(qs) && exists(uspec) && exists(buildPath(ulib, "shape.cpp"))) {
-            // A REAL FILE, so the checker can depend on something reggae SCHEDULES. The note below
-            // recorded the defect and named this fix; it cost a second false red on 2026-08-28, in
-            // the same row order, about two files that were byte-identical to their origin when the
-            // gate was asked again a minute later. A phony dependency of a phony is not scheduled,
-            // so the work moves into a target with an output and the name stays as an alias over it.
-            auto qsStamp = buildPath(root, ".build", "xiboca-quickstart", "quickstart.stamp");
-            auto qsWork = Target(qsStamp,
-                                // shGate: the example it builds is a Qt program, and there is no
-                                // rpath on Windows — it linked, started, and died with
-                                // `Qt6Core.dll: cannot open shared object file`.
-                                shGate("sh " ~ qs ~ " " ~ buildPath(root, "xiboca", exeName("xiboca")) ~ " "
-                                       ~ buildPath(root, ".build", "xiboca-quickstart")
-                                       // ...ON SUCCESS ONLY: a failed run must leave no stamp, or the
-                                       // next build would treat the failure as done.
-                                       ~ " && touch $out", ["Qt6Core"]),
-                                // ...AND THE RUNTIME SOURCES IT COPIES VERBATIM. Third pipeline to
-                                // need this edge and third to be missing it: the common builder had
-                                // it, libsample got it in round 13, and the quickstart is a fourth
-                                // hand-written copy of the same steps. Without it, editing
-                                // runtime/qtmoc/qtdmoc.cpp left this directory holding the previous
-                                // revision and runtime-provenance said so — which is the whole
-                                // reason that gate exists, working exactly as intended.
-                                //
-                                // THE EDGE IS NOT ENOUGH, AND SAYING SO HERE IS THE POINT. It makes
-                                // THIS target rebuild when the runtime changes; it does not make
-                                // runtime-provenance RUN it first. Both are phony, and measured on
-                                // 2026-08-27 a record execution visited the checker at row 1196 and
-                                // this producer at row 1201:
-                                //     runtime-provenance FAIL: .build/xiboca-quickstart/gen/qtdmoc.cpp
-                                //     is NOT the current qtdmoc.cpp
-                                // The copy really was stale — 06:04 against a source edited at 21:17 —
-                                // so the gate was right and the tree was wrong; what is wrong is that
-                                // a matrix can reach the checker before the producer at all. Asking
-                                // for runtime-provenance alone does not run this target either (7.2 s
-                                // against the 23.6 s this one costs), so a phony dependency of a
-                                // phony is not scheduled. The fix is for this to produce a real file
-                                // and for the gate to depend on THAT; until then a runtime edit can
-                                // cost one false red in the row order.
-                                [Target(qs), Target(uspec), gendTarget(root),
-                                 Target(buildPath(ulib, "shape.h")),
-                                 Target(buildPath(ulib, "shape.cpp")),
-                                 Target(buildPath(ulib, "app.d")),
-                                 Target(buildPath(ulib, "expected.txt"))]
-                                ~ qtdRuntimeSources(root).map!(f => Target(f)).array);
-            quickstart = [qsWork];
-            // `cd .` rather than `true`: the alias carries no work, and the no-op has to be one
-            // in BOTH shells this build drives — `true` is not a cmd.exe builtin.
-            all ~= Target.phony("xiboca-quickstart", "cd .", [qsWork]);
-        }
-    }
+    quickstart = xibocaQuickstartTargets(root);
+    all ~= quickstart;
 
     // ...and OPTIONAL, not part of the default build. A node reached by two top-level targets
         // is executed once per reaching target in this backend, so adding these to `all` made the
@@ -1090,7 +1037,7 @@ Build reggaeBuild() {
         // which is what it did: `qtdmoc.cpp is NOT the current qtdmoc.cpp` about a file that was
         // byte-identical to its origin a minute later. Same failure mode as libsample's, one
         // writer later.
-        auto gens = qtdGenRegistry() ~ quickstart;
+        auto gens = qtdGenRegistry() ~ xibocaQuickstartTargets(root);
         // THE DIRECTORIES IT MUST FIND COPIES IN, named rather than globbed. The gate used to
         // compare whatever happened to be on disk, so a producer whose output was missing simply
         // was not counted: measured, deleting .build/xiboca-quickstart turned `OK: 52` into
@@ -2626,4 +2573,86 @@ Target[] qmltcCppTypeTargets(string root, QtdBinding qmlBind) {
         }
     }
     return ts;
+}
+
+// THE QUICKSTART, BUILT ONCE AND ANSWERED TO EVERY READER. Two places need this target: the
+// aggregate list, and `runtime-provenance`, which must depend on it because it writes runtime
+// copies into `.build/xiboca-quickstart/gen`. Passing it through a local variable did not work —
+// both readers live in buildAggregates() and the order between them is not the order of the line
+// numbers, so the provenance block read an EMPTY list, got no dependency edge, and the gate ran
+// before the producer. Measured twice, on 2026-08-27 and again on 2026-09-01: the same false red
+// about copies that were byte-identical to their origin a minute later. A memoised function has no
+// order to get wrong.
+// PRINT A FILE, in whichever shell reggae hands the command to. `cat` is not a cmd.exe command
+// and `type` is not a POSIX one, so the alias below would be silent on one of the two platforms —
+// and a target that prints nothing is reported `mute`, which the record execution counts as a
+// failure.
+string catCmd(string f) {
+    version (Windows) return "type " ~ f.replace("/", "\\");
+    else              return "cat " ~ f;
+}
+
+private __gshared Target[] _quickstartCache;
+private __gshared bool _quickstartBuilt;
+Target[] xibocaQuickstartTargets(string root) {
+    if (_quickstartBuilt) return _quickstartCache;
+    _quickstartBuilt = true;
+        auto qs = buildPath(root, "tests", "xiboca-quickstart.sh");
+        auto ulib = buildPath(root, "examples", "userlib");
+        auto uspec = buildPath(root, "generator", "spec_userlib.json");
+        if (exists(qs) && exists(uspec) && exists(buildPath(ulib, "shape.cpp"))) {
+            // A REAL FILE, so the checker can depend on something reggae SCHEDULES. The note below
+            // recorded the defect and named this fix; it cost a second false red on 2026-08-28, in
+            // the same row order, about two files that were byte-identical to their origin when the
+            // gate was asked again a minute later. A phony dependency of a phony is not scheduled,
+            // so the work moves into a target with an output and the name stays as an alias over it.
+            auto qsStamp = buildPath(root, ".build", "xiboca-quickstart", "quickstart.stamp");
+            // The log lives OUTSIDE the work directory, which the script wipes on entry.
+            auto qsLog = buildPath(root, ".build", "xiboca-quickstart.log");
+            auto qsWork = Target(qsStamp,
+                                // shGate: the example it builds is a Qt program, and there is no
+                                // rpath on Windows — it linked, started, and died with
+                                // `Qt6Core.dll: cannot open shared object file`.
+                                shGate("sh " ~ qs ~ " " ~ buildPath(root, "xiboca", exeName("xiboca")) ~ " "
+                                       ~ buildPath(root, ".build", "xiboca-quickstart")
+                                       // ...RECORDED, so the alias below can say what happened on a
+                                       // run where the stamp was already current, and ON SUCCESS
+                                       // ONLY: a failed run must leave no stamp, or the next build
+                                       // would treat the failure as done.
+                                       ~ " > " ~ qsLog ~ " 2>&1 && touch $out", ["Qt6Core"]),
+                                // ...AND THE RUNTIME SOURCES IT COPIES VERBATIM. Third pipeline to
+                                // need this edge and third to be missing it: the common builder had
+                                // it, libsample got it in round 13, and the quickstart is a fourth
+                                // hand-written copy of the same steps. Without it, editing
+                                // runtime/qtmoc/qtdmoc.cpp left this directory holding the previous
+                                // revision and runtime-provenance said so — which is the whole
+                                // reason that gate exists, working exactly as intended.
+                                //
+                                // THE EDGE ALONE WAS NOT ENOUGH, and that is why the target above
+                                // has an output. It makes THIS rebuild when the runtime changes; it
+                                // did not make runtime-provenance RUN it first, because both were
+                                // phony and a phony dependency of a phony is not scheduled. Measured
+                                // on 2026-08-27, a record execution visited the checker at row 1196
+                                // and this producer at row 1201:
+                                //     runtime-provenance FAIL: .build/xiboca-quickstart/gen/qtdmoc.cpp
+                                //     is NOT the current qtdmoc.cpp
+                                // The copy really was stale — 06:04 against a source edited at 21:17 —
+                                // so the gate was right and the tree was wrong; what was wrong is
+                                // that a matrix could reach the checker before the producer at all.
+                                [Target(qs), Target(uspec), gendTarget(root),
+                                 Target(buildPath(ulib, "shape.h")),
+                                 Target(buildPath(ulib, "shape.cpp")),
+                                 Target(buildPath(ulib, "app.d")),
+                                 Target(buildPath(ulib, "expected.txt"))]
+                                ~ qtdRuntimeSources(root).map!(f => Target(f)).array);
+            // THE NAME STILL HAS TO SAY SOMETHING. The first alias ran `cd .`, which is a no-op
+            // in both shells this build drives — and a target that prints nothing is reported
+            // `mute`, which the record execution counts as a failure. It did: `xiboca-quickstart
+            // mute` in an otherwise green matrix, for a target that had in fact passed. So the
+            // worker records its own verdict and the alias prints it, which also means the line
+            // appears on a run where the stamp was already current and the worker did not execute.
+            auto alias_ = Target.phony("xiboca-quickstart", catCmd(qsLog), [qsWork]);
+            _quickstartCache = [qsWork, alias_];
+        }
+    return _quickstartCache;
 }
