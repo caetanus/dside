@@ -51,26 +51,39 @@ CXX=$TC/bin/clang++
 AR=$TC/bin/llvm-ar
 SYSROOT=$TC/sysroot
 
+# THE RESOURCE DIRECTORY IS THE NDK'S, NOT THE HOST libclang'S. xiboca parses with the libclang
+# that is installed on the machine it runs on, and a compiler's BUILTIN headers - stddef.h,
+# stdarg.h, the rest - live beside that compiler rather than in the sysroot. Handed the NDK's
+# sysroot but the host compiler's idea of builtin, the first parse failed on libc++'s very first
+# include:
+#
+#     <cstddef> tried including <stddef.h> but didn't find libc++'s <stddef.h> header
+#
+# which reads like a broken NDK and is really two compilers not lining up.
+RESDIR=$(ls -d "$TC"/lib/clang/* 2>/dev/null | sort -V | tail -1)
+[ -n "$RESDIR" ] || fail "no clang resource directory under $TC/lib/clang"
+
 rm -rf "$WORK"; mkdir -p "$WORK/gen" "$WORK/ocpp" "$WORK/od"
 
 # THE SPEC, DERIVED. Same shape the Windows build derives: everything the shipped spec says, with
 # `pkg_config` replaced by the flags of the Qt in front of us and `out_dir` made absolute. There is
 # no pkg-config in an Android Qt and there is no reason for the shipped spec to know about one.
 python3 - "$ROOT/generator/spec_cxx_qtwidgets.json" "$WORK/spec.json" "$WORK/gen" \
-         "$QTA" "$TRIPLE$API" "$SYSROOT" <<'PY'
+         "$QTA" "$TRIPLE$API" "$SYSROOT" "$RESDIR" <<'PY'
 import json, sys, os
-src, dst, out, qta, target, sysroot = sys.argv[1:7]
+src, dst, out, qta, target, sysroot, resdir = sys.argv[1:8]
 s = json.load(open(src))
 s.pop("pkg_config", None)
 s["out_dir"] = os.path.abspath(out)
 inc = os.path.join(qta, "include")
 mods = ["QtCore", "QtGui", "QtWidgets"]
-s["cflags"] = ["--target=" + target, "--sysroot=" + sysroot, "-I" + inc] + \
+s["cflags"] = ["--target=" + target, "--sysroot=" + sysroot,
+               "-resource-dir=" + resdir, "-I" + inc] + \
               ["-I" + os.path.join(inc, m) for m in mods] + \
               ["-DQT_NO_KEYWORDS"]
 s["libs"] = []
 json.dump(s, open(dst, "w"), indent=2)
-print("spec: target=%s sysroot=%s qt=%s" % (target, sysroot, qta))
+print("spec: target=%s resource-dir=%s qt=%s" % (target, resdir, qta))
 PY
 
 "$ROOT/xiboca/xiboca" "$WORK/spec.json" > "$WORK/gen.log" 2>&1 \
