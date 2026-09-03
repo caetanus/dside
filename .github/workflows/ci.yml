@@ -274,28 +274,42 @@ jobs:
           # Qt5 matrix here needs base + declarative, which the base package carries.
           ./tools/win/get-qt.ps1 -Version 5.15.2 -Dest C:/Qt -Arch win64_msvc2019_64 -Modules @()
 
-      # xiboca links libclang, and on Windows that is `libclang.lib` from the LLVM release. The
-      # runner ships LLVM but not its lib directory on the linker's search path — the same shape as
-      # the Linux step above, and the same refusal when it is not there.
-      - name: Put libclang on the link path
+      # xiboca links libclang, and on Windows that means the IMPORT LIBRARY, `libclang.lib`. The
+      # runner's LLVM does not ship one - measured: `C:\Program Files\LLVM\lib` holds a single
+      # `clang` directory and nothing else, and the build died on
+      #     LINK : fatal error LNK1104: cannot open file 'libclang.lib'
+      # Setting LIB and LIBPATH therefore changed nothing; there was no file to find.
+      #
+      # The DLL is there, though, and an import library is derivable from a DLL's export table.
+      # That is what this does, with LLVM's own tools: no Visual Studio shell, no 845 MB download
+      # of the LLVM release archive that does ship the .lib, and no cache to go stale.
+      - name: Derive libclang's import library from the DLL
         shell: pwsh
         run: |
           $llvm = "C:\Program Files\LLVM"
-          Write-Output "what LLVM ships in lib\:"
-          Get-ChildItem "$llvm\lib" -Filter '*clang*' -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty Name | Out-String
-          if (-not (Test-Path "$llvm\lib\libclang.lib")) {
-            Write-Output "::error::no libclang.lib under $llvm\lib"
-            exit 1
+          Write-Output ("lib\: " + ((Get-ChildItem "$llvm\lib" -EA SilentlyContinue).Name -join ' '))
+          Write-Output ("bin *clang*: " + ((Get-ChildItem "$llvm\bin" -Filter '*clang*' -EA SilentlyContinue).Name -join ' '))
+          $out = "$env:GITHUB_WORKSPACE\.llvmlib"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          if (Test-Path "$llvm\lib\libclang.lib") {
+            Copy-Item "$llvm\lib\libclang.lib" $out
+          } else {
+            $dll = "$llvm\bin\libclang.dll"
+            if (-not (Test-Path $dll)) { Write-Output "::error::no libclang.dll under $llvm\bin"; exit 1 }
+            $names = & "$llvm\bin\llvm-readobj.exe" --coff-exports $dll |
+                     Select-String -Pattern '^\s*Name:\s*(\S+)' |
+                     ForEach-Object { $_.Matches[0].Groups[1].Value }
+            if ($names.Count -lt 100) { Write-Output "::error::only $($names.Count) exports read"; exit 1 }
+            Write-Output ("exports: " + $names.Count)
+            $def = "$out\libclang.def"
+            @("LIBRARY libclang.dll", "EXPORTS") + $names | Set-Content -LiteralPath $def -Encoding ascii
+            & "$llvm\bin\llvm-dlltool.exe" -m i386:x86-64 -d $def -D libclang.dll -l "$out\libclang.lib"
+            if ($LASTEXITCODE -ne 0) { Write-Output "::error::llvm-dlltool failed"; exit 1 }
           }
-          # `LIB` ALONE WAS NOT ENOUGH. It was set — the step's own env block showed
-          # `LIB: C:/Program Files/LLVM/lib;` — and link.exe still answered
-          #     LINK : fatal error LNK1104: cannot open file 'libclang.lib'
-          # so the directory is handed to the linker explicitly as well, through the flags dub
-          # passes on. Both, because LIB is what a plain `cl`/`link` invocation reads and DFLAGS is
-          # what this particular build actually goes through.
-          "LIB=$llvm\lib;$env:LIB" >> $env:GITHUB_ENV
-          "DFLAGS=-L/LIBPATH:`"$llvm\lib`"" >> $env:GITHUB_ENV
+          if (-not (Test-Path "$out\libclang.lib")) { Write-Output "::error::no libclang.lib produced"; exit 1 }
+          Write-Output ("libclang.lib: " + (Get-Item "$out\libclang.lib").Length + " bytes")
+          "LIB=$out;$llvm\lib;$env:LIB" >> $env:GITHUB_ENV
+          "DFLAGS=-L/LIBPATH:`"$out`"" >> $env:GITHUB_ENV
           "PATH=$llvm\bin;$env:PATH" >> $env:GITHUB_ENV
 
       - name: What this machine has (preflight, advisory)
