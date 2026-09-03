@@ -138,7 +138,7 @@ echo "android: probe OK — the NDK compiles Qt's headers with the driver's own 
 # fails HERE and not above, the argv is wrong and this prints the include chain that says why;
 # if it passes both, the argv is fine and the difference is libclang itself.
 "$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -fsyntax-only \
-    -x c++ -std=c++17 -fvisibility=hidden -isystem "$RESDIR/include" \
+    -x c++ -std=c++17 -fvisibility=hidden -resource-dir="$RESDIR" \
     -I"$QTA/include" -I"$QTA/include/QtCore" \
     "$WORK/probe.cpp" 2>"$WORK/probe2.err" \
     || fail "the driver fails with the GENERATOR'S argv, so the flags are what is wrong" \

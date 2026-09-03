@@ -181,8 +181,21 @@ void main(string[] args) {
     // -fvisibility=hidden: unmarked (internal) classes become Hidden while Q_*_EXPORT ones
     // stay Default — so clang_getCursorVisibility distinguishes a public type (linkable
     // dtor/copy-ctor -> safe to mark non-trivial) from an internal one (unlinkable).
-    auto argv = ["-x", "c++", "-std=c++17", "-fvisibility=hidden", "-isystem", buildPath(res, "include"),
-        "-DQT_ANNOTATE_ACCESS_SPECIFIER(x)=__attribute__((annotate(#x)))"] ~ cflags ~ extraI;
+    // HOW THE BUILTIN HEADERS ARE REACHED, and the two ways are not interchangeable. `-isystem
+    // <res>/include` puts them in a system directory searched EARLY, which is what makes libclang
+    // find them on a host where it was loaded from somewhere unusual. On a target with libc++ it is
+    // wrong: libc++'s `<cstddef>` reaches its own `<stddef.h>` with `#include_next`, and a builtin
+    // directory placed in front of it breaks that chain —
+    //     c++/v1/cstddef:46:5: error: <cstddef> tried including <stddef.h> but didn't find
+    //     libc++'s <stddef.h>
+    // `-resource-dir` says the same thing to the DRIVER, which then places the directory where it
+    // belongs in the search order. Used when a spec named one, because that is a spec compiling
+    // for somewhere else; the host keeps the behaviour it has always had.
+    auto resFlags = ("resource_dir" in spec.object)
+        ? ["-resource-dir=" ~ res]
+        : ["-isystem", buildPath(res, "include")];
+    auto argv = ["-x", "c++", "-std=c++17", "-fvisibility=hidden"] ~ resFlags ~
+        ["-DQT_ANNOTATE_ACCESS_SPECIFIER(x)=__attribute__((annotate(#x)))"] ~ cflags ~ extraI;
     auto cargv = argv.map!(a => a.toStringz).array;
 
     string discMod;
