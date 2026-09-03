@@ -469,8 +469,24 @@ jobs:
 
       - name: Cross-compile for arm64-v8a
         run: |
-          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
-          test -n "$ndk" || { echo "::error::no NDK on this runner"; exit 1; }
+          # THE NDK WHOSE CLANG MATCHES THE HOST'S libclang, not the newest. xiboca parses with
+          # the libclang it was linked against, and a clang reading another major's builtin
+          # headers resolves <stdint.h> to something that defines nothing: `unknown type name
+          # 'int32_t'`, from the newest NDK, whose clang is 21 against a host libclang of 18.
+          want=$(llvm-config --version | cut -d. -f1)
+          echo "host libclang: $want"
+          ndk=""
+          for c in /usr/local/lib/android/sdk/ndk/*; do
+            [ -d "$c/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/$want" ] || continue
+            ndk=$c; break
+          done
+          if [ -z "$ndk" ]; then
+            echo "::error::no installed NDK ships clang $want"
+            for c in /usr/local/lib/android/sdk/ndk/*; do
+              echo "  $(basename "$c"): $(ls "$c/toolchains/llvm/prebuilt/linux-x86_64/lib/clang" 2>/dev/null | tr '\n' ' ')"
+            done
+            exit 1
+          fi
           echo "NDK: $ndk"
           sh tools/android/cross-build.sh "$ndk" \
             "$GITHUB_WORKSPACE/Qt/6.8.2/android_arm64_v8a" arm64-v8a 23

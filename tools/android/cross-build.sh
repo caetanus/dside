@@ -66,8 +66,19 @@ SYSROOT=$TC/sysroot
 #     <cstddef> tried including <stddef.h> but didn't find libc++'s <stddef.h> header
 #
 # which reads like a broken NDK and is really two compilers not lining up.
-RESDIR=$(ls -d "$TC"/lib/clang/* 2>/dev/null | sort -V | tail -1)
-[ -n "$RESDIR" ] || fail "no clang resource directory under $TC/lib/clang"
+# ...AND IT HAS TO BE THE SAME CLANG MAJOR AS THE ONE DOING THE PARSING. Taking the NDK's newest
+# was not enough: the runner's NDK ships clang 21 while the host libclang xiboca is linked against
+# is 18, and clang 18 reading clang 21's builtin headers produced
+#     unknown type name 'int32_t'
+# from a <stdint.h> that is a wrapper around the compiler's own definitions. A version mismatch
+# there does not announce itself — the include resolves and defines nothing.
+HOSTCLANG=$( { llvm-config --version 2>/dev/null || ls /usr/bin/llvm-config-* 2>/dev/null |
+              sort -V | tail -1 | xargs -r -I{} {} --version; } | cut -d. -f1 )
+[ -n "$HOSTCLANG" ] || fail "cannot tell which clang libclang is" "llvm-config is not on PATH"
+RESDIR=$TC/lib/clang/$HOSTCLANG
+[ -d "$RESDIR" ] || fail \
+    "this NDK has clang $(ls "$TC"/lib/clang 2>/dev/null | tr '\n' ' ') and libclang here is $HOSTCLANG" \
+    "the parser and the builtin headers must be the same clang; pass an NDK whose lib/clang/$HOSTCLANG exists, or install a matching libclang"
 
 rm -rf "$WORK"; mkdir -p "$WORK/gen" "$WORK/ocpp" "$WORK/od"
 
