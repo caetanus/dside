@@ -122,12 +122,25 @@ int probe() { return int(QString("x").size()); }
 CPP
 # shellcheck disable=SC2046
 "$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -std=c++17 -fsyntax-only \
-    -I"$SYSROOT/usr/include" -I"$SYSROOT/usr/include/$ARCHDIR" \
     -I"$QTA/include" -I"$QTA/include/QtCore" \
     "$WORK/probe.cpp" 2>"$WORK/probe.err" \
     || fail "the NDK's own clang++ cannot compile <QtCore/QString> with these flags" \
             "$(head -12 "$WORK/probe.err")"
-echo "android: probe OK — the NDK compiles Qt's headers with these flags"
+echo "android: probe OK — the NDK compiles Qt's headers with the driver's own include set"
+
+# ...AND AGAIN WITH THE GENERATOR'S ARGV, which is the experiment that matters. xiboca adds
+# `-x c++ -std=c++17 -fvisibility=hidden -isystem <resource>/include` in front of the spec's
+# cflags, and the first probe does not. Run both and the failure is attributable: if the driver
+# fails HERE and not above, the argv is wrong and this prints the include chain that says why;
+# if it passes both, the argv is fine and the difference is libclang itself.
+"$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -fsyntax-only \
+    -x c++ -std=c++17 -fvisibility=hidden -isystem "$RESDIR/include" \
+    -I"$SYSROOT/usr/include" -I"$SYSROOT/usr/include/$ARCHDIR" \
+    -I"$QTA/include" -I"$QTA/include/QtCore" \
+    "$WORK/probe.cpp" 2>"$WORK/probe2.err" \
+    || fail "the driver fails with the GENERATOR'S argv, so the flags are what is wrong" \
+            "$(head -20 "$WORK/probe2.err")"
+echo "android: probe OK — and with the generator's own argv, so any refusal below is libclang's"
 
 "$ROOT/xiboca/xiboca" "$WORK/spec.json" > "$WORK/gen.log" 2>&1 \
     || fail "xiboca refused the Android spec" "$(tail -5 "$WORK/gen.log")"
