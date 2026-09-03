@@ -33,6 +33,8 @@ connectMeta(this, "leftInsetChanged()",               this, "__rcb_implicitWidth
 No JS engine is involved in that binding again, and the document is not read at run time. That last
 part is measured rather than asserted — see [Does the .qml ship?](#does-the-qml-ship).
 
+- **What it does NOT cover, ranked by what it costs:** `qmltc-d-gaps.md` — measured on a real
+  application rather than on fixtures, and the answer is one shape, not a list.
 - **What it is compared with Qt's `qmltc`:** `qmltc-d-vs-qmltc.md`.
 - **How every defect in it was found:** `qmltc-d-journal.md` (history; the numbers there are
   whatever was true on the day).

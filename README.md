@@ -107,7 +107,8 @@ runner, and the full matrix fails intermittently under parallelism (see
 - **Exception translation**: C++/Qt exceptions → D via a Lippincott + per-signature
   guard layer (gated).
 - **`qmltc-d`**: a QML→D compiler with a fallback ladder — see below, and
-  `docs/qmltc-d.md` (reference) / `docs/qmltc-d-vs-qmltc.md` (vs Qt's own `qmltc`).
+  `docs/qmltc-d.md` (reference) / `docs/qmltc-d-gaps.md` (what it does not cover, ranked) /
+  `docs/qmltc-d-vs-qmltc.md` (vs Qt's own `qmltc`).
 
 ## qmltc-d: QML compiled to D
 
@@ -151,7 +152,7 @@ numbers in both files are compared against what the gates counted, by `docs-numb
 | `reggae/`, `reggaefile.d` | **supported** | the build of record (POSIX/Linux) |
 | `generated/` | **generated** | gitignored, on-demand output |
 | `tests/`, `examples/`, `apps/` | **tests only** | ldc2×dmd × Qt5×Qt6 matrix |
-| `docs/` | **supported** | `FEATURES.md`, `test-suite.md`, `uic-spec.md`, `qmltc-d.md`, `qmltc-d-vs-qmltc.md`, `windows-roadmap.md` |
+| `docs/` | **supported** | `FEATURES.md`, `test-suite.md`, `uic-spec.md`, `qmltc-d.md`, `qmltc-d-gaps.md`, `qmltc-d-vs-qmltc.md`, `windows-roadmap.md` |
 | `generator/` (specs) | **supported** | `spec_cxx_*.json` |
 
 ## Known risks / honest gaps
