@@ -148,8 +148,29 @@ echo "android: probe OK — and with the generator's own argv, so any refusal be
 "$ROOT/xiboca/xiboca" "$WORK/spec.json" > "$WORK/gen.log" 2>&1 \
     || fail "xiboca refused the Android spec" "$(tail -5 "$WORK/gen.log")"
 emitted=$(sed -n 's/.*done: \([0-9]*\) classes emitted.*/\1/p' "$WORK/gen.log")
-[ -n "${emitted:-}" ] && [ "$emitted" -gt 0 ] \
-    || fail "xiboca emitted no classes" "$(grep -a 'skipped\|done:' "$WORK/gen.log" | head -3)"
+if [ -z "${emitted:-}" ] || [ "$emitted" -eq 0 ]; then
+    # NOTHING EMITTED IS NOT THE SAME AS NOTHING PARSED, and the two need telling apart. The parse
+    # succeeded here — both probes pass and there are no diagnostics — so the classes were found
+    # and then DROPPED. The generator decides a type is public by its visibility: it parses with
+    # `-fvisibility=hidden`, so a Q_*_EXPORT type comes back Default and an internal one Hidden.
+    # That test asks about a SHARED library, and Qt for Android is shipped static — which would
+    # leave every class Hidden and every one of them dropped.
+    #
+    # Reported rather than assumed: the shape of the Qt is printed so the next person reads a fact.
+    echo "android: xiboca emitted no classes, and the parse produced no errors" >&2
+    echo "    Qt libraries here are:" >&2
+    ls "$QTA/lib" 2>/dev/null | head -6 | sed 's/^/      /' >&2
+    nshared=$(ls "$QTA"/lib/*.so 2>/dev/null | wc -l)
+    nstatic=$(ls "$QTA"/lib/*.a 2>/dev/null | wc -l)
+    echo "      ($nshared shared, $nstatic static)" >&2
+    [ "$nshared" -eq 0 ] && [ "$nstatic" -gt 0 ] && cat >&2 <<'NOTE'
+    A STATIC Qt has no exported-symbol visibility to read, and the generator tells a public type
+    from an internal one exactly that way (-fvisibility=hidden + clang_getCursorVisibility). This
+    is a real limit of the discovery step on this platform, not a flag that is missing.
+NOTE
+    grep -a 'skipped\|done:' "$WORK/gen.log" | head -3 | sed 's/^/    /' >&2
+    exit 1
+fi
 echo "android: $emitted class(es) generated for $ABI"
 
 # The shims, with the NDK's clang++ — the same command line reggae/qtd_build.d builds, minus the
