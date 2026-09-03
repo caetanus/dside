@@ -107,6 +107,11 @@ s["cflags"] = ["--target=" + target, "--sysroot=" + sysroot,
 s["libs"] = []
 # The builtin headers come from the NDK's clang, not this machine's: see xiboca/emit.d.
 s["resource_dir"] = resdir
+# ...AND WHICH HEADERS ARE "QT'S". Discovery keeps a class whose declaring file contains
+# `qt_marker`, and the default is the path fragment `/qt6/` — true of a distro (/usr/include/qt6/)
+# and false of every Qt installed anywhere else. Against Qt for Android it rejected every class
+# and reported `discovered 0 classes in <QtWidgets>`, a parse that succeeded and found nothing.
+s["qt_marker"] = os.path.join(os.path.abspath(qta), "include")
 json.dump(s, open(dst, "w"), indent=2)
 print("spec: target=%s resource-dir=%s qt=%s" % (target, resdir, qta))
 PY
