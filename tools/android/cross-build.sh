@@ -106,6 +106,28 @@ json.dump(s, open(dst, "w"), indent=2)
 print("spec: target=%s resource-dir=%s qt=%s" % (target, resdir, qta))
 PY
 
+# A PROBE BEFORE THE GENERATOR, because the two things that can be wrong here fail identically.
+# xiboca reports a parse error without the include stack that caused it, so `unknown type name
+# 'int32_t'` could mean the flags are wrong OR that libclang disagrees with the NDK's headers — and
+# guessing between them cost three rounds. The NDK's own clang++ compiling one translation unit
+# with the SAME flags tells them apart and prints the full stack when it is the flags.
+#
+# It is worth keeping after the debugging: it is the first thing a user with a new NDK or a new Qt
+# wants to know, and it costs a second.
+cat > "$WORK/probe.cpp" <<'CPP'
+#include <QtCore/QtGlobal>
+#include <QtCore/QString>
+int probe() { return int(QString("x").size()); }
+CPP
+# shellcheck disable=SC2046
+"$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -std=c++17 -fsyntax-only \
+    -I"$SYSROOT/usr/include" -I"$SYSROOT/usr/include/$ARCHDIR" \
+    -I"$QTA/include" -I"$QTA/include/QtCore" \
+    "$WORK/probe.cpp" 2>"$WORK/probe.err" \
+    || fail "the NDK's own clang++ cannot compile <QtCore/QString> with these flags" \
+            "$(head -12 "$WORK/probe.err")"
+echo "android: probe OK — the NDK compiles Qt's headers with these flags"
+
 "$ROOT/xiboca/xiboca" "$WORK/spec.json" > "$WORK/gen.log" 2>&1 \
     || fail "xiboca refused the Android spec" "$(tail -5 "$WORK/gen.log")"
 emitted=$(sed -n 's/.*done: \([0-9]*\) classes emitted.*/\1/p' "$WORK/gen.log")
