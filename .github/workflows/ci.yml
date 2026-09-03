@@ -255,6 +255,12 @@ jobs:
           path: C:/Qt
           key: qt-windows-6.11.1-5.15.2-v1
 
+      # py7zr is how get-qt.ps1 unpacks Qt's .7z archives; it is not on the runner by default.
+      - name: py7zr
+        if: steps.qtcache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check py7zr
+
       - name: Install Qt (from Qt's own repository, not aqtinstall)
         if: steps.qtcache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -303,6 +309,7 @@ jobs:
       #   *-qt5                     the Qt5/Qt6 parity rule, on the platform where the two Qts are
       #                             separate installs rather than one distro's packages
       - name: Record execution (slice)
+        id: slice
         if: github.event_name != 'workflow_dispatch' || inputs.windows_full != true
         shell: pwsh
         env:
@@ -315,6 +322,7 @@ jobs:
             -Wait
 
       - name: Record execution (full matrix, on request)
+        id: full
         if: github.event_name == 'workflow_dispatch' && inputs.windows_full == true
         shell: pwsh
         env:
@@ -326,8 +334,11 @@ jobs:
 
       # The report's own totals line is the verdict. Read here rather than trusted, because a run
       # that stops mid-list looks exactly like one that finished — measured three times on the VM.
+      # Gated on a record step having RUN. With a plain `always()` an earlier failure — the first
+      # run died installing Qt — produced a second error about a report nothing had tried to write,
+      # which buries the cause under its consequence.
       - name: Judge the report
-        if: always()
+        if: always() && (steps.slice.conclusion != 'skipped' || steps.full.conclusion != 'skipped')
         shell: bash
         run: |
           test -f win-report.tsv || { echo "::error::no report was produced"; tail -40 win-report.err || true; exit 1; }

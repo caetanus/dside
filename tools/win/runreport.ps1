@@ -103,6 +103,10 @@ if ($Wait) {
     $p.WaitForExit()
     Get-Content -LiteralPath $Tsv
     Get-Content -LiteralPath $Err | Select-Object -Last 20
+    # ...AND THE CHILD'S VERDICT. Without this the launcher returned success no matter what the
+    # report did, so a caller that only checks the exit code — which is what a CI step is — was
+    # told a failing matrix had passed. The VM never noticed because a person read the totals line.
+    exit $p.ExitCode
 }
 # POLL THE ROW COUNT AND REQUIRE `# totals:`. A report without that line is a report that was
 # killed, not one that passed — which is the whole reason point 1 above is written down.

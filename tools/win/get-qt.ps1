@@ -42,7 +42,11 @@ param(
     # A switch has no value to convert.
     [switch]   $SkipWebEngine,
     [string]   $Base = "https://download.qt.io/online/qtsdkrepository/windows_x86",
-    [string]   $Python = "C:/Python312/python.exe"
+    # EMPTY MEANS "FIND ONE". This was the VM's interpreter written into the script, and CI is a
+    # second machine where Python is somewhere else entirely - the first run of the Windows job
+    # died on `get-qt: no C:/Python312/python.exe`. The VM's path is still the fallback, so nothing
+    # changes there.
+    [string]   $Python = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,7 +58,12 @@ $sfx  = $Arch -replace '^win64_', ''        # win64_msvc2022_64 -> msvc2022_64
 # page, and an em dash in a STRING literal came back as bytes that closed the quote early:
 #     Token 'needed' inesperado na expressao ou instrucao.
 # The other scripts here have kept their punctuation because theirs is all in comments.
+if (-not $Python) {
+    $found = Get-Command python.exe, python3.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    $Python = if ($found) { $found.Source } else { "C:/Python312/python.exe" }
+}
 if (-not (Test-Path -LiteralPath $Python)) { throw "get-qt: no $Python - py7zr unpacks the archives" }
+Write-Output ("python: " + $Python)
 & $Python -m py7zr --help *> $null
 if ($LASTEXITCODE -ne 0) { throw "get-qt: $Python has no py7zr (pip install py7zr)" }
 
