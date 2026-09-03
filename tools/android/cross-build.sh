@@ -35,10 +35,16 @@ fail() { echo "android: $1" >&2; [ $# -gt 1 ] && echo "    $2" >&2; exit 1; }
 
 # The ABI names Android uses are not the triples the compilers want, and the two do not map by
 # string surgery — `armeabi-v7a` is `armv7a-linux-androideabi`, with an `eabi` the others lack.
+#
+# ...and the SYSROOT'S ARCHITECTURE DIRECTORY is a third name again: `armeabi-v7a` compiles as
+# `armv7a-linux-androideabi` and its headers live under `arm-linux-androideabi`. Named because
+# `$SYSROOT/usr/include` alone is not enough — the NDK splits the machine-dependent half out, and
+# without it the first parse stopped at `unknown type name 'int32_t'`, which reads like a broken
+# stdint.h and is really half of one.
 case "$ABI" in
-  arm64-v8a)   TRIPLE=aarch64-linux-android;    LDCTRIPLE=aarch64-linux-android ;;
-  armeabi-v7a) TRIPLE=armv7a-linux-androideabi; LDCTRIPLE=armv7a-linux-androideabi ;;
-  x86_64)      TRIPLE=x86_64-linux-android;     LDCTRIPLE=x86_64-linux-android ;;
+  arm64-v8a)   TRIPLE=aarch64-linux-android;    LDCTRIPLE=aarch64-linux-android;    ARCHDIR=aarch64-linux-android ;;
+  armeabi-v7a) TRIPLE=armv7a-linux-androideabi; LDCTRIPLE=armv7a-linux-androideabi; ARCHDIR=arm-linux-androideabi ;;
+  x86_64)      TRIPLE=x86_64-linux-android;     LDCTRIPLE=x86_64-linux-android;     ARCHDIR=x86_64-linux-android ;;
   *)           fail "unknown ABI '$ABI'" "one of arm64-v8a, armeabi-v7a, x86_64" ;;
 esac
 
@@ -69,16 +75,19 @@ rm -rf "$WORK"; mkdir -p "$WORK/gen" "$WORK/ocpp" "$WORK/od"
 # `pkg_config` replaced by the flags of the Qt in front of us and `out_dir` made absolute. There is
 # no pkg-config in an Android Qt and there is no reason for the shipped spec to know about one.
 python3 - "$ROOT/generator/spec_cxx_qtwidgets.json" "$WORK/spec.json" "$WORK/gen" \
-         "$QTA" "$TRIPLE$API" "$SYSROOT" "$RESDIR" <<'PY'
+         "$QTA" "$TRIPLE$API" "$SYSROOT" "$RESDIR" "$ARCHDIR" <<'PY'
 import json, sys, os
-src, dst, out, qta, target, sysroot, resdir = sys.argv[1:8]
+src, dst, out, qta, target, sysroot, resdir, archdir = sys.argv[1:9]
 s = json.load(open(src))
 s.pop("pkg_config", None)
 s["out_dir"] = os.path.abspath(out)
 inc = os.path.join(qta, "include")
 mods = ["QtCore", "QtGui", "QtWidgets"]
 s["cflags"] = ["--target=" + target, "--sysroot=" + sysroot,
-               "-resource-dir=" + resdir, "-I" + inc] + \
+               "-resource-dir=" + resdir,
+               "-I" + os.path.join(sysroot, "usr", "include"),
+               "-I" + os.path.join(sysroot, "usr", "include", archdir),
+               "-I" + inc] + \
               ["-I" + os.path.join(inc, m) for m in mods] + \
               ["-DQT_NO_KEYWORDS"]
 s["libs"] = []
@@ -99,6 +108,7 @@ for c in "$WORK"/gen/*.cpp; do
     b=$(basename "$c" .cpp)
     "$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -std=c++17 -fPIC -O2 \
         -ffunction-sections -fdata-sections \
+        -I"$SYSROOT/usr/include" -I"$SYSROOT/usr/include/$ARCHDIR" \
         -I"$QTA/include" -I"$QTA/include/QtCore" -I"$QTA/include/QtGui" -I"$QTA/include/QtWidgets" \
         -c "$c" -o "$WORK/ocpp/$b.o" 2>>"$WORK/cxx.err" \
         || fail "the shim $b.cpp did not compile" "$(tail -5 "$WORK/cxx.err")"
