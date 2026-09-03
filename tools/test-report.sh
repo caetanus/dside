@@ -251,8 +251,19 @@ BATCH="${BATCH:-20}"
 [ "$BATCH" -ge 1 ] 2>/dev/null || BATCH=20
 
 # The subset this run will actually visit, after the filter.
+#
+# SEVERAL PATTERNS, SEPARATED BY SPACES. `case "$t" in $filter)` uses the expansion as ONE pattern:
+# `case`'s alternation is syntactic and is not re-parsed out of a variable, so a filter written as
+# `wraptest*|uic*` matches a target literally called that and nothing else. The Windows job was
+# refused twice for exactly this — once with commas, once with pipes — and the refusal was right
+# both times. Space separation is what a shell caller writes anyway, and `$filter` unquoted here is
+# already word-split by the shell.
 sel=()
-for t in "${targets[@]}"; do case "$t" in $filter) sel+=("$t") ;; esac; done
+for t in "${targets[@]}"; do
+    for pat in $filter; do
+        case "$t" in $pat) sel+=("$t"); break ;; esac
+    done
+done
 # A SELECTION OF NOTHING IS NOT A PASS. This printed `# totals: 0 pass, 0 fail, 0 skip` — a
 # well-formed report, signed with the commit and the Qt release, about a run that visited no
 # target at all. It happened because the MSYS runtime EXPANDS WILDCARDS in the command line when
