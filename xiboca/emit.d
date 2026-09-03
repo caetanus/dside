@@ -160,6 +160,22 @@ void main(string[] args) {
         import core.stdc.stdlib : exit;
         exit(1);
     }
+    // WHICH HEADERS ARE THIS QT'S, derived from the flags rather than defaulted to a distribution's
+    // habit. Discovery keeps a class whose declaring file contains `qtMarker`, and that defaulted to
+    // the path fragment `/qt6/` — true of Debian and Arch (/usr/include/qt6/…) and false of every
+    // Qt installed from qt.io, which is precisely what a CI downloads and what a cross build uses.
+    // Both answered the same way: `discovered 0 classes`, a parse that succeeded and found nothing.
+    //
+    // The flags already say where the headers are. The Qt include ROOT is the `-I` that holds a
+    // QtCore directory, and using it means the marker is a fact about this Qt rather than about a
+    // packaging convention. A spec may still name one; nothing that did stops working.
+    if ("qt_marker" !in spec.object)
+        foreach (f; cflags) {
+            if (!f.startsWith("-I")) continue;
+            auto dir = f[2 .. $];
+            if (dir.length && exists(buildPath(dir, "QtCore"))) { qtMarker = dir; break; }
+        }
+
     // THE CLANG WHOSE BUILTIN HEADERS THESE ARE, which is not always the one on this machine.
     // `stddef.h`, `stdint.h` and the rest live beside a compiler rather than in a sysroot, and a
     // CROSS build parses headers meant for another one — the NDK's. Asked of the host clang by
