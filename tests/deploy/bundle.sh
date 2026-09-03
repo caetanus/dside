@@ -122,8 +122,11 @@ if [ "$PLATFORM" = posix ]; then
 else
     # Only the system directories stay in PATH; anything Qt has to come from beside the executable.
     SYSPATH="/c/Windows/System32:/c/Windows"
-    ( cd / && env PATH="$SYSPATH" QT_QPA_PLATFORM=offscreen \
-          -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
+    # OPTIONS BEFORE ASSIGNMENTS. `env FOO=1 -u BAR cmd` is not a thing: everything after the
+    # first assignment is the command and its arguments, so `-u` arrived as a program name —
+    # `env: '-u': No such file or directory`, which reads like a missing binary.
+    ( cd / && env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
+          PATH="$SYSPATH" QT_QPA_PLATFORM=offscreen \
           "$WORK/out/bin/app.exe" $APPARG >"$WORK/run.out" 2>"$WORK/run.err" ) \
         || fail "the bundled application did not run with Qt out of PATH" \
                 "$(tail -5 "$WORK/run.err")"
