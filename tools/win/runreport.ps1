@@ -36,6 +36,22 @@ param(
     # A GLOB, for re-running the targets a fix was about without paying for 1200. The report takes
     # one as its first argument; the default runs everything, which is what a record execution is.
     [string] $Filter  = "*",
+    # THE TOOLCHAIN, NAMED RATHER THAN ASSUMED. These were the VM's directories and they were
+    # written into the script, which was fine while the VM was the only machine that ran it. CI is
+    # a second one, and there `ldc2`, `dmd` and `clang++` are already on PATH while none of these
+    # paths exist. A directory that is not there is harmless in PATH, so the default still works on
+    # the VM; `-Toolchain @()` says "use the PATH I was given", which is what a runner wants.
+    [string[]] $Toolchain = @(
+        "C:\msys64\usr\bin"
+        "C:\Python312"
+        "C:\Python312\Scripts"
+        "C:\Users\caetano\llvm\bin"
+        "C:\D\ldc2-1.42.0-windows-x64\bin"
+        "C:\D\dmd2\windows\bin64"
+    ),
+    # ...and the shell the report is written in. `sh` comes from MSYS2 on the VM and from whatever
+    # the runner installed in CI; taking the first one on PATH is how the two agree.
+    [string] $Sh = "",
     # ...and `-Wait` for exactly that case: a subset finishes in minutes, so blocking and printing
     # the rows beats polling a file. A full matrix should never use it — see point 1 above.
     [switch] $Wait
@@ -47,15 +63,7 @@ $ErrorActionPreference = 'Stop'
 # because the gates are `sh` scripts; note that `C:\msys64\mingw64\bin` is deliberately NOT here.
 # It carries MSYS's own MinGW Qt6, and a `qmake6` from a Qt that is not the one being built against
 # is how `qmltc-optlevels-controls-Basic` came to be handed another Qt's Controls corpus.
-$toolchain = @(
-    "C:\msys64\usr\bin"
-    "C:\Python312"
-    "C:\Python312\Scripts"
-    "C:\Users\caetano\llvm\bin"
-    "C:\D\ldc2-1.42.0-windows-x64\bin"
-    "C:\D\dmd2\windows\bin64"
-) -join ';'
-$env:PATH = $toolchain + ';' + $env:PATH
+if ($Toolchain.Count -gt 0) { $env:PATH = ($Toolchain -join ';') + ';' + $env:PATH }
 
 $env:QTDIR6 = $Qt6
 $env:QTDIR5 = $Qt5
@@ -81,7 +89,13 @@ foreach ($f in @($Tsv, $Err)) { Remove-Item -LiteralPath $f -Force -ErrorAction 
 # is the other half, and it is why the default filter is expressed by ABSENCE rather than by `*`.
 $argv = @("tools/test-report.sh")
 if ($Filter -ne "*") { $argv += $Filter }
-$p = Start-Process -FilePath "C:/msys64/usr/bin/sh.exe" `
+if (-not $Sh) {
+    $found = Get-Command sh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    $Sh = if ($found) { $found.Source } else { "C:/msys64/usr/bin/sh.exe" }
+}
+if (-not (Test-Path -LiteralPath $Sh)) { throw "runreport: no sh.exe at $Sh" }
+Write-Output ("sh=" + $Sh)
+$p = Start-Process -FilePath $Sh `
      -ArgumentList $argv `
      -RedirectStandardOutput $Tsv -RedirectStandardError $Err -NoNewWindow -PassThru
 Write-Output ("pid=" + $p.Id + " tsv=" + $Tsv + " err=" + $Err)

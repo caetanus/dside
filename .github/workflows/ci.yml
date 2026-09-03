@@ -24,6 +24,12 @@ on:
   push:
     branches: [master, codegen-tools]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      windows_full:
+        description: "Run the FULL Windows matrix instead of the slice (hours, may hit the job cap)"
+        type: boolean
+        default: false
 
 jobs:
   matrix:
@@ -208,3 +214,132 @@ jobs:
             report.tsv
             generated/**/coverage.txt
             generated/**/coverage-manifest.tsv
+
+  # ---------------------------------------------------------------------------------------------
+  # WINDOWS / MSVC. The full 1223-target matrix has been run on a VM (docs/windows-roadmap.md); it
+  # is NOT what this job runs. A hosted runner is slower than that VM and a GitHub job is capped at
+  # six hours, so a full matrix here would teach nothing on the run where it times out. What this
+  # proves is the part that is platform-shaped and therefore the part that breaks: the generator
+  # runs with an MSVC triple, the binding builds and links WITHOUT Visual Studio's IDE, the C++
+  # exception route that differs on Win64 works, and the sh-driven gates run under MSYS2.
+  #
+  # The full matrix is reachable by hand: `workflow_dispatch` with `windows_full: true`.
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      # `sh` is not optional: the gates are shell scripts, and `diffutils` is not in the default
+      # MSYS2 install — without it `diff` is absent and a differential gate reports the comparison
+      # it could not make as agreement (tools/win/preflight.ps1 records that measurement).
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: false
+          install: diffutils
+
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-latest
+
+      # Qt is over a gigabyte and does not change between runs; the key carries the version so a
+      # bump invalidates it rather than silently serving the old one.
+      - name: Cache Qt
+        id: qtcache
+        uses: actions/cache@v4
+        with:
+          path: C:/Qt
+          key: qt-windows-6.11.1-5.15.2-v1
+
+      - name: Install Qt (from Qt's own repository, not aqtinstall)
+        if: steps.qtcache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          ./tools/win/get-qt.ps1 -Version 6.11.1 -Dest C:/Qt
+          ./tools/win/get-qt.ps1 -Version 5.15.2 -Dest C:/Qt
+
+      # xiboca links libclang, and on Windows that is `libclang.lib` from the LLVM release. The
+      # runner ships LLVM but not its lib directory on the linker's search path — the same shape as
+      # the Linux step above, and the same refusal when it is not there.
+      - name: Put libclang on the link path
+        shell: pwsh
+        run: |
+          $llvm = "C:/Program Files/LLVM"
+          if (-not (Test-Path "$llvm/lib/libclang.lib")) {
+            Write-Output "::error::no libclang.lib under $llvm/lib"
+            Get-ChildItem "$llvm/lib" -Filter '*clang*' | Select-Object -First 10 | Out-String
+            exit 1
+          }
+          "LIB=$llvm/lib;$env:LIB" >> $env:GITHUB_ENV
+          "PATH=$llvm/bin;$env:PATH" >> $env:GITHUB_ENV
+
+      - name: What this machine has (preflight, advisory)
+        shell: pwsh
+        continue-on-error: true
+        env:
+          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR5: C:/Qt/5.15.2/msvc2019_64
+        run: ./tools/win/preflight.ps1
+
+      - name: Build the generator (xiboca)
+        shell: pwsh
+        run: cd xiboca; dub build
+
+      - name: Generate the reggae build binary
+        shell: pwsh
+        run: dub run reggae -- -b binary . --reggaefile-import-path "$pwd/reggae"
+
+      # THE SLICE, and why each family is in it. Every one of these is a place where Windows and
+      # Linux genuinely differ, so a green row here means something a Linux row cannot mean:
+      #   wraptest/borrowed/dangle  the wrapper's lifetime layer over the MSVC ABI
+      #   uic*/qrc*                 the CTFE side-car tools, and `uicheck` carries the EXC verdict
+      #                             that the Win64 exception route produces
+      #   consumer-smoke/dub-*      the contract a user outside the tree meets
+      #   deploy-*                  the PE half of qtd-deploy: no run path, DLLs beside the exe
+      #   *-qt5                     the Qt5/Qt6 parity rule, on the platform where the two Qts are
+      #                             separate installs rather than one distro's packages
+      - name: Record execution (slice)
+        if: github.event_name != 'workflow_dispatch' || inputs.windows_full != true
+        shell: pwsh
+        env:
+          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR5: C:/Qt/5.15.2/msvc2019_64
+        run: |
+          ./tools/win/runreport.ps1 -Repo "$pwd" -Toolchain @() `
+            -Tsv "$pwd/win-report.tsv" -Err "$pwd/win-report.err" `
+            -Filter "wraptest*,borrowed*,dangle*,uic*,qrc*,hello*,consumer-smoke*,dub-consumer*,deploy-*,cannon*,moc_test*" `
+            -Wait
+
+      - name: Record execution (full matrix, on request)
+        if: github.event_name == 'workflow_dispatch' && inputs.windows_full == true
+        shell: pwsh
+        env:
+          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR5: C:/Qt/5.15.2/msvc2019_64
+        run: |
+          ./tools/win/runreport.ps1 -Repo "$pwd" -Toolchain @() `
+            -Tsv "$pwd/win-report.tsv" -Err "$pwd/win-report.err" -Wait
+
+      # The report's own totals line is the verdict. Read here rather than trusted, because a run
+      # that stops mid-list looks exactly like one that finished — measured three times on the VM.
+      - name: Judge the report
+        if: always()
+        shell: bash
+        run: |
+          test -f win-report.tsv || { echo "::error::no report was produced"; tail -40 win-report.err || true; exit 1; }
+          grep -a '^# totals' win-report.tsv || { echo "::error::the report has no totals line — it stopped mid-list"; tail -40 win-report.err || true; exit 1; }
+          awk -F'\t' 'NR>3 && $6!="pass" && $6!="skip" {print $1"\t"$6}' win-report.tsv | head -40
+          n=$(awk -F'\t' 'NR>3 && $6!="pass" && $6!="skip"' win-report.tsv | wc -l)
+          test "$n" -eq 0 || { echo "::error::$n Windows target(s) did not pass"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-report
+          path: |
+            win-report.tsv
+            win-report.err
