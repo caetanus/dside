@@ -396,3 +396,79 @@ jobs:
             win-report.tsv
             win-report.err
             .build/report-logs/
+
+  # ---------------------------------------------------------------------------------------------
+  # ANDROID / aarch64. THIS PROVES ONE THING: the binding cross-compiles. It generates against Qt
+  # for Android, compiles the C++ shims with the NDK's clang++, compiles the generated D with ldc2
+  # for the Android triple, and checks the archives are aarch64 rather than host objects.
+  #
+  # It runs NO test, and that is a decision rather than an omission. The ~1200 targets of the record
+  # execution are host processes driven by `sh`; running them on Android means an emulator AND a
+  # rewrite of how a target is invoked, which is a different piece of work with a different price.
+  # A green row here means "it builds for the phone", not "it works on the phone".
+  #
+  # dmd is absent for the same reason it is absent everywhere on this axis: it does not target
+  # Android at all. This is an ldc2-only platform and saying so is cheaper than a job that looks
+  # half-covered.
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The generator runs on the HOST and only reads headers, so it needs the host's libclang and
+      # nothing Android at all — the same install and the same libclang path fix as the Linux job.
+      - name: Install clang/libclang and pkg-config
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-dev llvm-dev pkg-config
+
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+
+      - name: Put libclang on the link path
+        run: |
+          cfg=$(command -v llvm-config || ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)
+          test -n "$cfg" || { echo "::error::no llvm-config"; exit 1; }
+          libdir=$("$cfg" --libdir)
+          test -e "$libdir/libclang.so" || { echo "::error::no libclang.so in $libdir"; exit 1; }
+          echo "LIBRARY_PATH=$libdir${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Build the generator (xiboca)
+        run: cd xiboca && dub build
+
+      # Qt for Android is ~1 GB and does not change between runs. aqtinstall is the only published
+      # way to get it without an account; the desktop Qt of the same version is NOT needed here,
+      # because nothing in this job runs a Qt tool — it only reads headers and links archives.
+      - name: Cache Qt for Android
+        id: qtacache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/Qt
+          key: qt-android-6.8.2-arm64_v8a-v1
+
+      - name: Install Qt for Android
+        if: steps.qtacache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m pip install --user aqtinstall
+          python3 -m aqt install-qt linux android 6.8.2 android_arm64_v8a \
+            --outputdir "$GITHUB_WORKSPACE/Qt"
+
+      - name: Cross-compile for arm64-v8a
+        run: |
+          ndk="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          test -n "$ndk" || { echo "::error::no NDK on this runner"; exit 1; }
+          echo "NDK: $ndk"
+          sh tools/android/cross-build.sh "$ndk" \
+            "$GITHUB_WORKSPACE/Qt/6.8.2/android_arm64_v8a" arm64-v8a 23
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-crossbuild
+          path: |
+            .build/android-arm64-v8a/*.log
+            .build/android-arm64-v8a/*.err
+            .build/android-arm64-v8a/spec.json
