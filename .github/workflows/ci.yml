@@ -61,6 +61,28 @@ jobs:
         with:
           compiler: ldc-latest
 
+      # `libs-posix: ["clang"]` in xiboca/dub.json asks the linker for `-lclang`, and that is the
+      # right thing for the package to say: it is a fact about the generator, not about a distro.
+      # Ubuntu does not put a bare `libclang.so` anywhere on the default search path — the
+      # development symlink lives under `/usr/lib/llvm-<N>/lib`, and the versioned runtime under
+      # `/usr/lib/x86_64-linux-gnu/libclang-<N>.so.1`. Every run of this workflow so far died here:
+      #
+      #     /usr/bin/ld: cannot find -lclang: No such file or directory
+      #
+      # Asked of `llvm-config` rather than written as a version, so a runner image bump does not
+      # break it again, and REFUSED LOUDLY if the file is not where llvm-config says the libdir is —
+      # a silent miss would come back as the same link error six steps later.
+      - name: Put libclang on the link path
+        run: |
+          cfg=$(command -v llvm-config || ls /usr/bin/llvm-config-* 2>/dev/null | sort -V | tail -1)
+          test -n "$cfg" || { echo "::error::no llvm-config; llvm-dev did not install"; exit 1; }
+          libdir=$("$cfg" --libdir)
+          echo "llvm-config: $cfg -> $libdir"
+          test -e "$libdir/libclang.so" || {
+            echo "::error::no libclang.so in $libdir"; ls "$libdir" | grep -i clang || true; exit 1; }
+          echo "LIBRARY_PATH=$libdir${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Build the generator (xiboca)
         run: cd xiboca && dub build
 
