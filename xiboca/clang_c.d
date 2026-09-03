@@ -95,6 +95,7 @@ CXDiagnostic clang_getDiagnostic(CXTranslationUnit, uint);
 void     clang_disposeDiagnostic(CXDiagnostic);
 uint     clang_getDiagnosticSeverity(CXDiagnostic);   // 3 = Error, 4 = Fatal
 CXString clang_formatDiagnostic(CXDiagnostic, uint options);
+uint clang_defaultDiagnosticDisplayOptions();
 int      clang_Cursor_getNumArguments(CXCursor);
 CXCursor clang_Cursor_getArgument(CXCursor, uint);
 int      clang_Type_getNumTemplateArguments(CXType);

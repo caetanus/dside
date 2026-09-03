@@ -231,7 +231,13 @@ void main(string[] args) {
         foreach (i; 0 .. nd) {
             auto d = clang_getDiagnostic(tu, i);
             if (clang_getDiagnosticSeverity(d) >= 3) {   // Error = 3, Fatal = 4
-                if (fatal < 10) stderr.writefln("xiboca: %s", clang_formatDiagnostic(d, 0).str);
+                // WITH THE SOURCE LOCATION. `0` here meant no file, no line, no include stack —
+                // just the sentence — and a parse error that says `unknown type name 'int32_t'`
+                // and not WHERE is the diagnostic that sends you guessing at toolchains. It cost
+                // four rounds on the Android cross build before this line was looked at.
+                if (fatal < 10)
+                    stderr.writefln("xiboca: %s",
+                        clang_formatDiagnostic(d, clang_defaultDiagnosticDisplayOptions()).str);
                 fatal++;
             }
             clang_disposeDiagnostic(d);
