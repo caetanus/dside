@@ -36,11 +36,16 @@ fail() { echo "android: $1" >&2; [ $# -gt 1 ] && echo "    $2" >&2; exit 1; }
 # The ABI names Android uses are not the triples the compilers want, and the two do not map by
 # string surgery — `armeabi-v7a` is `armv7a-linux-androideabi`, with an `eabi` the others lack.
 #
-# ...and the SYSROOT'S ARCHITECTURE DIRECTORY is a third name again: `armeabi-v7a` compiles as
-# `armv7a-linux-androideabi` and its headers live under `arm-linux-androideabi`. Named because
-# `$SYSROOT/usr/include` alone is not enough — the NDK splits the machine-dependent half out, and
-# without it the first parse stopped at `unknown type name 'int32_t'`, which reads like a broken
-# stdint.h and is really half of one.
+# THE SYSROOT'S INCLUDE DIRECTORIES ARE NOT PASSED, and that is the whole of the include story.
+# Adding `-I$SYSROOT/usr/include` looks obviously right and is exactly wrong: it puts the C headers
+# in front of libc++'s, so libc++'s own `<cstddef>` stops finding its own `<stddef.h>` and the
+# parse dies twenty headers later on `unknown type name 'int32_t'` — a symptom four levels from
+# its cause. `--sysroot` alone gives the driver the whole set in the right order. Measured by
+# running the NDK's clang++ twice, once with the driver's include set and once with the
+# generator's argv: the first passes, the second fails, and the second names libc++'s <cstddef>.
+#
+# `ARCHDIR` survives only because the ABI names are a third spelling again — `armeabi-v7a`
+# compiles as `armv7a-linux-androideabi` — and something will want it.
 case "$ABI" in
   arm64-v8a)   TRIPLE=aarch64-linux-android;    LDCTRIPLE=aarch64-linux-android;    ARCHDIR=aarch64-linux-android ;;
   armeabi-v7a) TRIPLE=armv7a-linux-androideabi; LDCTRIPLE=armv7a-linux-androideabi; ARCHDIR=arm-linux-androideabi ;;
@@ -89,14 +94,13 @@ python3 - "$ROOT/generator/spec_cxx_qtwidgets.json" "$WORK/spec.json" "$WORK/gen
          "$QTA" "$TRIPLE$API" "$SYSROOT" "$RESDIR" "$ARCHDIR" <<'PY'
 import json, sys, os
 src, dst, out, qta, target, sysroot, resdir, archdir = sys.argv[1:9]
+# NOTE: the sysroot's own include directories are DELIBERATELY absent. See below.
 s = json.load(open(src))
 s.pop("pkg_config", None)
 s["out_dir"] = os.path.abspath(out)
 inc = os.path.join(qta, "include")
 mods = ["QtCore", "QtGui", "QtWidgets"]
 s["cflags"] = ["--target=" + target, "--sysroot=" + sysroot,
-               "-I" + os.path.join(sysroot, "usr", "include"),
-               "-I" + os.path.join(sysroot, "usr", "include", archdir),
                "-I" + inc] + \
               ["-I" + os.path.join(inc, m) for m in mods] + \
               ["-DQT_NO_KEYWORDS"]
@@ -135,7 +139,6 @@ echo "android: probe OK — the NDK compiles Qt's headers with the driver's own 
 # if it passes both, the argv is fine and the difference is libclang itself.
 "$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -fsyntax-only \
     -x c++ -std=c++17 -fvisibility=hidden -isystem "$RESDIR/include" \
-    -I"$SYSROOT/usr/include" -I"$SYSROOT/usr/include/$ARCHDIR" \
     -I"$QTA/include" -I"$QTA/include/QtCore" \
     "$WORK/probe.cpp" 2>"$WORK/probe2.err" \
     || fail "the driver fails with the GENERATOR'S argv, so the flags are what is wrong" \
@@ -155,7 +158,6 @@ for c in "$WORK"/gen/*.cpp; do
     b=$(basename "$c" .cpp)
     "$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -std=c++17 -fPIC -O2 \
         -ffunction-sections -fdata-sections \
-        -I"$SYSROOT/usr/include" -I"$SYSROOT/usr/include/$ARCHDIR" \
         -I"$QTA/include" -I"$QTA/include/QtCore" -I"$QTA/include/QtGui" -I"$QTA/include/QtWidgets" \
         -c "$c" -o "$WORK/ocpp/$b.o" 2>>"$WORK/cxx.err" \
         || fail "the shim $b.cpp did not compile" "$(tail -5 "$WORK/cxx.err")"
