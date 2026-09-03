@@ -214,6 +214,7 @@ jobs:
             report.tsv
             generated/**/coverage.txt
             generated/**/coverage-manifest.tsv
+            .build/report-logs/
 
   # ---------------------------------------------------------------------------------------------
   # WINDOWS / MSVC. The full 1223-target matrix has been run on a VM (docs/windows-roadmap.md); it
@@ -380,6 +381,9 @@ jobs:
           n=$(awk -F'\t' 'NR>3 && $6!="pass" && $6!="skip"' win-report.tsv | wc -l)
           test "$n" -eq 0 || { echo "::error::$n Windows target(s) did not pass"; exit 1; }
 
+      # THE PER-TARGET LOGS TOO. Without them a failed row names a file that only existed on the
+      # runner: the first real Windows run came back `42 pass, 8 fail` with an empty stderr, and
+      # the eight reasons were in `.build/report-logs/` on a machine that no longer exists.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -387,3 +391,4 @@ jobs:
           path: |
             win-report.tsv
             win-report.err
+            .build/report-logs/
