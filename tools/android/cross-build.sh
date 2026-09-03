@@ -95,13 +95,14 @@ s["out_dir"] = os.path.abspath(out)
 inc = os.path.join(qta, "include")
 mods = ["QtCore", "QtGui", "QtWidgets"]
 s["cflags"] = ["--target=" + target, "--sysroot=" + sysroot,
-               "-resource-dir=" + resdir,
                "-I" + os.path.join(sysroot, "usr", "include"),
                "-I" + os.path.join(sysroot, "usr", "include", archdir),
                "-I" + inc] + \
               ["-I" + os.path.join(inc, m) for m in mods] + \
               ["-DQT_NO_KEYWORDS"]
 s["libs"] = []
+# The builtin headers come from the NDK's clang, not this machine's: see xiboca/emit.d.
+s["resource_dir"] = resdir
 json.dump(s, open(dst, "w"), indent=2)
 print("spec: target=%s resource-dir=%s qt=%s" % (target, resdir, qta))
 PY

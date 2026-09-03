@@ -160,7 +160,15 @@ void main(string[] args) {
         import core.stdc.stdlib : exit;
         exit(1);
     }
-    auto res = execute(["clang", "-print-resource-dir"]).output.strip;
+    // THE CLANG WHOSE BUILTIN HEADERS THESE ARE, which is not always the one on this machine.
+    // `stddef.h`, `stdint.h` and the rest live beside a compiler rather than in a sysroot, and a
+    // CROSS build parses headers meant for another one — the NDK's. Asked of the host clang by
+    // default, which is every existing spec; named by a spec that is binding for somewhere else.
+    // Without this an Android parse answered `unknown type name 'int32_t'` twenty times, from a
+    // <stdint.h> that resolved and defined nothing, while the NDK's own clang++ compiled the same
+    // headers with the same flags — which is what told the two apart.
+    auto res = ("resource_dir" in spec.object) ? spec["resource_dir"].str
+             : execute(["clang", "-print-resource-dir"]).output.strip;
     string[] extraI;
     // Relative include paths resolve against the SPEC (like out_dir), not the cwd: xiboca is invoked
     // from the repo root by the build and from generator/ by hand, and both must find the headers.

@@ -72,6 +72,13 @@ Toolchain location
      - Raw compile flags, for a library that ships no ``.pc``.
    * - ``libs``
      - Raw link flags, same case. Also feeds the symbol scan.
+   * - ``resource_dir``
+     - The clang whose BUILTIN headers to parse with — ``stddef.h``, ``stdint.h``
+       and the rest, which live beside a compiler rather than in a sysroot.
+       Defaults to this machine's (``clang -print-resource-dir``), which is what
+       every desktop spec wants. A CROSS spec names the target toolchain's: an
+       Android parse with the host's answered ``unknown type name 'int32_t'``
+       twenty times, from a ``<stdint.h>`` that resolved and defined nothing.
 
 Emission
 --------
