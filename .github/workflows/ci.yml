@@ -434,6 +434,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang libclang-dev llvm-dev pkg-config
 
+      # BOTH, and ldc2 last so `dub build` uses it, as the other two jobs do. dmd is not here to
+      # target Android — it cannot — but because the generator shells out to it on the HOST:
+      # `std.process.ProcessException: Executable file not found: dmd`, after discovering 680
+      # classes. A host prerequisite, not a platform one.
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-latest
       - uses: dlang-community/setup-dlang@v2
         with:
           compiler: ldc-latest
