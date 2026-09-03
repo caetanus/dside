@@ -239,12 +239,15 @@ jobs:
           update: false
           install: diffutils
 
-      - uses: dlang-community/setup-dlang@v2
-        with:
-          compiler: ldc-latest
+      # ORDER MATTERS: setup-dlang leaves DC pointing at the LAST compiler it installed, and that
+      # is what `dub build` uses. ldc2 last, so the generator is built by the same compiler the
+      # Linux job and the VM build it with — dmd is still installed, because the matrix needs both.
       - uses: dlang-community/setup-dlang@v2
         with:
           compiler: dmd-latest
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
 
       # Qt is over a gigabyte and does not change between runs; the key carries the version so a
       # bump invalidates it rather than silently serving the old one.
@@ -277,14 +280,23 @@ jobs:
       - name: Put libclang on the link path
         shell: pwsh
         run: |
-          $llvm = "C:/Program Files/LLVM"
-          if (-not (Test-Path "$llvm/lib/libclang.lib")) {
-            Write-Output "::error::no libclang.lib under $llvm/lib"
-            Get-ChildItem "$llvm/lib" -Filter '*clang*' | Select-Object -First 10 | Out-String
+          $llvm = "C:\Program Files\LLVM"
+          Write-Output "what LLVM ships in lib\:"
+          Get-ChildItem "$llvm\lib" -Filter '*clang*' -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name | Out-String
+          if (-not (Test-Path "$llvm\lib\libclang.lib")) {
+            Write-Output "::error::no libclang.lib under $llvm\lib"
             exit 1
           }
-          "LIB=$llvm/lib;$env:LIB" >> $env:GITHUB_ENV
-          "PATH=$llvm/bin;$env:PATH" >> $env:GITHUB_ENV
+          # `LIB` ALONE WAS NOT ENOUGH. It was set — the step's own env block showed
+          # `LIB: C:/Program Files/LLVM/lib;` — and link.exe still answered
+          #     LINK : fatal error LNK1104: cannot open file 'libclang.lib'
+          # so the directory is handed to the linker explicitly as well, through the flags dub
+          # passes on. Both, because LIB is what a plain `cl`/`link` invocation reads and DFLAGS is
+          # what this particular build actually goes through.
+          "LIB=$llvm\lib;$env:LIB" >> $env:GITHUB_ENV
+          "DFLAGS=-L/LIBPATH:`"$llvm\lib`"" >> $env:GITHUB_ENV
+          "PATH=$llvm\bin;$env:PATH" >> $env:GITHUB_ENV
 
       - name: What this machine has (preflight, advisory)
         shell: pwsh
