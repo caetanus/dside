@@ -280,6 +280,10 @@ jobs:
       #     LINK : fatal error LNK1104: cannot open file 'libclang.lib'
       # Setting LIB and LIBPATH therefore changed nothing; there was no file to find.
       #
+      # It is written to RUNNER_TEMP and not into the checkout: the report reads the working tree's
+      # git status into its own header, and a file left in the workspace made a fresh clone report
+      # `commit ded5f46 (DIRTY)`.
+      #
       # The DLL is there, though, and an import library is derivable from a DLL's export table.
       # That is what this does, with LLVM's own tools: no Visual Studio shell, no 845 MB download
       # of the LLVM release archive that does ship the .lib, and no cache to go stale.
@@ -347,7 +351,7 @@ jobs:
         run: |
           ./tools/win/runreport.ps1 -Repo "$pwd" -Toolchain @() `
             -Tsv "$pwd/win-report.tsv" -Err "$pwd/win-report.err" `
-            -Filter "wraptest*,borrowed*,dangle*,uic*,qrc*,hello*,consumer-smoke*,dub-consumer*,deploy-*,cannon*,moc_test*" `
+            -Filter 'wraptest*|borrowed*|dangle*|uic*|qrc*|hello*|consumer-smoke*|dub-consumer*|deploy-*|cannon*|moc_test*' `
             -Wait
 
       - name: Record execution (full matrix, on request)
