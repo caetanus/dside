@@ -45,6 +45,11 @@ fail() { echo "deploy-bundle FAIL: $1" >&2; [ $# -gt 1 ] && echo "    $2" >&2; e
 # image has no such entry to ask for — a DLL is looked for beside the loading executable — so there
 # is nothing to pass and nothing for the tool to rewrite.
 #
+# ...and the EXECUTABLE'S NAME is a third one. ldc2 and dmd append `.exe` when `-of` has no
+# extension, so the file the link produces and the file this script then names were different on
+# Windows: `env: '…/out/bin/app.exe': No such file or directory`, about a bundle that had been
+# built around a path with no extension. One variable, used at all four sites.
+#
 # The C++ runtime is the same question with the same answer: `-lstdc++` is a POSIX library and MSVC
 # links its own, so asking for it there produced
 #     LINK : fatal error LNK1181: cannot open input file 'stdc++.lib'
@@ -53,13 +58,13 @@ fail() { echo "deploy-bundle FAIL: $1" >&2; [ $# -gt 1 ] && echo "    $2" >&2; e
 # This is `cxxRuntimeFlag()` from reggae/qtd_build.d, in the one place that writes its own link
 # line instead of going through qtdApp.
 case "$(uname -s 2>/dev/null || echo unknown)" in
-  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows; RPATHFLAGS=""; CXXLIB="" ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows; RPATHFLAGS=""; CXXLIB=""; EXE=".exe" ;;
   *)                    PLATFORM=posix;   RPATHFLAGS="-L-rpath=\$ORIGIN/../lib -L--disable-new-dtags"
-                        CXXLIB="-L-lstdc++" ;;
+                        CXXLIB="-L-lstdc++"; EXE="" ;;
 esac
 
 # shellcheck disable=SC2086
-"$DC" -of="$WORK/app" "$APPSRC" \
+"$DC" -of="$WORK/app$EXE" "$APPSRC" \
     -I"$GENDIR" -I"$ROOT/tests/support" \
     -L--start-group -L="$BDIR/libbinding_$DC.a" -L="$BDIR/libshims.a" -L--end-group \
     $QTLIBS $CXXLIB $RPATHFLAGS \
@@ -79,7 +84,7 @@ for d in "${QTDIR6:-}" "${QTDIR:-}"; do
     if [ -n "$d" ] && [ -d "$d/include/QtCore" ]; then QTARG="--qt-prefix $d"; break; fi
 done
 # shellcheck disable=SC2086
-"$WORK/qtd-deploy" bundle "$WORK/app" --out "$WORK/out" $QMLARG $QTARG \
+"$WORK/qtd-deploy" bundle "$WORK/app$EXE" --out "$WORK/out" $QMLARG $QTARG \
     --plugins platforms,imageformats,iconengines,platformthemes,platforminputcontexts,styles \
     >"$WORK/bundle.out" 2>&1 || fail "qtd-deploy bundle failed" "$(tail -5 "$WORK/bundle.out")"
 if [ -n "$QMLFILE" ]; then
@@ -106,7 +111,7 @@ fi
 # plugin, nothing is left to fall back to and the process fails to start.
 if [ "$PLATFORM" = posix ]; then
     ( cd / && env -u LD_LIBRARY_PATH -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
-          QT_QPA_PLATFORM=offscreen LD_DEBUG=libs "$WORK/out/bin/app" $APPARG \
+          QT_QPA_PLATFORM=offscreen LD_DEBUG=libs "$WORK/out/bin/app$EXE" $APPARG \
           >"$WORK/run.out" 2>"$WORK/run.err" ) \
         || fail "the bundled application did not run" "$(tail -5 "$WORK/run.err")"
 
@@ -127,7 +132,7 @@ else
     # `env: '-u': No such file or directory`, which reads like a missing binary.
     ( cd / && env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH \
           PATH="$SYSPATH" QT_QPA_PLATFORM=offscreen \
-          "$WORK/out/bin/app.exe" $APPARG >"$WORK/run.out" 2>"$WORK/run.err" ) \
+          "$WORK/out/bin/app$EXE" $APPARG >"$WORK/run.out" 2>"$WORK/run.err" ) \
         || fail "the bundled application did not run with Qt out of PATH" \
                 "$(tail -5 "$WORK/run.err")"
     [ -f "$WORK/out/bin/Qt6Core.dll" ] || fail "Qt6Core.dll is not beside the executable" \
