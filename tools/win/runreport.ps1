@@ -87,8 +87,11 @@ foreach ($f in @($Tsv, $Err)) { Remove-Item -LiteralPath $f -Force -ErrorAction 
 # the filter became a filename, no target matched, and the run signed off `0 pass, 0 fail, 0 skip`
 # with the commit and the Qt release in its header. The report now refuses an empty selection; this
 # is the other half, and it is why the default filter is expressed by ABSENCE rather than by `*`.
+# THROUGH THE ENVIRONMENT, not argv. `Start-Process -ArgumentList` joins with spaces and no
+# quoting, and the MSYS runtime splits and glob-expands what arrives — a filter of eleven patterns
+# reached the report as one argument and ten strays, and only the first family ran.
+$env:QTD_FILTER = $Filter
 $argv = @("tools/test-report.sh")
-if ($Filter -ne "*") { $argv += $Filter }
 if (-not $Sh) {
     $found = Get-Command sh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     $Sh = if ($found) { $found.Source } else { "C:/msys64/usr/bin/sh.exe" }

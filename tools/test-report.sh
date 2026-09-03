@@ -16,7 +16,13 @@ BUILD=./build
 
 cd "$(dirname "$0")/.."
 selftest=no; [ "${1:-}" = "--self-test" ] && { selftest=yes; shift; }
-filter="${1:-*}"
+# THE FILTER, FROM ARGV OR FROM THE ENVIRONMENT. argv is how a person runs this; the environment
+# is how a LAUNCHER does, because a filter with several patterns cannot survive the trip otherwise:
+# PowerShell's Start-Process joins its ArgumentList with spaces and no quoting, and the MSYS
+# runtime then splits and glob-expands what arrives. Measured on the Windows job — an 11-pattern
+# filter reached the script as $1="wraptest*" and ten arguments nobody read, and exactly the
+# wraptest family ran. An environment variable is not touched by either.
+filter="${1:-${QTD_FILTER:-*}}"
 logdir=".build/report-logs"; mkdir -p "$logdir"
 
 commit=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
@@ -258,9 +264,15 @@ BATCH="${BATCH:-20}"
 # refused twice for exactly this — once with commas, once with pipes — and the refusal was right
 # both times. Space separation is what a shell caller writes anyway, and `$filter` unquoted here is
 # already word-split by the shell.
+# ...AND SPLIT WITHOUT GLOBBING. `for pat in $filter` performs PATHNAME EXPANSION on the value,
+# so the default filter `*` became the list of files in the repository root and selected 0 of 1218
+# targets — the same defect the paragraph below records, reintroduced one commit later in a new
+# place. `read -ra` splits on IFS and expands nothing. The pattern stays unquoted inside `case`,
+# which is where it must be a pattern and where no pathname expansion happens.
+read -ra pats <<< "$filter"
 sel=()
 for t in "${targets[@]}"; do
-    for pat in $filter; do
+    for pat in "${pats[@]}"; do
         case "$t" in $pat) sel+=("$t"); break ;; esac
     done
 done
