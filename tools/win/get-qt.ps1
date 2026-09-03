@@ -154,8 +154,28 @@ if (-not $SkipWebEngine) {
     }
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $prefix "include/QtCore/qconfig.h"))) {
-    throw "get-qt: unpacked, but $prefix has no include/QtCore/qconfig.h"
+# ...AND WHERE THE TREE ACTUALLY LANDED, found rather than assumed. The comment above is true of
+# Qt 6's archives and NOT of Qt 5's: the 5.15.2 packages carry their own `<version>/<arch>/` prefix,
+# so unpacking them into a destination that already ends in `5.15.2/msvc2019_64` produces
+# `C:/Qt/5.15.2/msvc2019_64/5.15.2/msvc2019_64/include/...` and the check below fired on a Qt that
+# was in fact fully downloaded. Rather than write down a second layout — which would be wrong for
+# the third one — the tree is located by the file that defines it, and lifted into place.
+$marker = "include/QtCore/qconfig.h"
+if (-not (Test-Path -LiteralPath (Join-Path $prefix $marker))) {
+    $hit = Get-ChildItem -LiteralPath $prefix -Recurse -Filter 'qconfig.h' -File -ErrorAction SilentlyContinue |
+           Where-Object { $_.FullName -replace '\\', '/' -match '/include/QtCore/qconfig\.h$' } |
+           Select-Object -First 1
+    if (-not $hit) { throw "get-qt: unpacked, but nothing under $prefix has $marker" }
+    # <...>/include/QtCore/qconfig.h -> <...>
+    $inner = Split-Path (Split-Path (Split-Path $hit.FullName -Parent) -Parent) -Parent
+    Write-Output ("the archives carried a prefix; lifting " + $inner)
+    Get-ChildItem -LiteralPath $inner -Force | ForEach-Object {
+        Move-Item -LiteralPath $_.FullName -Destination $prefix -Force
+    }
+    Remove-Item -LiteralPath (Join-Path $prefix ($Version)) -Recurse -Force -ErrorAction SilentlyContinue
+}
+if (-not (Test-Path -LiteralPath (Join-Path $prefix $marker))) {
+    throw "get-qt: unpacked, but $prefix has no $marker"
 }
 Write-Output ""
 Write-Output ("get-qt: " + $Version + " is at " + $prefix)
