@@ -293,7 +293,7 @@ jobs:
           $llvm = "C:\Program Files\LLVM"
           Write-Output ("lib\: " + ((Get-ChildItem "$llvm\lib" -EA SilentlyContinue).Name -join ' '))
           Write-Output ("bin *clang*: " + ((Get-ChildItem "$llvm\bin" -Filter '*clang*' -EA SilentlyContinue).Name -join ' '))
-          $out = "$env:GITHUB_WORKSPACE\.llvmlib"
+          $out = "$env:RUNNER_TEMP\llvmlib"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           if (Test-Path "$llvm\lib\libclang.lib") {
             Copy-Item "$llvm\lib\libclang.lib" $out
