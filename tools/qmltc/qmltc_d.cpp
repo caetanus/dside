@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <algorithm>
 #include <deque>
@@ -547,8 +548,29 @@ static std::string qname(UiQualifiedId *id) {
 // Qt5's parser spells two things differently, and both are mechanical: a parameter's type is a
 // UiQualifiedId (which has no toString(); qname walks it), and isDefaultMember is a data member
 // rather than an accessor. Naming them here keeps the version check out of the walking code.
+//
+// ...AND A PARAMETER'S TYPE IS ASKED, NOT ASSUMED FROM THE VERSION NUMBER. `UiParameterList::type`
+// is a UiQualifiedId in Qt 5 AND in early Qt 6 — it only became a `Type*` with `toString()` later
+// in the 6.x line — so a `QT_VERSION >= 6.0.0` guard is a claim about a boundary rather than about
+// the type in front of us. Against Qt 6.4 it produced
+//     qmltc_d.cpp:551: error: no member named 'toString' in 'QQmlJS::AST::UiQualifiedId'
+// which stopped the tool building and took 668 targets with it. This project generates a wrapper
+// for whatever Qt is installed; asking the type what it can do is the only form of that question
+// that stays true across the versions nobody has tried yet.
+template <class T, class = void> struct QtdHasToString : std::false_type {};
+template <class T>
+struct QtdHasToString<T, std::void_t<decltype(std::declval<T>()->toString())>> : std::true_type {};
+
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-static QString paramTypeName(UiParameterList *p) { return p->type->toString(); }
+// A TEMPLATE, because `if constexpr` only discards inside one. In a plain function both branches
+// are type-checked whatever the condition says, so the first attempt at this compiled exactly as
+// badly as the version guard it replaced — same file, same line, same message. The parameter makes
+// `decltype(p->type)` dependent, which is what lets the untaken branch go uninstantiated.
+template <class P> static QString qtdParamType(P *p) {
+    if constexpr (QtdHasToString<decltype(p->type)>::value) return p->type->toString();
+    else return QString::fromStdString(qname(p->type));
+}
+static QString paramTypeName(UiParameterList *p) { return qtdParamType(p); }
 // A FUNCTION'S DECLARED PARAMETER TYPE — `function f(a: real, b: int)`. The parser has carried it
 // all along; nothing read it, so the inference below had to reduce the type from USE alone and
 // refused the function when it could not. Qt draws the same line the other way round ("Functions
