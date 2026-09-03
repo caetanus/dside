@@ -42,6 +42,24 @@ jobs:
             qt6-webengine-dev qt6-webengine-dev-tools \
             clang libclang-dev llvm-dev pkg-config
 
+      # THE QML MODULES ARE A SEPARATE INSTALL, and without them the runner has a Qt Quick with no
+      # Controls — which the build correctly turns into `qmltc-o3-gate-skipped` instead of the five
+      # per-style gates, and which the assertion below correctly refuses. Run 33707504655 died on
+      # exactly that: `missing o3 gate: qmltc-o3-gate-Basic`, with 957 qmltc targets present.
+      #
+      # Installed rather than asserted away. Weakening the check to accept the skip would make the
+      # runner's coverage a property of what apt happened to pull in, which is the shape of silent
+      # capability loss this workflow already has one comment about.
+      - name: Install the QML runtime modules (QtQuick.Controls and what it depends on)
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-templates \
+            qml6-module-qtquick-layouts qml6-module-qtquick-window qml6-module-qtquick-shapes \
+            qml6-module-qtqml-workerscript qml6-module-qtqml-models \
+            qml-module-qtquick2 qml-module-qtquick-controls2
+          echo "Qt6 QML dir: $(qmake6 -query QT_INSTALL_QML)"
+          ls "$(qmake6 -query QT_INSTALL_QML)/QtQuick/Controls" | head
+
       # The 58 sample_* targets that materialize the PySide north (shiboken's libsample corner
       # cases) only exist if ../pyside-setup is present — otherwise libsampleTargets() returns [].
       # Provision it at a PINNED revision so conformance can't silently vanish.
