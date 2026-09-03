@@ -266,7 +266,10 @@ jobs:
         shell: pwsh
         run: |
           ./tools/win/get-qt.ps1 -Version 6.11.1 -Dest C:/Qt
-          ./tools/win/get-qt.ps1 -Version 5.15.2 -Dest C:/Qt
+          # Qt 5.15.2's MSVC build is msvc2019_64 — there is no msvc2022 one — and the modules the
+          # Qt6 default names (qtwebchannel, qtpositioning, qtshadertools) are Qt6 spellings. The
+          # Qt5 matrix here needs base + declarative, which the base package carries.
+          ./tools/win/get-qt.ps1 -Version 5.15.2 -Dest C:/Qt -Arch win64_msvc2019_64 -Modules @()
 
       # xiboca links libclang, and on Windows that is `libclang.lib` from the LLVM release. The
       # runner ships LLVM but not its lib directory on the linker's search path — the same shape as

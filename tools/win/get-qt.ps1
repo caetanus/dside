@@ -114,20 +114,44 @@ function Get-Package($repo, $map, $name) {
     }
 }
 
-$desktop = "$Base/desktop/qt6_$v/qt6_${v}_$sfx"
+# QT 5 AND QT 6 ARE LAID OUT DIFFERENTLY, and the difference is not cosmetic. Qt 6 splits the
+# desktop repository per architecture (`qt6_6111/qt6_6111_msvc2022_64`) and files its extra modules
+# under `addons.`; Qt 5 has ONE repository for all of them (`qt5_5152`, no suffix) and no `addons`
+# segment. Written for Qt 6 only, this asked for `qt6_5152/qt6_5152_msvc2022_64` and the run died
+# on a bare `404 Not Found` — which names the URL and not the assumption behind it.
+#
+# Probed rather than remembered:
+#   .../desktop/qt5_5152/Updates.xml               200, and lists qt.qt5.5152.win64_msvc2019_64
+#   .../desktop/qt5_5152_msvc2019_64/Updates.xml   404
+$major = ($Version -split '\.')[0]
+if ($major -eq '5') {
+    $desktop = "$Base/desktop/qt5_$v"
+    $pkgBase = "qt.qt5.$v"
+    $addons  = ""          # Qt 5 files its modules directly: qt.qt5.5152.qtwebengine.<arch>
+} else {
+    $desktop = "$Base/desktop/qt6_$v/qt6_${v}_$sfx"
+    $pkgBase = "qt.qt6.$v"
+    $addons  = "addons."
+}
 Write-Output ("repository: " + $desktop)
 $map = Get-Repo $desktop
 
-Get-Package $desktop $map "qt.qt6.$v.$Arch"
-foreach ($m in $Modules) { Get-Package $desktop $map "qt.qt6.$v.addons.$m.$Arch" }
+Get-Package $desktop $map "$pkgBase.$Arch"
+foreach ($m in $Modules) { Get-Package $desktop $map "$pkgBase.$addons$m.$Arch" }
 
 if (-not $SkipWebEngine) {
     # A SEPARATE REPOSITORY, and it is not an oversight in Qt's layout: WebEngine ships under
     # extensions/ with its own versioning. Asking the desktop repo for it answers "not in this
     # repository", which is why this says so explicitly rather than silently skipping.
+    if ($major -eq '5') {
+        # ...and on Qt 5 it is not an extension at all: it sits in the desktop repository beside
+        # everything else, as `qt.qt5.<v>.qtwebengine.<arch>` (probed).
+        Get-Package $desktop $map "$pkgBase.qtwebengine.$Arch"
+    } else {
     $ext = "$Base/extensions/qtwebengine/$v/$sfx"
     Write-Output ("repository: " + $ext)
     Get-Package $ext (Get-Repo $ext) "extensions.qtwebengine.$v.$Arch"
+    }
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $prefix "include/QtCore/qconfig.h"))) {
