@@ -178,13 +178,31 @@ NOTE
 fi
 echo "android: $emitted class(es) generated for $ABI"
 
+# QT'S PRIVATE HEADERS, which two of the shims include. `qtdmoc.cpp` reaches for
+# `QtCore/private/qmetaobjectbuilder_p.h` — that is the meta-object builder the runtime moc is
+# built on — and those live under a VERSIONED directory beside the public ones:
+#     include/QtCore/6.8.2/QtCore/private/…
+# The build adds them on the host through modulePrivateFlags(); here they are globbed, because the
+# version in that path is the Qt's and not something to write down.
+PRIV=""
+for m in QtCore QtGui QtWidgets; do
+    for v in "$QTA/include/$m"/*/; do
+        [ -d "$v$m/private" ] || continue
+        PRIV="$PRIV -I${v%/} -I$v$m"
+    done
+done
+[ -n "$PRIV" ] || fail "no private headers under $QTA/include/*/*/" \
+    "qtdmoc.cpp needs QtCore/private/qmetaobjectbuilder_p.h"
+
 # The shims, with the NDK's clang++ — the same command line reggae/qtd_build.d builds, minus the
 # host's pkg-config flags and plus the target.
+# shellcheck disable=SC2086
 for c in "$WORK"/gen/*.cpp; do
     b=$(basename "$c" .cpp)
     "$CXX" --target="$TRIPLE$API" --sysroot="$SYSROOT" -std=c++17 -fPIC -O2 \
         -ffunction-sections -fdata-sections \
         -I"$QTA/include" -I"$QTA/include/QtCore" -I"$QTA/include/QtGui" -I"$QTA/include/QtWidgets" \
+        $PRIV \
         -c "$c" -o "$WORK/ocpp/$b.o" 2>>"$WORK/cxx.err" \
         || fail "the shim $b.cpp did not compile" "$(tail -5 "$WORK/cxx.err")"
 done
