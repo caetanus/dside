@@ -43,7 +43,11 @@ if (Test-Path -LiteralPath $pacman) {
     # tmux: not default either, and `screen` is not packaged at all. A long run needs to outlive
     # the session that started it — though tools/win/runreport.ps1 is the answer that does not
     # depend on a terminal multiplexer at all.
-    foreach ($p in @('diffutils', 'tmux')) {
+    # flock: NOT in the default install either, and the build's guarded steps shell out to it —
+    # `sh: line 1: flock: command not found` is how uicheck and dub-consumer fail on a machine that
+    # has everything else. It was on the VM because something had pulled it in, which is precisely
+    # the kind of prerequisite this file exists to stop being a person's memory.
+    foreach ($p in @('diffutils', 'tmux', 'util-linux')) {
         $have = (& $pacman -Q $p 2>$null)
         if (-not $have -and $Install) {
             & $pacman -S --needed --noconfirm $p | Out-Null

@@ -44,16 +44,25 @@ fail() { echo "deploy-bundle FAIL: $1" >&2; [ $# -gt 1 ] && echo "    $2" >&2; e
 # executable and the distribution libraries in the bundle carry no run path of their own. A PE
 # image has no such entry to ask for — a DLL is looked for beside the loading executable — so there
 # is nothing to pass and nothing for the tool to rewrite.
+#
+# The C++ runtime is the same question with the same answer: `-lstdc++` is a POSIX library and MSVC
+# links its own, so asking for it there produced
+#     LINK : fatal error LNK1181: cannot open input file 'stdc++.lib'
+# and took all four deploy targets with it. (`--start-group`/`--end-group` survive: link.exe warns
+# LNK4044 and ignores them, which is why the rest of the build passes them unconditionally.)
+# This is `cxxRuntimeFlag()` from reggae/qtd_build.d, in the one place that writes its own link
+# line instead of going through qtdApp.
 case "$(uname -s 2>/dev/null || echo unknown)" in
-  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows; RPATHFLAGS="" ;;
-  *)                    PLATFORM=posix;   RPATHFLAGS="-L-rpath=\$ORIGIN/../lib -L--disable-new-dtags" ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows; RPATHFLAGS=""; CXXLIB="" ;;
+  *)                    PLATFORM=posix;   RPATHFLAGS="-L-rpath=\$ORIGIN/../lib -L--disable-new-dtags"
+                        CXXLIB="-L-lstdc++" ;;
 esac
 
 # shellcheck disable=SC2086
 "$DC" -of="$WORK/app" "$APPSRC" \
     -I"$GENDIR" -I"$ROOT/tests/support" \
     -L--start-group -L="$BDIR/libbinding_$DC.a" -L="$BDIR/libshims.a" -L--end-group \
-    $QTLIBS -L-lstdc++ $RPATHFLAGS \
+    $QTLIBS $CXXLIB $RPATHFLAGS \
     2>"$WORK/link.err" || fail "the test application did not link" "$(head -5 "$WORK/link.err")"
 
 QMLARG=""

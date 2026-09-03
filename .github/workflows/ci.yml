@@ -238,7 +238,11 @@ jobs:
         with:
           msystem: MSYS
           update: false
-          install: diffutils
+          # util-linux carries `flock`, which the build's lock-guarded steps shell out to. Not in
+          # the default MSYS2 install: `sh: line 1: flock: command not found` took out uicheck and
+          # dub-consumer on both compilers, and it was present on the VM only because something
+          # else had pulled it in.
+          install: diffutils util-linux
 
       # ORDER MATTERS: setup-dlang leaves DC pointing at the LAST compiler it installed, and that
       # is what `dub build` uses. ldc2 last, so the generator is built by the same compiler the
