@@ -235,6 +235,7 @@ jobs:
       # MSYS2 install — without it `diff` is absent and a differential gate reports the comparison
       # it could not make as agreement (tools/win/preflight.ps1 records that measurement).
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: MSYS
           update: false
@@ -354,7 +355,12 @@ jobs:
           QTDIR6: C:/Qt/6.11.1/msvc2022_64
           QTDIR5: C:/Qt/5.15.2/msvc2019_64
         run: |
-          ./tools/win/runreport.ps1 -Repo "$pwd" -Toolchain @() `
+          # MSYS2's, NAMED. Left to find `sh.exe` on PATH the launcher picked Git for Windows'
+          # (`sh=C:\Program Files\Git\bin\sh.exe` in the log), whose environment ships no
+          # `flock` — so the build's lock-guarded steps died with `flock: command not found` and
+          # the util-linux installed above sat in an msys64 nothing was looking at.
+          $msys = '${{ steps.msys2.outputs.msys2-location }}\usr\bin'
+          ./tools/win/runreport.ps1 -Repo "$pwd" -Toolchain @($msys) -Sh "$msys\sh.exe" `
             -Tsv "$pwd/win-report.tsv" -Err "$pwd/win-report.err" `
             -Filter 'wraptest* borrowed* dangle* uic* qrc* hello* consumer-smoke* dub-consumer* deploy-* cannon* moc_test*' `
             -Wait
@@ -367,7 +373,12 @@ jobs:
           QTDIR6: C:/Qt/6.11.1/msvc2022_64
           QTDIR5: C:/Qt/5.15.2/msvc2019_64
         run: |
-          ./tools/win/runreport.ps1 -Repo "$pwd" -Toolchain @() `
+          # MSYS2's, NAMED. Left to find `sh.exe` on PATH the launcher picked Git for Windows'
+          # (`sh=C:\Program Files\Git\bin\sh.exe` in the log), whose environment ships no
+          # `flock` — so the build's lock-guarded steps died with `flock: command not found` and
+          # the util-linux installed above sat in an msys64 nothing was looking at.
+          $msys = '${{ steps.msys2.outputs.msys2-location }}\usr\bin'
+          ./tools/win/runreport.ps1 -Repo "$pwd" -Toolchain @($msys) -Sh "$msys\sh.exe" `
             -Tsv "$pwd/win-report.tsv" -Err "$pwd/win-report.err" -Wait
 
       # The report's own totals line is the verdict. Read here rather than trusted, because a run

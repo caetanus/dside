@@ -67,8 +67,19 @@ esac
 
 QMLARG=""
 if [ -n "$QMLFILE" ]; then QMLARG="--qml $QMLFILE"; fi
+
+# WHERE QT IS, WHEN NOTHING CAN BE ASKED. qtd-deploy finds Qt by running `qmake -query`, which is
+# how a user's machine answers and how this passes on Linux. On Windows Qt is an installation the
+# build was POINTED at rather than one on PATH, so the tool refused:
+#     qtd-deploy: no Qt found. Pass --qt-prefix; qmake was not on PATH
+# The build already knows the answer — it is what QTDIR6 says — so it is handed over rather than
+# discovered. Empty on a machine where qmake IS on PATH, which leaves the discovery path exercised.
+QTARG=""
+for d in "${QTDIR6:-}" "${QTDIR:-}"; do
+    if [ -n "$d" ] && [ -d "$d/include/QtCore" ]; then QTARG="--qt-prefix $d"; break; fi
+done
 # shellcheck disable=SC2086
-"$WORK/qtd-deploy" bundle "$WORK/app" --out "$WORK/out" $QMLARG \
+"$WORK/qtd-deploy" bundle "$WORK/app" --out "$WORK/out" $QMLARG $QTARG \
     --plugins platforms,imageformats,iconengines,platformthemes,platforminputcontexts,styles \
     >"$WORK/bundle.out" 2>&1 || fail "qtd-deploy bundle failed" "$(tail -5 "$WORK/bundle.out")"
 if [ -n "$QMLFILE" ]; then
