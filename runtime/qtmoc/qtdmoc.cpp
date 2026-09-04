@@ -30,6 +30,7 @@
 #include <QTranslator>
 #include <QtCore/private/qmetaobjectbuilder_p.h>
 #include <cstring>
+#include <type_traits>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -428,6 +429,46 @@ int qtd_prop_set_bool(void* o, const char* n, bool v) { return qtd_prop_write(o,
 // which no overload existed — so a document using the commonest form of a static model produced
 // output that did not compile. That is the worst of the three outcomes: not a refusal, not a
 // value, but a build failure in someone else's project with no diagnostic pointing back here.
+// ASK THE TYPE, NOT THE VERSION NUMBER. Two things in Qt's private QML API moved inside the 6.x
+// line, and both were guarded by `QT_VERSION >= 6.0.0`, which is a claim about a boundary rather
+// than about the declaration in front of us. Against Qt 6.4 this file did not compile:
+//
+//     error: no member named 'CurrentVersion' in 'QQmlPrivate::RegisterType'
+//     error: cannot initialize a parameter of type 'QQmlEnginePrivate *' with an rvalue of type
+//            'QQmlTypeLoader *'
+//
+// three errors in one file, taking 757 qmltc targets with them. This project generates a wrapper
+// for whatever Qt is installed, so the question has to be asked of the type — which also answers
+// for the versions nobody has tried yet.
+// (extern "C++": this whole file is inside `extern "C"`, but templates need C++ linkage — the
+// same reason the Qt5 create-pool below is wrapped. Without it these are not ill-formed in a way
+// that says so: the definitions are simply not found, and clang answers `no matching function for
+// call to 'qtdRegisterTypeVersion'` about a template three hundred lines above the call.)
+extern "C++" {
+template <class T, class = void> struct QtdHasCurrentVersion : std::false_type {};
+template <class T>
+struct QtdHasCurrentVersion<T, std::void_t<decltype(T::CurrentVersion)>> : std::true_type {};
+
+/// The struct version to declare. Where Qt names one, that is the answer; where it does not — 6.4
+/// and earlier — the layout this file fills is base plus `finalizerCast`, which is version 1.
+template <class RT> static constexpr int qtdRegisterTypeVersion() {
+    if constexpr (QtdHasCurrentVersion<RT>::value) return int(RT::CurrentVersion);
+    else return 1;
+}
+
+/// `attachedPropertiesFunction` takes a QQmlTypeLoader* in recent Qt and a QQmlEnginePrivate* in
+/// older ones, and 6.10 briefly carried both — which is why the argument is cast rather than left
+/// as a bare `nullptr` (ambiguous there). The cast target is now whichever the declaration wants.
+template <class QT>
+static auto qtdAttachedFn(const QT &t) {
+    if constexpr (std::is_invocable_v<decltype(&QT::attachedPropertiesFunction), const QT &,
+                                      QQmlTypeLoader *>)
+        return t.attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr));
+    else
+        return t.attachedPropertiesFunction(static_cast<QQmlEnginePrivate *>(nullptr));
+}
+}   // extern "C++"
+
 extern "C" int qtd_prop_set_list(void* o, const char* n, const char* typeName,
                                  const char** items, int count) {
     if (!o || !n) return 0;
@@ -1636,7 +1677,7 @@ void* qtd_attached_obj(void* obj, const char* uri, const char* typeName) {
     // QQmlTypeLoader* one, so a bare `nullptr` is ambiguous there and the file does not compile —
     // `call to member function 'attachedPropertiesFunction' is ambiguous`. 6.11 kept only this
     // one, so naming it works on both.
-    auto fn = t.attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr));
+    auto fn = qtdAttachedFn(t);
     if (!fn) return nullptr;
     // Go through qmlAttachedPropertiesObject, NOT the raw function: the raw one CONSTRUCTS an
     // attached object every time it is called. The public entry point caches per (object, type),
@@ -2074,7 +2115,7 @@ void* qtd_qml_register_sub(
     rt.valueSourceCast = -1;
     rt.valueInterceptorCast = -1;
 #if QT_VERSION >= 0x060000
-    rt.structVersion = int(QQmlPrivate::RegisterType::CurrentVersion);
+    rt.structVersion = qtdRegisterTypeVersion<QQmlPrivate::RegisterType>();
     // NO metatype of our own, and NO list metatype. Registering `QObject*` as THIS type's id told
     // Qt that the QObject* metatype IS this type, and from then on every QQmlListReference over a
     // `data` list (whose element metatype is exactly that) resolved its element type to our last
@@ -2150,7 +2191,7 @@ void* qtd_qml_register_type(
     rt.valueSourceCast = -1;
     rt.valueInterceptorCast = -1;
 #if QT_VERSION >= 0x060000
-    rt.structVersion = int(QQmlPrivate::RegisterType::CurrentVersion);
+    rt.structVersion = qtdRegisterTypeVersion<QQmlPrivate::RegisterType>();
     rt.typeId = QMetaType::fromType<QtdMocObject*>();
     rt.listId = QMetaType::fromType<QQmlListProperty<QtdMocObject>>();
     rt.create = &qtd_qml_create6;   // userdata carries the QtdQmlType*
