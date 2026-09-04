@@ -525,6 +525,7 @@ jobs:
             .build/android-arm64-v8a/*.log
             .build/android-arm64-v8a/*.err
             .build/android-arm64-v8a/probe.cpp
+            .build/android-arm64-v8a/spec.json
 
       # ...and the cross-built wrapper itself: the generated D and the two archives, which is what
       # an Android application links against. No dub.json here — the packaging step belongs to the
@@ -540,4 +541,3 @@ jobs:
             .build/android-arm64-v8a/libshims.a
             .build/android-arm64-v8a/gen/
           if-no-files-found: error
-            .build/android-arm64-v8a/spec.json
