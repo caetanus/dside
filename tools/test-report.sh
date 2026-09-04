@@ -108,6 +108,9 @@ category() {
     # category rather than `gate`, because unlike a gate it exercises a shipped TOOL end to end —
     # map the binary, bundle it, start it with the machine's Qt out of reach.
     deploy-bundle-*|deploy-qml-*) echo deploy ;;
+    # The DELIVERABLE: the generated D, both archives, dub.json, licences and manifest, laid out as
+    # a dub package. Its own category because it is not a test — it is what the build is for.
+    wrapper-package) echo package ;;
     *) echo other ;;
   esac
 }
@@ -167,6 +170,7 @@ if [ "$selftest" = yes ]; then
   ck compiler-context                gate      qt6 -
   ck abi-layout                      gate      qt6 -
   ck abi-layout-qt5                  gate      qt5 -
+  ck wrapper-package                 package   qt6 -
   ck deploy-bundle-ldc2              deploy    qt6 ldc2
   ck deploy-qml-dmd                  deploy    qt6 dmd
   ck tr-ldc2                         i18n      qt6 ldc2

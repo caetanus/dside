@@ -399,6 +399,25 @@ jobs:
       # THE PER-TARGET LOGS TOO. Without them a failed row names a file that only existed on the
       # runner: the first real Windows run came back `42 pass, 8 fail` with an empty stderr, and
       # the eight reasons were in `.build/report-logs/` on a machine that no longer exists.
+      - name: Build the wrapper package
+        if: always()
+        shell: pwsh
+        env:
+          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR5: C:/Qt/5.15.2/msvc2019_64
+        run: |
+          $msys = '${{ steps.msys2.outputs.msys2-location }}\usr\bin'
+          $env:PATH = "$msys;$env:PATH"
+          & "$msys\sh.exe" -c "./build -s wrapper-package"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wrapper-windows-qt6.11.1
+          path: .build/*/pkg/
+          if-no-files-found: error
+
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -506,4 +525,19 @@ jobs:
             .build/android-arm64-v8a/*.log
             .build/android-arm64-v8a/*.err
             .build/android-arm64-v8a/probe.cpp
+
+      # ...and the cross-built wrapper itself: the generated D and the two archives, which is what
+      # an Android application links against. No dub.json here — the packaging step belongs to the
+      # host build and has not been taught about a target triple yet, so this is the raw
+      # deliverable rather than the polished one, and saying so beats shipping a package whose
+      # metadata describes the wrong machine.
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: wrapper-android-arm64-v8a
+          path: |
+            .build/android-arm64-v8a/libbinding_ldc2.a
+            .build/android-arm64-v8a/libshims.a
+            .build/android-arm64-v8a/gen/
+          if-no-files-found: error
             .build/android-arm64-v8a/spec.json

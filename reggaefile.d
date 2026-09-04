@@ -688,6 +688,14 @@ Build reggaeBuild() {
                 guarded(prefix ~ ".lock", instCmd, null, stamp,
                         [ex.genDir ~ "/gen.stamp", ins] ~ archivePaths),
                 [Target(ins), ex.gen] ~ DCS.map!(dc => qtdBindLib(ex, dc)).array ~ [ex.shims]);
+            // ...AND A NAME FOR IT. The package is what a user actually receives — the generated D,
+            // both archives, dub.json, the licences and the manifest — and until now nothing could
+            // ask for it by name: it existed only as a dependency of `dub-consumer-*`, so producing
+            // the deliverable meant knowing which test happened to pull it in. CI publishes what
+            // this target builds.
+            all ~= Target.phony("wrapper-package", catCmd(buildPath(ex.bdir, "pkg", "qtd-build.txt")),
+                                [inst]);
+
             // THE PACKAGE, not the tree. Every other licensing gate reads what is committed; this
             // one reads what a consumer receives, because a spotless repository can still ship a
             // package with no licence in it — which is precisely what this found on first run.
