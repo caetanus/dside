@@ -140,6 +140,17 @@ __gshared string[] g_searchDirs;   /// --search, then the system's own configure
 
 string[] defaultSearchDirs() {
     string[] dirs;
+    // WINDOWS HAS NO ld.so.conf, AND NAMING NONE IS NOT AN ANSWER. Everything below reads the
+    // loader's configuration on a POSIX system; on Windows a DLL is looked for in the directories
+    // on PATH, and Qt's bin/ is where its DLLs live. Without this the PE side resolved nothing,
+    // copied nothing, and produced a bundle whose executable died on
+    //     app.exe: error while loading shared libraries: Qt6Core.dll: cannot open shared object file
+    // — a bundle that was empty of the very libraries the import table had just named.
+    version (Windows) {
+        foreach (d; environment.get("PATH", "").split(";"))
+            if (d.length && exists(d) && !dirs.canFind(d)) dirs ~= d;
+        return dirs;
+    }
     void readConf(string f) {
         if (!exists(f)) return;
         foreach (l; readText(f).lineSplitter) {
@@ -719,6 +730,9 @@ int main(string[] args) {
                        "\n    nothing to read the plugin descriptions out of without it.");
         return 1;
     }
+    // ...AND QT'S OWN BINARY DIRECTORY, which is where a PE keeps its DLLs and which the build
+    // points at rather than puts on PATH. Harmless on ELF, where the libraries are in `libs`.
+    if (q.bins.length && exists(q.bins)) g_searchDirs ~= q.bins;
     g_searchDirs ~= defaultSearchDirs();
 
     add("exe", baseName(target), absolutePath(target), Class.thirdParty, "the application");
