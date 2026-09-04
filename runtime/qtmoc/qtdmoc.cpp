@@ -456,17 +456,6 @@ template <class RT> static constexpr int qtdRegisterTypeVersion() {
     else return 1;
 }
 
-/// `attachedPropertiesFunction` takes a QQmlTypeLoader* in recent Qt and a QQmlEnginePrivate* in
-/// older ones, and 6.10 briefly carried both — which is why the argument is cast rather than left
-/// as a bare `nullptr` (ambiguous there). The cast target is now whichever the declaration wants.
-template <class QT>
-static auto qtdAttachedFn(const QT &t) {
-    if constexpr (std::is_invocable_v<decltype(&QT::attachedPropertiesFunction), const QT &,
-                                      QQmlTypeLoader *>)
-        return t.attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr));
-    else
-        return t.attachedPropertiesFunction(static_cast<QQmlEnginePrivate *>(nullptr));
-}
 }   // extern "C++"
 
 extern "C" int qtd_prop_set_list(void* o, const char* n, const char* typeName,
@@ -1665,6 +1654,26 @@ int qtd_vgroup_set_qs(void* o, const char* g, const char* m, const char* s, int 
 // property fails to resolve it rather than failing to build. (Same shape as the QT_VERSION
 // branch in the RegisterType block below.)
 #if defined(QTD_HAVE_QML) && QT_VERSION >= 0x060000
+// (extern "C++" again, and INSIDE this guard on purpose: the else branch names QQmlEnginePrivate,
+// and a name in a template body must be declarable where the template is DEFINED even when
+// `if constexpr` discards the branch that uses it. Defined in the general section it broke the one
+// build that compiles this file without QtQml at all — the Android shims:
+//     qtdmoc.cpp:468: error: unknown type name 'QQmlEnginePrivate'
+// which is a compile that had nothing to do with attached properties.)
+extern "C++" {
+/// `attachedPropertiesFunction` takes a QQmlTypeLoader* in recent Qt and a QQmlEnginePrivate* in
+/// older ones, and 6.10 briefly carried both — which is why the argument is cast rather than left
+/// as a bare `nullptr` (ambiguous there). The cast target is whichever the declaration wants.
+template <class QT>
+static auto qtdAttachedFn(const QT &t) {
+    if constexpr (std::is_invocable_v<decltype(&QT::attachedPropertiesFunction), const QT &,
+                                      QQmlTypeLoader *>)
+        return t.attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr));
+    else
+        return t.attachedPropertiesFunction(static_cast<QQmlEnginePrivate *>(nullptr));
+}
+}   // extern "C++"
+
 // The ATTACHED-properties object a QML type provides for `obj` (`TestType.attachedCount` in QML).
 // The type is looked up BY NAME in Qt's own QML type registry, so this works for any registered
 // type without the D side knowing it at compile time. Returns null when the type is unknown or
