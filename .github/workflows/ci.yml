@@ -205,6 +205,28 @@ jobs:
           # means installing a Qt the matrix records, or auditing the runner's Qt and recording it.
           ./build license-no-gpl-product
 
+      # THE DELIVERABLE. The point of this build is a wrapper someone can use, so CI publishes one:
+      # the generated D, both archives, dub.json, the licences and the manifest, laid out as a dub
+      # package. Built even when the matrix failed — a wrapper that builds is worth having in hand
+      # while the tests that judge it are still red — and named after the Qt it came from, because
+      # that is the one thing a consumer has to match.
+      - name: Build the wrapper package
+        if: always()
+        run: ./build -s wrapper-package
+
+      - name: Name the artifact after the Qt it was built against
+        if: always()
+        id: qtver
+        run: echo "v=$(pkg-config --modversion Qt6Core 2>/dev/null || echo unknown)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the wrapper
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrapper-linux-qt${{ steps.qtver.outputs.v }}
+          path: .build/*/pkg/
+          if-no-files-found: error
+
       - name: Upload report + coverage artifacts
         if: always()
         uses: actions/upload-artifact@v4
