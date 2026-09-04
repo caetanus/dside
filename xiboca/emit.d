@@ -72,8 +72,21 @@ bool havePkgConfig() {
 
 void main(string[] args) {
     auto specPath = args.length > 1 ? args[1] : "spec.json";
+    // WHERE THE BINDING GOES IS THE CALLER'S TO SAY. Every shipped spec writes `out_dir` with a Qt
+    // version in it (`../generated/qt-6.11/cxx-qtwidgets`), and that is a reasonable default for a
+    // person running the generator by hand — but the BUILD derives that directory from the Qt it
+    // actually found, and a machine with Qt 6.4 then generated into `generated/qt-6.11/` while
+    // every consumer looked in `generated/qt-6.4/`. The symptom was an empty directory:
+    //     clang++: error: no such file or directory: '.../generated/qt-6.4/cxx-wraptest/*.cpp'
+    // said 824 times, about a generator that had succeeded. This is a wrapper generator for
+    // whatever Qt is installed, so the version in a shipped path cannot be the one that decides.
+    string cliOut;
+    for (size_t i = 2; i < args.length; ++i)
+        if (args[i] == "--out-dir" && i + 1 < args.length) cliOut = args[++i];
+        else if (args[i].startsWith("--out-dir=")) cliOut = args[i]["--out-dir=".length .. $];
     auto spec = parseJSON(readText(specPath));
-    auto outDir = buildNormalizedPath(specPath.dirName, spec["out_dir"].str);
+    auto outDir = cliOut.length ? buildNormalizedPath(absolutePath(cliOut))
+                                : buildNormalizedPath(specPath.dirName, spec["out_dir"].str);
     mkdirRecurse(outDir);
     auto dpkg = spec["d_package"].str;
     // Each dpkg-scoped module is written at a path matching its `module` name

@@ -1143,8 +1143,16 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // everything — and from then on the gen step is skipped for ever while every consumer fails
     // somewhere else entirely (`Push-Location : PathNotFound`, about a directory nothing
     // regenerates). Removing it first means a failed run leaves no claim behind.
+    // --out-dir, ALWAYS. The shipped specs write a Qt version into `out_dir`
+    // (`../generated/qt-6.11/cxx-qtwidgets`), which is a fine default for a person running the
+    // generator by hand and cannot be right here: this build derives genDir from the Qt it FOUND,
+    // so on a machine with Qt 6.4 the generator wrote into `generated/qt-6.11/` while every
+    // consumer read `generated/qt-6.4/`. It looked like a generator that produced nothing —
+    //     clang++: error: no such file or directory: '.../generated/qt-6.4/cxx-wraptest/*.cpp'
+    // — 824 times in one matrix, about runs that had all succeeded. The Windows path never showed
+    // it because the derived spec already overrides out_dir there.
     auto genCmd = "rm -f " ~ stamp ~ " && rm -rf " ~ genDir ~ " && " ~ xiboca ~ " " ~ useSpec
-                ~ " >/dev/null && touch " ~ stamp;
+                ~ " --out-dir " ~ genDir ~ " >/dev/null && touch " ~ stamp;
     // The generator COPIES these runtime sources verbatim into the binding (emit.d), so they are
     // build INPUTS. Without the edge, editing the runtime leaves every already-generated binding
     // on the old copy and the whole matrix goes green against code that is no longer in the tree —
