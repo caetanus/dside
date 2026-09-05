@@ -1749,7 +1749,9 @@ static void resolveReadSrc(ExpressionNode *e, std::string &obj, std::string &grp
                 if (sc == g_outerChain[k].childIds.end() || sc->second.second.empty()) continue;
                 g_outerUsed = true;
                 if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-                return outerQualify(preS, sc->second.first);
+                return outerQualify(preS, g_engineIds.count(bn)
+                                              && sc->second.first.rfind("instOf(", 0) != 0
+                                          ? "instOf(" + sc->second.first + ")" : sc->second.first);
             }
         }
         return "";
@@ -2222,7 +2224,13 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
                 if (sc == g_outerChain[k].childIds.end() || sc->second.second.empty()) continue;
                 g_outerUsed = true;
                 if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-                oe = outerQualify(preS, sc->second.first); oq = sc->second.second;
+                // THE INSTANCE, not the wrapper — see the identical rewrite on the own-children
+                // branch. A sibling compiled AFTER us has not had its field rewritten yet, so the
+                // id is what says which it is.
+                oe = outerQualify(preS, g_engineIds.count(n2)
+                                            && sc->second.first.rfind("instOf(", 0) != 0
+                                        ? "instOf(" + sc->second.first + ")" : sc->second.first);
+                oq = sc->second.second;
                 return true;
             }
         }
@@ -2493,11 +2501,18 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
         // this function has its own copy of the resolution, and a dependency re-resolved here has
         // to reach what the READ reached.
         if (auto sc = g_outerChain[k].childIds.find(n2);
-                sc != g_outerChain[k].childIds.end() && !sc->second.second.empty()) {
+                sc != g_outerChain[k].childIds.end()
+                && !sc->second.second.empty()) {
             g_depIsSibling = true;
             g_outerUsed = true;
             if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-            oe = outerQualify(pre3, sc->second.first); oq = sc->second.second;
+            // THE INSTANCE, not the wrapper, for a sibling the ENGINE built — the same rewrite
+            // the own-children branch above makes, and missing here for as long as a sibling id
+            // could not be reached at all.
+            oe = outerQualify(pre3, g_engineIds.count(n2)
+                                        && sc->second.first.rfind("instOf(", 0) != 0
+                                    ? "instOf(" + sc->second.first + ")" : sc->second.first);
+            oq = sc->second.second;
             return true;
         }
     }
@@ -7174,6 +7189,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // a child that IS built, and every `placeholder.<x>` read went on being refused with
             // the object sitting right there.
             if (!uriForType(ct).empty() && g_qmlCxxType.count(ct)) continue;
+            // ...NOR one the registry cannot name at all and the document's own imports can.
+            // `Timer` is that case and it is the most ordinary piece of application machinery there
+            // is: the compile loop builds it through createQmlObjectAny, this pre-pass took its id
+            // out of scope, and a sibling that named it was refused with the object sitting right
+            // there. Measured: the capture probe of a real reader reads `shotTimer.target`, and the
+            // handler that takes the photograph answered `ReferenceError: shotTimer is not defined`
+            // 132 times a run while the timer fired correctly. Same test the compile loop uses, so
+            // the two cannot disagree again; if it does end up skipped after all, the loop drops
+            // the id there.
+            if (!g_bareImports.empty()) {
+                // ...and it is reached through instOf(): the field holds the D shell, the engine
+                // holds the object. Recorded HERE, before the child is compiled, because a sibling
+                // ABOVE it in the document is what needs to know — handed the shell instead, the
+                // engine answered `Property 'restart' of object Main_dc20 is not a function`.
+                if (std::string cid1 = idOfInit(od->initializer); !cid1.empty())
+                    g_engineIds.insert(cid1);
+                continue;
+            }
         }
         dropSkippedChildId(od->initializer);
     }
