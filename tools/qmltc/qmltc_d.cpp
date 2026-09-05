@@ -5386,7 +5386,14 @@ static std::string vgroupMemberType(const std::string &selfQmlType, const std::s
     return t;
 }
 
-static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &out) {
+// `prop` empty means A HANDLER, not a binding: the same free-identifier handover — ids, enclosing
+// properties, attached types, and a promise for a name from another document — with `runJs` at the
+// end instead of `bindJs`. The two used to be separate paths, and the handler one had no handover
+// at all: `onTriggered: root.grabToImage(...)` on an engine-built Timer answered `ReferenceError:
+// root is not defined` while the timer fired correctly. `recv` is the object to run it on, which is
+// `__inst` for a child the engine built and `this` for one we compiled.
+static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
+                       const std::string &recv = "this") {
     std::string src = srcRaw(e);
     if (src.empty()) return false;
     FreeIdScan sc;
@@ -5460,6 +5467,13 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
             // If the name never becomes reachable the promise stays empty and the expression throws
             // exactly as it does today. Nothing that resolves now changes: this branch is only
             // reached where the alternative was to refuse outright.
+            // ...but NOT inside a statement body. The rewrite is a whole-token substitution over
+            // the source, which is safe in an expression and is not in a block: a name that is
+            // DECLARED there — `for (var i = 0; …)`, a function parameter — becomes
+            // `for (var __sp_i.i = 0; …)` and the engine answers `SyntaxError: Expected token 'in'`
+            // for the whole handler. A handler leaves such a name alone and lets the engine resolve
+            // it, which is the tier below and what it would have done anyway.
+            if (prop.empty()) continue;
             std::string alias = "__sp_" + n;
             for (size_t k = 0; (k = src.find(n, k)) != std::string::npos; ) {
                 size_t e = k + n.size();
@@ -5630,12 +5644,20 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
         }
         // ...and the expression itself, so a shadow that does not load falls to the engine
         // instead of leaving the property with no binding at all.
-        out = "        bindShadow(this, \"" + prop + "\", \"" + g_shadowUrl + file
-            + "\", " + dstr(QString::fromStdString(ssrc)) + ", [" + snames + "]" + sobjs + ");\n";
+        if (prop.empty())
+            out = "        runJs(" + recv + ", " + dstr(QString::fromStdString(ssrc))
+                + ", [" + snames + "]" + sobjs + ");\n";
+        else
+            out = "        bindShadow(this, \"" + prop + "\", \"" + g_shadowUrl + file
+                + "\", " + dstr(QString::fromStdString(ssrc)) + ", [" + snames + "]" + sobjs + ");\n";
         return true;
     }
-    out = "        bindJs(this, \"" + prop + "\", " + dstr(QString::fromStdString(src))
-        + ", [" + names + "]" + objs + ");\n";
+    if (prop.empty())
+        out = "        runJs(" + recv + ", " + dstr(QString::fromStdString(src))
+            + ", [" + names + "]" + objs + ");\n";
+    else
+        out = "        bindJs(this, \"" + prop + "\", " + dstr(QString::fromStdString(src))
+            + ", [" + names + "]" + objs + ");\n";
     return true;
 }
 
@@ -7487,6 +7509,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     bool skippedAKid = false;
     for (size_t di = 0; di < defaultKids.size(); ++di) {
         auto *od = defaultKids[di];
+        bool connPlaceholder = false;   // a Connections the engine builds only to hold its index
         std::string childType = od->qualifiedTypeNameId ? typeName(od->qualifiedTypeNameId) : "";
         if (isComponentType(childType)) {
             std::fprintf(stderr, "qmltc-d: %s: `Component` in %s is a template, not an object — "
@@ -7504,12 +7527,27 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // signal handlers ON THE PARENT, and the engine still puts a QQmlConnections in `data`
             // — so from the INDEX's point of view this is a skipped child even when nothing was
             // refused, and every sibling after it would sit one place early.
-            skippedAKid = true;
-            continue;
+            //
+            // ...which is why it does not skip when the engine can hold the place. Setting
+            // skippedAKid here disables the engine fallback for EVERY LATER CHILD of this object,
+            // and a `Connections` near the top of a document is ordinary: in the application this
+            // is developed against, one at line 200 of Main.qml cost all four `Timer`s of the
+            // capture path — the program ran and could no longer photograph itself. A skip must
+            // not kill the siblings that follow it.
+            //
+            // So the engine builds an INERT one instead: the type with none of its members, since
+            // the handlers are already on the parent. It occupies the index, nothing shifts, and
+            // the fallback stays open. Only where there is no import to resolve it through does
+            // this fall back to skipping, which is the old behaviour and the honest one there.
+            if (g_bareImports.empty()) { skippedAKid = true; continue; }
+            connPlaceholder = true;
         }
         auto cbt = boundTypeFor(childType);
         std::string dcEngineUri;              // non-empty: the ENGINE builds this child
         UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
+        // The placeholder carries NO members: its handlers are on the parent already, and
+        // compiling them here would install every one of them twice.
+        if (connPlaceholder) childInit = nullptr;
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
         std::string childBaseImport = cbt.second;           // its import module (for g_extraImports)
         std::vector<std::string> childResolvedPath;           // local-type files (for the cycle guard)
@@ -7533,8 +7571,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // the chain splices each definition's member list in front of the use site's, so the
             // merged class carries both and the deepest base comes first.
             bool ltFound = false;
-            auto chained = resolveLocalChain(childType, inPath, childInit, childResolvedPath,
-                                             nullptr, &ltFound);
+            if (connPlaceholder) {
+                std::string tried;
+                for (auto &u : g_bareImports) tried += (tried.empty() ? "" : ";") + u;
+                dcEngineUri = "\x01" + tried;
+                ltFound = true;
+            }
+            auto chained = ltFound ? std::pair<std::string, std::string>{}
+                                   : resolveLocalChain(childType, inPath, childInit,
+                                                       childResolvedPath, nullptr, &ltFound);
             // ...or a type the ENGINE knows and no subclass can wrap. The property, group and
             // value-source paths all answer this by letting the engine build it and holding the
             // result as an opaque pointer; the DEFAULT-child path was the fourth and last one
@@ -7929,11 +7974,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // ...and when this object is one the ENGINE built, the signal can be found by NAME at run
         // time instead of being named here. A child of a type outside the binding — `Timer` is the
         // plain case — has no entry in the signal table, so `onTriggered` was refused outright even
-        // though QML names a handler after its signal and nothing else. The body still has to
-        // compile; only the SIGNATURE is what we did not have. See connectMetaByName.
+        // though QML names a handler after its signal and nothing else. See connectMetaByName.
+        //
+        // It does NOT require the body to compile, and requiring it was a defect of exactly the
+        // shape this file keeps warning about: two independent questions answered as one. Finding
+        // the signal by name has nothing to do with whether the body compiles, and coupling them
+        // meant a body that merely needed the engine took the SIGNATURE down with it — the handler
+        // was refused outright and the diagnostic then blamed the body ("could not be delegated"),
+        // which was true only because this line had already decided not to try.
+        //
+        // Measured on the application this is developed against: its four capture Timers connected
+        // nothing, so the program ran, rendered, and could no longer photograph itself.
         bool connByName = false;
         if (!isCustom && !baseNotifyOk && (notifyProp.empty() || !isProp(notifyProp))
-                && bodyOk && g_selfIsEngineInst && !sigParams)
+                && g_selfIsEngineInst && !sigParams)
             connByName = true;
         // ...AND A BODY WE CANNOT COMPILE IS HANDED TO THE ENGINE, exactly as a binding is. The
         // signal being identifiable and the body compiling are two independent questions, and this
@@ -7955,9 +8009,32 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         bool sigKnown = connByName || isCustom || baseNotifyOk
                      || (!notifyProp.empty() && isProp(notifyProp));
         if (!bodyOk && sigKnown && !sigParams) {
-            std::string bsrc = srcRaw(h.stmt);
+            // The SAME handover the binding path computes, so an id or an enclosing property
+            // the body names arrives with it instead of being absent from the engine's scope.
+            std::string hj;
+            if (jsDelegate(h.stmt, "", hj, g_selfIsEngineInst ? "__inst" : "this")) {
+                hbody = hj;
+                bodyOk = true;
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s:%s: handler 'on%s' in %s delegated to the engine: '%s'\n",
+                             inPath, posOf(h.stmt).c_str(), h.sig.c_str(), cls.c_str(),
+                             srcOf(h.stmt).c_str());
+            }
+            std::string bsrc = bodyOk ? std::string() : srcRaw(h.stmt);
             if (!bsrc.empty()) {
-                hbody = "        runJs(this, " + dstr(QString::fromStdString(bsrc)) + ");\n";
+                // ...ON THE OBJECT THE ENGINE BUILT, not on the D shell that holds it. The shell
+                // carries the slot; `__inst` is the QML object, and it is the one that has a
+                // context for the body to be evaluated in.
+                // ...and the enclosing document's id with it, because the engine-built object's
+                // context has never heard of it. One name covers the shape that matters —
+                // `root.something` inside a handler — and it is the name the binding path hands
+                // over for the same objects.
+                std::string handover;
+                if (g_selfIsEngineInst && !g_outerId.empty() && g_outerId != "this")
+                    handover = ", [\"" + g_outerId + "\"], __outer";
+                hbody = std::string("        runJs(") + (g_selfIsEngineInst ? "__inst" : "this")
+                      + ", " + dstr(QString::fromStdString(bsrc)) + handover + ");\n";
+                if (!handover.empty()) g_outerUsed = true;
                 bodyOk = true;
                 ++g_delegated;
                 std::fprintf(stderr, "qmltc-d: %s:%s: handler 'on%s' in %s delegated to the engine: '%s'\n",

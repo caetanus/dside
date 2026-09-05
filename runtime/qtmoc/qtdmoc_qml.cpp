@@ -133,15 +133,27 @@ extern "C" void* qtd_context_prop_qs(void* o, const char* name) {
 //
 // Wrapped in a function so a BLOCK body (`{ a(); b() }`) and a bare expression are the same thing
 // to QQmlExpression, which otherwise parses only the second.
-extern "C" int qtd_run_js(void* o, const char* src) {
+// ...WITH THE NAMES THE BODY NEEDS, exactly as a delegated binding gets them. A handler delegated
+// on an object the ENGINE built is evaluated in that object's own context, and the ids of the
+// document it was written in are not in it: `onTriggered: root.grabToImage(...)` answered
+// `ReferenceError: root is not defined`, 598 times, while the timer fired correctly.
+extern "C" int qtd_run_js(void* o, const char* src, const char** names, void** objs, int n) {
 #ifdef QTD_HAVE_QML
     if (!o || !src) return 0;
     QObject* obj = static_cast<QObject*>(o);
-    QQmlContext* ctx = qmlContext(obj);
-    if (!ctx) {
+    QQmlContext* base = qmlContext(obj);
+    if (!base) {
         std::fprintf(stderr, "qtd_run_js: %s has no QQmlContext — handler not run\n",
                      obj->metaObject()->className());
         return 0;
+    }
+    QQmlContext* ctx = base;
+    if (n > 0) {
+        ctx = new QQmlContext(base, obj);   // owned by the object, like the engine's per-item one
+        for (int i = 0; i < n; ++i)
+            if (names[i])
+                ctx->setContextProperty(QString::fromUtf8(names[i]),
+                                        static_cast<QObject*>(objs[i]));
     }
     QQmlExpression e(ctx, obj, QString("(function(){ ") + QString::fromUtf8(src) + "\n})()");
     e.evaluate();
@@ -154,7 +166,7 @@ extern "C" int qtd_run_js(void* o, const char* src) {
     }
     return 1;
 #else
-    (void) o; (void) src; return 0;
+    (void) o; (void) src; (void) names; (void) objs; (void) n; return 0;
 #endif
 }
 

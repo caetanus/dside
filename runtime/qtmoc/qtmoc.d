@@ -1513,11 +1513,22 @@ int bindJs(T, A...)(T o, string prop, string src, string[] ids, A objs) {
                        ns.ptr, ps.ptr, cast(int) A.length);
 }
 
-private extern(C) int qtd_run_js(void*, const(char)*);
+private extern(C) int qtd_run_js(void*, const(char)*, const(char)**, void**, int);
 /// Run a handler body the compiler could not compile, in the engine's scope, when the signal
 /// fires. See qtd_run_js in qtdmoc_qml.cpp for why a body may need a scope the compiler lacks.
 int runJs(T)(T o, string src) {
-    return qtd_run_js(qobjOf(o), (src ~ "\0").ptr);
+    return qtd_run_js(qobjOf(o), (src ~ "\0").ptr, null, null, 0);
+}
+/// ...and the form that hands the body the names it cannot otherwise see — the enclosing
+/// document's ids, for a handler delegated on an object the engine built.
+int runJs(T, A...)(T o, string src, string[] ids, A objs) {
+    const(char)*[A.length ? A.length : 1] ns;
+    void*[A.length ? A.length : 1] ps;
+    static foreach (i, a; objs) {
+        ns[i] = (ids[i] ~ "\0").ptr;
+        ps[i] = qobjOf(a);
+    }
+    return qtd_run_js(qobjOf(o), (src ~ "\0").ptr, ns.ptr, ps.ptr, cast(int) A.length);
 }
 
 private extern(C) int qtd_bind_shadow(void*, const(char)*, const(char)*, const(char)*, const(char)**, void**, int);
