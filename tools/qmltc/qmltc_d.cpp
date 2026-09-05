@@ -9807,7 +9807,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     bool ok = compileStmtList(fn->body, ptWithParams, fbody);
                     g_returnType = savedRT;
                     if (ok) {
-                        methods += "    " + rt + " " + name + "(" + sig + ") {\n" + fbody + "    }\n";
+                        // @Invokable, SO THE ENGINE CAN CALL IT. A void QML function already got
+                        // @Slot; one that RETURNS was emitted as a plain D method, which the
+                        // meta-object never saw — so a delegated expression calling it answered
+                        // `Property 'X' of object … is not a function` about a function the
+                        // document declares (bugs.md #9, criterion 4). Qt draws the slot/invokable
+                        // line at the return type, and the runtime now builds both.
+                        methods += "    @Invokable " + rt + " " + name + "(" + sig + ") {\n"
+                                 + fbody + "    }\n";
                         if (sig.empty()) node.methods0.push_back(name);
                         done = true;
                     }
