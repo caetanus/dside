@@ -224,7 +224,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wrapper-linux-qt${{ steps.qtver.outputs.v }}
-          path: .build/*/pkg/
+          # `**`, not a trailing slash: upload-artifact globs with @actions/glob rather than a
+          # shell, and `.build/*/pkg/` matched nothing there while expanding fine in a terminal —
+          # `No files were found with the provided path`, over a package that had just been built.
+          path: .build/*/pkg/**
           if-no-files-found: error
 
       - name: Upload report + coverage artifacts
@@ -414,8 +417,12 @@ jobs:
         run: |
           test -f win-report.tsv || { echo "::error::no report was produced"; tail -40 win-report.err || true; exit 1; }
           grep -a '^# totals' win-report.tsv || { echo "::error::the report has no totals line — it stopped mid-list"; tail -40 win-report.err || true; exit 1; }
-          awk -F'\t' 'NR>3 && $6!="pass" && $6!="skip" {print $1"\t"$6}' win-report.tsv | head -40
-          n=$(awk -F'\t' 'NR>3 && $6!="pass" && $6!="skip"' win-report.tsv | wc -l)
+          # A ROW IS A ROW, and a `#` line is not one. `NR>3` assumed the report's comments all
+          # come first; they do not — `# scheduling:` and the closing `# totals:` sit among and
+          # after the rows, have no sixth field, and were counted as two targets that did not
+          # pass. It reported `2 Windows target(s) did not pass` over `50 pass, 0 fail`.
+          awk -F'\t' 'NF>=6 && $6 ~ /^(fail|mute)$/ {print $1"\t"$6}' win-report.tsv | head -40
+          n=$(awk -F'\t' 'NF>=6 && $6 ~ /^(fail|mute)$/' win-report.tsv | wc -l)
           test "$n" -eq 0 || { echo "::error::$n Windows target(s) did not pass"; exit 1; }
 
       # THE PER-TARGET LOGS TOO. Without them a failed row names a file that only existed on the
@@ -436,7 +443,10 @@ jobs:
         if: always()
         with:
           name: wrapper-windows-qt6.11.1
-          path: .build/*/pkg/
+          # `**`, not a trailing slash: upload-artifact globs with @actions/glob rather than a
+          # shell, and `.build/*/pkg/` matched nothing there while expanding fine in a terminal —
+          # `No files were found with the provided path`, over a package that had just been built.
+          path: .build/*/pkg/**
           if-no-files-found: error
 
 
