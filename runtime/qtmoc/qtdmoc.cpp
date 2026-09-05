@@ -957,7 +957,13 @@ extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url, const
 // registered as a QML type (qmlRegisterType, which is how a D @QObject reaches QML at all); this
 // builds the one-line document that instantiates it, on the SAME engine every compiled object
 // already uses, so the created items share the engine's contexts and its type registry.
-extern "C" void* qtd_make_component(const char* uri, const char* typeName, const char* docUrl) {
+// `decls` is QML text the DOCUMENT declares on this element — `property string target: ""`. A type
+// outside the binding is built by the engine, so the properties the document adds to it have to be
+// on the ENGINE's object: held on the D shell instead, they were invisible to every expression the
+// engine evaluates, and `shotTimer.target = x` answered `Cannot assign to non-existent property`.
+// The engine builds what the document describes, which is the whole point of this path.
+extern "C" void* qtd_make_component(const char* uri, const char* typeName, const char* docUrl,
+                                    const char* decls) {
 #ifdef QTD_HAVE_QML
     if (!uri || !typeName || !QCoreApplication::instance()) return nullptr;
     QQmlEngine* e = qtd_qml_engine();
@@ -976,7 +982,8 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
     // resolves where the engine resolves it.
     {
         QQmlComponent host(e, e);
-        host.setData(QByteArray("import QtQml\nimport ") + uri + "\nComponent { " + typeName + " {} }",
+        host.setData(QByteArray("import QtQml\nimport ") + uri + "\nComponent { " + typeName
+                         + " { " + (decls ? decls : "") + " } }",
                      url);
         if (!host.isError())
             if (QQmlComponent* hc = qobject_cast<QQmlComponent*>(host.create())) {
@@ -997,7 +1004,7 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
     }
     return c;
 #else
-    (void) uri; (void) typeName; (void) docUrl; return nullptr;
+    (void) uri; (void) typeName; (void) docUrl; (void) decls; return nullptr;
 #endif
 }
 
@@ -1035,9 +1042,10 @@ extern "C" void* qtd_qml_create_document(const char* docUrl) {
 // as its baseUrl, so every relative path inside it resolves against that document — which is what
 // the engine does. Passing nothing left `file:///qtd_delegate.qml` there (measured on Qt's Material
 // TextField, whose placeholder reports it in the dump).
-extern "C" void* qtd_qml_create_object_in(const char* uri, const char* typeName, const char* docUrl) {
+extern "C" void* qtd_qml_create_object_in(const char* uri, const char* typeName, const char* docUrl,
+                                          const char* decls) {
 #ifdef QTD_HAVE_QML
-    void* c = qtd_make_component(uri, typeName, docUrl);
+    void* c = qtd_make_component(uri, typeName, docUrl, decls);
     if (!c) return nullptr;
     auto* comp = static_cast<QQmlComponent*>(c);
     QObject* o = comp->create();
@@ -1050,7 +1058,7 @@ extern "C" void* qtd_qml_create_object_in(const char* uri, const char* typeName,
 }
 extern "C" void* qtd_qml_create_object(const char* uri, const char* typeName) {
 #ifdef QTD_HAVE_QML
-    void* c = qtd_make_component(uri, typeName, nullptr);
+    void* c = qtd_make_component(uri, typeName, nullptr, nullptr);
     if (!c) return nullptr;
     auto* comp = static_cast<QQmlComponent*>(c);
     QObject* o = comp->create();

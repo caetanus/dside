@@ -1375,6 +1375,9 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
             for (auto &pp : qn2->second) if (!bns.count(pp.first)) bns[pp.first] = pp.second;
             ctypeResolved = ctype;
     }
+    // The same predicate the compile loop uses to decide who builds this child: a type neither the
+    // registry nor the qmlmap can name is one the engine builds from the document's own imports.
+    const bool engineBuilt = ctypeResolved.empty();
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> sigs;
     std::set<std::string> meths;
     for (auto *cm = ci->members; cm; cm = cm->next) {
@@ -1393,9 +1396,17 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
             // property as "T" and every path through it stopped there.
             const std::string mt = typeName(cp->memberType);
             const char *dt = dtypeOf(QString::fromStdString(mt));
-            if (dt[0]) pts[qs(cp->name.toString())] = dt;
+            // ...and WHERE it lives. For a type the registry knows nothing about, the ENGINE builds
+            // the object and the properties the document declares on it are declared into that
+            // object, not held as D fields on the shell — so they are read through the meta-object
+            // like every other property of such a child. Recorded as a base property for exactly
+            // that reason: recorded as a declared one, a sibling compiled `_dc20.ready` and the
+            // generated D did not build ("undefined identifier `ready`").
+            auto &tbl = engineBuilt ? bps : pts;
+            if (dt[0]) tbl[qs(cp->name.toString())] = dt;
             else if (!boundTypeFor(mt).first.empty())
-                pts[qs(cp->name.toString())] = "@" + mt;   // see above
+                tbl[qs(cp->name.toString())] = "@" + mt;   // see above
+            if (engineBuilt) bns[qs(cp->name.toString())] = qs(cp->name.toString()) + "Changed()";
             continue;
         }
         if (auto *cp = cast<UiPublicMember *>(cm->member);
@@ -4609,6 +4620,15 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                 if (!readName(nm, lv)) return false;
                 // QML converts the value to the property's declared type; D will not narrow
                 // implicitly (`lastWidth = width` is int <- qreal on an Item).
+                // ...ON THE ENGINE'S OBJECT when that is where the property lives. A class that
+                // holds an engine instance keeps none of the document's declared properties as
+                // fields any more; writing one as a field did not compile at all ("undefined
+                // identifier `ready`"). The engine's own property emits its own notify, so the
+                // static-if below finds nothing and there is nothing to emit.
+                if (g_selfIsEngineInst && lv == nm) {
+                    body += "        setPropAny(__inst, \"" + nm + "\", " + coerceTo(ty, val) + ");\n";
+                    return true;
+                }
                 body += "        " + lv + " = " + coerceTo(ty, val) + ";\n";
                 // ...AND THE NOTIFY. In QML an assignment IS a change notification — it is the whole
                 // reason anything bound downstream moves. `Component.onCompleted: root.target = 40`
@@ -4905,6 +4925,16 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
             if (!compileExpr(bin->right, QString::fromStdString(it->second), rhs)) return false;
             // QML converts the value to the target's declared type; D refuses to narrow
             // implicitly, and a qreal base property read (`lastWidth = width`) is exactly that.
+            // ...and ON THE ENGINE'S OBJECT for a class that holds an engine instance: see the
+            // note at the other imperative-assignment site. Only a plain `=` can be rerouted
+            // through the meta-object; a compound operator would need to read the field first and
+            // there is none, so it stays refused.
+            if (g_selfIsEngineInst) {
+                if (std::string(op) != "=") return false;
+                body += "        setPropAny(__inst, \"" + name + "\", "
+                      + coerceTo(it->second, rhs) + ");\n";
+                return true;
+            }
             body += "        " + name + " " + op + " "
                   + (std::string(op) == "=" ? coerceTo(it->second, rhs) : rhs) + ";\n";
             // ...AND THE NOTIFY, which an imperative assignment owes exactly as much as a binding
@@ -10092,6 +10122,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Which branch applies is decided by the compiler from the expression's own type, so a value
     // type driven by a real value (`property color a: base`) still assigns the field directly.
     auto storeInto = [&](const Prop &p) {
+        // ONE STORAGE. For a child the ENGINE built, the property is on the engine's object (it is
+        // declared into the document that creates it), so the recompute writes there. A D field
+        // beside it would be a second copy of the same property and the two would drift the first
+        // time anything wrote through the other.
+        if (g_selfIsEngineInst) return "        setPropAny(__inst, \"" + p.name + "\", _v);\n";
         std::string direct = "if (" + p.name + " != _v) { " + p.name + " = _v;"
                            + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }";
         if (p.dtype == "int" || p.dtype == "double" || p.dtype == "float"
@@ -10102,6 +10137,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
              + "        else setProp(this, \"" + p.name + "\", _v);\n";
     };
     bool colorDefaultEmitted = false;   // one CTFE helper per class, and only where a colour exists
+    std::string engineDecls, engineInit;   // what the document adds to a type the engine builds
     for (auto &p : props) {
         // A declared `var` whose value is a CHILD OBJECT is held by the child's own field, which is
         // named after the property and already carries @Property. Emitting the marker as well gave
@@ -10113,6 +10149,29 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (childFields.find(" " + dIdent(p.name) + ";\n") != std::string::npos) continue;
         }
         node.scalars.push_back({p.name, p.dtype});
+        // A PROPERTY THE DOCUMENT ADDS TO A TYPE THE ENGINE OWNS belongs on the engine's object.
+        // Held as a D field on the shell it was invisible to every expression the engine evaluates
+        // — `shotTimer.target = x` answered `Cannot assign to non-existent property "target"` —
+        // and visible to the compiled side only, which is two storages for one name. Declared into
+        // the document that builds the object, there is one, and both sides read it through the
+        // meta-object. The initial value is written by the wire, so a binding still drives it.
+        if (g_selfIsEngineInst) {
+            static const std::map<std::string, std::string> qmlTy = {
+                {"int", "int"}, {"double", "real"}, {"float", "real"}, {"bool", "bool"},
+                {"string", "string"}, {"QColor", "color"}};
+            auto qt0 = qmlTy.find(p.dtype);
+            engineDecls += "property " + (qt0 == qmlTy.end() ? "var" : qt0->second) + " "
+                         + p.name + "; ";
+            if (!p.expr.empty() && !p.bound)
+                engineInit += "        setPropAny(__inst, \"" + p.name + "\", " + p.expr + ");\n";
+            if (p.bound) {
+                recompute += "    @Slot void __rc_" + p.name + "() {\n"
+                           + bindGuard("        auto _v = " + coerceTo(p.dtype, p.expr) + ";\n"
+                                       + storeInto(p)) + "    }\n";
+                anyBound = true;
+            }
+            continue;
+        }
         std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
         // ...and the SAME GAP for a colour, which cost five of Qt's own documents. QML's default
         // for `property color` is OPAQUE BLACK; a default-constructed QColor is INVALID, and the
@@ -10955,8 +11014,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                  + (g_engineChildUri.rfind("\x01", 0) == 0
                                         ? "createQmlObjectAny(\"" + g_engineChildUri.substr(1)
                                         : "createQmlObject(\"" + g_engineChildUri) + "\", \""
-                                 + g_engineChildType + "\", \"" + selfDocUrl + "\");\n"
-                                 "        if (__inst is null) return;\n");
+                                 + g_engineChildType + "\", \"" + selfDocUrl + "\", \""
+                                 + engineDecls + "\");\n"
+                                 "        if (__inst is null) return;\n"
+                                 + engineInit);
         outerField += mk;
     }
     classes += "@QObject class " + cls + ext + " {\n" + mixinLine + outerField + lateMethod + enumDecls + signalDecls + valueListDecls + stateFields + body + stateMethods

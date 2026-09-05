@@ -1159,9 +1159,21 @@ private extern(C) bool qtd_prop_reset(void*, const(char)*);
 bool resetProp(T)(T o, string name) { return qtd_prop_reset(qobjOf(o), (name ~ "\0").ptr); }
 private extern(C) int qtd_prop_set_obj(void*, const(char)*, void*);
 /// Attach an object to a QObject*-valued property (the write counterpart of [propObj]).
+/// WHERE A PROPERTY OF THIS OBJECT ACTUALLY LIVES. A class the compiler generates for a child the
+/// ENGINE builds is a shell around `__inst`: the properties the document declares on that element
+/// are declared into the engine's object, not held here. Every write path would otherwise have to
+/// know that, at each of its sites; instead a write that the shell cannot take is retried on the
+/// object it holds. A failure steps down to the thing that can answer it rather than throwing.
+private void* __writeRecv(T)(T o, string name) {
+    static if (__traits(hasMember, T, "__inst")) {
+        if (o !is null && o.__inst !is null && !hasProp(o, name)) return o.__inst;
+    }
+    return qobjOf(o);
+}
 void setPropObj(T, U)(T o, string name, U v) {
-    if (!qtd_prop_set_obj(qobjOf(o), (name ~ "\0").ptr, qobjOf(v)))
-        __propWriteFailed(name, "QObject*", "", qtd_moc_classname(qobjOf(o)));
+    auto r = __writeRecv(o, name);
+    if (!qtd_prop_set_obj(r, (name ~ "\0").ptr, qobjOf(v)))
+        __propWriteFailed(name, "QObject*", "", qtd_moc_classname(r));
 }
 private extern(C) bool qtd_invoke0(void*, const(char)*);
 /// Invoke a parameterless member (signal or invokable) by name — used to emit a signal that
@@ -1549,16 +1561,16 @@ int bindShadow(T, A...)(T o, string prop, string url, string src, string[] ids, 
                            ns.ptr, ps.ptr, cast(int) A.length);
 }
 
-extern(C) void* qtd_make_component(const(char)*, const(char)*, const(char)*);
+extern(C) void* qtd_make_component(const(char)*, const(char)*, const(char)*, const(char)*);
 // The QQmlComponent for a compiled delegate class: `uri`/`typeName` are what the generated code
 // registered it as. Returned as an opaque pointer — the caller wraps it in whatever QQmlComponent
 // binding its module has, because this unit compiles for bindings that have no QtQml at all.
 void* makeComponent(string uri, string typeName, string docUrl = "") {
-    return qtd_make_component((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);
+    return qtd_make_component((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr, null);
 }
 
 extern(C) void* qtd_qml_create_object(const(char)*, const(char)*);
-private extern(C) void* qtd_qml_create_object_in(const(char)*, const(char)*, const(char)*);
+private extern(C) void* qtd_qml_create_object_in(const(char)*, const(char)*, const(char)*, const(char)*);
 /// An object of a registered QML type that exports no C++ symbol (Qt's DialImpl and friends live in
 /// a style plugin): it cannot be SUBCLASSED, but the engine builds it by name and everything after
 /// that goes through the meta-object like any other object.
@@ -1581,18 +1593,22 @@ void* createQmlDocument(string docUrl) {
 /// which of them defines the type is not something the registry can answer. Trying is exact: the
 /// first one that yields an object is the right one, and a type no import defines returns null,
 /// which the caller already treats as "the engine could not build it".
-void* createQmlObjectAny(string uris, string typeName, string docUrl = "") {
+/// `decls` is the QML the DOCUMENT declares on this element (`property string target: ""`). It goes
+/// to the ENGINE, because the engine owns the object: a property the document adds to a type outside
+/// the binding is not on the D shell, it is on the thing every expression actually reads.
+void* createQmlObjectAny(string uris, string typeName, string docUrl = "", string decls = "") {
     import std.algorithm : splitter;
     foreach (u; uris.splitter(';')) {
         if (u.length == 0) continue;
-        if (auto o = createQmlObject(u.idup, typeName, docUrl)) return o;
+        if (auto o = createQmlObject(u.idup, typeName, docUrl, decls)) return o;
     }
     return null;
 }
 
-void* createQmlObject(string uri, string typeName, string docUrl = "") {
-    if (docUrl.length)
-        return qtd_qml_create_object_in((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr);
+void* createQmlObject(string uri, string typeName, string docUrl = "", string decls = "") {
+    if (docUrl.length || decls.length)
+        return qtd_qml_create_object_in((uri ~ "\0").ptr, (typeName ~ "\0").ptr,
+                                        (docUrl ~ "\0").ptr, (decls ~ "\0").ptr);
     return qtd_qml_create_object((uri ~ "\0").ptr, (typeName ~ "\0").ptr);
 }
 
@@ -1639,8 +1655,9 @@ string propEnumKey(T)(T o, string name) {
 }
 /// Writes a QString property by name (fires the notify, if any).
 void setProp(T)(T o, string name, string v) {
-    if (!qtd_prop_set_qs(qobjOf(o), (name ~ "\0").ptr, v.ptr, cast(int) v.length))
-        __propWriteFailed(name, "string", v, qtd_moc_classname(qobjOf(o)));
+    auto r = __writeRecv(o, name);
+    if (!qtd_prop_set_qs(r, (name ~ "\0").ptr, v.ptr, cast(int) v.length))
+        __propWriteFailed(name, "string", v, qtd_moc_classname(r));
 }
 
 private void __propWriteFailed(string name, string ty, string v = "",

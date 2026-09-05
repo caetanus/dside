@@ -509,3 +509,5 @@ Named, reproduced, and demoted by the gate rather than hidden:
   bound to a property the compiler does not know is still refused.
 - **Worker threads.** The moc runtime's side tables are owner-thread only, by an explicit abort
   rather than a silent race.
+
+- **Writing QML that compiles well**: [qmltc-d-good-practices.md](qmltc-d-good-practices.md) — the rules that move whole clusters of refusals, each with what it cost.
