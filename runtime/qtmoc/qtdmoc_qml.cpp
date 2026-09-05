@@ -54,6 +54,7 @@
 #ifdef QTD_HAVE_QML
 #include <QtQml/QQmlEngine>
 #include <QtQml/QQmlContext>
+#include <QtQml/private/qqmldata_p.h>
 #include <QtCore/QTimer>
 #include <QtCore/QCoreApplication>
 #include <QtQml/QQmlComponent>
@@ -84,10 +85,35 @@ extern "C" void* qtd_context_object(void* o) {
 #endif
 }
 
+// A CONTEXT READ ON A DYING OBJECT IS A CRASH, not an empty answer. `~QQuickItem` calls
+// setParentItem(nullptr), which emits parentChanged, which runs a recompute slot of ours, which
+// asked the object's QML context for a name — and by then QQmlContextData has been torn down:
+//     #0 QQmlContextData::initPropertyNames()
+//     #1 QQmlContext::contextProperty(QString const&)
+//     ...
+//     #10 QQuickItem::setParentItem(QQuickItem*)
+//     #11 QQuickItem::~QQuickItem()
+// gdb on the reader, in the frame that matters. Qt marks the object the moment deletion starts and
+// asks this question itself everywhere it touches QML data on a QObject; so do we. A destroyed
+// object's binding has nothing to compute, so refusing to read is also the right ANSWER.
+#ifdef QTD_HAVE_QML
+static QQmlContext* qtd_live_context(void* o) {
+    if (!o) return nullptr;
+    QObject* obj = static_cast<QObject*>(o);
+    if (QQmlData::wasDeleted(obj)) return nullptr;
+    QQmlContext* c = qmlContext(obj);
+    // ...and the CONTEXT can die before the object does, which is the case that actually crashed: a
+    // delegate's per-item context is released by the view while `~QQuickItem` is still running, so
+    // the object is not yet marked deleted and its context is already unusable. isValid() is Qt's
+    // own word for it and it is public.
+    return c && c->isValid() ? c : nullptr;
+}
+#endif
+
 extern "C" int qtd_context_prop_int(void* o, const char* name) {
 #ifdef QTD_HAVE_QML
     if (!o || !name) return 0;
-    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
+    if (QQmlContext* c = qtd_live_context(o))
         return c->contextProperty(QString::fromUtf8(name)).toInt();
     return 0;
 #else
@@ -98,7 +124,7 @@ extern "C" int qtd_context_prop_int(void* o, const char* name) {
 extern "C" double qtd_context_prop_double(void* o, const char* name) {
 #ifdef QTD_HAVE_QML
     if (!o || !name) return 0;
-    if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
+    if (QQmlContext* c = qtd_live_context(o))
         return c->contextProperty(QString::fromUtf8(name)).toDouble();
     return 0;
 #else
@@ -109,7 +135,7 @@ extern "C" double qtd_context_prop_double(void* o, const char* name) {
 extern "C" void* qtd_context_prop_qs(void* o, const char* name) {
 #ifdef QTD_HAVE_QML
     if (o && name)
-        if (QQmlContext* c = qmlContext(static_cast<QObject*>(o)))
+        if (QQmlContext* c = qtd_live_context(o))
             return new QString(c->contextProperty(QString::fromUtf8(name)).toString());
 #else
     (void) o; (void) name;
@@ -379,6 +405,33 @@ static void qtd_drain_promises() {
 }
 
 #endif   // QTD_HAVE_QML — everything above is QML-only; the entry point below is not
+// THE TREE, WITH ITS GEOMETRY, because a screenshot says a document collapsed and not which item
+// did. Read through the meta-object, so it needs no QtQuick header and works for an object the
+// engine built as well as one this compiler did. Armed by QTD_DUMP_TREE=<milliseconds>, once, from
+// the first finalize of an object that has no parent — by then the tree exists and has laid out.
+#ifdef QTD_HAVE_QML
+static void qtd_dump_tree(QObject* o, int depth) {
+    if (!o || depth > 12) return;
+    const QVariant w = o->property("width"), h = o->property("height");
+    if (w.isValid())
+        std::fprintf(stderr, "%*s%s%s %gx%g @%g,%g%s\n", depth * 2, "",
+                     o->metaObject()->className(),
+                     o->objectName().isEmpty() ? "" : qPrintable(" '" + o->objectName() + "'"),
+                     w.toDouble(), h.toDouble(), o->property("x").toDouble(),
+                     o->property("y").toDouble(),
+                     o->property("visible").toBool() ? "" : " HIDDEN");
+    // The VISUAL children, not the QObject ones: QQuickItem::setParentItem does not set a QObject
+    // parent, so a whole document's tree reads as childless from QObject alone — the first version
+    // of this printed one line and looked like the tree had not been built. QQmlListReference is
+    // public QtQml, so this still needs no QtQuick header.
+    QQmlListReference kids(o, "children");
+    if (kids.isValid())
+        for (qsizetype i = 0; i < kids.count(); ++i) qtd_dump_tree(kids.at(i), depth + 1);
+    else
+        for (QObject* c : o->children()) qtd_dump_tree(c, depth + 1);
+}
+#endif
+
 extern "C" void* qtd_scope_promise(void* o, const char* prop) {
     if (qEnvironmentVariableIsSet("QTD_PROMISE_DEBUG")) {
         fprintf(stderr, "qtd_scope_promise: ENTER '%s'\n", prop ? prop : "?");
@@ -441,9 +494,14 @@ extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
         if (e->hasError()) {
             if (!*reported) {
                 *reported = true;
-                std::fprintf(stderr, "qtd_bind_js: delegated binding for '%s' on %s threw: %s\n",
+                std::fprintf(stderr, "qtd_bind_js: delegated binding for '%s' on %s threw: %s%s\n",
                              qPrintable(p), obj->metaObject()->className(),
-                             qPrintable(e->error().description()));
+                             qPrintable(e->error().description()),
+                             qEnvironmentVariableIsSet("QTD_CTX_DEBUG")
+                                 ? (qmlContext(obj) && qmlContext(obj)
+                                        ->contextProperty(QStringLiteral("modelData")).isValid()
+                                        ? "  [ctx HAS modelData]" : "  [ctx has NO modelData]")
+                                 : "");
             }
             e->clearError();
             return;
@@ -560,6 +618,17 @@ Q_DECLARE_INTERFACE(QQmlFinalizerHook, QQmlFinalizerHook_iid)
 extern "C" void qtd_component_finalized(void* o) {
 #ifdef QTD_HAVE_QML
     qtd_drain_promises();   // the tree grew; a name that was unreachable may not be any more
+    if (o && !static_cast<QObject*>(o)->parent() && qEnvironmentVariableIsSet("QTD_DUMP_TREE")) {
+        static bool armed = false;
+        if (!armed && QCoreApplication::instance()) {
+            armed = true;
+            QObject* root = static_cast<QObject*>(o);
+            QTimer::singleShot(qEnvironmentVariableIntValue("QTD_DUMP_TREE"),
+                               QCoreApplication::instance(),
+                               [root] { std::fprintf(stderr, "--- qtd tree ---\n");
+                                        qtd_dump_tree(root, 0); std::fflush(stderr); });
+        }
+    }
 #endif
 
 #if defined(QTD_HAVE_QML) && QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)

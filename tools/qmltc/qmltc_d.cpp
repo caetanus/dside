@@ -7162,6 +7162,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         childBindings.swap(dedup);
     }
 
+    // A BARE CHILD OF A VIEW IS ITS DELEGATE. `Repeater { model: […]; Item { … } }` is the ordinary
+    // spelling — Repeater's default property IS `delegate` — and it went down the default-child
+    // path, which builds an OBJECT and assigns it where Qt wants a FACTORY. The Repeater then had
+    // exactly one item, built once, with no per-item context: `modelData.r` answered
+    // `Cannot read property 'r' of undefined` and the reader's whole footer came out blank, six
+    // labels wide and empty. Measured: 116 delegated bindings in one run, every one of them on an
+    // object whose context has no `modelData`.
+    //
+    // The machinery for this already exists two hundred lines below, for `delegate: Item { … }`.
+    // The two spellings mean the same thing, so the bare one is rewritten into the explicit one
+    // here and there is one path rather than two. The registry says which properties take a
+    // component, so this is data and not a list of view names.
+    if (!defaultKids.empty())
+        if (auto qc0 = g_qmlCxxType.find(g_selfQmlType); qc0 != g_qmlCxxType.end()) {
+            std::string dp0 = defaultPropOf(g_selfQmlType);
+            if (dp0.empty() && !boundBase.empty()) dp0 = defaultPropOf(qmlNameOfCxx(boundBase));
+            auto ct0 = dp0.empty() ? qc0->second.end() : qc0->second.find(dp0);
+            if (ct0 != qc0->second.end()
+                    && ct0->second.find("QQmlComponent") != std::string::npos
+                    && defaultKids.size() == 1) {
+                auto *od0 = defaultKids[0];
+                bool taken = false;
+                for (auto &cb0 : childBindings) if (cb0.field == dp0) taken = true;
+                if (!taken && od0->initializer) {
+                    childBindings.push_back({dp0, od0->initializer,
+                                             od0->qualifiedTypeNameId
+                                                 ? typeName(od0->qualifiedTypeNameId) : std::string()});
+                    defaultKids.clear();
+                }
+            }
+        }
+
     // What a declared OBJECT property is actually ASSIGNED, before any child is compiled. Qt's
     // Fusion declares `property Item control` and assigns a CheckBox to it; every child that reads
     // `indicator.control.checkState` needs the type of the OBJECT, not of the declaration, and the
@@ -9890,6 +9922,31 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 node.groupProps.push_back({ga.first, "string"});
                 continue;
             }
+            // A PLAIN READ OF ANOTHER OBJECT'S PROPERTY IS COPIED, NOT STRINGIFIED, and it is
+            // tried BEFORE the text channel because the text channel accepts everything: `propAny`
+            // reads any property as a string, so `anchors.left: parent.left` compiled, wrote a
+            // QString into a QQuickAnchorLine, and anchored nothing. Every anchor LINE in the
+            // application went that way — the header came out 0 wide against the window's 620 and
+            // the whole chrome collapsed into the corner, with no error anywhere, because the
+            // recompute slot's guard swallows the failed write.
+            //
+            // Qt's own styles never caught it: they anchor with `fill` and `centerIn`, which take
+            // an ITEM and go through the object branch below. `left`/`right`/`top`/`bottom` and the
+            // centre lines are values, and they are what application layout is written with.
+            //
+            // copyProp moves a QVariant from one meta-object to another without either side naming
+            // the type, which is what makes it right for a type no D name can spell.
+            if (auto *fmv = cast<FieldMemberExpression *>(ga.second))
+                if (std::string oe, oq; objPathExpr(fmv->base, oe, oq)) {
+                    std::string src = qs(fmv->name.toString());
+                    std::string slot = "__rcg_" + gname + "_" + mem;
+                    std::string ost = "        copyProp(" + oe + ", \"" + src
+                                    + "\", propObj(this, \"" + gname + "\"), \"" + mem + "\");\n";
+                    handlerSlots += "    @Slot void " + slot + "() {\n" + ost + "    }\n";
+                    wireGroupDeps(ga.second, slot, ost, "object-group member '" + ga.first + "'", false);
+                    lateWire += "        " + slot + "();\n";
+                    continue;
+                }
             // ...and when the source is not a plain read or a ternary BETWEEN two of them — Qt's
             // SpinBox nests one: `c ? A : (enabled ? B : C)` — fall back to the text channel the
             // colours already use. QMetaType turns the string into a QColor on write, and setProp
@@ -9928,23 +9985,6 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 lateWire += "        " + slot + "();\n";
                 continue;
             }
-            // ...and a PROPERTY OF an object, which is what an anchor is: `anchors.left:
-            // parent.left` reads a QQuickAnchorLine — an ordinary Q_PROPERTY on QQuickItem, checked
-            // — and no D type can name it. It does not have to: copyProp moves a value from one
-            // meta-object to another without either side naming its type, which is the same channel
-            // a `font` copy already travels on. Anchoring to a SIBLING is the shape application
-            // layout is built from and none of Qt's styles uses.
-            if (auto *fmv = cast<FieldMemberExpression *>(ga.second))
-                if (std::string oe, oq; objPathExpr(fmv->base, oe, oq)) {
-                    std::string src = qs(fmv->name.toString());
-                    std::string slot = "__rcg_" + gname + "_" + mem;
-                    std::string ost = "        copyProp(" + oe + ", \"" + src
-                                    + "\", propObj(this, \"" + gname + "\"), \"" + mem + "\");\n";
-                    handlerSlots += "    @Slot void " + slot + "() {\n" + ost + "    }\n";
-                    wireGroupDeps(ga.second, slot, ost, "object-group member '" + ga.first + "'", false);
-                    lateWire += "        " + slot + "();\n";
-                    continue;
-                }
             std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s: value is not a scalar "
                          "the channel can convert [%s] — skipped (later phase)\n",
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
