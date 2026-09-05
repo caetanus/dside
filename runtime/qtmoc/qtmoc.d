@@ -1710,6 +1710,19 @@ void classBegin(T)(T o, string docUrl) { attachContext(o, docUrl); qtd_parser_st
 
 /// Give an object a QQmlContext. Anything that instantiates children through the engine (views,
 /// Loader, delegates) reads QQmlContext::engine() in componentComplete() and crashes without one.
+private extern(C) void* qtd_scope_promise(void*, const(char)*);
+/// A handle for a name this document cannot reach yet.
+///
+/// QML resolves a bare name up the component scope; a compiled document is one document and cannot
+/// name the object that will hold it. Handing the OWNER over fails on timing, not on lookup:
+/// bindings are installed as each object is built, bottom-up, and the object that declares the
+/// name is not an ancestor yet — a context property's value is captured then, so a null is
+/// permanent. This hands over something that exists NOW and fills in later, notifying when it
+/// does, so the binding re-evaluates by itself.
+void* scopePromise(T)(T o, string prop) {
+    return qtd_scope_promise(qobjOf(o), (prop ~ "\0").ptr);
+}
+
 private extern(C) void qtd_set_qml_engine(void*);
 /// POINT THE RUNTIME AT THE ENGINE YOUR APPLICATION ALREADY HAS.
 ///

@@ -5443,7 +5443,36 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
             continue;
         }
         std::string oe, oq;
-        if (!objPathExpr(id, oe, oq)) return false;
+        if (!objPathExpr(id, oe, oq)) {
+            // A NAME THAT RESOLVES NOWHERE HERE COMES FROM ANOTHER DOCUMENT, and refusing the whole
+            // expression over it is what leaves 88% of this compiler's refusals unbuilt
+            // (docs/qmltc-d-gaps.md): `theme.ink`, `modelData.label`, `root.bookFace` — names the
+            // application resolves up the component scope, from the document that instantiated this
+            // one, which a compiler seeing one document at a time cannot name.
+            //
+            // It hands over a PROMISE instead: an object that exists now and whose contents arrive
+            // when the tree does. Two other routes were measured and are not this one — giving the
+            // expression an extra QQmlContext with the root as its context object costs the import
+            // namespace (`ReferenceError: Shape is not defined`), and handing the OWNER over fails
+            // on timing, because a context property's value is captured at install time and the
+            // owner is not an ancestor yet (105 of 125 answered `... of null`).
+            //
+            // If the name never becomes reachable the promise stays empty and the expression throws
+            // exactly as it does today. Nothing that resolves now changes: this branch is only
+            // reached where the alternative was to refuse outright.
+            std::string alias = "__sp_" + n;
+            for (size_t k = 0; (k = src.find(n, k)) != std::string::npos; ) {
+                size_t e = k + n.size();
+                bool lok = k == 0 || (!std::isalnum((unsigned char) src[k - 1]) && src[k - 1] != '_'
+                                      && src[k - 1] != '.');
+                bool rok = e >= src.size() || (!std::isalnum((unsigned char) src[e]) && src[e] != '_');
+                if (!lok || !rok) { k = e; continue; }
+                src.replace(k, n.size(), alias + "." + n);
+                k += alias.size() + 1 + n.size();
+            }
+            binds.push_back({alias, "scopePromise(this, \"" + n + "\")"});
+            continue;
+        }
         binds.push_back({n, oe});
     }
     // `control.Material.theme` — an ATTACHED read inside a delegated expression. The engine
@@ -8220,6 +8249,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // means it is not a plain read and cannot be copied.
             auto readSrc = [&](ExpressionNode *e, std::string &o, std::string &g, std::string &pr) {
                 o.clear(); g.clear(); pr.clear();
+                // A BARE NAME IS A READ TOO. `color: paper`, where `paper` is a property of an
+                // enclosing document, parses as an IdentifierExpression and fell straight through
+                // to the scalar path, which emitted `setProp(this, "color", __outer.paper)` — and
+                // there is no setProp overload for a QColor, so the generated module did not
+                // compile at all. The spelling `root.paper` went the copy route two lines below
+                // and worked; the difference was punctuation.
+                if (auto *idv = cast<IdentifierExpression *>(e)) {
+                    std::string bn = qs(idv->name.toString()), pre;
+                    for (size_t k = 0; k < g_outerChain.size(); ++k) {
+                        pre += "__outer.";
+                        if (!g_outerChain[k].propType.count(bn)) continue;
+                        g_outerUsed = true;
+                        if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+                        o = pre.substr(0, pre.size() - 1);
+                        pr = bn;
+                        return;
+                    }
+                    return;
+                }
                 auto *fmv = cast<FieldMemberExpression *>(e);
                 if (!fmv) return;
                 if (auto *b0 = cast<IdentifierExpression *>(fmv->base)) {
@@ -8510,7 +8558,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // written in the late phase, so the object published was null and the expression
                 // threw `Cannot read property 'accentColor' of null` for good. Same sink and same
                 // reason as every other read through an object assigned later.
-                if (js.find("propObj(") != std::string::npos) lateWire += js;
+                // ...and a scopePromise() handover, for the same reason and more so: the promise is
+                // filled from the object's ANCESTORS, and an object has none until it is parented.
+                if (js.find("propObj(") != std::string::npos
+                        || js.find("scopePromise(") != std::string::npos) lateWire += js;
                 else baseWire += js;
                 g_ctxUsed = true;   // ...so a delegate's body waits for the per-item context
                 ++g_delegated;

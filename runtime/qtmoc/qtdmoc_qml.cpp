@@ -54,12 +54,15 @@
 #ifdef QTD_HAVE_QML
 #include <QtQml/QQmlEngine>
 #include <QtQml/QQmlContext>
+#include <QtCore/QTimer>
+#include <QtCore/QCoreApplication>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlProperty>
 #include <QtQml/QQmlExpression>
 #include <QtQml/QQmlListReference>
 #include <QtQml/QQmlParserStatus>
 #include <QtQml/QJSValue>
+#include <QtQml/QQmlPropertyMap>
 #endif
 
 // One helper from the shared unit, taken through the C ABI rather than by including anything: the
@@ -224,6 +227,166 @@ extern "C" int qtd_call_js(void* o, const char* src, void** args, int n, void* r
 #endif
 }
 
+// A PROMISE FOR A NAME THAT IS NOT REACHABLE YET.
+//
+// QML resolves a bare name up the component scope — ultimately the root of the document that
+// instantiated this one — and a compiled document is one document: `Settings.qml` writing
+// `color: theme.paper` names something declared in `Main.qml` that the compiler cannot see.
+//
+// Handing the OWNER over does not work, and the reason is timing rather than lookup. Bindings are
+// installed in each object's late phase as it is built, bottom-up; when a nested object installs
+// its own, the object that declares the name is not its ancestor yet. A context property's value
+// is captured at that moment, so a null there is permanent. Measured: 105 of 125 delegated
+// bindings answered `Cannot read property 'X' of null`.
+//
+// So what is handed over is a QQmlPropertyMap — a QObject that exists NOW and whose contents
+// arrive later, and which notifies when they do, so the binding re-evaluates by itself. The
+// alternative that does not work is worth recording beside this one: giving the expression an
+// extra QQmlContext with the root as its context object costs the import namespace and with it
+// every type name (`ReferenceError: Shape is not defined`, seven of them).
+#ifdef QTD_HAVE_QML
+namespace {
+struct QtdPromise { QQmlPropertyMap* map; QObject* obj; QByteArray prop; };
+}
+static QList<QtdPromise>& qtd_promises() { static QList<QtdPromise> v; return v; }
+
+// WHO ANSWERS A NAME THIS DOCUMENT DOES NOT DECLARE. The first version of this walked `parent()`
+// looking for an object carrying the property, which is a guess about where QML keeps such names —
+// and the wrong one. It found nothing for `theme`, the promise stayed empty, and 298 bindings
+// answered `Cannot read property 'ink' of undefined`: `theme` is a CONTEXT property, set on the
+// engine's root context, and no ancestor OBJECT has ever heard of it.
+//
+// QML already has the answer and it is one call. QQmlContext::contextProperty walks the context
+// chain — each context's own properties, then its context object's — which is exactly the scope
+// lookup the engine performs for a bare name. So it is asked, rather than imitated. The parent walk
+// stays behind it for the case a context cannot serve: an object built outside any engine.
+static bool qtd_resolve_scope(QObject* from, const QByteArray& prop, QVariant& out) {
+    if (QQmlContext* ctx = qmlContext(from)) {
+        const QVariant v = ctx->contextProperty(QString::fromUtf8(prop));
+        if (v.isValid()) { out = v; return true; }
+    }
+    // ...AND UP THE OBJECT TREE, asking each ancestor's CONTEXT before asking the ancestor itself.
+    //
+    // The context above answers names the document's own chain knows, and for a document this
+    // compiler compiled on its own that chain stops at the engine's root: the context is made in
+    // the object's CONSTRUCTOR, when it has no parent yet, so it is hung off the root rather than
+    // nested under the context of whoever creates it. The creating document's own names — the nine
+    // `chosen`, `active`, `region`, `place` … measured on a real application — live in a context
+    // that is nowhere in that chain.
+    //
+    // Walking the objects reaches it once the tree exists, which is why the drain retries rather
+    // than answering once: at construction there is no parent to walk to. Asking the ancestor's
+    // CONTEXT and not merely the ancestor covers the case the parent walk alone never could — the
+    // owner is a context property of an enclosing document, not a property of any object above.
+    for (QObject* p = from ? from->parent() : nullptr; p; p = p->parent()) {
+        if (QQmlContext* pc = qmlContext(p)) {
+            const QVariant v = pc->contextProperty(QString::fromUtf8(prop));
+            if (v.isValid()) { out = v; return true; }
+        }
+        const QMetaObject* mo = p->metaObject();
+        if (mo->indexOfProperty(prop.constData()) >= 0 || p->dynamicPropertyNames().contains(prop)) {
+            out = p->property(prop.constData());
+            return true;
+        }
+    }
+    return false;
+}
+
+// Try every promise that is still waiting. Idempotent and cheap — the list only holds names that
+// have not resolved — and called from every finalization, because the object that will answer may
+// be finalized after the one that asked.
+static int g_promiseRetries = 0;   // consecutive drains that resolved nothing
+static bool g_promiseRetryArmed = false;
+static void qtd_drain_promises();
+static void qtd_drain_promises() {
+    auto& v = qtd_promises();
+    for (int i = 0; i < v.size();) {
+        QVariant val;
+        if (!v[i].obj || !qtd_resolve_scope(v[i].obj, v[i].prop, val)) { ++i; continue; }
+        const QByteArray prop = v[i].prop;
+        QQmlPropertyMap* map = v[i].map;
+        // WHAT IS STORED, AND WHAT THAT MEANS LATER. The value is read once, here. When it is an
+        // OBJECT — which is what a palette published from D is — every read through it stays live,
+        // because the reads go to the object and its own notifies still fire. When it is a plain
+        // value it is a snapshot, and a later change does not reach the binding: refreshing it
+        // would mean connecting the owner's NOTIFY to a slot, and this runtime has no moc to
+        // declare one on a QQmlPropertyMap. Said here rather than discovered later.
+        if (qEnvironmentVariableIsSet("QTD_PROMISE_DEBUG"))
+            fprintf(stderr, "qtd_scope_promise: '%s' <- %s (valid=%d, null=%d)\n", prop.constData(),
+                    val.typeName() ? val.typeName() : "?", (int) val.isValid(), (int) val.isNull());
+        map->insert(QString::fromUtf8(prop), val);
+        g_promiseRetries = 0;   // progress: the tree is still growing, keep trying for the rest
+        v.removeAt(i);
+    }
+    // A name that stays unreachable is the compiler's remaining gap, and it is invisible from the
+    // JS side: the binding says "of undefined" and names the PROPERTY, never the scope name that
+    // failed. Asked for by name so it costs nothing when it is not.
+    // WHY ONCE IS NOT ENOUGH, and this is the whole reason the thing is called a promise. The
+    // resolution above is attempted when the promise is made and again when a component finishes —
+    // and for an object built by this compiler both of those happen inside its own CONSTRUCTOR,
+    // before the caller has parented it or the engine has given the delegate its context. Measured
+    // on a real application: 307 promises made, 209 resolved, and the 98 left were not unreachable
+    // names but names asked for too early.
+    //
+    // So a drain that leaves work behind asks to be run again after the current event cycle, when
+    // the tree has grown. It is bounded: a name that is genuinely not there would otherwise
+    // reschedule for the life of the process, and the binding that reads it must be allowed to
+    // fail like the engine's does rather than hang the loop in retries. The bound counts
+    // CONSECUTIVE FRUITLESS attempts, not attempts: a single process-wide cap was spent in the
+    // first milliseconds of a real application and left every later promise with no retry at all,
+    // which is why the first version of this measured no improvement whatsoever.
+    if (v.isEmpty()) return;
+    if (QCoreApplication::instance() && g_promiseRetries < 32 && !g_promiseRetryArmed) {
+        g_promiseRetryArmed = true;
+        ++g_promiseRetries;
+        QTimer::singleShot(0, QCoreApplication::instance(), [] {
+            g_promiseRetryArmed = false;
+            qtd_drain_promises();
+        });
+        return;
+    }
+    if (g_promiseRetryArmed) return;   // a retry is already pending; this is not the last word
+    // REPORTED WHERE THE ANSWER IS FINAL, which is here — the point at which no further attempt is
+    // scheduled. Reporting on the first drain instead described the tree as it was during
+    // construction (every object an orphan, which they all are for a moment) and said nothing about
+    // why a name was still missing once the tree existed.
+    if (qEnvironmentVariableIsSet("QTD_PROMISE_DEBUG")) {
+        // Once per NAME for the life of the process: a drain runs on every promise and every
+        // finalize, so a per-call report buried the ten names that matter under 5623 lines.
+        static QSet<QByteArray> reported;
+        for (const auto& e : v) if (!reported.contains(e.prop)) {
+            reported.insert(e.prop);
+            int depth = 0; QObject* top = e.obj;
+            for (QObject* q = e.obj; q && q->parent(); q = q->parent()) { ++depth; top = q->parent(); }
+            fprintf(stderr, "qtd_scope_promise: '%s' unresolved (on %s, %d ancestors, top=%s, ctx=%d)\n",
+                    e.prop.constData(), e.obj ? e.obj->metaObject()->className() : "?", depth,
+                    top ? top->metaObject()->className() : "?",
+                    (int) (e.obj && qmlContext(e.obj) != nullptr));
+        }
+    }
+}
+
+#endif   // QTD_HAVE_QML — everything above is QML-only; the entry point below is not
+extern "C" void* qtd_scope_promise(void* o, const char* prop) {
+    if (qEnvironmentVariableIsSet("QTD_PROMISE_DEBUG")) {
+        fprintf(stderr, "qtd_scope_promise: ENTER '%s'\n", prop ? prop : "?");
+        fflush(stderr);
+    }
+#ifdef QTD_HAVE_QML
+    if (!o || !prop) return nullptr;
+    QObject* obj = static_cast<QObject*>(o);
+    auto* map = new QQmlPropertyMap(obj);
+    map->insert(QString::fromUtf8(prop), QVariant());
+    qtd_promises().append({map, obj, QByteArray(prop)});
+    g_promiseRetries = 0;   // a new name to answer is progress too
+
+    qtd_drain_promises();          // it may already be reachable
+    return map;
+#else
+    (void) o; (void) prop; return nullptr;
+#endif
+}
+
 extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
                            const char** names, void** objs, int n) {
 #ifdef QTD_HAVE_QML
@@ -383,6 +546,10 @@ Q_DECLARE_INTERFACE(QQmlFinalizerHook, QQmlFinalizerHook_iid)
 #endif
 
 extern "C" void qtd_component_finalized(void* o) {
+#ifdef QTD_HAVE_QML
+    qtd_drain_promises();   // the tree grew; a name that was unreachable may not be any more
+#endif
+
 #if defined(QTD_HAVE_QML) && QT_VERSION >= QT_VERSION_CHECK(6, 2, 0)
     if (!o) return;
     // qobject_cast, not dynamic_cast: the hook is reached through qt_metacast by IID, which is what
