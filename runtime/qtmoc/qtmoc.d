@@ -1710,6 +1710,22 @@ void classBegin(T)(T o, string docUrl) { attachContext(o, docUrl); qtd_parser_st
 
 /// Give an object a QQmlContext. Anything that instantiates children through the engine (views,
 /// Loader, delegates) reads QQmlContext::engine() in componentComplete() and crashes without one.
+private extern(C) void qtd_set_qml_engine(void*);
+/// POINT THE RUNTIME AT THE ENGINE YOUR APPLICATION ALREADY HAS.
+///
+/// A compiled document's contexts and every expression it delegates live in a QQmlEngine. Without
+/// this the runtime makes its own — right for a program whose whole interface is compiled, wrong
+/// for one that puts compiled documents inside a QQuickView it created, because the view's engine
+/// is where the application registered its context properties. A delegated expression in the other
+/// engine cannot see them, and says so:
+///
+///     qtd_run_js: delegated handler on Main_dc7 threw: ReferenceError: bible is not defined
+///
+/// Call it once, before building the compiled tree:
+///
+///     useQmlEngine(view.engine());
+void useQmlEngine(T)(T engine) { qtd_set_qml_engine(qobjOf(engine)); }
+
 void attachContext(T)(T o) { qtd_attach_context(qobjOf(o)); }
 /// ...with the document the object was written in, so its relative URLs resolve like the engine's.
 private extern(C) void qtd_attach_context_in(void*, void*, const(char)*);

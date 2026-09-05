@@ -1157,7 +1157,29 @@ extern "C" int qtd_connect_notify(void* ownerV, const char* prop, void* recvV, c
 // generated constructor for exactly this reason; the win is not parsing QML, not doing without an
 // engine. This engine parses nothing -- it exists so those internals have a context to reach.
 #ifdef QTD_HAVE_QML
+// THE ENGINE THE APPLICATION IS ACTUALLY USING, when it says so.
+//
+// A compiled document's contexts, its delegated bindings and its delegated handlers all live in an
+// engine. Left to itself this file makes one — which is right for a program whose whole interface
+// is compiled, and wrong for one that embeds compiled documents in a QQuickView it already has:
+// the view's engine is where the application registered its context properties, and a delegated
+// expression evaluated in OUR engine cannot see them. Measured on a real reader:
+//
+//     qtd_run_js: delegated handler on Main_dc7 threw: ReferenceError: bible is not defined
+//
+// about a context property the application had registered — on the other engine.
+//
+// So the application may name one. Nothing changes for a program that does not.
+static QQmlEngine* g_qtdEngine = nullptr;
+extern "C" void qtd_set_qml_engine(void* e) {
+#ifdef QTD_HAVE_QML
+    g_qtdEngine = static_cast<QQmlEngine*>(e);
+#else
+    (void) e;
+#endif
+}
 static QQmlEngine* qtd_qml_engine() {
+    if (g_qtdEngine) return g_qtdEngine;
     static QQmlEngine* eng = nullptr;
     if (!eng) eng = new QQmlEngine;   // leaked on purpose: it outlives every object pointing at it
     return eng;
