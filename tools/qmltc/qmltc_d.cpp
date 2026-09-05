@@ -8514,6 +8514,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 else baseWire += js;
                 g_ctxUsed = true;   // ...so a delegate's body waits for the per-item context
                 ++g_delegated;
+                // ...AND IT GOES IN THE DUMP. A delegated binding was recorded nowhere, so the
+                // differential never compared it — which is exactly backwards: a value the engine
+                // computes for us is where the two halves can most easily disagree, and a fixture
+                // whose interesting property is delegated was comparing objectName and geometry
+                // and reporting that as agreement.
+                node.baseProps.push_back({ba.first, ty.empty() ? std::string("string") : ty});
                 std::fprintf(stderr, "qmltc-d: %s:%s: base property '%s' in %s (%s) delegated to the engine: '%s'\n",
                              inPath, posOf(ba.second).c_str(), ba.first.c_str(), cls.c_str(),
                              g_selfQmlType.empty() ? "?" : g_selfQmlType.c_str(),
@@ -9776,6 +9782,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 bool untyped = false;
                 for (auto &pp : params) if (pp.second.empty()) untyped = true;
                 if (untyped) {
+                    // NOT GUESSED, AND NOT DROPPED EITHER. Picking a type is wrong — `f(x, y)
+                    // { return x + y }` compiled as numeric addition is wrong the moment it is
+                    // called with strings, and Qt declines the same shape for the same reason.
+                    // But emitting the function NOWHERE made it callable from neither side: the
+                    // engine answered `Property 'X' of object … is not a function` about a
+                    // function the document declares (bugs.md #9, criterion 4), and a real reader
+                    // lost `visibleIndex` that way.
+                    //
+                    // An untyped parameter is a JavaScript value, and the engine runs JavaScript.
+                    // So the function is DECLARED to the meta-object with every argument and the
+                    // result crossing as QVariant — lossless in both directions, and deciding
+                    // nothing — and its body is handed to the engine. The types stay the
+                    // document's, which is what the refusal was protecting.
+                    std::string ds = srcRaw(fn);
+                    if (!ds.empty()) {
+                        std::string sigv, callv;
+                        for (size_t k = 0; k < params.size(); ++k) {
+                            sigv += (k ? ", " : "") + std::string("QmlVarRef __a") + std::to_string(k);
+                            callv += (k ? ", " : "") + std::string("__a") + std::to_string(k);
+                        }
+                        methods += "    @Invokable QmlVarRef " + name + "(" + sigv + ") {\n"
+                                 + "        return callJsFunc(this, "
+                                 + dstr(QString::fromStdString(ds)) + ", [" + callv + "]);\n"
+                                 + "    }\n";
+                        g_ctxUsed = true;
+                        ++g_delegated;
+                        std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has an untyped "
+                                     "parameter — declared to the meta-object and delegated to the "
+                                     "engine (arguments and result cross as QVariant)\n",
+                                     inPath, name.c_str(), cls.c_str());
+                        continue;
+                    }
                     std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has a parameter whose type "
                                  "cannot be determined from its use — skipped rather than guessed "
                                  "(later phase)\n", inPath, qs(fn->name.toString()).c_str(), cls.c_str());

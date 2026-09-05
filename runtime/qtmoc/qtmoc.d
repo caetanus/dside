@@ -182,6 +182,12 @@ struct Slot {}
 /// engine answers `Property 'visibleIndex' of object … is not a function` about a function the
 /// document declares.
 struct Invokable {}
+/// A VALUE THAT CROSSES WITHOUT BEING INTERPRETED. Qt hands a metacall a `QVariant*` for an
+/// untyped argument; this carries that pointer and nothing else, so a method can take one, pass it
+/// on, and never decide what it is. It exists for QML functions whose parameters have no type
+/// annotation — the compiler refuses to guess one, and guessing is how `f(x, y) { return x + y }`
+/// becomes numeric addition and starts being wrong the moment it is called with strings.
+struct QmlVarRef { void* p; }
 /// Field UDA: exposes the field as a Q_PROPERTY. `notify` = name of the change
 /// signal (optional), e.g. @Property("valueChanged") int value;
 struct Property { string notify = ""; }
@@ -339,6 +345,7 @@ template cppSig(T) {
     // runtime owns the elements, so the D side needs no storage — only a name the moc can key on.
     else static if (is(T == QmlObjectList)) enum cppSig = "QQmlListProperty<QObject>";
     else static if (is(T == QmlVar)) enum cppSig = "QVariant";
+    else static if (is(T == QmlVarRef)) enum cppSig = "QVariant";
     else static if (is(T == struct)) enum cppSig = T.stringof;
     // A bound wrapper CLASS is an object: the meta-object records the property as `X*` and Qt
     // resolves it through QMetaType::fromName, exactly as it does for the value types above. This is
@@ -636,6 +643,8 @@ void callSlot(alias f, T)(T o, void** args) {
     P vals;
     static foreach (j, X; P) {
         static if (is(X == string)) vals[j] = qsToD(args[j + 1]);
+        // The QVariant Qt allocated, by address: taking a copy would mean deciding what is in it.
+        else static if (is(X == QmlVarRef)) vals[j] = QmlVarRef(args[j + 1]);
         else vals[j] = *cast(X*) args[j + 1];
     }
     // ...AND `a[0]` IS THE RETURN. Qt passes a slot the same array it passes an invokable, with
@@ -646,6 +655,13 @@ void callSlot(alias f, T)(T o, void** args) {
         auto rv = __traits(child, o, f)(vals);
         if (args[0] !is null) {
             static if (is(ReturnType!f == string)) qtd_qs_set(args[0], rv.ptr, cast(int) rv.length);
+            // A QmlVarRef return is a QVariant the callee made: copy it into the slot Qt
+            // reserved, then free it. The callee cannot write args[0] itself — it is an ordinary
+            // D method and never sees the metacall's array.
+            else static if (is(ReturnType!f == QmlVarRef)) {
+                qtd_var_assign(args[0], rv.p);
+                qtd_var_free(rv.p);
+            }
             else *cast(ReturnType!f*) args[0] = rv;
         }
     }
@@ -1190,6 +1206,24 @@ void* __bindRecv(T)(T o, string name) {
     if (q is null && __inBinding) throw new QmlNullDeref(name);
     return q;
 }
+private extern(C) int qtd_call_js(void*, const(char)*, void**, int, void*);
+private extern(C) void* qtd_var_new();
+private extern(C) void qtd_var_assign(void*, void*);
+private extern(C) void qtd_var_free(void*);
+/// Run a QML function's SOURCE in the engine, with the arguments the metacall was handed and the
+/// result written into the slot it reserved. The whole crossing is QVariant, so nothing here — and
+/// nothing in the generated code — decides what an untyped parameter holds.
+///
+/// `ret` is `args[0]`: Qt reserves it for the return of every method, and an invokable declared to
+/// return QVariant gets a QVariant there to assign into.
+QmlVarRef callJsFunc(T)(T o, string src, QmlVarRef[] argv) {
+    auto ps = new void*[argv.length];
+    foreach (i, a; argv) ps[i] = a.p;
+    auto ret = qtd_var_new();
+    qtd_call_js(qobjOf(o), (src ~ "\0").ptr, ps.ptr, cast(int) ps.length, ret);
+    return QmlVarRef(ret);   // callSlot copies it into the metacall's slot and frees this one
+}
+
 /// Evaluate ONE binding. A null dereference inside aborts it and writes nothing, as the engine
 /// does; any other exception propagates. Each initial binding is wrapped separately because the
 /// engine aborting one does not stop the object being built — only that one property stays at its

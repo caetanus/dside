@@ -155,6 +155,75 @@ extern "C" int qtd_run_js(void* o, const char* src) {
 #endif
 }
 
+// A QVariant THE CALLEE OWNS. The generated method has no access to the metacall's return slot —
+// it is a plain D method that returns a value — so it makes one of these, the engine writes the
+// result into it, and callSlot copies it into the slot Qt reserved and frees this one. Three
+// functions rather than threading `args[0]` through a signature the meta-object also reads.
+extern "C" void* qtd_var_new() { return new QVariant(); }
+extern "C" void qtd_var_assign(void* dst, void* src) {
+    if (dst && src) *static_cast<QVariant*>(dst) = *static_cast<QVariant*>(src);
+}
+extern "C" void qtd_var_free(void* v) { delete static_cast<QVariant*>(v); }
+
+// RUN A QML FUNCTION IN THE ENGINE, WITH ITS ARGUMENTS AND ITS RESULT.
+//
+// A QML function whose parameters carry no type annotation is JavaScript, and guessing a type for
+// a parameter is how `f(x, y) { return x + y }` becomes numeric addition and starts being wrong
+// the moment it is called with strings. So the compiler refuses to compile one — and then emitted
+// it nowhere, which made it callable from neither side: the engine answered `Property 'X' of
+// object … is not a function` about a function the document declares (bugs.md #9, criterion 4).
+//
+// The engine can run it. What was missing is a crossing for the ARGUMENTS: QVariant, in both
+// directions, because it is what Qt's meta-object already carries for an untyped value and what
+// QJSEngine converts to and from without deciding anything. Nothing here interprets a value; the
+// types stay the document's.
+//
+// The source is the WHOLE function — `function f(a, b) { … }` — evaluated once to obtain the JS
+// function object, then called. Evaluating a bare body would lose the parameter names.
+extern "C" int qtd_call_js(void* o, const char* src, void** args, int n, void* ret) {
+#ifdef QTD_HAVE_QML
+    if (!o || !src) return 0;
+    QObject* obj = static_cast<QObject*>(o);
+    QQmlContext* ctx = qmlContext(obj);
+    QQmlEngine* eng = ctx ? ctx->engine() : nullptr;
+    if (!ctx || !eng) {
+        std::fprintf(stderr, "qtd_call_js: %s has no QQmlContext — '%s' not called\n",
+                     obj->metaObject()->className(), src);
+        return 0;
+    }
+    // `(<source>)` so a function DECLARATION reads as an expression and yields the function.
+    QQmlExpression e(ctx, obj, QString("(") + QString::fromUtf8(src) + ")");
+    QVariant fnv = e.evaluate();
+    if (e.hasError()) {
+        std::fprintf(stderr, "qtd_call_js: '%s' on %s did not compile: %s\n", src,
+                     obj->metaObject()->className(), qPrintable(e.error().description()));
+        return 0;
+    }
+    QJSValue fn = eng->toScriptValue(fnv);
+    if (!fn.isCallable()) {
+        std::fprintf(stderr, "qtd_call_js: '%s' on %s did not evaluate to a function\n", src,
+                     obj->metaObject()->className());
+        return 0;
+    }
+    QJSValueList argv;
+    argv.reserve(n);
+    for (int i = 0; i < n; ++i)
+        argv << eng->toScriptValue(args && args[i] ? *static_cast<QVariant*>(args[i]) : QVariant());
+    QJSValue r = fn.call(argv);
+    if (r.isError()) {
+        // LOUD, like the delegated binding beside it: a call that silently returns nothing is
+        // indistinguishable from one that was never made.
+        std::fprintf(stderr, "qtd_call_js: '%s' on %s threw: %s\n", src,
+                     obj->metaObject()->className(), qPrintable(r.toString()));
+        return 0;
+    }
+    if (ret) *static_cast<QVariant*>(ret) = r.toVariant();
+    return 1;
+#else
+    (void) o; (void) src; (void) args; (void) n; (void) ret; return 0;
+#endif
+}
+
 extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
                            const char** names, void** objs, int n) {
 #ifdef QTD_HAVE_QML
