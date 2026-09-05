@@ -175,6 +175,13 @@ struct QTranslator {
 struct QObject {}
 /// Method UDA: slot (invokable by Qt / connectable to a signal).
 struct Slot {}
+/// A method the meta-object exposes that RETURNS something. Qt calls this an invokable and draws
+/// the line exactly there: a slot returns void, and QMetaObject::invokeMethod with Q_RETURN_ARG
+/// only works on a method declared with a return type. A QML function that returns a value has no
+/// other way to be callable from the engine — emitted as a plain D method it is invisible, and the
+/// engine answers `Property 'visibleIndex' of object … is not a function` about a function the
+/// document declares.
+struct Invokable {}
 /// Field UDA: exposes the field as a Q_PROPERTY. `notify` = name of the change
 /// signal (optional), e.g. @Property("valueChanged") int value;
 struct Property { string notify = ""; }
@@ -358,8 +365,11 @@ template signalMembers(T) {
 // `toggle()`, `toggle(int)` and `toggle(bool)` are three distinct entries in a meta-object,
 // told apart by their full signature — moc emits all three. Keying by name would collapse
 // them into one, so each overload gets its own entry here too.
+// SLOTS AND INVOKABLES SHARE ONE INDEX SPACE, which is what lets the whole dispatch stay as it
+// was: the metacall already hands `a` to the slot callback, and `a[0]` is the return slot every
+// Qt method carries and a slot simply ignores.
 template slotSymbols(T) {
-    enum isSlotSym(alias f) = hasUDA!(f, Slot);
+    enum isSlotSym(alias f) = hasUDA!(f, Slot) || hasUDA!(f, Invokable);
     template ovlsOf(string m) {
         static if (m.length && __traits(compiles, __traits(getOverloads, T, m)))
             alias ovlsOf = Filter!(isSlotSym, __traits(getOverloads, T, m));
@@ -385,9 +395,16 @@ string[] signalSigs(T)() {
     return r;
 }
 string[] slotSigs(T)() {
+    import std.traits : ReturnType;
     string[] r;
-    static foreach (f; slotSymbols!T)
-        r ~= sigString!(__traits(identifier, f), Parameters!f);
+    static foreach (f; slotSymbols!T) {{
+        auto sig = sigString!(__traits(identifier, f), Parameters!f);
+        // `->` and the C++ spelling of the return, for an invokable. The separator cannot occur in
+        // a signature the other branch produces, so buildMo tells the two apart without another
+        // array and without touching any of its four callers.
+        static if (!is(ReturnType!f == void)) sig ~= "->" ~ cppSig!(ReturnType!f);
+        r ~= sig;
+    }}
     return r;
 }
 
@@ -504,10 +521,10 @@ int[] propNotify(T)() {
 void validateMeta(T)() {
     import std.traits : ReturnType;
     static foreach (f; slotSymbols!T)
-        static assert(is(ReturnType!f == void),
+        static assert(is(ReturnType!f == void) || hasUDA!(f, Invokable),
             "qtmoc: @Slot " ~ T.stringof ~ "." ~ __traits(identifier, f) ~ " must return void. " ~
-            "A method that returns a value is an invokable, not a slot, and the runtime " ~
-            "would discard the return — emit the result through a Signal instead.");
+            "A method that returns a value is an invokable: mark it @Invokable, which declares " ~
+            "the return type to the meta-object and marshals it back.");
     static foreach (m; propMembers!T) {{
         enum note = propNote!(__traits(getMember, T, m));
         static if (note.length) {
@@ -614,13 +631,24 @@ void callProp(T, string m)(T o, void* qobj, int notifyIdx, int write, void** a) 
 // __traits(child) binds that exact symbol to the instance, where __traits(getMember, o, name)
 // would reopen the overload set and re-resolve it from the argument types.
 void callSlot(alias f, T)(T o, void** args) {
+    import std.traits : ReturnType;
     alias P = Parameters!f;
     P vals;
     static foreach (j, X; P) {
         static if (is(X == string)) vals[j] = qsToD(args[j + 1]);
         else vals[j] = *cast(X*) args[j + 1];
     }
-    __traits(child, o, f)(vals);
+    // ...AND `a[0]` IS THE RETURN. Qt passes a slot the same array it passes an invokable, with
+    // slot zero reserved for the result; a void method leaves it alone. Writing it is the whole
+    // difference, and it is why invokables need no dispatch of their own.
+    static if (is(ReturnType!f == void)) __traits(child, o, f)(vals);
+    else {
+        auto rv = __traits(child, o, f)(vals);
+        if (args[0] !is null) {
+            static if (is(ReturnType!f == string)) qtd_qs_set(args[0], rv.ptr, cast(int) rv.length);
+            else *cast(ReturnType!f*) args[0] = rv;
+        }
+    }
 }
 
 // ---- factory ----------------------------------------------------------------

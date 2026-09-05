@@ -84,7 +84,7 @@ category() {
     # rather than testing a unit. They run their members, so counting them as tests would count
     # every member twice — they are their own category on purpose.
     binding-core|qmltc-smoke|qmltc-corpus) echo aggregate ;;
-    qml-*|qmlreg-*|qmlaot-*|shadowaot-*|qmltc-o3-gate-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
+    qml-*|qmlreg-*|qmlinvoke-*|qmlaot-*|shadowaot-*|qmltc-o3-gate-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
     reglife-*|valuetypeprop-*|subclasscast-*) echo qml ;;
     slotoverload-*) echo moc ;;
     # ...and the ratchets/probes that answer the long-lived structural findings (r4 #9, r9 #2,

@@ -284,6 +284,10 @@ Build reggaeBuild() {
         foreach (dc; DCS) {
             all ~= qtdTest("qml" ~ tag ~ "-" ~ dc, t("qml", "backend_test.d"), b, dc, qmlExtra);   // setContextProperty
             all ~= qtdTest("qmlreg" ~ tag ~ "-" ~ dc, t("qml", "register_test.d"), b, dc, qmlExtra); // qmlRegisterType
+            // ...and a D method that RETURNS, called from QML. Qt draws the slot/invokable line at
+            // the return type, and until the meta-object could declare one a QML function that
+            // returns a value was unreachable from the engine (bugs.md #9, criterion 4).
+            all ~= qtdTest("qmlinvoke" ~ tag ~ "-" ~ dc, t("qml", "invokable_test.d"), b, dc, qmlExtra);
             all ~= qtdTest("qmltwo" ~ tag ~ "-" ~ dc, t("qml", "register_two_test.d"), b, dc, qmlExtra); // 2 distinct types
             all ~= qtdTest("homonym" ~ tag ~ "-" ~ dc, t("qml", "homonym_test.d"), b, dc, homoExtra); // 2 same-named types
             all ~= qtdTest("homocollide" ~ tag ~ "-" ~ dc, t("qml", "homonym_collision_test.d"), b, dc, homoExtra); // same key -> conflict

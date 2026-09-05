@@ -215,7 +215,22 @@ const QMetaObject* buildMo(const char* cn, const QMetaObject* super,
     // name against the engine's QQuickItem. The channel already carries this kind of fact.
     b.addClassInfo("qtdGenerated", "1");
     for (int i = 0; i < nsig; ++i)  b.addSignal(sigs[i]);
-    for (int i = 0; i < nslot; ++i) b.addSlot(slotSigs[i]);
+    // A RETURN TYPE TRAVELS INSIDE THE SIGNATURE, after `->`. Qt's meta-object distinguishes a
+    // SLOT (returns void) from an INVOKABLE (returns something), and until now this builder could
+    // only make the first — so a QML function that returns a value was emitted as a plain D method
+    // the meta-object never saw, and the engine answered
+    //     TypeError: Property 'visibleIndex' of object Main_dc9 is not a function
+    // about a function the document declares (bugs.md #9, criterion 4).
+    //
+    // Encoded in the string rather than passed as another array, because `buildMo` has four
+    // callers and `qtd_moc_new` is one of them: a separator no existing signature can contain
+    // costs nothing at any of them, and the cache key below already hashes the raw strings.
+    for (int i = 0; i < nslot; ++i) {
+        const char* arrow = std::strstr(slotSigs[i], "->");
+        if (!arrow) { b.addSlot(slotSigs[i]); continue; }
+        QMetaMethodBuilder m = b.addMethod(QByteArray(slotSigs[i], int(arrow - slotSigs[i])));
+        m.setReturnType(QByteArray(arrow + 2));
+    }
     for (int i = 0; i < nprop; ++i) {
         // An OBJECT property is declared by its precise type (`QQuickItem*`), and that name only
         // resolves to a QMetaType if something in the process instantiated one — QtQuick registers
