@@ -5628,8 +5628,10 @@ static bool jsDelegate(ExpressionNode *e, const std::string &prop, std::string &
             snames = std::string("\"self\"") + (names.empty() ? "" : ", " + names);
             sobjs = ", this" + objs;
         }
+        // ...and the expression itself, so a shadow that does not load falls to the engine
+        // instead of leaving the property with no binding at all.
         out = "        bindShadow(this, \"" + prop + "\", \"" + g_shadowUrl + file
-            + "\", [" + snames + "]" + sobjs + ");\n";
+            + "\", " + dstr(QString::fromStdString(ssrc)) + ", [" + snames + "]" + sobjs + ");\n";
         return true;
     }
     out = "        bindJs(this, \"" + prop + "\", " + dstr(QString::fromStdString(src))

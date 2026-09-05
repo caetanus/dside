@@ -880,21 +880,45 @@ extern "C" void* qtd_ctx_fill_qs(void* o, const char* name) {
 // It also writes the result ITSELF, through a QML `Binding` inside it, so there is no signal to
 // connect and no slot to invent here. And because it is a real document it carries the ORIGINAL
 // document's imports, which is the one thing the runtime string path never had.
-extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url,
+// A TIER, NOT AN ULTIMATUM. Every failure below used to `return 0` and install nothing: the
+// property kept its default, no binding existed, and the only trace was a line on stderr. That is
+// the worst of the three outcomes — worse than compiling it, worse than delegating it — because
+// the document still says the property is bound and nothing in the running program agrees.
+//
+// So the ladder is: compiled where the compiler can, this AOT shadow where it cannot, and the
+// engine evaluating the expression directly where the shadow does not load or build. The engine is
+// the floor and it always answers, because it is what would have run had none of this existed. The
+// expression travels with the shadow for exactly this reason.
+extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
+                           const char** names, void** objs, int n);
+extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url, const char* src,
                                const char** names, void** objs, int n) {
 #ifdef QTD_HAVE_QML
     if (!o || !prop || !url) return 0;
     QObject* obj = static_cast<QObject*>(o);
+    // Reported once per binding and then handed down, so a tier DROP stays measurable — the reason
+    // a blanket fallback was resisted is that it hides how much the compiler actually covers.
+    auto fallback = [&](const char* why) {
+        std::fprintf(stderr, "qtd_bind_shadow: '%s' on %s — %s; falling back to the engine\n",
+                     prop, obj->metaObject()->className(), why);
+        return src ? qtd_bind_js(o, prop, src, names, objs, n) : 0;
+    };
     if (!QCoreApplication::instance()) {
         std::fprintf(stderr, "qtd_bind_shadow: '%s' on %s has no application — not installed\n",
                      prop, obj->metaObject()->className());
-        return 0;
+        return 0;   // the engine path needs one too; there is no lower tier to fall to
     }
+    // FAULT INJECTION, because a fallback nothing ever takes is a fallback nobody knows is broken.
+    // The shadows are BYTECODE inside the binary by the time this runs, so there is no file to
+    // remove and no way to make them fail from outside. shadowaot- runs the same program twice:
+    // once as built, and once with this set, and both runs must produce the engine's values.
+    if (qEnvironmentVariableIsSet("QTD_SHADOW_FORCE_FAIL"))
+        return fallback("QTD_SHADOW_FORCE_FAIL is set");
     auto* c = new QQmlComponent(qtd_qml_engine(), QUrl(QString::fromUtf8(url)), obj);
     if (c->isError()) {
         std::fprintf(stderr, "qtd_bind_shadow: shadow '%s' failed to load: %s\n", url,
                      qPrintable(c->errorString()));
-        return 0;
+        return fallback("the shadow document did not load");
     }
     // beginCreate / completeCreate, NOT create(). `create()` completes the object, which is when
     // the engine evaluates its bindings — and the shadow's whole value is a binding that reads the
@@ -909,7 +933,7 @@ extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url,
     if (!sh) {
         std::fprintf(stderr, "qtd_bind_shadow: shadow '%s' failed to build: %s\n", url,
                      qPrintable(c->errorString()));
-        return 0;
+        return fallback("the shadow document did not build");
     }
     sh->setParent(obj);   // dies with the object whose property it drives
     for (int i = 0; i < n; ++i)
@@ -921,7 +945,7 @@ extern "C" int qtd_bind_shadow(void* o, const char* prop, const char* url,
     c->completeCreate();
     return 1;
 #else
-    (void) o; (void) prop; (void) url; (void) names; (void) objs; (void) n; return 0;
+    (void) o; (void) prop; (void) url; (void) src; (void) names; (void) objs; (void) n; return 0;
 #endif
 }
 

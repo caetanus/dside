@@ -91,4 +91,20 @@ if [ -s "$OUT/run.err.real" ]; then
   echo "shadow-aot: the run was not silent:" >&2; head -5 "$OUT/run.err.real" >&2; exit 1
 fi
 diff "$OUT/eng.s" "$OUT/ours.s"
-echo "shadow-aot OK: $n shadow(s) as BYTECODE (no .qml readable), values match the engine"
+
+# ...AND THE SAME PROGRAM WITH THE AOT TIER TAKEN AWAY. A failing shadow used to install nothing at
+# all: the property kept its default, the document still claimed it was bound, and one line on
+# stderr was the only trace. The tiers are compiled -> AOT shadow -> the engine evaluating the
+# expression, and the floor always answers, because it is what would have run had none of this
+# existed. Proved by forcing the middle tier to fail and demanding the SAME values: a run that
+# merely survived would pass while every property sat at its default.
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QTD_SHADOW_FORCE_FAIL=1 \
+    "$OUT/app" > "$OUT/fb" 2>"$OUT/fb.err"
+grep -q "falling back to the engine" "$OUT/fb.err" \
+    || { echo "shadow-aot: the forced failure did not take the fallback" >&2; exit 1; }
+sort "$OUT/fb" > "$OUT/fb.s"
+diff "$OUT/eng.s" "$OUT/fb.s" \
+    || { echo "shadow-aot: the fallback ran but did not reproduce the engine" >&2; exit 1; }
+
+echo "shadow-aot OK: $n shadow(s) as BYTECODE (no .qml readable), values match the engine —"\
+     "and match it again with the AOT tier forced to fail, through the engine"

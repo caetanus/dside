@@ -1520,19 +1520,21 @@ int runJs(T)(T o, string src) {
     return qtd_run_js(qobjOf(o), (src ~ "\0").ptr);
 }
 
-private extern(C) int qtd_bind_shadow(void*, const(char)*, const(char)*, const(char)**, void**, int);
+private extern(C) int qtd_bind_shadow(void*, const(char)*, const(char)*, const(char)*, const(char)**, void**, int);
 /// PHASE 2: the same delegation, from a SHADOW compiled at build time. The expression lives in a
 /// generated QML document — a real one, with the original document's imports — and the value is
 /// written back by a `Binding` inside it, so it stays reactive without a signal being wired here.
 /// Emitted in place of `bindJs` when the compiler is given --shadow-dir; identical otherwise.
-int bindShadow(T, A...)(T o, string prop, string url, string[] ids, A objs) {
+/// `src` is the same expression the shadow was built from: if the shadow does not load or build,
+/// the runtime evaluates it through the engine rather than leaving the property unbound.
+int bindShadow(T, A...)(T o, string prop, string url, string src, string[] ids, A objs) {
     const(char)*[A.length ? A.length : 1] ns;
     void*[A.length ? A.length : 1] ps;
     static foreach (i, a; objs) {
         ns[i] = (ids[i] ~ "\0").ptr;
         ps[i] = qobjOf(a);
     }
-    return qtd_bind_shadow(qobjOf(o), (prop ~ "\0").ptr, (url ~ "\0").ptr,
+    return qtd_bind_shadow(qobjOf(o), (prop ~ "\0").ptr, (url ~ "\0").ptr, (src ~ "\0").ptr,
                            ns.ptr, ps.ptr, cast(int) A.length);
 }
 
