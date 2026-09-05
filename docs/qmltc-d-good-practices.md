@@ -95,14 +95,14 @@ the engine. `function pick(i: int) : string { … }` compiles.
 A `Component` is a template; building it eagerly would instantiate its contents once, which is
 wrong. It is skipped by design. This is not a gap to work around — it is what `Component` means.
 
-### 6. Watch what a document-declared property on a non-Qt-type child costs
+### 6. A property you add to a `Timer` or a `ListModel` is read through the meta-object
 
 `Timer`, `ListModel`, `RowLayout` and friends are not in the binding, so the **engine** builds them
-and the generated D holds a shell around the instance. Base properties (`interval`, `running`) live
-on the instance; properties the *document* declares on that element live on the shell. A body that
-uses both through one id — `shotTimer.target = x; shotTimer.restart()` — cannot be satisfied by
-either object alone. **Today this is a real limitation**: put such state on the enclosing object
-(`property string shotTarget`) instead of on the `Timer`.
+and the generated D holds a shell around the instance. Properties the document declares on such an
+element are declared into the engine's object too, so one name answers both halves —
+`shotTimer.target = x; shotTimer.restart()` works. They are not D fields, so reads and writes cost a
+meta-object round trip rather than a field access. That is a price, not a limitation; if a property
+is written every frame, put it on the enclosing object instead.
 
 ### 7. Ids are visible everywhere; declaration order does not matter
 
