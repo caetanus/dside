@@ -10860,9 +10860,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // The late pass: this object's deferred connects, then every child's. Emitted only where
     // there is something to do, so the common object is unchanged.
     std::string lateKids;
-    for (auto &k : node.kids)        if (k.second.hasLate) lateKids += "        " + dIdent(k.first) + ".__qmltcLate();\n";
-    for (auto &dk : node.defaultKids) if (dk.second.hasLate) lateKids += "        " + dk.first + ".__qmltcLate();\n";
-    for (auto &gk : node.groupKids)  if (gk.second.hasLate) lateKids += "        " + gk.first + ".__qmltcLate();\n";
+    for (auto &k : node.kids)        if (k.second.hasLate) lateKids += "        if (" + dIdent(k.first) + " !is null) " + dIdent(k.first) + ".__qmltcLate();\n";
+    for (auto &dk : node.defaultKids) if (dk.second.hasLate) lateKids += "        if (" + dk.first + " !is null) " + dk.first + ".__qmltcLate();\n";
+    for (auto &gk : node.groupKids)  if (gk.second.hasLate) lateKids += "        if (" + gk.first + " !is null) " + gk.first + ".__qmltcLate();\n";
     // ...and the bindings whose reads go through an object assigned later. Appended at the END of
     // the late body, after every connect it makes, so the value they settle on is the final one.
     for (auto &r : reEval) lateWire += "        " + r + "();\n";
@@ -10881,24 +10881,50 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Only a BOUND object can implement the interface (a fresh @QObject is a QtdMocObject and has
     // no C++ base to declare one), but a bound descendant of an unbound object still needs the
     // call, so the recursion is emitted wherever anything below it is bound.
+    // A CHILD THAT WAS NEVER CONSTRUCTED HAS NOTHING TO WIRE. The cascade used to dereference the
+    // field unconditionally, which was safe only while every class reached its late phase through
+    // its parent's — a delegate reaches its own, and inside one a field can still be null when the
+    // engine has not built that level. Null-checked rather than ordered around: a missing child is
+    // a fact about the tree, not about the phase.
     std::string finalKids;
-    for (auto &k : node.kids)         if (k.second.hasFinal) finalKids += "        " + dIdent(k.first) + ".__qmltcFinal();\n";
-    for (auto &dk : node.defaultKids) if (dk.second.hasFinal) finalKids += "        " + dk.first + ".__qmltcFinal();\n";
-    for (auto &gk : node.groupKids)   if (gk.second.hasFinal) finalKids += "        " + gk.first + ".__qmltcFinal();\n";
+    for (auto &k : node.kids)         if (k.second.hasFinal) finalKids += "        if (" + dIdent(k.first) + " !is null) " + dIdent(k.first) + ".__qmltcFinal();\n";
+    for (auto &dk : node.defaultKids) if (dk.second.hasFinal) finalKids += "        if (" + dk.first + " !is null) " + dk.first + ".__qmltcFinal();\n";
+    for (auto &gk : node.groupKids)   if (gk.second.hasFinal) finalKids += "        if (" + gk.first + " !is null) " + gk.first + ".__qmltcFinal();\n";
     std::string finalSelf = boundBase.empty() ? std::string()
                                               : "        componentFinalized(this);\n";
     node.boundBase = boundBase;
     node.hasFinal = !finalSelf.empty() || !finalKids.empty();
-    if (cls == g_rootClass && (node.hasLate || node.hasFinal)) {
+    // ...AND A DELEGATE, which is a root of its own instantiation: the view builds it, so there is
+    // no enclosing class to call its late phase the way a parent calls its children's. Nothing did,
+    // so a delegate's late wiring never ran at all — the connect that keeps a cell's width following
+    // its label's was emitted and never made, and the cell stayed at the width it had before the
+    // label had any text (10 against the engine's 32 in the reduced case, and a footer of six
+    // labels piled on top of each other in the reader). Every delegated binding in a delegate's
+    // late phase was in the same position, and so was componentFinalized for its whole subtree.
+    if ((cls == g_rootClass || (!g_delegateCls.empty() && cls == g_delegateCls))
+            && (node.hasLate || node.hasFinal)) {
         auto pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
         if (pos != std::string::npos)
             wire.insert(pos, std::string(node.hasLate ? "        __qmltcLate();\n" : "")
                            + (node.hasFinal ? "        __qmltcFinal();\n" : ""));
     }
+    // AN OBJECT THE ENGINE COULD NOT BUILD HAS NOTHING TO WIRE. The wire of such a class returns
+    // the moment createQmlObject answers null — before it takes its back-reference to the enclosing
+    // object — so every later phase would dereference a null `__outer`. It never showed while a
+    // delegate's late phase was dead code; the first run with one alive crashed inside it, in a
+    // tooltip whose type the document's imports could not resolve. gdb, frame #0.
+    std::string engineBail = g_selfIsEngineInst ? "        if (__inst is null) return;\n"
+                                                : std::string();
+    // ...and an object whose own wiring never completed. A delegate's levels resolve their
+    // back-references by CLASS at ready time and give up when the tree does not carry the class
+    // they are looking for — `if (__o0 is null) return;`, already there. The late phase is called
+    // by the parent's cascade and knew nothing about that, so it dereferenced the null the
+    // resolution had just declined to use. `__qtdWired` is the object's own word for "I finished".
+    if (delegRewrite) engineBail += "        if (!__qtdWired) return;\n";
     std::string lateMethod = node.hasLate
-        ? "    void __qmltcLate() {\n" + guardWire(lateWire) + lateKids + "    }\n" : "";
+        ? "    void __qmltcLate() {\n" + engineBail + guardWire(lateWire) + lateKids + "    }\n" : "";
     if (node.hasFinal)
-        lateMethod += "    void __qmltcFinal() {\n" + finalSelf + finalKids + "    }\n";
+        lateMethod += "    void __qmltcFinal() {\n" + engineBail + finalSelf + finalKids + "    }\n";
     if (delegRewrite) {
         // `__outer.__outer` -> `__o1`, as a WHOLE chain (the next character must not continue it,
         // or the outermost level would be rewritten as the innermost). Longest first, and only the
