@@ -190,7 +190,14 @@ struct Invokable {}
 struct QmlVarRef { void* p; }
 /// Field UDA: exposes the field as a Q_PROPERTY. `notify` = name of the change
 /// signal (optional), e.g. @Property("valueChanged") int value;
-struct Property { string notify = ""; }
+///
+/// `name` publishes the property under a name of its own, when the FIELD cannot carry it: QML has
+/// no reserved words in common with D, so a document is free to declare `property string ref` or
+/// `property int align`, and the D field holding one has to be spelled otherwise. Without this the
+/// generated code had a choice between not compiling and publishing a name Qt would not find, and
+/// took the third option — dropping the property, which is how `required property string ref`
+/// became a delegate row that read back nothing.
+struct Property { string notify = ""; string name = ""; }
 /// The D placeholder for a declared QML list property. It stores nothing: the elements live in the
 /// runtime, behind the QQmlListProperty the meta-object hands out — which is also what the
 /// `listAppend` the generated code already emits writes into.
@@ -501,6 +508,18 @@ template propNote(alias sym) {
     static if (is(U[0])) enum propNote = "";          // @Property (type) -> no notify
     else                 enum propNote = U[0].notify;  // @Property()/@Property("x")
 }
+// The name Qt publishes: the UDA's when it carries one, the FIELD's otherwise.
+template propPub(alias sym, string member) {
+    private alias U = getUDAs!(sym, Property);
+    static if (is(U[0])) enum propPub = member;
+    else static if (U[0].name.length) enum propPub = U[0].name;
+    else enum propPub = member;
+}
+string[] propPubNames(T)() {
+    string[] r;
+    static foreach (m; propMembers!T) r ~= propPub!(__traits(getMember, T, m), m);
+    return r;
+}
 // index (in signalMembers order) of each property's notify signal, or -1.
 int[] propNotify(T)() {
     int[] r;
@@ -700,7 +719,7 @@ T newQObject(T, Args...)(Args ctorArgs) {
     enum slts  = slotSigs!T;
     // The forwarding ones are appended AFTER the stored ones, so a property index is still the
     // index into `propMembers` for everything below that length and into the alias list above it.
-    enum pnames = propMembers!T ~ aliasPropNames!T;
+    enum pnames = propPubNames!T ~ aliasPropNames!T;
     enum ptypes = propTypes!T ~ aliasPropTypes!T;
     enum pnotif = propNotify!T ~ aliasPropNotify!T;
     // arrays of C-strings (signatures with \0 -> .ptr is safe in C); +1 avoids [0]
@@ -1319,9 +1338,19 @@ string propStr(T)(T o, string name) {
 /// In a bool target that distinction is invisible, but `implicitWidth: a || b` (Qt's TextField)
 /// must yield a WIDTH — compiled as a bool comparison it would set 1 or 0. `lazy` keeps JS's
 /// short-circuit, and taking `a` by value evaluates it exactly once.
-T __qmltcOr(T)(T a, lazy T b) { return a != 0 ? a : b; }
+/// TRUTHINESS IS JS'S, NOT D'S, and for a string the two disagree: JS calls `""` falsy while D
+/// would take a non-null slice as true, so the test is on LENGTH. `a || ""` on a string is the
+/// ordinary way a document supplies a default — the reader writes `(place || "").length` — and
+/// compiled as D's `||` it yields a bool, which does not even have a `.length` to read.
+private bool __qmltcTruthy(T)(auto ref T v) {
+    static if (is(T == string) || is(T == wstring) || is(T == dstring) || __traits(isStaticArray, T)
+               || is(T : const(U)[], U)) return v.length != 0;
+    else static if (is(T == bool)) return v;
+    else return v != 0;
+}
+T __qmltcOr(T)(T a, lazy T b) { return __qmltcTruthy(a) ? a : b; }
 /// ...and its twin: `a && b` is `b` when `a` is truthy, else `a`.
-T __qmltcAnd(T)(T a, lazy T b) { return a != 0 ? b : a; }
+T __qmltcAnd(T)(T a, lazy T b) { return __qmltcTruthy(a) ? b : a; }
 
 /// The QML globals `Qt.darker` / `Qt.lighter`. Both take a colour and a factor and return a
 /// colour; colours travel as TEXT here (a colour read is a propStr and a colour write goes through

@@ -2073,7 +2073,13 @@ static bool readName(const std::string &n, std::string &out) {
                             && !fr.baseProps.count(n)) {
                         g_outerUsed = true;
                         if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-                        out = pre + n;
+                        // dIdent, because a QML property may be spelled with a D KEYWORD and the
+                        // field that holds it carries the renamed spelling. The declaration went
+                        // through this and the read did not: a document with `property string ref`
+                        // emitted `__o0.ref`, which is not an expression D can parse at all
+                        // ("identifier or `new` expected following `.`, not `ref`") — the generated
+                        // module did not compile, so nothing downstream of it ran.
+                        out = pre + dIdent(n);
                         return true;
                     }
                     auto bp2 = fr.baseProps.find(n);
@@ -3030,7 +3036,10 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 // D answered `no property 'length' for ... QmlVar`. Same rule readName keeps for a bare one.
                 if (!fr->baseProps.count(mem)) {
                     auto pv = fr->propType.find(mem);
-                    if (pv != fr->propType.end() && pv->second != "@var") { out = pre + mem; return true; }
+                    // dIdent for the same reason the bare-name read above needs it: a QML property
+                    // may be spelled with a D keyword, and the field carries the renamed spelling.
+                    if (pv != fr->propType.end() && pv->second != "@var")
+                        { out = pre + dIdent(mem); return true; }
                 }
                 if (auto qp = g_qmlProps.find(fr->qmlType); qp != g_qmlProps.end()) {
                     auto t = qp->second.find(mem);
@@ -3943,7 +3952,11 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // knew only the registry's spelling, so `property real neg: -x || 0` fell through to the
         // bool operator and assigned 1 where the engine had -9. Qt's own styles never showed it:
         // they write these guards on BASE properties, which arrive here already typed `double`.
-        if (logical && (dtype == "double" || dtype == "int" || dtype == "real" || dtype == "float")) {
+        // ...AND A STRING TARGET IS THE SAME PROBLEM. `(place || "").length` is how a document
+        // supplies a default, and compiled as D's `||` it is a bool, which has no `.length` — the
+        // generated module did not compile, so every binding in it was lost, not just this one.
+        if (logical && (dtype == "double" || dtype == "int" || dtype == "real" || dtype == "float"
+                        || dtype == "string")) {
             std::string l2, r2;
             if (compileExpr(bin->left, dtype, l2) && compileExpr(bin->right, dtype, r2)) {
                 out = std::string(bin->op == QSOperator::Or ? "__qmltcOr(" : "__qmltcAnd(")
@@ -6627,12 +6640,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // a property), which is what `delegate` needs; a declared one is refused instead. This
             // has to be checked before any other handling: a literal-valued property takes an
             // earlier path and skipped the check entirely when it sat further down.
-            if (dKeywords().count(name)) {
-                std::fprintf(stderr, "qmltc-d: %s: property '%s' in %s is a D keyword, and renaming "
-                             "the field would change the name Qt sees — skipped (later phase)\n",
-                             inPath, name.c_str(), cls.c_str());
-                ++partial; continue;
-            }
+            // ...AND IT NO LONGER HAS TO BE. The field is renamed and the meta-object is told the
+            // name to publish — `@Property("refChanged", "ref") string ref_;` — so D compiles and Qt
+            // still knows the property as the document spells it. Dropping it instead was the third
+            // option, and the worst: `required property string ref` became a delegate row that read
+            // back nothing at all, with a diagnostic that named the property and not the symptom.
+            // QML shares no reserved word with D, so this is a whole class: `ref`, `body`, `align`,
+            // `scope`, `version`, `module`, `function`, `debug`, `real`, `byte`, `alias`.
             // A custom `default property` (typically `list<QtObject>`) redirects bare children into
             // that list rather than the object's QObject children; whether that breaks our `@N` =
             // children()[N] dump model depends on there being bare children, which we only know after
@@ -10259,13 +10273,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // beside it would be a second copy of the same property and the two would drift the first
         // time anything wrote through the other.
         if (g_selfIsEngineInst) return "        setPropAny(__inst, \"" + p.name + "\", _v);\n";
-        std::string direct = "if (" + p.name + " != _v) { " + p.name + " = _v;"
+        const std::string f2 = dIdent(p.name);
+        std::string direct = "if (" + f2 + " != _v) { " + f2 + " = _v;"
                            + (notified(p.name) ? " " + p.name + "Changed.emit();" : "") + " }";
         if (p.dtype == "int" || p.dtype == "double" || p.dtype == "float"
                 || p.dtype == "bool" || p.dtype == "string")
             return "        " + direct + "\n";
         // Braced: `static if (c) if (x) {...} else ...` binds the `else` to the INNER `if`.
-        return "        static if (is(typeof(_v) : typeof(" + p.name + "))) { " + direct + " }\n"
+        return "        static if (is(typeof(_v) : typeof(" + f2 + "))) { " + direct + " }\n"
              + "        else setProp(this, \"" + p.name + "\", _v);\n";
     };
     bool colorDefaultEmitted = false;   // one CTFE helper per class, and only where a colour exists
@@ -10304,7 +10319,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             continue;
         }
-        std::string notifyUda = notified(p.name) ? "@Property(\"" + p.name + "Changed\") " : "@Property ";
+        // The FIELD may be spelled otherwise than the property: see the note where the keyword
+        // check used to refuse. When they differ the UDA carries the published name.
+        const std::string fld = dIdent(p.name);
+        const std::string pubArg = fld == p.name ? std::string() : ", \"" + p.name + "\"";
+        std::string notifyUda = notified(p.name)
+            ? "@Property(\"" + p.name + "Changed\"" + pubArg + ") "
+            : (pubArg.empty() ? "@Property " : "@Property(\"\"" + pubArg + ") ");
         // ...and the SAME GAP for a colour, which cost five of Qt's own documents. QML's default
         // for `property color` is OPAQUE BLACK; a default-constructed QColor is INVALID, and the
         // two are different values that print differently (#000000 against #00000000). It shows
@@ -10327,7 +10348,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // before `baseLightness` is assigned, and a NaN factor aborts Qt inside qRound.
             // (The value settles either way, through the notify; it is the transient that differs.)
             const char *zero = (p.dtype == "double" || p.dtype == "float") ? " = 0" : "";
-            body += "    " + notifyUda + p.dtype + " " + p.name + zero + colorInit + ";\n";
+            body += "    " + notifyUda + p.dtype + " " + fld + zero + colorInit + ";\n";
             if (notified(p.name)) body += "    Signal!() " + p.name + "Changed;\n";
             // Which binding currently drives this property. 0 = the declarative one; a
             // `Qt.binding(...)` install switches it, and a plain assignment (`p = 42`) clears it
@@ -10354,7 +10375,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // is NaN in D where QML's `real` defaults to 0. A declared property whose initial
             // binding was refused kept that NaN and reported it as the property's value (Fusion's
             // SliderGroove `offset`, where the engine reads 0).
-            body += "    " + notifyUda + p.dtype + " " + p.name
+            body += "    " + notifyUda + p.dtype + " " + fld
                   + (p.expr.empty() ? ((p.dtype == "double" || p.dtype == "float") ? " = 0"
                                                                                    : colorInit)
                                     : " = " + p.expr) + ";\n";
