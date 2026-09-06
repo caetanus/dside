@@ -5411,8 +5411,24 @@ static bool collectStates(UiObjectMember *binding, std::vector<StateEntry> &out)
 // makes the set small enough to account for honestly.
 struct FreeIdScan : Visitor {
     std::vector<IdentifierExpression *> ids;
+    // NAMES THIS SOURCE BINDS ITSELF are not free, however much they read like it: a function
+    // literal's parameters and a `var` it declares belong to the expression, not to the document.
+    // Rewriting one is not a near-miss — `mapView.shapes.filter(function (s) { … })` came out
+    // `function (__sp_s.s)` and the engine refused the whole binding with
+    // `SyntaxError: Expected token ')'`, losing every read in it.
+    std::set<std::string> bound;
     void throwRecursionDepthError() override {}
     bool visit(IdentifierExpression *e) override { ids.push_back(e); return true; }
+    bool visit(PatternElement *e) override {
+        if (e->bindingIdentifier.length()) bound.insert(qs(e->bindingIdentifier.toString()));
+        return true;
+    }
+    bool visit(FormalParameterList *e) override {
+        for (auto *it = e; it; it = it->next)
+            if (it->element && it->element->bindingIdentifier.length())
+                bound.insert(qs(it->element->bindingIdentifier.toString()));
+        return true;
+    }
 };
 
 // How many bindings this document handed to the engine instead of compiling. Counted apart from
@@ -5463,8 +5479,14 @@ static std::string vgroupMemberType(const std::string &selfQmlType, const std::s
 // at all: `onTriggered: root.grabToImage(...)` on an engine-built Timer answered `ReferenceError:
 // root is not defined` while the timer fired correctly. `recv` is the object to run it on, which is
 // `__inst` for a child the engine built and `this` for one we compiled.
+// `bound` names the function's own FORMALS, which are not free identifiers however much they look
+// like them inside the body: handing `newContent` over as a document name would shadow the argument
+// the call actually passes. `callArgs`, when given, emits the CALL form — the whole function to the
+// engine plus its arguments — instead of a binding or a handler.
 static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
-                       const std::string &recv = "this") {
+                       const std::string &recv = "this",
+                       const std::set<std::string> *bound = nullptr,
+                       const std::string *callArgs = nullptr) {
     std::string src = srcRaw(e);
     if (src.empty()) return false;
     // A BINDING WHOSE BODY IS A BLOCK. `readonly property int wantedZoom: { … return z }` is
@@ -5483,6 +5505,8 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
         std::string n = qs(id->name.toString());
         if (n.empty() || !seen.insert(n).second) continue;
         if (n == "undefined") continue;
+        if (bound && bound->count(n)) continue;   // the function's own parameter
+        if (sc.bound.count(n)) continue;          // a name the SOURCE itself binds
         // A capitalised name is USUALLY one the engine resolves by itself (`Math`, `Qt`, `JSON`).
         // A QML TYPE is not: types come from the document's import namespace, and a context built
         // by hand has none. Waving every capitalised name through is how `(background as
@@ -5722,7 +5746,10 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
         }
         // ...and the expression itself, so a shadow that does not load falls to the engine
         // instead of leaving the property with no binding at all.
-        if (prop.empty())
+        if (callArgs)
+            out = "        callJsFunc(" + recv + ", " + dstr(QString::fromStdString(ssrc))
+                + ", [" + *callArgs + "], [" + snames + "]" + sobjs + ");\n";
+        else if (prop.empty())
             out = "        runJs(" + recv + ", " + dstr(QString::fromStdString(ssrc))
                 + ", [" + snames + "]" + sobjs + ");\n";
         else
@@ -5732,7 +5759,10 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
                 + ", [" + snames + "]" + sobjs + ");\n";
         return true;
     }
-    if (prop.empty())
+    if (callArgs)
+        out = "        callJsFunc(" + recv + ", " + dstr(QString::fromStdString(src))
+            + ", [" + *callArgs + "], [" + names + "]" + objs + ");\n";
+    else if (prop.empty())
         out = "        runJs(" + recv + ", " + dstr(QString::fromStdString(src))
             + ", [" + names + "]" + objs + ");\n";
     else
@@ -10179,14 +10209,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             sigv += (k ? ", " : "") + std::string("QmlVarRef __a") + std::to_string(k);
                             callv += (k ? ", " : "") + std::string("__a") + std::to_string(k);
                         }
-                        // ...with this object under its own id, because the body says `root.x`
-                        // and `root` is a name of the DOCUMENT, not of the engine's scope.
-                        const std::string hand = g_selfId.empty() ? std::string()
-                                               : ", [\"" + g_selfId + "\"], this";
+                        // ...WITH EVERY NAME THE BODY READS, not just this object's own id. The
+                        // first version handed over `root` alone and a body that says
+                        // `leftPage.content = …` answered `ReferenceError: leftPage is not
+                        // defined` — a SIBLING id of the same document, which the binding path has
+                        // resolved all along. Same scan, so the two cannot drift: the function's
+                        // own formals are excluded, since inside the body they look exactly like
+                        // document names and are not.
+                        std::set<std::string> formals;
+                        for (auto &pp : params) formals.insert(pp.first);
+                        std::string body;
+                        if (!jsDelegate(fn, "", body, "this", &formals, &callv)) {
+                            std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s has an untyped "
+                                         "parameter and its body could not be delegated — skipped "
+                                         "(later phase)\n", inPath, name.c_str(), cls.c_str());
+                            ++partial; continue;
+                        }
                         methods += "    @Invokable QmlVarRef " + name + "(" + sigv + ") {\n"
-                                 + "        return callJsFunc(this, "
-                                 + dstr(QString::fromStdString(ds)) + ", [" + callv + "]"
-                                 + hand + ");\n"
+                                 + "        return" + body.substr(body.find("callJsFunc") - 1)
                                  + "    }\n";
                         g_ctxUsed = true;
                         ++g_delegated;
@@ -10271,12 +10311,17 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // Reported by the application's own session, measured on pixels rather than on
                 // whether a .d was produced.
                 if (sig.empty()) {
-                    std::string fsrc = srcRaw(fn->body);
-                    if (fsrc.empty()) {
+                    // ...THROUGH THE SAME SCAN as every other delegated body. This branch used to
+                    // hand the source over with no names at all, which is exactly the hole the
+                    // parameterised one had: a real reader's `showSpread()` says
+                    // `leftPage.content = content` — a SIBLING id of its own document — and the
+                    // engine answered `ReferenceError: leftPage is not defined`. One function
+                    // reached through another (`adopt` calls `showSpread`), so the failure landed
+                    // two calls away from the name that caused it.
+                    if (!jsDelegate(fn->body, "", fbody)) {
                         std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
                         ++partial; continue;
                     }
-                    fbody = "        runJs(this, " + dstr(QString::fromStdString(fsrc)) + ");\n";
                 } else {
                     std::string dsrc = srcRaw(fn);
                     if (dsrc.empty()) {
@@ -10297,10 +10342,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                         : "varOf(" + params[k].first + ")");
                     }
                     sig = sigd;
-                    const std::string hand2 = g_selfId.empty() ? std::string()
-                                            : ", [\"" + g_selfId + "\"], this";
-                    fbody = "        callJsFunc(this, " + dstr(QString::fromStdString(dsrc))
-                          + ", [" + boxed + "]" + hand2 + ");\n";
+                    // Same scan as the untyped case above, and for the same reason.
+                    std::set<std::string> formals2;
+                    for (auto &pp : params) formals2.insert(pp.first);
+                    if (!jsDelegate(fn, "", fbody, "this", &formals2, &boxed)) {
+                        std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
+                        ++partial; continue;
+                    }
                     g_ctxUsed = true;
                 }
                 ++g_delegated;

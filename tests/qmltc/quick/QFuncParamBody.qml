@@ -14,6 +14,12 @@
 // `apply` has a parameter and a body with an early return and a local — the shape that does not
 // compile — and `seen` is written from it, so the fixture reads the RESULT of the call rather than
 // the fact that a method was emitted.
+//
+// It also writes a SIBLING by id, which is the half that was missing: the first version of this
+// handover gave the body only this object's own id, and a real reader's `showSpread()` — reached
+// through `adopt(newContent)` — answered `ReferenceError: leftPage is not defined` about an id
+// declared in the same document. The formals are excluded from that scan on purpose: inside the
+// body `v` looks exactly like a document name and is not one.
 import QtQuick 2.15
 Item {
     id: root
@@ -23,6 +29,8 @@ Item {
         if (v <= 0) return
         var doubled = v * 2
         root.seen = "got " + doubled
+        sibling.objectName = "n" + doubled
     }
+    Item { id: sibling; objectName: "-" }
     Component.onCompleted: root.apply(21)
 }
