@@ -267,6 +267,26 @@ private struct QtProbe {
 // so an import path is the whole wiring: nothing to compile, nothing to link.
 string dSupport(string root) { return " -I" ~ buildPath(root, "tests", "support"); }
 
+// mold, WHEN IT IS THERE. Linking is what this build spends its wall clock on — every gate relinks
+// a binary against the whole binding archive — and mold does that several times faster than the
+// default linker for no change in the result. Probed once rather than assumed: a machine without it
+// gets the linker it has, and Windows has neither the flag nor the tool.
+private bool haveMold() {
+    static int cached = -1;
+    if (cached < 0) {
+        version (Windows) cached = 0;
+        else {
+            try cached = (execute(["mold", "--version"]).status == 0) ? 1 : 0;
+            catch (Exception) cached = 0;
+        }
+    }
+    return cached == 1;
+}
+/// For a C++ link (clang++ drives it directly).
+string cxxFastLink() { return haveMold() ? " -fuse-ld=mold" : ""; }
+/// ...and for a D one, where the flag has to be forwarded to the C linker.
+string dFastLink() { return haveMold() ? " -L-fuse-ld=mold" : ""; }
+
 // An executable's file name. Qt installs `moc` on POSIX and `moc.exe` on Windows, and a build that
 // tests for the file rather than relying on PATH has to ask for the right one — otherwise a present
 // tool reads as missing, which is what "moc=MISSING" meant on a machine where moc was right there.
@@ -1367,7 +1387,7 @@ Target qtdApp(string binName, string appMain, QtdBinding b, string dc, string ex
     // --gc-sections drops every unreferenced function/section (unused guards + unused binding
     // code -> the à-la-carte binary). --as-needed drops DT_NEEDED for a Qt .so the app never
     // touches (a QtCore-only program stops requiring Widgets/Gui just by being linked here).
-    auto link = dc ~ " -of=$out" ~ dSupport(b.root) ~ " " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
+    auto link = dc ~ " -of=$out" ~ dFastLink() ~ dSupport(b.root) ~ " " ~ appMain ~ (extra.length ? " " ~ extra : "") ~ " -I" ~ b.genDir
         ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ libPath ~ " -L=" ~ shimsPath
         ~ " -L--end-group " ~ pkgLibs(b.mods);
     // extraDeps carries inputs the STRING cannot: an object file another target produces has to
@@ -1534,7 +1554,7 @@ Target[] libsampleTargets(string root, string pyside) {
             // each a no-op behind its flock, and each still a process. The link line keeps the
             // archive (grp), which is what the mutual refs actually need; the dependency is the
             // transitive one. (critics r7 #8 / r8 #9)
-            auto app = Target(n ~ "-bin", dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ c ~ " -I" ~ gen ~ " " ~ grp,
+            auto app = Target(n ~ "-bin", dc ~ " -of=$out" ~ dFastLink() ~ dSupport(root) ~ " " ~ c ~ " -I" ~ gen ~ " " ~ grp,
                 [Target(c), libT, shimsT]);
             outs ~= Target.phony(n, runOffscreen(root, "$in", "", ["Qt6Core"]), [app]);
         }

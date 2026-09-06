@@ -1382,7 +1382,7 @@ Target[] qmlTypesCheckTargets(string root, QtdBinding qml) {
         auto types = Target(outTypes, runExe(root, "$in", "", "$out", qml.mods), [gen]);
         // Qt's authoritative .qmltypes reader.
         auto check = Target("qmltypes-check-" ~ dc ~ "-bin",
-            "clang++ " ~ ccflags ~ " " ~ checkCpp ~ " -o $out " ~ clibs, [Target(checkCpp)]);
+            "clang++ " ~ ccflags ~ cxxFastLink() ~ " " ~ checkCpp ~ " -o $out " ~ clibs, [Target(checkCpp)]);
         // validate: deps=[check, types] -> $in = "<validator> <App.qmltypes>".
         // $in is "<validator> <App.qmltypes>" — the validator is the program and the file its
         // argument, which is where runExe puts a leftover.
@@ -1441,7 +1441,7 @@ Target qmltcTool(string root, QtdBinding bind) {
     auto revO = Target(revObj, "clang++ -std=c++17 " ~ cxxPic() ~ " -O2 -c " ~ revCpp ~ " -o " ~ revObj,
                        [Target(revCpp)]);
     auto t = Target(toolBin, guarded(toolBin ~ ".lock",
-        "clang++ " ~ toolFlags ~ " " ~ toolCpp ~ " " ~ revObj ~ " -o " ~ toolBin ~ " " ~ toolLibs, null,
+        "clang++ " ~ toolFlags ~ cxxFastLink() ~ " " ~ toolCpp ~ " " ~ revObj ~ " -o " ~ toolBin ~ " " ~ toolLibs, null,
         toolBin, [toolCpp, revObj]),
         [Target(toolCpp), revO]);
     _qmltcTools[bind.bdir] = t;
@@ -1660,7 +1660,7 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
         auto rFl = pkgCflags(bind.mods ~ ["Qt6Core"]) ~ " -std=c++17 " ~ cxxPic() ~ " -O2";
         auto rLb = qtLibsOf(bind.mods ~ ["Qt6Core"]);
         rndDep ~= Target(rndBin, guardedLink(rndBin ~ ".lock",
-            "clang++ " ~ rFl ~ " " ~ rCpp ~ " -o $out " ~ rLb, rndBin, [rCpp]), [Target(rCpp)]);
+            "clang++ " ~ rFl ~ cxxFastLink() ~ " " ~ rCpp ~ " -o $out " ~ rLb, rndBin, [rCpp]), [Target(rCpp)]);
     }
 
     // guardedLink, not guarded: this binary is SHARED by every differential in the suite, so a
@@ -1669,7 +1669,7 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     // EACCES. guardedLink's own comment documents that exact failure; the oracle was the last
     // binary still linking the unsafe way, and it surfaced the moment its source changed.
     auto oracle = Target(oracleBin, guardedLink(oracleBin ~ ".lock",
-        "clang++ " ~ oracleFlags ~ " " ~ oracleCpp ~ " -o $out " ~ oracleLibs,
+        "clang++ " ~ oracleFlags ~ cxxFastLink() ~ " " ~ oracleCpp ~ " -o $out " ~ oracleLibs,
         oracleBin, [oracleCpp]), [Target(oracleCpp)]);
 
     // A bound visual root (Text) touches the font DB on property-set and fatals without a
@@ -1816,7 +1816,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             auto gen = Target(genD, genCmd, [tool, Target(qmlFile), bind.gen]);
             // 2) link the generated D against the binding (same shape as qtdApp).
             auto appBin = buildPath(bind.bdir, "qmltc_" ~ name ~ "_" ~ dc ~ "_check");
-            auto link = dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ genD ~ " " ~ appObj ~ renderLink ~ " -I" ~ bind.genDir
+            auto link = dc ~ " -of=$out" ~ dFastLink() ~ dSupport(root) ~ " " ~ genD ~ " " ~ appObj ~ renderLink ~ " -I" ~ bind.genDir
                 ~ " -L--gc-sections -L--as-needed -L--start-group -L=" ~ buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a")
                 ~ " -L=" ~ buildPath(bind.bdir, "libshims.a") ~ " -L--end-group " ~ pkgLibs(bind.mods) ~ cxxRuntimeFlag();
             // Guarded: with a `<Name>.set` sidecar TWO phony targets depend on this binary, and a
