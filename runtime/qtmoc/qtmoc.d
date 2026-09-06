@@ -1570,7 +1570,7 @@ void* makeComponent(string uri, string typeName, string docUrl = "") {
 }
 
 extern(C) void* qtd_qml_create_object(const(char)*, const(char)*);
-private extern(C) void* qtd_qml_create_object_in(const(char)*, const(char)*, const(char)*, const(char)*);
+private extern(C) void* qtd_qml_create_object_in(const(char)*, const(char)*, const(char)*, const(char)*, const(char)**, void**, int);
 /// An object of a registered QML type that exports no C++ symbol (Qt's DialImpl and friends live in
 /// a style plugin): it cannot be SUBCLASSED, but the engine builds it by name and everything after
 /// that goes through the meta-object like any other object.
@@ -1596,19 +1596,28 @@ void* createQmlDocument(string docUrl) {
 /// `decls` is the QML the DOCUMENT declares on this element (`property string target: ""`). It goes
 /// to the ENGINE, because the engine owns the object: a property the document adds to a type outside
 /// the binding is not on the D shell, it is on the thing every expression actually reads.
-void* createQmlObjectAny(string uris, string typeName, string docUrl = "", string decls = "") {
+void* createQmlObjectAny(A...)(string uris, string typeName, string docUrl = "", string decls = "",
+                               string[] ids = null, A objs = A.init) {
     import std.algorithm : splitter;
     foreach (u; uris.splitter(';')) {
         if (u.length == 0) continue;
-        if (auto o = createQmlObject(u.idup, typeName, docUrl, decls)) return o;
+        if (auto o = createQmlObject(u.idup, typeName, docUrl, decls, ids, objs)) return o;
     }
     return null;
 }
 
-void* createQmlObject(string uri, string typeName, string docUrl = "", string decls = "") {
-    if (docUrl.length || decls.length)
+void* createQmlObject(A...)(string uri, string typeName, string docUrl = "", string decls = "",
+                            string[] ids = null, A objs = A.init) {
+    const(char)*[A.length ? A.length : 1] ns;
+    void*[A.length ? A.length : 1] ps;
+    static foreach (i, a; objs) {
+        ns[i] = (ids[i] ~ "\0").ptr;
+        ps[i] = qobjOf(a);
+    }
+    if (docUrl.length || decls.length || A.length)
         return qtd_qml_create_object_in((uri ~ "\0").ptr, (typeName ~ "\0").ptr,
-                                        (docUrl ~ "\0").ptr, (decls ~ "\0").ptr);
+                                        (docUrl ~ "\0").ptr, (decls ~ "\0").ptr,
+                                        ns.ptr, ps.ptr, cast(int) A.length);
     return qtd_qml_create_object((uri ~ "\0").ptr, (typeName ~ "\0").ptr);
 }
 

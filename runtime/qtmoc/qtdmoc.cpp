@@ -1042,13 +1042,28 @@ extern "C" void* qtd_qml_create_document(const char* docUrl) {
 // as its baseUrl, so every relative path inside it resolves against that document — which is what
 // the engine does. Passing nothing left `file:///qtd_delegate.qml` there (measured on Qt's Material
 // TextField, whose placeholder reports it in the dump).
+// ...AND THE NAMES ITS BODY READS. A body the engine owns is evaluated in the context it is created
+// in, and the ids of the document that wrote it are not there: `Connections { target: bible;
+// function onTranslationChanged() { root.readTranslations() } }` built and then answered
+// `root is not defined` — silently, because Qt's default handler is where that message goes and
+// this program does not print it. Same handover a delegated binding gets, for the same reason.
 extern "C" void* qtd_qml_create_object_in(const char* uri, const char* typeName, const char* docUrl,
-                                          const char* decls) {
+                                          const char* decls, const char** names, void** objs,
+                                          int n) {
 #ifdef QTD_HAVE_QML
     void* c = qtd_make_component(uri, typeName, docUrl, decls);
     if (!c) return nullptr;
     auto* comp = static_cast<QQmlComponent*>(c);
-    QObject* o = comp->create();
+    QQmlContext* ctx = comp->creationContext();
+    if (!ctx) ctx = qtd_qml_engine()->rootContext();
+    if (n > 0) {
+        ctx = new QQmlContext(ctx, comp);
+        for (int i = 0; i < n; ++i)
+            if (names[i])
+                ctx->setContextProperty(QString::fromUtf8(names[i]),
+                                        static_cast<QObject*>(objs[i]));
+    }
+    QObject* o = comp->create(ctx);
     if (!o) std::fprintf(stderr, "qtd: creating '%s' from '%s' failed: %s\n", typeName, uri,
                          qPrintable(comp->errorString()));
     return o;

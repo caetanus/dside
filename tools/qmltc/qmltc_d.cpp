@@ -756,6 +756,10 @@ static std::string g_delegateCls;
 // The class being compiled as an ENGINE-CREATED child: a registered QML type with no exported C++
 // symbol, so it cannot be subclassed. The class holds the instance and writes it by name.
 static std::string g_engineChildCls, g_engineChildType, g_engineChildUri;
+// The DOCUMENT'S OWN TEXT for a child the engine builds and this compiler does not touch at all —
+// `Connections { target: bible; function onTranslationChanged() { … } }`, whose target is a name
+// this compiler cannot resolve and the engine can. Set by the parent beside the three above.
+static std::string g_engineChildBody;
 // ...and whether the object being compiled RIGHT NOW is one. g_engineChildCls is set by the PARENT
 // around each child's compile, so by the time a grandchild pushes its frame it already names the
 // GRANDCHILD. This holds the answer for the object that is actually enclosing.
@@ -1570,6 +1574,15 @@ static void prescanChildIds(UiObjectInitializer *init, const std::string &prefix
 
 // The `id` a child object declares, or empty. Reads the one member shape an id can have, the same
 // one the prescan reads.
+// The DOCUMENT TEXT of an element's body, braces excluded — what the engine needs to build the
+// element itself. srcRaw gives the whole `{ … }`; the engine is handed the inside, because it is
+// wrapped in a type name of ours on the way out.
+static std::string bodyOfInit(UiObjectInitializer *ci) {
+    std::string s = srcRaw(ci);
+    if (s.size() >= 2 && s.front() == '{' && s.back() == '}') s = s.substr(1, s.size() - 2);
+    return s;
+}
+
 static std::string idOfInit(UiObjectInitializer *ci) {
     for (auto *cm = ci ? ci->members : nullptr; cm; cm = cm->next)
         if (auto *sb = cast<UiScriptBinding *>(cm->member))
@@ -7612,11 +7625,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          "phase)\n", inPath, cls.c_str());
             ++partial; skippedAKid = true; continue;
         }
+        bool connHandled = true;
+        bool connDelegateBody = false;
         if (childType == "Connections") {
             if (!connectionsHandlers(od->initializer, rawHandlers)) {
-                std::fprintf(stderr, "qmltc-d: %s: Connections in %s needs `target: <this object's id>` and"
-                             " `function on<Signal>(...)` members — skipped (later phase)\n", inPath, cls.c_str());
-                ++partial;
+                connHandled = false;
+                // ...and it is not skipped either, it is DELEGATED: the engine builds the whole
+                // Connections, target and handlers, and wires it itself. The shape this compiler
+                // cannot take is `target: <a context property>` — `Connections { target: bible }`
+                // in the reader — which is exactly the shape the engine has no trouble with, since
+                // the name is one it resolves. Skipped, the handlers never ran: the reader's
+                // translation list stayed empty and its subtitle came out blank, with no
+                // diagnostic that pointed at the header.
+                std::fprintf(stderr, "qmltc-d: %s: Connections in %s is not on an id of this "
+                             "document — delegated to the engine\n", inPath, cls.c_str());
+                ++g_delegated;
+                connDelegateBody = true;
             }
             // EITHER WAY it leaves no object of ours in the list. A handled Connections becomes
             // signal handlers ON THE PARENT, and the engine still puts a QQmlConnections in `data`
@@ -7642,6 +7666,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         UiObjectInitializer *childInit = od->initializer;   // members compiled for this child
         // The placeholder carries NO members: its handlers are on the parent already, and
         // compiling them here would install every one of them twice.
+        // ...with its members when we did NOT take its handlers: then the engine owns the whole
+        // thing. Without them only where the handlers are already on the parent, since compiling
+        // them here as well would install every one of them twice.
         if (connPlaceholder) childInit = nullptr;
         std::string childBase = cbt.first;                  // bound Qt base (empty = fresh @QObject)
         std::string childBaseImport = cbt.second;           // its import module (for g_extraImports)
@@ -7724,8 +7751,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &rp : childResolvedPath) g_resolving.insert(rp);
         g_parentCompletes = true;   // ...after this wire appends and parents it
         auto savedDEC = g_engineChildCls, savedDET = g_engineChildType, savedDEU = g_engineChildUri;
+        auto savedDECB = g_engineChildBody;
+        g_engineChildBody.clear();
         if (!dcEngineUri.empty()) {
             g_engineChildCls = childCls; ++g_engineKids; g_engineChildType = childType; g_engineChildUri = dcEngineUri;
+            g_engineChildBody = connDelegateBody ? bodyOfInit(od->initializer) : std::string();
             // From OUTSIDE, the only thing anyone wants of an engine-built child is the instance:
             // its signals and its properties are the engine object's, and the wrapper has neither.
             // So the id resolves to the instance from here on — a connect naming the wrapper threw
@@ -7751,6 +7781,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         }
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_engineChildCls = savedDEC; g_engineChildType = savedDET; g_engineChildUri = savedDEU;
+        g_engineChildBody = savedDECB;
         g_srcStack.pop_back(); g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
         g_docUrl = savedDocUrl;   // ...and so a class emits ITS document's baseUrl, not ours
         g_bareImports = savedDcBare; g_qualifiedTypes = savedDcQual;
@@ -11094,8 +11125,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                  + (g_engineChildUri.rfind("\x01", 0) == 0
                                         ? "createQmlObjectAny(\"" + g_engineChildUri.substr(1)
                                         : "createQmlObject(\"" + g_engineChildUri) + "\", \""
-                                 + g_engineChildType + "\", \"" + selfDocUrl + "\", \""
-                                 + engineDecls + "\");\n"
+                                 + g_engineChildType + "\", \"" + selfDocUrl + "\", "
+                                 + dstr(QString::fromStdString(engineDecls.empty()
+                                            ? g_engineChildBody : engineDecls))
+                                 // ...and the enclosing document's id, for a body the engine owns:
+                                 // it is evaluated in the context the object is created in, and an
+                                 // id of ours is not a name there. `root.readTranslations()` in a
+                                 // delegated Connections answered `root is not defined` — and Qt's
+                                 // default handler is where that went, so nothing printed it.
+                                 + (g_engineChildBody.empty() || g_outerId.empty()
+                                        || g_outerClass.empty()
+                                        ? std::string()
+                                        // __qmltcOuter, not the `__outer` FIELD: the creation is
+                                        // the first line of the wire and the field is assigned
+                                        // further down, so the field is both undeclared here (when
+                                        // nothing else reads it) and null.
+                                        : ", [\"" + g_outerId + "\"], cast(" + g_outerClass
+                                          + ") __qmltcOuter")
+                                 + ");\n"
                                  "        if (__inst is null) return;\n"
                                  + engineInit);
         outerField += mk;
