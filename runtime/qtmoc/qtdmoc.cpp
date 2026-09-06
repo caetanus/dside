@@ -1443,6 +1443,54 @@ static QtdVarSlot* qtd_var_slot(QObject* o, const char* name) {
 }
 }
 #endif
+// ---- a MODEL, built on the D side --------------------------------------------------------------
+//
+// A QVariantList of QVariantMap IS a QML model: a view iterates it and a delegate reads each map's
+// keys by name, with no QAbstractListModel and no moc anywhere. What the D side lacked was a way to
+// BUILD one — `qtd_prop_set_list` makes a flat list of scalars from strings and nothing made a map
+// — so applications reached for the only thing that did cross: a JSON string the QML re-parses on
+// every change. That costs a serialise, a parse, and a delegate that reads through `modelData`,
+// which is the shape this compiler cannot compile (docs/qmltc-d-gaps.md, gaps 1-3).
+//
+// Handles, not values, because a QVariant tree has no place in a D struct: the D side calls these in
+// order and the last one consumes what it was given. QVariantList and QVariantMap are QtCore, so
+// none of this needs QtQml and it builds in every configuration.
+extern "C" void* qtd_varlist_new() { return new QVariantList(); }
+extern "C" void* qtd_varmap_new()  { return new QVariantMap(); }
+extern "C" void qtd_varmap_set_str(void* m, const char* k, const char* v, int len) {
+    if (m && k) static_cast<QVariantMap*>(m)->insert(QString::fromUtf8(k),
+                    QString::fromUtf8(v ? v : "", len));
+}
+extern "C" void qtd_varmap_set_int(void* m, const char* k, long long v) {
+    if (m && k) static_cast<QVariantMap*>(m)->insert(QString::fromUtf8(k), qlonglong(v));
+}
+extern "C" void qtd_varmap_set_double(void* m, const char* k, double v) {
+    if (m && k) static_cast<QVariantMap*>(m)->insert(QString::fromUtf8(k), v);
+}
+extern "C" void qtd_varmap_set_bool(void* m, const char* k, bool v) {
+    if (m && k) static_cast<QVariantMap*>(m)->insert(QString::fromUtf8(k), v);
+}
+// Appends and DELETES the map: the list owns the value from here on, and a caller that has to
+// remember to free each row is a caller that will not.
+extern "C" void qtd_varlist_push(void* l, void* m) {
+    if (!l || !m) return;
+    static_cast<QVariantList*>(l)->append(*static_cast<QVariantMap*>(m));
+    delete static_cast<QVariantMap*>(m);
+}
+extern "C" int qtd_varlist_count(void* l) {
+    return l ? int(static_cast<QVariantList*>(l)->size()) : 0;
+}
+// ...and the list itself is consumed by the write. `out` is a QVariant the caller owns.
+// The caller's QVariant storage is a plain byte box on the D side (see QmlVarBox): built here,
+// released here, never named there.
+extern "C" void qtd_var_box_clear(void* v) { if (v) static_cast<QVariant*>(v)->~QVariant(); }
+extern "C" void qtd_varlist_into(void* l, void* out) {
+    if (out) new (out) QVariant();
+    if (!l) return;
+    if (out) *static_cast<QVariant*>(out) = QVariant(*static_cast<QVariantList*>(l));
+    delete static_cast<QVariantList*>(l);
+}
+
 extern "C" void qtd_moc_var_read(void* o, const char* name, void* out) {
 #ifdef QTD_HAVE_QML
     if (o && out) *static_cast<QVariant*>(out) = qtd_var_slot(static_cast<QObject*>(o), name)->v;

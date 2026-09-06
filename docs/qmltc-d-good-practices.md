@@ -257,6 +257,33 @@ and where the delegate is built outside a view it throws.
 
 This is the largest single cluster left.
 
+> **`required property` in a delegate is Qt 6.** Measured on one document across both: every value
+> reads back on Qt 6.11 and all of them are undefined on Qt 5.15, because filling a delegate's
+> required properties from the model arrived with Qt 6. An application that ships both majors has
+> three options, and the middle one is usually right:
+>
+> | spelling | Qt 5 | Qt 6 | compiles |
+> |---|---|---|---|
+> | `modelData.label` | yes | yes | no — one delegated read per use |
+> | `property string label: modelData.label`, then read `label` | yes | yes | the reads do; one delegated expression per row-property |
+> | `required property string label` | **no** | yes | yes |
+
+### Hand the rows over as a model, not as JSON
+
+A `QVariantList` of `QVariantMap` **is** a QML model — a view iterates it and a delegate reads the
+keys by name, with no `QAbstractListModel` and no roles to register. Build it from D with `setModel`,
+which takes an array of structs and uses the field names as the keys:
+
+```d
+struct Verse { int number; string text; bool marked; }
+setModel(this, "page", verses);          // `page` is a `QmlVar` @Property
+pageChanged.emit();
+```
+
+The struct is the row's schema, declared once, and it is the same list of names the delegate claims.
+The alternative applications reach for — a JSON string the QML re-parses on every change — pays a
+serialise, a parse, and a delegate reading through `modelData` on every key.
+
 ### 5.3 Handlers take no parameters if you want them compiled
 
 A handler with parameters is neither compiled nor delegated — its parameters live in the slot

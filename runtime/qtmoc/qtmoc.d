@@ -1470,6 +1470,67 @@ void setQmlProp(T, V)(T o, string path, V v) {
         __propWriteFailed(path, "value-type member");
 }
 
+private extern(C) void* qtd_varlist_new();
+private extern(C) void* qtd_varmap_new();
+private extern(C) void qtd_varmap_set_str(void*, const(char)*, const(char)*, int);
+private extern(C) void qtd_varmap_set_int(void*, const(char)*, long);
+private extern(C) void qtd_varmap_set_double(void*, const(char)*, double);
+private extern(C) void qtd_varmap_set_bool(void*, const(char)*, bool);
+private extern(C) void qtd_varlist_push(void*, void*);
+private extern(C) void qtd_varlist_into(void*, void*);
+
+/// PUBLISH AN ARRAY OF STRUCTS AS A QML MODEL. Each element becomes a map whose keys are the
+/// struct's FIELD NAMES, and a QVariantList of those is what a QML view already accepts as a model —
+/// no QAbstractListModel, no moc, no roles to register.
+///
+/// The struct is the row's schema, in one place, and it is the same list of names the delegate
+/// claims:
+///
+///     struct Verse { int number; string text; bool marked; }
+///     setModel(this, "page", verses);          // D
+///
+///     delegate: Text {                          // QML
+///         required property int number
+///         required property string text
+///         text: number + "  " + text
+///     }
+///
+/// Written that way the delegate COMPILES: `required property` is a property of the object itself,
+/// where `modelData.text` is a name from a scope this compiler cannot see and has to delegate
+/// (docs/qmltc-d-good-practices.md §5.2). The alternative applications reach for — a JSON string the
+/// QML re-parses — pays a serialise, a parse and that delegation on every change.
+///
+/// `name` must be a `QmlVar` @Property of `o`: that is the meta-object's `QVariant` slot, which is
+/// what a QML `var` property is.
+void setModel(T, R)(T o, string name, R[] rows) if (is(R == struct)) {
+    auto list = qtd_varlist_new();
+    foreach (ref row; rows) {
+        auto m = qtd_varmap_new();
+        foreach (i, ref fld; row.tupleof) {
+            enum k = __traits(identifier, R.tupleof[i]) ~ "\0";
+            alias F = typeof(fld);
+            static if (is(F == string))      qtd_varmap_set_str(m, k.ptr, fld.ptr, cast(int) fld.length);
+            else static if (is(F == bool))   qtd_varmap_set_bool(m, k.ptr, fld);
+            else static if (is(F : long))    qtd_varmap_set_int(m, k.ptr, cast(long) fld);
+            else static if (is(F : double))  qtd_varmap_set_double(m, k.ptr, cast(double) fld);
+            else static assert(0, "setModel: a row field must be a string, an integral, a "
+                                  ~ "floating-point value or a bool — `" ~ F.stringof ~ " "
+                                  ~ __traits(identifier, R.tupleof[i]) ~ "` is none of those");
+        }
+        qtd_varlist_push(list, m);
+    }
+    // Into the property's QVariant slot, through the same door a `var` property is read by.
+    QmlVarBox box;
+    qtd_varlist_into(list, &box);
+    qtd_moc_var_write(qobjOf(o), (name ~ "\0").ptr, &box);
+    qtd_var_box_clear(&box);
+}
+/// Storage the size and alignment of a QVariant, so one can be built and released without D naming
+/// the type. QVariant is bound as a value type elsewhere; this path deliberately does not depend on
+/// which binding is linked, since setModel is useful from a program that binds no QtQml types at all.
+private struct QmlVarBox { align(8) ubyte[32] _; }
+private extern(C) void qtd_var_box_clear(void*);
+
 private extern(C) void qtd_moc_list_read(void*, const(char)*, void*);
 private extern(C) void qtd_moc_var_read(void*, const(char)*, void*);
 private extern(C) void qtd_moc_var_write(void*, const(char)*, void*);
