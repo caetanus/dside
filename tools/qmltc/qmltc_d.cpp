@@ -6195,6 +6195,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Declared properties whose value must go through the meta-object rather than into the D
     // field: a value type takes its literal as a string and QMetaType converts it.
     std::vector<std::pair<std::string, std::string>> metaAssigns;
+    // Bindings the property loop hands to the engine, collected here because it runs long before
+    // lateWire exists and they belong in the same phase as every other delegated binding.
+    std::string propLateWire;
     // A declared OBJECT property with an initial binding: written through setPropObj, the channel a
     // use-site assignment already uses. Collected here because baseWire does not exist yet.
     std::vector<std::pair<std::string, std::string>> objInitAssigns;
@@ -7078,6 +7081,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // because it treats exit 3 as failure; the corpora tolerate 3 and said nothing.
                 if (!objInit.empty()) {
                     props.push_back({name, dt, "", false, {}});
+                    continue;
+                }
+                // ...AND THE ENGINE CAN STILL GIVE IT ONE. Declaring the property and dropping its
+                // binding leaves it at a default forever, which is the one outcome that is neither
+                // the compiled answer nor the engine's: `readonly property string label:
+                // rows.length ? rows[cur].label : "-"` reads a `var`, does not compile, and came
+                // out empty against the engine's "dois". Same delegation a base property gets —
+                // the property exists, so the write lands, and it stays live.
+                if (std::string dj; es && jsDelegate(es->expression, name, dj)) {
+                    props.push_back({name, dt, "", false, {}});
+                    propLateWire += dj;
+                    ++g_delegated;
+                    std::fprintf(stderr, "qmltc-d: %s: the initial binding of property '%s' (%s) in %s "
+                                 "delegated to the engine\n", inPath,
+                                 qPrintable(pub->name.toString()), qPrintable(qmlType), cls.c_str());
                     continue;
                 }
                 std::fprintf(stderr, "qmltc-d: %s: the initial binding of property '%s' (%s) in %s is not "
@@ -8255,7 +8273,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // Statements that must run only once the WHOLE tree is complete: connects to objects a Control
     // creates during its own completion (indicator/contentItem/background). The root triggers the
     // pass; every level forwards it to its children.
-    std::string lateWire;
+    std::string lateWire = propLateWire;
     lateWire += objInitLate;   // ...an object-returning CALL, asked once the tree it reads exists
     // Recompute slots that must run AGAIN once the whole tree exists: their expression reads
     // through an object the enclosing wire assigns later. Collected as a set so a binding with
@@ -10826,7 +10844,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (!childWire.empty() || !dcWire.empty()) wire += "        drainComplete(__cmark);\n";
         if (!childWire.empty()) wire += "        runDeferred(this);\n";
         if (!thisParentCompletes) wire += "        componentComplete(this);\n";
-        wire += onCompletedBody;   // Component.onCompleted, last
+        // Component.onCompleted, LAST — and last means after the late phase, not before it. The
+        // late phase is where a delegated binding is installed, including the one that gives a
+        // property its INITIAL value, so a completion body that ran first had its writes overwritten
+        // a moment later: `rows = [ … ]` in the body, then `bindJs(this, "rows", "[]")` on top of
+        // it. QML evaluates the bindings and then completes; this is that order.
+        wire += "//__QTD_ONCOMPLETED__\n" + onCompletedBody;
         // THE SPLIT. `__qmltcWire` keeps what the object does to ITSELF; everything from the
         // children on becomes `__qmltcKids`, which the parent calls once this object is assigned
         // and parented. Nobody assigns the root (nor a group, attached or value-source child —
@@ -10948,7 +10971,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // late phase was in the same position, and so was componentFinalized for its whole subtree.
     if ((cls == g_rootClass || (!g_delegateCls.empty() && cls == g_delegateCls))
             && (node.hasLate || node.hasFinal)) {
-        auto pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
+        // Before the completion body when there is one — see the note where it is appended.
+        auto pos = wire.find("//__QTD_ONCOMPLETED__\n");
+        if (pos == std::string::npos)
+            pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
         if (pos != std::string::npos)
             wire.insert(pos, std::string(node.hasLate ? "        __qmltcLate();\n" : "")
                            + (node.hasFinal ? "        __qmltcFinal();\n" : ""));
@@ -10966,6 +10992,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // by the parent's cascade and knew nothing about that, so it dereferenced the null the
     // resolution had just declined to use. `__qtdWired` is the object's own word for "I finished".
     if (delegRewrite) engineBail += "        if (!__qtdWired) return;\n";
+    {   // the marker is a placement anchor, not output
+        auto mk = wire.find("//__QTD_ONCOMPLETED__\n");
+        if (mk != std::string::npos) wire.erase(mk, std::string("//__QTD_ONCOMPLETED__\n").size());
+    }
     std::string lateMethod = node.hasLate
         ? "    void __qmltcLate() {\n" + engineBail + guardWire(lateWire) + lateKids + "    }\n" : "";
     if (node.hasFinal)

@@ -1066,6 +1066,9 @@ extern "C" void* qtd_qml_create_object_in(const char* uri, const char* typeName,
     QObject* o = comp->create(ctx);
     if (!o) std::fprintf(stderr, "qtd: creating '%s' from '%s' failed: %s\n", typeName, uri,
                          qPrintable(comp->errorString()));
+    if (qEnvironmentVariableIsSet("QTD_CTX_DEBUG"))
+        std::fprintf(stderr, "qtd: created '%s' -> %s%s\n", typeName, o ? "ok" : "NULL",
+                     decls && *decls ? " (with body)" : "");
     return o;
 #else
     (void) uri; (void) typeName; (void) docUrl; return nullptr;
