@@ -221,11 +221,23 @@ extern "C" void qtd_var_free(void* v) { delete static_cast<QVariant*>(v); }
 //
 // The source is the WHOLE function — `function f(a, b) { … }` — evaluated once to obtain the JS
 // function object, then called. Evaluating a bare body would lose the parameter names.
-extern "C" int qtd_call_js(void* o, const char* src, void** args, int n, void* ret) {
+// ...AND THE NAMES ITS BODY READS. A function handed to the engine is evaluated in the object's
+// own context, and the ids of the document it was written in are not names there: a body that says
+// `root.seen = …` answered `ReferenceError: root is not defined`. Same handover a delegated binding
+// and a delegated handler already get, for the same reason.
+extern "C" int qtd_call_js(void* o, const char* src, const char** names, void** objs, int nn,
+                           void** args, int n, void* ret) {
 #ifdef QTD_HAVE_QML
     if (!o || !src) return 0;
     QObject* obj = static_cast<QObject*>(o);
     QQmlContext* ctx = qmlContext(obj);
+    if (ctx && nn > 0) {
+        ctx = new QQmlContext(ctx, obj);   // owned by the object, like the engine's per-item one
+        for (int i = 0; i < nn; ++i)
+            if (names[i])
+                ctx->setContextProperty(QString::fromUtf8(names[i]),
+                                        static_cast<QObject*>(objs[i]));
+    }
     QQmlEngine* eng = ctx ? ctx->engine() : nullptr;
     if (!ctx || !eng) {
         std::fprintf(stderr, "qtd_call_js: %s has no QQmlContext — '%s' not called\n",
@@ -261,7 +273,8 @@ extern "C" int qtd_call_js(void* o, const char* src, void** args, int n, void* r
     if (ret) *static_cast<QVariant*>(ret) = r.toVariant();
     return 1;
 #else
-    (void) o; (void) src; (void) args; (void) n; (void) ret; return 0;
+    (void) o; (void) src; (void) names; (void) objs; (void) nn;
+    (void) args; (void) n; (void) ret; return 0;
 #endif
 }
 

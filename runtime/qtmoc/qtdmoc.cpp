@@ -689,7 +689,20 @@ static bool qtd_invoke_mixed_var(void* o, const char* method, int n, const int* 
     argv[0] = retType.id() == QMetaType::Void ? nullptr : ret.data();
     for (int i = 0; i < n; ++i) {
         if (kinds[i] == 1) { argv[i + 1] = const_cast<void**>(&vals[i]); continue; }  // pointer slot
-        QVariant v(QString::fromUtf8(static_cast<const char*>(vals[i])));
+        const QString txt = QString::fromUtf8(static_cast<const char*>(vals[i]));
+        // The kind says what the text IS — 2 a number, 3 a bool — which is what the caller knew and
+        // the digits alone do not say. It matters for a `var` parameter, where nothing converts the
+        // text afterwards and the value is whatever is put in.
+        QVariant v = kinds[i] == 2 ? QVariant(txt.toDouble())
+                   : kinds[i] == 3 ? QVariant(txt == QLatin1String("true"))
+                                   : QVariant(txt);
+        // A QVariant PARAMETER takes anything, so there is nothing to convert to: converting is
+        // exactly what fails, since no type converts to "any type". This is a `var` in the document.
+        if (paramType(i).id() == QMetaType::QVariant) {
+            conv[i] = v;
+            argv[i + 1] = &conv[i];
+            continue;
+        }
 #if QT_VERSION >= 0x060000
         if (!v.convert(paramType(i))) {
 #else
@@ -1455,6 +1468,15 @@ static QtdVarSlot* qtd_var_slot(QObject* o, const char* name) {
 // Handles, not values, because a QVariant tree has no place in a D struct: the D side calls these in
 // order and the last one consumes what it was given. QVariantList and QVariantMap are QtCore, so
 // none of this needs QtQml and it builds in every configuration.
+// A SINGLE VALUE IN A QVariant, so a typed D argument can be handed to JavaScript. The list
+// builder above makes rows; this makes one operand — what a function body delegated to the engine
+// needs for each of its parameters, which arrive here already typed and have to leave untyped.
+extern "C" void* qtd_var_of_int(long long v) { return new QVariant(qlonglong(v)); }
+extern "C" void* qtd_var_of_double(double v) { return new QVariant(v); }
+extern "C" void* qtd_var_of_bool(bool v) { return new QVariant(v); }
+extern "C" void* qtd_var_of_str(const char* v, int len) {
+    return new QVariant(QString::fromUtf8(v ? v : "", len));
+}
 extern "C" void* qtd_varlist_new() { return new QVariantList(); }
 extern "C" void* qtd_varmap_new()  { return new QVariantMap(); }
 extern "C" void qtd_varmap_set_str(void* m, const char* k, const char* v, int len) {

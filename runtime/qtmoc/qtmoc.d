@@ -1237,7 +1237,7 @@ void* __bindRecv(T)(T o, string name) {
     if (q is null && __inBinding) throw new QmlNullDeref(name);
     return q;
 }
-private extern(C) int qtd_call_js(void*, const(char)*, void**, int, void*);
+private extern(C) int qtd_call_js(void*, const(char)*, const(char)**, void**, int, void**, int, void*);
 private extern(C) void* qtd_var_new();
 private extern(C) void qtd_var_assign(void*, void*);
 private extern(C) void qtd_var_free(void*);
@@ -1247,11 +1247,37 @@ private extern(C) void qtd_var_free(void*);
 ///
 /// `ret` is `args[0]`: Qt reserves it for the return of every method, and an invokable declared to
 /// return QVariant gets a QVariant there to assign into.
-QmlVarRef callJsFunc(T)(T o, string src, QmlVarRef[] argv) {
+private extern(C) void* qtd_var_of_int(long);
+private extern(C) void* qtd_var_of_double(double);
+private extern(C) void* qtd_var_of_bool(bool);
+private extern(C) void* qtd_var_of_str(const(char)*, int);
+/// A typed D value as the untyped thing JavaScript takes. `callJsFunc` hands each argument to the
+/// engine as a QVariant; a function whose D signature is typed — because its parameter's type could
+/// be inferred — still has to cross that way when its BODY is the engine's.
+QmlVarRef varOf(T)(T v) {
+    static if (is(T == string))        return QmlVarRef(qtd_var_of_str(v.ptr, cast(int) v.length));
+    else static if (is(T == bool))     return QmlVarRef(qtd_var_of_bool(v));
+    else static if (is(T : long))      return QmlVarRef(qtd_var_of_int(cast(long) v));
+    else static if (is(T : double))    return QmlVarRef(qtd_var_of_double(cast(double) v));
+    else static if (is(T == QmlVarRef)) return v;
+    else static assert(0, "varOf: no QVariant for " ~ T.stringof);
+}
+
+/// `ids`/`objs` publish the names the body reads that are not its own — the enclosing document's
+/// ids — on a context of its own, exactly as a delegated binding gets them.
+QmlVarRef callJsFunc(T, A...)(T o, string src, QmlVarRef[] argv, string[] ids = null,
+                              A objs = A.init) {
     auto ps = new void*[argv.length];
     foreach (i, a; argv) ps[i] = a.p;
+    const(char)*[A.length ? A.length : 1] ns;
+    void*[A.length ? A.length : 1] os;
+    static foreach (i, a; objs) {
+        ns[i] = (ids[i] ~ "\0").ptr;
+        os[i] = qobjOf(a);
+    }
     auto ret = qtd_var_new();
-    qtd_call_js(qobjOf(o), (src ~ "\0").ptr, ps.ptr, cast(int) ps.length, ret);
+    qtd_call_js(qobjOf(o), (src ~ "\0").ptr, ns.ptr, os.ptr, cast(int) A.length,
+                ps.ptr, cast(int) ps.length, ret);
     return QmlVarRef(ret);   // callSlot copies it into the metacall's slot and frees this one
 }
 
@@ -1439,12 +1465,18 @@ string invokeMixed(T, A...)(T recv, string method, A args) {
         // than on the type name: this unit cannot name QColor (it is a binding type).
         } else static if (__traits(compiles, a.rgba())) {
             keep[i] = colorName(a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+        // KIND 2 AND 3 SAY WHAT THE TEXT IS. Everything scalar crosses as text and the far side
+        // converts it to the parameter's type, which works for every type except the one that
+        // accepts anything: a `var` parameter is a QVariant, and a QString does not convert to one
+        // — `qtd: argument 0 of 'apply' does not convert to QVariant`, about a call the engine
+        // makes without trouble. The kind carries what D already knew, so the far side builds a
+        // number as a number rather than guessing from the digits.
         } else static if (is(typeof(a) == bool)) {
-            keep[i] = (a ? "true" : "false") ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+            keep[i] = (a ? "true" : "false") ~ "\0"; kinds[i] = 3; vals[i] = keep[i].ptr;
         } else static if (__traits(isIntegral, typeof(a))) {
-            import std.conv : to; keep[i] = a.to!string ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+            import std.conv : to; keep[i] = a.to!string ~ "\0"; kinds[i] = 2; vals[i] = keep[i].ptr;
         } else static if (__traits(isFloating, typeof(a))) {
-            keep[i] = numText(cast(double) a) ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
+            keep[i] = numText(cast(double) a) ~ "\0"; kinds[i] = 2; vals[i] = keep[i].ptr;
         } else {
             kinds[i] = 1; vals[i] = qobjOf(a);
         }
@@ -1532,6 +1564,18 @@ private extern(C) void qtd_varlist_into(void*, void*);
 /// `name` must be a `QmlVar` @Property of `o`: that is the meta-object's `QVariant` slot, which is
 /// what a QML `var` property is.
 void setModel(T, R)(T o, string name, R[] rows) if (is(R == struct)) {
+    // LOUD ON A NULL RECEIVER. The write goes to a side table keyed by the QObject, so an object
+    // that is not registered yet keys the slot on NULL and the value is dropped without a word —
+    // the property then reads empty and the view shows nothing, which looks like a compiler gap
+    // and is a call made too early. Reported from an application: `setModel` from inside the
+    // constructor, before `newQObject` had registered the object, cost hours of looking in the
+    // wrong place. The rule is the same one the property writers keep: a write that cannot land
+    // says so.
+    if (qobjOf(o) is null)
+        throw new Exception("setModel(\"" ~ name ~ "\"): the object is not registered yet — "
+                            ~ "qobjOf() is null, so the rows would be written to nobody. Publish "
+                            ~ "the model AFTER newQObject/qmlRegisterType has the object, not from "
+                            ~ "inside its constructor.");
     auto list = qtd_varlist_new();
     foreach (ref row; rows) {
         auto m = qtd_varmap_new();

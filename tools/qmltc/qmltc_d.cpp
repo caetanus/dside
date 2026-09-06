@@ -10179,9 +10179,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             sigv += (k ? ", " : "") + std::string("QmlVarRef __a") + std::to_string(k);
                             callv += (k ? ", " : "") + std::string("__a") + std::to_string(k);
                         }
+                        // ...with this object under its own id, because the body says `root.x`
+                        // and `root` is a name of the DOCUMENT, not of the engine's scope.
+                        const std::string hand = g_selfId.empty() ? std::string()
+                                               : ", [\"" + g_selfId + "\"], this";
                         methods += "    @Invokable QmlVarRef " + name + "(" + sigv + ") {\n"
                                  + "        return callJsFunc(this, "
-                                 + dstr(QString::fromStdString(ds)) + ", [" + callv + "]);\n"
+                                 + dstr(QString::fromStdString(ds)) + ", [" + callv + "]"
+                                 + hand + ");\n"
                                  + "    }\n";
                         g_ctxUsed = true;
                         ++g_delegated;
@@ -10254,12 +10259,50 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // Only for a void, parameterless function: with parameters the body would have to
                 // see them, which means publishing them on a context, and that is the binding
                 // path's problem rather than this one's.
-                std::string fsrc = sig.empty() ? srcRaw(fn->body) : std::string();
-                if (fsrc.empty()) {
-                    std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
-                    ++partial; continue;
+                // ...AND WITH PARAMETERS TOO, which the note above declined because the body
+                // would have to see them. It can: the engine takes the whole FUNCTION and is called
+                // with the arguments, each boxed as a QVariant on the way — the channel an untyped
+                // parameter already travels. The D signature stays the document's, so a compiled
+                // call site still compiles; only the body moved.
+                //
+                // Refusing here does not fail alone. A real reader's `adopt(newContent)` is both
+                // the first page load and the handler for every page change, so the whole reading
+                // surface came out blank on the compiled path — one function, one skip, no text.
+                // Reported by the application's own session, measured on pixels rather than on
+                // whether a .d was produced.
+                if (sig.empty()) {
+                    std::string fsrc = srcRaw(fn->body);
+                    if (fsrc.empty()) {
+                        std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
+                        ++partial; continue;
+                    }
+                    fbody = "        runJs(this, " + dstr(QString::fromStdString(fsrc)) + ");\n";
+                } else {
+                    std::string dsrc = srcRaw(fn);
+                    if (dsrc.empty()) {
+                        std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s body not yet supported — skipped (later phase)\n", inPath, name.c_str(), cls.c_str());
+                        ++partial; continue;
+                    }
+                    // A `var` PARAMETER HAS NO STORAGE. QmlVar is a marker for a property whose
+                    // value the runtime owns; as a parameter the thing that crosses is the QVariant
+                    // itself, which is QmlVarRef. Inferred as QmlVar it could not even be boxed
+                    // ("varOf: no QVariant for QmlVar"), and it could not have been called either.
+                    std::string sigd, boxed;
+                    for (size_t k = 0; k < params.size(); ++k) {
+                        const bool isVar = params[k].second == "QmlVar";
+                        sigd += (k ? ", " : "") + std::string(isVar ? "QmlVarRef" : params[k].second)
+                              + " " + params[k].first;
+                        boxed += (k ? ", " : "")
+                               + (isVar ? params[k].first
+                                        : "varOf(" + params[k].first + ")");
+                    }
+                    sig = sigd;
+                    const std::string hand2 = g_selfId.empty() ? std::string()
+                                            : ", [\"" + g_selfId + "\"], this";
+                    fbody = "        callJsFunc(this, " + dstr(QString::fromStdString(dsrc))
+                          + ", [" + boxed + "]" + hand2 + ");\n";
+                    g_ctxUsed = true;
                 }
-                fbody = "        runJs(this, " + dstr(QString::fromStdString(fsrc)) + ");\n";
                 ++g_delegated;
                 std::fprintf(stderr, "qmltc-d: %s: function '%s' in %s delegated to the engine\n",
                              inPath, name.c_str(), cls.c_str());
