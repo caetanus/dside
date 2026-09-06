@@ -126,6 +126,29 @@ in this corpus). The same treatment is not applied to a declared property of any
 emitter declares the property and prints the refusal without trying `jsDelegate`. Whether that is
 correct for every type is an open question a fixture would answer.
 
+### Closed, 2026-09-06
+
+It was correct for every type, and there were four emitters, not one — the scalar path, the colour
+path, the value-type path and the `var` path each printed their own refusal. All four now offer the
+binding to the engine first. **107 → 4**, and the four that remain are not this gap: they are
+`modelData` read inside a delegate that declares required properties, where the engine has no
+`modelData` either, so refusing is the honest answer (see `ctxNameIsReadable`).
+
+Two things had to be fixed for it to hold:
+
+- **A binding whose body is a BLOCK.** `readonly property int wantedZoom: { … return z }` is
+  ordinary QML and is not an expression, so the delegation — which is handed one — was never offered
+  it. A block is JavaScript and the engine runs JavaScript: `(function(){ … })()` is an expression
+  again, and the reads inside it are captured as the binding's dependencies exactly as they would be
+  in one.
+- **The promise rewrite must not touch a name DECLARED in that block.** It is a whole-token
+  substitution over the source, safe in an expression and not in a block: `var worldPx` became
+  `var __sp_worldPx.worldPx` and the engine refused the whole body — losing every read in it, not
+  just that name. The test is whether the source is a block, not whether it is a handler.
+
+Fixture: `tests/qmltc/quick/QBlockBinding.qml`, which reads a block-declared local back through the
+binding's result, so a broken rewrite is a wrong VALUE rather than a silence.
+
 ## 4 — a function whose parameter type cannot be inferred
 
 64 of them, and the refusal is deliberate: guessing `double` compiles `f(x, y) { return x + y }`
@@ -178,3 +201,41 @@ asking whether the same document declares it (`id:`, `property`, `function`). Th
 regular expression over the QML, so it is approximate at the edges — a property named `x` whose
 value is a block was excluded by hand. The three headline counts (292 / 121 / 57) come from the
 dotted-head form only, which is why they do not sum to the 542 refusals that quote anything.
+
+## Re-measurement, 2026-09-06 (the reader now starts)
+
+After the delegate-late-phase, engine-owned-property and id-pre-pass fixes, the reader — built
+`USE_QMLTC=1` — **boots, exits 0 and paints its chrome**, where an earlier build built the tree and
+then aborted with nothing on screen. The run-time throws that remain fell from ~100 to **35
+`qtd_bind_js` + 3 `qtd_run_js`**, all on `Main_*`. Numbers are not directly comparable to the table
+above: the reader has since grown a measures overlay (`Measure.qml`), and because it is kept out of
+the qmltc list it is **inlined into `Main`**, so ~12 of the 35 are its `entry.modern/ratio/fig/…`
+reading through an `entry` that is `undefined` at bind time — gap 3, wearing the overlay's names.
+
+The classes still trace where the table says:
+
+- `Cannot read property 'X' of undefined/null` — gaps 1 and 3. The body stays blank because the
+  verse list's own bindings (`theme` sub-reads, model `.length`) are in this set.
+- `Property 'adopt' … is not a function` — **gap 4, confirmed on a fresh case.** `function
+  adopt(newContent)` (untyped parameter) is emitted nowhere, so `Component.onCompleted:
+  stage.adopt(...)` — the FIRST page load — throws, which is part of why the body is blank. The
+  application-side half of this was a bare `adopt(...)` self-call; qualifying it to `stage.adopt`
+  moved the error from `ReferenceError: adopt is not defined` to gap 4's `is not a function`, which
+  is the honest failure.
+
+### The move that dissolves the largest throwing cluster, at the source
+
+The `modelData.*` / cross-document class (gaps 1–2) is, in this reader, an **application shape, not a
+compiler limit**, and the fix needs nothing new on either side. The data already crosses as a
+`@Property string` of JSON that QML `JSON.parse`s into a list of maps — which is what a
+`QVariantList` of `QVariantMap` **already is**, and a `QVariantList` already serves directly as a QML
+model, no `QAbstractListModel` and no moc addition. So there are two independent moves:
+
+1. **Compile the delegates now.** The model is already a list of maps; a delegate written
+   `required property string text; text: text` (good-practices §5.2) compiles where `modelData.text`
+   was delegated — no data-side change at all. This alone removes the cluster.
+2. **Drop the JSON round-trip.** Have D build and expose the `QVariantList` directly instead of
+   serialising a string the QML re-parses each chapter. An improvement, orthogonal to (1).
+
+Teaching the compiler to resolve `modelData.var` is the wrong end; the model already carries the
+names, the delegate just has to claim them.

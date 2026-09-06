@@ -5467,6 +5467,13 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
                        const std::string &recv = "this") {
     std::string src = srcRaw(e);
     if (src.empty()) return false;
+    // A BINDING WHOSE BODY IS A BLOCK. `readonly property int wantedZoom: { … return z }` is
+    // ordinary QML and it is not an expression, so the delegation — which is handed one — was never
+    // tried and the property kept its type's default for ever (gap 3). The engine runs JavaScript
+    // and a block is JavaScript: called as a function it is an expression again, and the reads
+    // inside it are captured as the binding's dependencies exactly as they would be in one.
+    const bool block = e->expressionCast() == nullptr && !prop.empty()
+                    && src.front() == '{' && src.back() == '}';
     FreeIdScan sc;
     e->accept(&sc);
     std::vector<std::pair<std::string, std::string>> binds;   // name -> the D expression for it
@@ -5540,11 +5547,11 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
             // reached where the alternative was to refuse outright.
             // ...but NOT inside a statement body. The rewrite is a whole-token substitution over
             // the source, which is safe in an expression and is not in a block: a name that is
-            // DECLARED there — `for (var i = 0; …)`, a function parameter — becomes
-            // `for (var __sp_i.i = 0; …)` and the engine answers `SyntaxError: Expected token 'in'`
-            // for the whole handler. A handler leaves such a name alone and lets the engine resolve
-            // it, which is the tier below and what it would have done anyway.
-            if (prop.empty()) continue;
+            // DECLARED there — `for (var i = 0; …)`, a `var` of its own, a function parameter —
+            // becomes `var __sp_worldPx.worldPx` and the engine refuses the whole body. The test is
+            // whether the SOURCE is a block, not whether this is a handler: a property bound to a
+            // block is delegated the same way and broke the same way the day it started being.
+            if (prop.empty() || block) continue;
             std::string alias = "__sp_" + n;
             for (size_t k = 0; (k = src.find(n, k)) != std::string::npos; ) {
                 size_t e = k + n.size();
@@ -5720,14 +5727,17 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
                 + ", [" + snames + "]" + sobjs + ");\n";
         else
             out = "        bindShadow(this, \"" + prop + "\", \"" + g_shadowUrl + file
-                + "\", " + dstr(QString::fromStdString(ssrc)) + ", [" + snames + "]" + sobjs + ");\n";
+                + "\", "
+                + dstr(QString::fromStdString(block ? "(function()" + ssrc + ")()" : ssrc))
+                + ", [" + snames + "]" + sobjs + ");\n";
         return true;
     }
     if (prop.empty())
         out = "        runJs(" + recv + ", " + dstr(QString::fromStdString(src))
             + ", [" + names + "]" + objs + ");\n";
     else
-        out = "        bindJs(this, \"" + prop + "\", " + dstr(QString::fromStdString(src))
+        out = "        bindJs(this, \"" + prop + "\", "
+            + dstr(QString::fromStdString(block ? "(function()" + src + ")()" : src))
             + ", [" + names + "]" + objs + ");\n";
     return true;
 }
@@ -6922,11 +6932,23 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         || qmlType == QLatin1String("url") || qmlType == QLatin1String("matrix4x4"))) {
                 props.push_back({name, "QmlVar", "", false, {}}); ++g_weakTyped;
                 g_propType[name] = "@var";
-                if (auto *ves2 = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
+                auto *ves2 = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+                if (ves2 || pub->statement) {
                     std::string vv;
-                    if (compileExpr(ves2->expression, "string", vv))
+                    if (ves2 && compileExpr(ves2->expression, "string", vv))
                         varTextInit.push_back({name, vv});
-                    else
+                    // ...or the engine writes it, by the same text route the compiled case uses.
+                    // Refusing left the property at its type's default and every read of it got
+                    // that, which for a value type is not a value the document ever mentions.
+                    else if (std::string dj; jsDelegate(ves2 ? (Node *) ves2->expression
+                                                             : (Node *) pub->statement, name, dj)) {
+                        propLateWire += dj;
+                        ++g_delegated;
+                        std::fprintf(stderr, "qmltc-d: %s: the initial value of value-type property "
+                                     "'%s' in %s delegated to the engine\n",
+                                     inPath, name.c_str(), cls.c_str());
+                    }
+                    else if (ves2)
                         std::fprintf(stderr, "qmltc-d: %s: the initial value of value-type property "
                                      "'%s' in %s does not compile — the property is DECLARED, its "
                                      "value is not [%s]\n", inPath, name.c_str(), cls.c_str(),
@@ -6968,7 +6990,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // runtime anyway — that is what `@var` means here — so handing the literal to
                     // the engine is not a workaround, it is the same channel the value already
                     // lives on.
-                    else if (std::string js; jsDelegate(ves->expression, name, js)) {
+                    else if (std::string js; jsDelegate(ves->expression, name, js)
+                                             || (pub->statement
+                                                 && jsDelegate(pub->statement, name, js))) {
                         varJsInit.push_back(js);
                         g_ctxUsed = true;
                         ++g_delegated;
@@ -7108,7 +7132,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // rows.length ? rows[cur].label : "-"` reads a `var`, does not compile, and came
                 // out empty against the engine's "dois". Same delegation a base property gets —
                 // the property exists, so the write lands, and it stays live.
-                if (std::string dj; es && jsDelegate(es->expression, name, dj)) {
+                if (std::string dj; (es ? jsDelegate(es->expression, name, dj)
+                                        : (pub->statement && jsDelegate(pub->statement, name, dj)))) {
                     props.push_back({name, dt, "", false, {}});
                     propLateWire += dj;
                     ++g_delegated;
@@ -7132,12 +7157,25 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // above — the field carries the value type and every read crosses as text — minus the
             // assignment, which is refused and counted as one.
             } else if (!std::strcmp(dt, "QColor")) {
+                // ...AND THE ENGINE CAN STILL GIVE IT ONE, exactly as it can for a scalar. A colour
+                // crosses as text through the meta-object either way, so a delegated binding writes
+                // it by the same route the compiled one would; refusing left the property at QML's
+                // default for a colour, which is opaque black, and every read of it got that.
+                props.push_back({name, "QColor", "", false, {}});
+                g_metaTextProps.insert(name);
+                if (std::string dj; (es ? jsDelegate(es->expression, name, dj)
+                                        : (pub->statement && jsDelegate(pub->statement, name, dj)))) {
+                    propLateWire += dj;
+                    ++g_delegated;
+                    std::fprintf(stderr, "qmltc-d: %s: the initial binding of colour property '%s' in "
+                                 "%s delegated to the engine\n", inPath,
+                                 qPrintable(pub->name.toString()), cls.c_str());
+                    continue;
+                }
                 std::fprintf(stderr, "qmltc-d: %s: the initial binding of colour property '%s' in %s is "
                              "not supported — the property is DECLARED, its initial value is not\n",
                              inPath, qPrintable(pub->name.toString()), cls.c_str());
                 ++partial;
-                props.push_back({name, "QColor", "", false, {}});
-                g_metaTextProps.insert(name);
             } else {
                 std::fprintf(stderr, "qmltc-d: %s: property '%s' (%s) is an unsupported binding/type — skipped (later phase)\n",
                              inPath, qPrintable(pub->name.toString()), qPrintable(qmlType));
