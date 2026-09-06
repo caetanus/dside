@@ -8184,8 +8184,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // (after children built, bindings initialised, handlers connected), matching QML's timing.
     std::string onCompletedBody;
     if (onCompleted && !compileStmt(onCompleted, ptype, onCompletedBody)) {
-        std::fprintf(stderr, "qmltc-d: %s: Component.onCompleted in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
-        ++partial; onCompletedBody.clear();
+        // ...AND HANDED TO THE ENGINE when it does not compile, exactly as a signal handler is.
+        // Skipping it outright is the one outcome that cannot be right: `Component.onCompleted` is
+        // where a document does the work it cannot express declaratively, and dropping it leaves a
+        // program that starts and does none of it. The reader restores the reader's theme, font and
+        // position there — compiled, it opened on the defaults every time and nothing said why.
+        onCompletedBody.clear();
+        std::string cj;
+        if (jsDelegate(onCompleted, "", cj, g_selfIsEngineInst ? "__inst" : "this")) {
+            onCompletedBody = cj;
+            ++g_delegated;
+            std::fprintf(stderr, "qmltc-d: %s: Component.onCompleted in %s delegated to the engine\n",
+                         inPath, cls.c_str());
+        } else {
+            std::fprintf(stderr, "qmltc-d: %s: Component.onCompleted in %s not yet supported — skipped (later phase)\n", inPath, cls.c_str());
+            ++partial;
+        }
     }
 
     // Base C++ property assignments (`objectName: "hi"`) -> set through the meta-object in
