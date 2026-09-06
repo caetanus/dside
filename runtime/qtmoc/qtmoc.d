@@ -1596,6 +1596,14 @@ void* createQmlDocument(string docUrl) {
 /// `decls` is the QML the DOCUMENT declares on this element (`property string target: ""`). It goes
 /// to the ENGINE, because the engine owns the object: a property the document adds to a type outside
 /// the binding is not on the D shell, it is on the thing every expression actually reads.
+private extern(C) bool qtd_list_append_default(void*, void*);
+/// Append to the type's OWN default property, read from its meta-object. For a child of a type the
+/// engine builds and nothing here binds — a `GradientStop` under a `Gradient` — where no table
+/// carries the property's name and a QObject parent puts the child nowhere the type looks.
+bool listAppendDefault(P, C)(P parent, C child) {
+    return qtd_list_append_default(qobjOf(parent), qobjOf(child));
+}
+
 void* createQmlObjectAny(A...)(string uris, string typeName, string docUrl = "", string decls = "",
                                string[] ids = null, A objs = A.init) {
     import std.algorithm : splitter;

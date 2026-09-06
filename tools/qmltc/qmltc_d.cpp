@@ -6246,6 +6246,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     bool hasCustomDefaultProp = false;                                           // a `default property` declared
     std::string defaultPropName;                                                 // ...its name
     std::string defaultKidLabel;                                                 // dump label for the lone default child
+    // The append goes through the object's OWN default property, whose NAME no table here carries
+    // (see the note where this is set). It is deliberately not a dump label: the differential
+    // resolves object paths by name, and `gradient.[0]` is not one — the oracle refused the whole
+    // document over it. The children keep the positional label they had.
+    bool defaultKidByMeta = false;
     bool defaultKidIsList = false;                                               // ...held at an index
     bool defaultPropIsList = false;                                              // ...and whether it's a list<>
     for (auto *m = init ? init->members : nullptr; m; m = m->next) {
@@ -7600,9 +7605,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // holds them in `flickableData` (reparented into its contentItem) and a Control in
     // `contentData`. Labelling them `data[i]` named a path the ENGINE does not have, which is how
     // the oracle refused ComboBox outright.
-    if (defaultKidLabel.empty() && !boundBase.empty() && !defaultKids.empty()) {
+    // ...AND A TYPE THE ENGINE BUILT holds them in its default property just the same. It has no
+    // bound base, so this block was skipped entirely and its children were only hand-parented —
+    // which is not where the type looks for them. `Gradient` is the plain case: its stops go in
+    // `stops`, a QObject parent puts them nowhere, and a Rectangle whose gradient has no stops
+    // paints its default colour. In the reader that was 46 pixels of WHITE down the left edge of
+    // the page, where the engine draws the spine shadow — the last visible difference between the
+    // two frames, and the one that looked least like a missing list.
+    if (defaultKidLabel.empty() && (!boundBase.empty() || g_selfIsEngineInst)
+            && !defaultKids.empty()) {
         std::string dp = defaultPropOf(g_selfQmlType);
-        if (dp.empty()) dp = defaultPropOf(qmlNameOfCxx(boundBase));
+        if (dp.empty() && !boundBase.empty()) dp = defaultPropOf(qmlNameOfCxx(boundBase));
+        // ...and when no table carries it and the object is the ENGINE'S, the object itself does:
+        // its meta-object records Q_CLASSINFO("DefaultProperty"), which is what the engine reads.
+        // Refusing here instead would be worse than the hand-parenting it replaced.
+        if (dp.empty() && g_selfIsEngineInst) { defaultKidByMeta = true; dp = "\x02"; }
         if (dp.empty()) {
             // No default property in the registry means the type CANNOT hold bare children --
             // Action, FontLoader, Translate and 11 others declare none. Assuming `data` invented a
@@ -7612,6 +7629,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                          inPath, g_selfQmlType.c_str(), cls.c_str());
             partial += (int)defaultKids.size();
             defaultKids.clear();
+        } else if (defaultKidByMeta) {
+            defaultKidIsList = true;   // appended, but never named in a path
         } else {
             defaultKidLabel = dp;
             defaultKidIsList = true;
@@ -7840,8 +7859,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // comes from the C++ base it resolved to. Missing that left `Greeter {}` — an
                    // Item-derived local type — unparented, which is exactly what the linkage
                    // check caught.
-                   + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
-                        ? "        if (!listAppend(this, \"" + defaultKidLabel + "\", " + field
+                   // ...appended to the OBJECT, which for a class holding an engine instance is
+                   // `__inst` and not the D shell: the shell has no such list and the append would
+                   // simply answer false.
+                   + (defaultKidByMeta
+                        ? "        if (!listAppendDefault(__inst, " + field
+                          + (dcEngineUri.empty() ? "" : ".__inst") + ")) {\n    "
+                      : defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
+                        ? "        if (!listAppend(" + std::string(g_selfIsEngineInst ? "__inst" : "this")
+                          + ", \"" + defaultKidLabel + "\", " + field
                           + (dcEngineUri.empty() ? "" : ".__inst") + ")) {\n    "
                         : "")
                    + "        setQtParent(" + field + (dcEngineUri.empty() ? "" : ".__inst") + ", this);\n"
@@ -7856,9 +7882,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                    // (measured — `no writable property "parent" … on RtSlider_background_dc0`).
                    + (((isItemType(childType) || isItemType(qmlNameOfCxx(childBase)))
                         && isItemType(g_selfQmlType))
-                        ? std::string(defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@' ? "    " : "")
+                        ? std::string(defaultKidByMeta
+                                      || (defaultKidIsList && !defaultKidLabel.empty()
+                                          && defaultKidLabel[0] != '@') ? "    " : "")
                           + "        setPropObj(" + dcRef + ", \"parent\", this);\n" : "")
-                   + (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@'
+                   + (defaultKidByMeta
+                      || (defaultKidIsList && !defaultKidLabel.empty() && defaultKidLabel[0] != '@')
                         ? "        }\n" : "")
                    // ...and NOT classBegin (the child did it); its own children come now, once it
                    // is appended and parented; componentComplete IS ours, and only after that.

@@ -432,6 +432,29 @@ static void qtd_dump_tree(QObject* o, int depth) {
 }
 #endif
 
+// APPEND TO WHATEVER THE TYPE CALLS ITS DEFAULT PROPERTY, asked of the object rather than of a
+// table. A type the engine builds and this compiler does not bind has no row anywhere — `Gradient`
+// is the plain case, and its stops belong in `stops`. Qt writes the answer into the meta-object as
+// Q_CLASSINFO("DefaultProperty"), which is exactly what the engine reads to place a bare child.
+// Falls back to nothing: the caller hand-parents when this answers false, which is what a type with
+// no list wants anyway.
+extern "C" bool qtd_list_append_default(void* parent, void* child) {
+#ifdef QTD_HAVE_QML
+    if (!parent || !child) return false;
+    QObject* p = static_cast<QObject*>(parent);
+    for (const QMetaObject* mo = p->metaObject(); mo; mo = mo->superClass()) {
+        int i = mo->indexOfClassInfo("DefaultProperty");
+        if (i < 0 || mo->classInfo(i).enclosingMetaObject() != mo) continue;
+        QQmlListReference r(p, mo->classInfo(i).value());
+        if (!r.isValid() || !r.canAppend()) return false;
+        return r.append(static_cast<QObject*>(child));
+    }
+    return false;
+#else
+    (void) parent; (void) child; return false;
+#endif
+}
+
 extern "C" void* qtd_scope_promise(void* o, const char* prop) {
     if (qEnvironmentVariableIsSet("QTD_PROMISE_DEBUG")) {
         fprintf(stderr, "qtd_scope_promise: ENTER '%s'\n", prop ? prop : "?");
@@ -625,8 +648,20 @@ extern "C" void qtd_component_finalized(void* o) {
             QObject* root = static_cast<QObject*>(o);
             QTimer::singleShot(qEnvironmentVariableIntValue("QTD_DUMP_TREE"),
                                QCoreApplication::instance(),
-                               [root] { std::fprintf(stderr, "--- qtd tree ---\n");
-                                        qtd_dump_tree(root, 0); std::fflush(stderr); });
+                               [root] {
+                                   // UP TO THE TOP FIRST. The arming object is whichever finished
+                                   // first with no QObject parent, and a delegate is exactly that
+                                   // — so the dump started from one leaf and showed one line.
+                                   // The visual parent is a property, so climbing it needs no
+                                   // QtQuick header either.
+                                   QObject* top = root;
+                                   for (int i = 0; i < 32; ++i) {
+                                       QObject* p = qvariant_cast<QObject*>(top->property("parent"));
+                                       if (!p) break;
+                                       top = p;
+                                   }
+                                   std::fprintf(stderr, "--- qtd tree ---\n");
+                                   qtd_dump_tree(top, 0); std::fflush(stderr); });
         }
     }
 #endif
