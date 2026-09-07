@@ -2468,6 +2468,12 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
     // `control.<member>` dep was stripped back to `control` and reported as having no notify.
     if (auto pt0 = g_propType.find(n2); pt0 != g_propType.end() && pt0->second.size() > 1
             && pt0->second[0] == '@' && !shadowedByLocalType(n2)) {
+        // ...EXCEPT A `var`, whose value the RUNTIME owns: the field is an empty marker, so a walk
+        // through it emits `comments.length` on a struct that has no such member and the generated
+        // module does not compile at all. The walker beside this one already keeps that rule; this
+        // copy did not, which is why fixing only the other one changed nothing. Refusing here sends
+        // the expression to the engine, where a `var` is a JS value and `.length` is ordinary.
+        if (pt0->second == "@var") return false;
         oe = dIdent(n2); oq = pt0->second.substr(1); return true;
     }
     // ...unless we are compiling a USE-SITE binding, where the merged class's own declarations are
@@ -4335,7 +4341,20 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
         switch (b->op) {
         case QSOperator::Lt: case QSOperator::Gt: case QSOperator::Le: case QSOperator::Ge:
         case QSOperator::Equal: case QSOperator::NotEqual: case QSOperator::StrictEqual:
-        case QSOperator::StrictNotEqual: case QSOperator::And: case QSOperator::Or: return "bool";
+        case QSOperator::StrictNotEqual: return "bool";
+        // ...BUT `||` AND `&&` ARE NOT BOOLEAN IN JS. They yield one of the OPERANDS, so the type
+        // is the operands' and not `bool` — and typing it bool is not a cosmetic slip when the
+        // property was declared `var`: `readonly property var comments: entry.comments || []`
+        // became a D `bool` field, every read through it stopped compiling, and the list it holds
+        // was never there. Measured on a real reader, whose commentary body was empty while its
+        // header — the same object, read without a `||` — printed fine.
+        //
+        // Both sides agreeing is the only safe answer; anything else stays untyped, which for a
+        // `var` means it stays a `var`.
+        case QSOperator::And: case QSOperator::Or: {
+            auto l = inferType(b->left, ptype), r = inferType(b->right, ptype);
+            return l == r ? l : std::string();
+        }
         case QSOperator::Div: return "double";
         case QSOperator::Add: {
             auto l = inferType(b->left, ptype), r = inferType(b->right, ptype);

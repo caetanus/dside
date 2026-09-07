@@ -542,7 +542,10 @@ extern "C" int qtd_bind_js(void* o, const char* prop, const char* src,
             e->clearError();
             return;
         }
-        QQmlProperty(obj, p, qmlContext(obj)).write(v);
+        const bool wrote = QQmlProperty(obj, p, qmlContext(obj)).write(v);
+        if (trace && !wrote)
+            std::fprintf(stderr, "qtd_bind_js: %s WRITE REFUSED (value %s)\n", qPrintable(p),
+                         qPrintable(v.toString()));
     };
     e->setNotifyOnValueChanged(true);
     QObject::connect(e, &QQmlExpression::valueChanged, obj, eval);
