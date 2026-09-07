@@ -1479,7 +1479,15 @@ extern "C" void* qtd_var_text(void* o, const char* name) {
     QString out;
     if (o && name) {
         QVariant v = static_cast<QObject*>(o)->property(name);
-        if (v.canConvert<QVariantList>() && v.metaType().id() != QMetaType::QString) {
+        // BOTH QT MAJORS NAME IT DIFFERENTLY, and the Qt6 spelling does not exist in Qt5:
+        // `QVariant::metaType()` arrived with Qt 6 and `userType()` is what 5 has. Written for one
+        // of them, this took the whole qml binding's shim archive down on the other.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const int vt = v.metaType().id();
+#else
+        const int vt = v.userType();
+#endif
+        if (v.canConvert<QVariantList>() && vt != QMetaType::QString) {
             const QVariantList l = v.toList();
             for (const QVariant& e : l) { if (!out.isEmpty()) out += QLatin1Char(','); out += e.toString(); }
         } else {
