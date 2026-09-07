@@ -2409,6 +2409,52 @@ static bool outerBareDep(const std::string &d, std::string &objExpr, std::string
     return false;
 }
 
+// THE HEAD OF A PATH THROUGH AN ENCLOSING OBJECT, and the notify that makes it live.
+//
+// `__outer.__outer.items.length` names no signal: `length` belongs to whatever `items` holds, and a
+// JS value has no notify. What CAN fire is the enclosing object's own `itemsChanged` — replace the
+// list and every read through it is stale, which is exactly when the binding must re-run. So the
+// hops are counted off, the first segment after them is the property to watch, and the connect is
+// made on the frame that declares it.
+//
+// It lives here because it had to be written a THIRD time. The same rule was already in two of the
+// three dependency consumers, and the one without it reported `binding 'nq' depends on
+// '__outer.__outer.items.length', which has no known notify` for a property the enclosing class
+// publishes with `@Property("itemsChanged")` right beside `Signal!() itemsChanged;`. A rule that
+// lands in some consumers and not others makes a binding live on one spelling and dead on another,
+// which is not a difference a reader of the QML can see.
+// `bare` is the name to watch when the dependency carries NO `__outer.` prefix — the caller that
+// already resolved one (a `theme` the enclosing document declares, read without qualification)
+// passes it, and the caller that only ever means a prefixed path passes nothing. Empty means "a
+// dependency with no prefix is not mine", which is what keeps this from wiring names that the
+// consumer around it resolves some other way.
+static bool outerHeadNotifyConn(const std::string &d, const std::string &bare,
+                                const std::string &recvSlot, std::string &conns) {
+    std::string rest = d; size_t hops = 0;
+    while (rest.rfind("__outer.", 0) == 0) { rest = rest.substr(8); ++hops; }
+    const std::string head = hops ? rest.substr(0, rest.find('.')) : bare;
+    if (head.empty()) return false;
+    // One `__outer.` is frame ZERO: the prefix counts hops and the vector counts frames.
+    for (size_t k = hops ? hops - 1 : 0; k < g_outerChain.size(); ++k) {
+        std::string pre;
+        for (size_t i = 0; i <= k; ++i) pre += "__outer.";
+        const std::string oe = pre.substr(0, pre.size() - 1);
+        const OuterFrame &fr = g_outerChain[k];
+        std::string sig;
+        if (fr.propType.count(head)) sig = head + "Changed()";
+        else if (auto qn = g_qmlNotify.find(fr.qmlType); qn != g_qmlNotify.end()) {
+            auto nt = qn->second.find(head);
+            if (nt != qn->second.end() && !nt->second.empty()) sig = nt->second;
+        }
+        if (sig.empty()) continue;
+        g_outerUsed = true;
+        if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
+        conns += "        connectMeta(" + oe + ", \"" + sig + "\", this, \"" + recvSlot + "()\");\n";
+        return true;
+    }
+    return false;
+}
+
 static bool outerDepIsPath(const std::string &d) {
     size_t i = 0;
     while (d.compare(i, 8, "__outer.") == 0) i += 8;
@@ -3467,9 +3513,36 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             }
         }
         // `<string>.length` -> D length (cast to int to match QML's int result).
+        //
+        // ...WHICH IS ONLY TRUE IF THE BASE IS A STRING. A `var` is not: the runtime owns its value
+        // and the meta channel hands it back as TEXT, so `root.items.length` compiled to
+        // `cast(int)(propStr(__outer.__outer, "items").length)` — the length of the text a
+        // QVariantList renders as, which is zero. It reported nothing and it was not a refusal; the
+        // binding simply answered 0 for a list of two, while the SAME property read as a bare name
+        // (which goes to the engine, where a `var` is a JS value) answered 2. Two spellings of one
+        // read disagreeing is what this looks like from the outside, and it is what a reader's
+        // "nothing here" line sitting above the entries it says are absent looked like.
+        //
+        // Asked of the two tables that actually know: this document's own declarations, and the
+        // frame of whichever enclosing object an id resolves to. Refusing sends the whole
+        // expression to the engine, which is where an untyped value belongs.
         if (qs(fm->name.toString()) == "length") {
+            auto namesVar = [&](Node *bn) {
+                if (auto *id = cast<IdentifierExpression *>(bn)) {
+                    auto v = g_propType.find(qs(id->name.toString()));
+                    return v != g_propType.end() && v->second == "@var";
+                }
+                auto *bfm = cast<FieldMemberExpression *>(bn);
+                auto *bid = bfm ? cast<IdentifierExpression *>(bfm->base) : nullptr;
+                if (!bid) return false;
+                std::string pre; const OuterFrame *fr = nullptr;
+                if (!outerHop(qs(bid->name.toString()), pre, &fr) || !fr) return false;
+                auto v = fr->propType.find(qs(bfm->name.toString()));
+                return v != fr->propType.end() && v->second == "@var";
+            };
             std::string b;
-            if (compileExpr(fm->base, "string", b)) { out = "cast(int)(" + b + ".length)"; return true; }
+            if (!namesVar(fm->base) && compileExpr(fm->base, "string", b))
+                { out = "cast(int)(" + b + ".length)"; return true; }
         }
         return false;
     }
@@ -9998,46 +10071,9 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // beside `Signal!() themeChanged;`. Without this the binding is compiled and DEAD: it
             // paints the first value and never moves, which in the application this was measured
             // on means switching the theme repaints nothing.
-            {
-                // THE DEPENDENCY IS WRITTEN AS IT IS READ, so an outer one arrives already
-                // prefixed: `__outer.theme.paper`. Reducing to the first dot leaves `__outer`,
-                // which is not a property of anything — the hops have to be counted off first and
-                // the name taken from what follows them.
-                std::string rest = d; size_t hops = 0;
-                while (rest.rfind("__outer.", 0) == 0) { rest = rest.substr(8); ++hops; }
-                std::string headN = rest.substr(0, rest.find('.'));
-                // ...and ONE `__outer.` is frame ZERO: the prefix counts hops, the vector counts
-                // frames, and they are off by one. Starting the walk at `hops` looked right and
-                // skipped the frame that declares the property.
-                std::string preN; bool wired = false;
-                for (size_t k = hops ? hops - 1 : 0; k < g_outerChain.size() && !wired; ++k) {
-                    preN.assign((k + 1) * 8, '\0');
-                    preN.clear();
-                    for (size_t i = 0; i <= k; ++i) preN += "__outer.";
-                    const OuterFrame &fr = g_outerChain[k];
-                    std::string oeN = preN.substr(0, preN.size() - 1);
-                    const std::string &dEffN = hops ? headN : dEff;
-                    if (fr.propType.count(dEffN)) {
-                        g_outerUsed = true;
-                        if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-                        conns += "        connectMeta(" + oeN + ", \"" + dEffN
-                               + "Changed()\", this, \"" + slot + "()\");\n";
-                        wired = true;
-                    } else if (auto qnO = g_qmlNotify.find(fr.qmlType); qnO != g_qmlNotify.end()) {
-                        // ...and a BASE property of the outer, whose notify the registry does know
-                        // and whose name is not always `<prop>Changed`.
-                        auto ntO = qnO->second.find(dEffN);
-                        if (ntO != qnO->second.end() && !ntO->second.empty()) {
-                            g_outerUsed = true;
-                            if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
-                            conns += "        connectMeta(" + oeN + ", \"" + ntO->second
-                                   + "\", this, \"" + slot + "()\");\n";
-                            wired = true;
-                        }
-                    }
-                }
-                if (wired) continue;
-            }
+            // The rule is shared with the other two dependency consumers rather than written
+            // out here — see outerHeadNotifyConn.
+            if (outerHeadNotifyConn(d, dEff, slot, conns)) continue;
             std::fprintf(stderr, "qmltc-d: %s: %s in %s depends on '%s', which has no known notify "
                          "— it would not update (later phase)\n", inPath, what.c_str(), cls.c_str(), d.c_str());
             ++partial;
@@ -11103,6 +11139,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                               + "\", this, \"__rc_" + p.name + "()\");\n";
                         continue;
                     }
+                    // A PATH through an enclosing object (`__outer.__outer.items.length`): the
+                    // notify is the enclosing property's, not the leaf's. Same rule as the other
+                    // two consumers, now the same code as well.
+                    if (outerHeadNotifyConn(d, "", "__rc_" + p.name, wire)) continue;
                     // Anything else that can never fire is reported, not silently dropped: the
                     // binding would look live and never update.
                     std::fprintf(stderr, "qmltc-d: %s: binding '%s' depends on '%s', which has no "

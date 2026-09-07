@@ -301,6 +301,38 @@ struct QtdPromise { QQmlPropertyMap* map; QObject* obj; QByteArray prop; };
 }
 static QList<QtdPromise>& qtd_promises() { static QList<QtdPromise> v; return v; }
 
+// ONE STEP UP THE SCOPE CHAIN, WHICH IS NOT `QObject::parent()`.
+//
+// A document this compiler compiled attaches a child by writing its `parent` PROPERTY — that is
+// what the QML source says and what the differential asserts. For a QQuickItem `parent` is the
+// VISUAL parent, and `QQuickItem::setParentItem` does not set the QObject parent, so a compiled
+// tree that is fully built has `QObject::parent() == nullptr` at every level. The walk above was
+// therefore standing still: measured on the two-deep fixture below, `0 ancestors` after all 32
+// retries, on an object whose visual grandparent declared the very name being asked for.
+//
+// It never showed up as a refusal. The promise simply stayed unresolved, its property map kept no
+// key, and JS read `undefined` — so `items.length` was `undefined` (written into an `int` as 0) and
+// `items.length === 0` was FALSE at the same instant, on the same object, in the same pass. Two
+// reads of one name disagreeing is what a missing key looks like from the JS side, and it is why
+// this was reported as a Repeater that iterates while its empty-check also fires: the qualified
+// read went to the object and the bare one to the map.
+//
+// So: the QObject parent when there is one — it is the stronger relationship and non-visual objects
+// have only that — and otherwise whatever the object's own `parent` property names. Asking the
+// meta-object keeps this generic: any type that declares `parent` answers, and QQuickItem is only
+// the one that made it visible.
+static QObject* qtd_scope_up(QObject* o) {
+    if (!o) return nullptr;
+    if (QObject* p = o->parent()) return p;
+    const QMetaObject* mo = o->metaObject();
+    const int pi = mo->indexOfProperty("parent");
+    if (pi < 0) return nullptr;
+    const QVariant v = mo->property(pi).read(o);
+    if (!v.canConvert<QObject*>()) return nullptr;
+    QObject* p = v.value<QObject*>();
+    return p == o ? nullptr : p;
+}
+
 // WHO ANSWERS A NAME THIS DOCUMENT DOES NOT DECLARE. The first version of this walked `parent()`
 // looking for an object carrying the property, which is a guess about where QML keeps such names —
 // and the wrong one. It found nothing for `theme`, the promise stayed empty, and 298 bindings
@@ -329,7 +361,10 @@ static bool qtd_resolve_scope(QObject* from, const QByteArray& prop, QVariant& o
     // than answering once: at construction there is no parent to walk to. Asking the ancestor's
     // CONTEXT and not merely the ancestor covers the case the parent walk alone never could — the
     // owner is a context property of an enclosing document, not a property of any object above.
-    for (QObject* p = from ? from->parent() : nullptr; p; p = p->parent()) {
+    // Bounded: the step is a PROPERTY read now, and a property can name anything, including a cycle
+    // the ownership tree could not have contained.
+    int hops = 0;
+    for (QObject* p = qtd_scope_up(from); p && hops < 256; p = qtd_scope_up(p), ++hops) {
         if (QQmlContext* pc = qmlContext(p)) {
             const QVariant v = pc->contextProperty(QString::fromUtf8(prop));
             if (v.isValid()) { out = v; return true; }
