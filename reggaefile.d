@@ -169,7 +169,34 @@ Build reggaeBuild() {
             // letting another runtime's event driver hand its fds to Qt instead of polling beside
             // it. About TIME, not about a callback arriving: a callback proves the notifier is
             // wired and only the elapsed time proves the wait was a wait.
+            //
+            // POSIX ONLY, and deliberately so rather than by accident: the test waits on a pipe,
+            // and `QSocketNotifier` on Windows watches SOCKETS and nothing else. The Windows
+            // answer to the same question is `QWinEventNotifier` over a HANDLE — the sibling class,
+            // the same design — and it is not written yet. Registering this there would have the
+            // Windows report carry a row that cannot compile, which is a red build about a gap
+            // that is already known.
+            version (Posix)
             all ~= qtdTest("eventloop_fd-" ~ dc ~ "-" ~ tag, t("wrapper", "eventloop_fd.d"), b, dc);
+            // ...and the whole of it, on a real foreign runtime: vibe-core's loop running with Qt
+            // as its event driver. Skipped, not failed, when vibe-core is not in the dub cache —
+            // it is not a dependency of this project and must not become one; it is what a USER
+            // brings. Qt6 only for now: the driver is the posix one.
+            // ADVISORY, not default. It shells out to dub, which fetches on a cold cache and
+            // rebuilds vibe-core on a warm one — neither belongs in the build everyone runs. It is
+            // reachable by name (`./build vibe-driver-ldc2`), which is what the integration needs.
+            // ...and posix for the same reason: the driver it exercises is
+            // `eventcore.drivers.posix.qt`.
+            version (Posix)
+            if (tag == "qt6")
+                advisoryGates ~= Target.phony("vibe-driver-" ~ dc,
+                    "sh " ~ buildPath(root, "tests", "vibe", "run.sh") ~ " " ~ dc ~ " " ~ b.genDir
+                    ~ " " ~ b.bdir ~ " " ~ buildPath(b.bdir, "vibe-" ~ dc) ~ " " ~ root
+                    // ...and the pkg-config modules the binding was generated for. The script
+                    // cannot guess them: a widgets binding needs Qt6Widgets and Qt6Gui that a QML
+                    // one does not, and a missing one shows up as three hundred undefined vtables.
+                    ~ " \"" ~ b.mods.join(" ") ~ "\"",
+                    [qtdBindLib(b, dc), b.shims]);
             // `new QThread` is a QThread: one object, a trampoline, and run() landing in D. The
             // piece that makes it real is generic rather than QThread's — every virtual callback
             // attaches a thread druntime has not seen, because Qt is free to call one from a
