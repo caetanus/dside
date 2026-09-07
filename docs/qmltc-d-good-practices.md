@@ -267,6 +267,11 @@ This is the largest single cluster left.
 > | `modelData.label` | yes | yes | no — one delegated read per use |
 > | `property string label: modelData.label`, then read `label` | yes | yes | the reads do; one delegated expression per row-property |
 > | `required property string label` | **no** | yes | yes |
+>
+> On the compiled path a required property is filled from the per-item context, and for a list of
+> objects the keys are on `modelData` rather than on the context itself. That was measured the hard
+> way — a page of rows with empty strings and a number of 0 — and is fixed: the fill asks the
+> context first and then the element's own key, so `setModel` and `required property` meet.
 
 ### Hand the rows over as a model, not as JSON
 
