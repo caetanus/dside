@@ -1278,6 +1278,10 @@ void qtdRegisterGenDir(string d) { if (!_genDirs.canFind(d)) _genDirs ~= d; }
 
 string[] qtdRuntimeSources(string root) {
     return ["qtmoc/qtdmoc.cpp", "qtmoc/qtdmoc_qml.cpp", "qtmoc/qtmoc.d",
+            // Qt as the event driver for a D fiber runtime: three calls and no moc, so a foreign
+            // event loop's descriptors can be handed to Qt's wait instead of polled. QtCore only,
+            // so it belongs in every binding exactly as the rest of this list does.
+            "qtmoc/qtd_eventloop.cpp",
             "holder/qtd_holder.cpp", "holder/holder.d"]
         .map!(f => buildPath(root, "runtime", f)).filter!(f => exists(f)).array;
 }

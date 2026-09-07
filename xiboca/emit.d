@@ -636,6 +636,14 @@ void main(string[] args) {
             // ABI a binding links against does not change with the module list.
             if (exists(buildPath(mocSrcDir, "qtdmoc_qml.cpp")))
                 std.file.copy(buildPath(mocSrcDir, "qtdmoc_qml.cpp"), buildPath(outDir, "qtdmoc_qml.cpp"));
+            // ...and Qt as the event driver for a foreign fiber runtime. QtCore only — three calls
+            // and no moc — so it is copied unconditionally like the QML half beside it: a binding's
+            // ABI must not change with the module list. The D side that uses it lives in the other
+            // runtime's own source tree (eventcore's PosixEventLoop is package-private, so a driver
+            // has no choice), and declares these as extern(C) and nothing more.
+            if (exists(buildPath(mocSrcDir, "qtd_eventloop.cpp")))
+                std.file.copy(buildPath(mocSrcDir, "qtd_eventloop.cpp"),
+                              buildPath(outDir, "qtd_eventloop.cpp"));
             std.file.copy(buildPath(mocSrcDir, "qtmoc.d"),    buildPath(outDir, "qtmoc.d"));
             cxxGen["qtmoc"] = true;
         }

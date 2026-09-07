@@ -34,7 +34,12 @@ done
 
 bad=0
 checked=0
+# THE LIST IS THE CLAIM. A runtime source the generator copies and this loop does not name is a
+# build INPUT nobody checks: it can drift from the tree and every binding will compile the old one
+# in silence, which is the whole failure this gate exists for. So a new one goes here at the same
+# time it goes into the generator's copy step — qtd_eventloop.cpp arrived that way.
 for origin in "$SRC"/qtmoc/qtdmoc.cpp "$SRC"/qtmoc/qtdmoc_qml.cpp "$SRC"/qtmoc/qtmoc.d \
+              "$SRC"/qtmoc/qtd_eventloop.cpp \
               "$SRC"/holder/qtd_holder.cpp "$SRC"/holder/holder.d; do
     [ -f "$origin" ] || continue
     base=$(basename "$origin")

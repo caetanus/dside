@@ -165,6 +165,11 @@ Build reggaeBuild() {
             // binding also compiles: prove they link and no-op here, not just that the C++ unit
             // compiles (qtmoc-probe-noqml covers that half).
             all ~= qtdTest("noqml_helpers-" ~ dc ~ "-" ~ tag, t("wrapper", "noqml_helpers.d"), b, dc);
+            // Qt's WAIT servicing a descriptor it does not own — the load-bearing measurement for
+            // letting another runtime's event driver hand its fds to Qt instead of polling beside
+            // it. About TIME, not about a callback arriving: a callback proves the notifier is
+            // wired and only the elapsed time proves the wait was a wait.
+            all ~= qtdTest("eventloop_fd-" ~ dc ~ "-" ~ tag, t("wrapper", "eventloop_fd.d"), b, dc);
             // `new QThread` is a QThread: one object, a trampoline, and run() landing in D. The
             // piece that makes it real is generic rather than QThread's — every virtual callback
             // attaches a thread druntime has not seen, because Qt is free to call one from a
