@@ -1257,6 +1257,13 @@ private extern(C) void* qtd_var_of_str(const(char)*, int);
 private extern(C) void* qtd_var_text(void*, const(char)*);
 /// A `var` property rendered as text, the way the differential's oracle renders it. The D field of
 /// a `var` is an empty marker — the runtime owns the value — so reading the field prints nothing.
+private extern(C) int qtd_var_count(void*, const(char)*);
+/// How many rows a `var` property holds, or -1 when it is not a list. `varText` cannot answer this:
+/// a row is a map and a map has no string form, so a model of any size reads back as "".
+int varCount(T)(T o, string name) {
+    return qtd_var_count(qobjOf(o), (name ~ "\0").ptr);
+}
+
 string varText(T)(T o, string name) {
     auto p = qtd_var_text(qobjOf(o), (name ~ "\0").ptr);
     auto s = qsToD(p); qtd_qs_free(p); return s;

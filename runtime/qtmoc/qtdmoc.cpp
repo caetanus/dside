@@ -1471,7 +1471,18 @@ static QtdListSlot* qtd_list_slot(QObject* o, const char* name) {
 // that prerequisite is what blocked this for so long. It disappears once the question is asked the
 // other way round: nobody said the value had to live on the D side. Same shape as the list slot
 // above, and the entry dies with the object through the same destroyed() hook.
-#ifdef QTD_HAVE_QML
+//
+// NOT BEHIND THE QML SWITCH, and it was — which cost a real user a blank page on a real phone.
+// Everything here is QtCore: QObject, QByteArray, QVariant, and a destroyed() connection. The
+// switch is about whether QtQml is LINKED, and a `property var`'s storage never needed it.
+//
+// Built without QTD_HAVE_QML, `qtd_moc_var_write` was an empty function. The symptom is what makes
+// this worth spelling out: `setModel` builds its QVariantList through the varlist/varmap calls,
+// which are QtCore and compiled in every configuration, so the model was built correctly; the
+// notify fired, because a signal is independent of any of this; and only the WRITE went nowhere,
+// so QML read `undefined` for the one property that mattered and every neighbouring `@Property
+// string` kept working. Measured on Android by the session that ships the application: the reading
+// page came up blank on the device and rendered on the desktop, from the same D source.
 extern "C++" {
 struct QtdVarSlot { QObject* owner; QByteArray prop; QVariant v; };
 static QVector<QtdVarSlot*>& qtd_var_slots() { static QVector<QtdVarSlot*> v; return v; }
@@ -1484,7 +1495,6 @@ static QtdVarSlot* qtd_var_slot(QObject* o, const char* name) {
     return s;
 }
 }
-#endif
 // ---- a MODEL, built on the D side --------------------------------------------------------------
 //
 // A QVariantList of QVariantMap IS a QML model: a view iterates it and a delegate reads each map's
@@ -1567,19 +1577,28 @@ extern "C" void qtd_varlist_into(void* l, void* out) {
     delete static_cast<QVariantList*>(l);
 }
 
-extern "C" void qtd_moc_var_read(void* o, const char* name, void* out) {
-#ifdef QTD_HAVE_QML
-    if (o && out) *static_cast<QVariant*>(out) = qtd_var_slot(static_cast<QObject*>(o), name)->v;
+// HOW MANY ROWS A `var` PROPERTY HOLDS, which `qtd_var_text` cannot answer: a row is a QVariantMap
+// and a map has no string form, so a model of any size renders as the empty string. That is correct
+// for text and useless for a test — a check written on it passes on an empty property and on a full
+// one alike. Returns -1 when the value is not a list at all, so "not a model" and "an empty model"
+// stay apart.
+extern "C" int qtd_var_count(void* o, const char* name) {
+    if (!o || !name) return -1;
+    const QVariant v = static_cast<QObject*>(o)->property(name);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const int vt = v.metaType().id();
 #else
-    (void) o; (void) name; (void) out;
+    const int vt = v.userType();
 #endif
+    if (!v.canConvert<QVariantList>() || vt == QMetaType::QString) return -1;
+    return int(v.toList().size());
+}
+
+extern "C" void qtd_moc_var_read(void* o, const char* name, void* out) {
+    if (o && out) *static_cast<QVariant*>(out) = qtd_var_slot(static_cast<QObject*>(o), name)->v;
 }
 extern "C" void qtd_moc_var_write(void* o, const char* name, void* in_) {
-#ifdef QTD_HAVE_QML
     if (o && in_) qtd_var_slot(static_cast<QObject*>(o), name)->v = *static_cast<QVariant*>(in_);
-#else
-    (void) o; (void) name; (void) in_;
-#endif
 }
 
 // Fills `*out` with the QQmlListProperty for `<o>.<name>` — the only way one is ever handed out.
