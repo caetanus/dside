@@ -2482,6 +2482,30 @@ static bool outerHeadNotifyConn(const std::string &d, const std::string &bare,
 // answers it for the ones that arrive already spelled, which is how objPathFromString hands them
 // over. Measured on QSiblingLaterHandover: `color: panel.open ? … : …` with `panel` declared below
 // it painted #ffffff — a Rectangle's default — against the engine's #445566.
+// A BARE NAME AN ENCLOSING DOCUMENT DECLARES, which a delegate's per-item context does not have.
+//
+// Inside a delegate an unqualified name is answered from the context — that is where `index`,
+// `modelData` and the model roles live. But the READ resolves an enclosing document's property
+// through the outer chain (rewritten to `__oK` at run time, since a delegate has no compile-time
+// link to its outer), and the DEPENDENCY did not ask the same question: it wired
+// `connectNotify(contextObject(this), …)` for a name the context has never heard of, so nothing
+// ever re-ran the binding.
+//
+// Measured on a real reader, and it is the sharpest pair this compiler has produced: the reading
+// page is BYTE-IDENTICAL to the engine in the light theme and in sepia, and differs in dark. The
+// one line that separates them is `opacity: themeIndex === 2 ? 0.22 : 0.55` on a marked verse. It
+// compiled correctly — `(__o7.themeIndex == 2.0)` — and was connected to the wrong object, so it
+// held the value it had when the page was built and every highlight came out at the light theme's
+// 0.55 against the engine's 0.22.
+static bool bareNameIsOuters(const std::string &d) {
+    for (const auto &fr : g_outerChain) {
+        if (fr.propType.count(d) || fr.baseProps.count(d)) return true;
+        if (auto qc = g_qmlCxxType.find(fr.qmlType); qc != g_qmlCxxType.end() && qc->second.count(d))
+            return true;
+    }
+    return false;
+}
+
 static bool objExprNullAtWire(const std::string &oe) {
     return oe.find("._dc") != std::string::npos || oe.rfind("_dc", 0) == 0
         || oe.find("propObj(") != std::string::npos || oe.find("instOf(") != std::string::npos;
@@ -9511,7 +9535,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // WITH a notify — so the binding is as live as any other, same channel.
                 if (!g_delegateCls.empty() && !g_hasRequiredDecl
                         && d.find('.') == std::string::npos && !g_propType.count(d)
-                        && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
+                        && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)
+                        && !bareNameIsOuters(d)) {
                     conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \"__rcb_"
                            + ba.first + "()\");\n";
                     continue;
@@ -10157,7 +10182,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // with a notify — so the binding is as live as any other, through the same channel.
             if (!g_delegateCls.empty() && !g_hasRequiredDecl
                     && d.find('.') == std::string::npos && !g_propType.count(d)
-                    && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
+                    && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)
+                        && !bareNameIsOuters(d)) {
                 conns += "        connectNotify(contextObject(this), \"" + d + "\", this, \""
                        + slot + "()\");\n";
                 continue;
@@ -11232,7 +11258,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // model.index` was, silently.
                     if (!g_delegateCls.empty() && !g_hasRequiredDecl
                             && d.find('.') == std::string::npos && !g_propType.count(d)
-                            && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)) {
+                            && !g_baseProps.count(d) && !g_scope.count(d) && !g_childIds.count(d)
+                        && !bareNameIsOuters(d)) {
                         wire += "        connectNotify(contextObject(this), \"" + d
                               + "\", this, \"__rc_" + p.name + "()\");\n";
                         continue;
@@ -11240,7 +11267,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     // A PATH through an enclosing object (`__outer.__outer.items.length`): the
                     // notify is the enclosing property's, not the leaf's. Same rule as the other
                     // two consumers, now the same code as well.
-                    if (outerHeadNotifyConn(d, "", "__rc_" + p.name, wire)) continue;
+                    // ...and a BARE name an enclosing document declares. It used to be swallowed
+                    // by the delegate-context branch above, which answered it from a context that
+                    // has never heard of it; now that the branch declines, the connect has to be
+                    // made here or the binding is merely honest about being dead.
+                    if (outerHeadNotifyConn(d, bareNameIsOuters(d) ? d : std::string(),
+                                            "__rc_" + p.name, wire)) continue;
                     // Anything else that can never fire is reported, not silently dropped: the
                     // binding would look live and never update.
                     std::fprintf(stderr, "qmltc-d: %s: binding '%s' depends on '%s', which has no "

@@ -1716,7 +1716,14 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
                                      // The promise reads the owner ONCE, so a plain value was a
                                      // snapshot: right at t=0 and wrong ever after, which a
                                      // property dump calls agreement. Only time tells them apart.
-                                     Timed("QBareOuterLive", 300, "n")];
+                                     Timed("QBareOuterLive", 300, "n"),
+                                     // ...and a bare name the enclosing DOCUMENT declares, read
+                                     // inside a delegate. The read goes to the outer chain and the
+                                     // dependency went to the per-item context, which has never
+                                     // heard of it — so the binding never re-ran. At t=0 both
+                                     // spellings agree, which is exactly what a dump would call
+                                     // agreement.
+                                     Timed("QDelegateOuterName", 800, "got")];
 
     // Documents whose KEYBOARD behaviour is compared: send this key to both sides and diff the property.
 struct Keyed { string name; int key; string prop; }
@@ -1860,6 +1867,10 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             static immutable string[] labelsGap = [
                 "QDelegateKidCtx", "QDelegateRole", "QDelegateRoleReq", "QDelegateReqNoModel",
                 "QDelegateReqFill", "QJsDelegatedFrame", "QDelegateRequiredRole",
+                // ...and one more of the same shape: the engine names the delegate INSTANCE's
+                // property (`data[1].v`) and the compiled side has no label for it. The dump and
+                // the timed comparison still judge this document; only the label census is waived.
+                "QDelegateOuterName",
             ];
             auto verifyStep = labelsGap.canFind(name) ? ""
                 : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;
