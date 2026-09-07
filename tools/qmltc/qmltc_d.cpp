@@ -2411,6 +2411,19 @@ static bool outerBareDep(const std::string &d, std::string &objExpr, std::string
     //
     // Nothing reported it. The binding was connected, it just listened to the wrong object.
     if (g_propType.count(d) || g_baseProps.count(d)) return false;
+    // ...and `g_baseProps` is not the whole of "the object's own": it holds the base properties the
+    // document BINDS, so a name that is only READ is absent from it. `parent` is the one that
+    // matters, and inside a Repeater delegate getting it wrong is fatal rather than merely wrong.
+    //
+    // `width: parent.width` on such a delegate resolved `parent` to the enclosing FRAME, which is
+    // the Repeater — and a Repeater parents its items to its own parent, never to itself, so the
+    // `findOuter` emitted for that frame returns null at run time. The whole object then bails out
+    // of its ready step: no width, no height, no children, nothing. Measured on a real reader's
+    // settings panel: twelve translation rows created, every one 0x0 and invisible, against the
+    // engine's twelve. The delegate's OWN `parent` was live all along — the late phase binds it —
+    // so the connect that cost the object everything was redundant as well as wrong.
+    if (auto qc = g_qmlCxxType.find(g_selfQmlType); qc != g_qmlCxxType.end() && qc->second.count(d))
+        return false;
     std::string pre;
     for (size_t k = 0; k < g_outerChain.size(); ++k) {
         pre += (k ? "." : "") + std::string("__outer");
@@ -2611,9 +2624,22 @@ static bool objPathHead(const std::string &n2, std::string &oe, std::string &oq)
             && pt2->second[0] == '@' && !shadowedByLocalType(n2)) {
         oe = dIdent(n2); oq = pt2->second.substr(1); return true;
     }
+    // THE OBJECT'S OWN OBJECT-PROPERTY IS ASKED BEFORE THE ENCLOSING FRAMES, which is QML's scope
+    // rule and the order these two lines were in the other way round. The name that shows it is
+    // `parent`: every Item frame has one, so the hop matched first and a path head meaning THIS
+    // object's parent resolved to the enclosing object instead.
+    //
+    // Inside a Repeater delegate that is not merely wrong, it is fatal. `width: parent.width`
+    // resolved to frame 0 — the Repeater — and a Repeater parents its items to its own parent,
+    // never to itself, so the `findOuter` emitted for that frame returns null at run time and the
+    // object bails out of its ready step before setting anything at all. Measured on a real
+    // reader's settings panel: twelve translation rows created, every one 0x0 and invisible,
+    // against the engine's twelve. `hasContext` true, `findOuter(<Repeater class>)` null, twelve
+    // times. The delegate's own `parent` was live the whole time — the late phase binds it — so the
+    // connect that cost the object everything was redundant as well as wrong.
+    if (objPropQml(g_selfQmlType, n2, oq)) { oe = "propObj(this, \"" + n2 + "\")"; return true; }
     std::string pre2; const OuterFrame *fr2 = nullptr;
     if (outerHop(n2, pre2, &fr2)) { oe = pre2.substr(0, pre2.size() - 1); oq = fr2->qmlType; return true; }
-    if (objPropQml(g_selfQmlType, n2, oq)) { oe = "propObj(this, \"" + n2 + "\")"; return true; }
     std::string pre3;
     for (size_t k = 0; k < g_outerChain.size(); ++k) {
         pre3 += "__outer.";
@@ -4339,8 +4365,17 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
             }
         // A read off the enclosing object is a real dependency: record it tagged, so the wiring
         // connects to the OUTER's notify instead of treating the binding as a constant.
+        // ...EXCEPT INSIDE A DELEGATE, where `parent` is not the enclosing object. A Repeater
+        // parents its items to its OWN parent, never to itself, so the enclosing frame is not an
+        // ancestor of the delegate at run time — and the `findOuter` the wiring emits for that
+        // frame returns null. The object then bails out of its ready step before setting anything
+        // at all: measured on a real reader's settings panel, twelve translation rows created and
+        // every one of them 0x0, invisible, against the engine's twelve. `hasContext` true,
+        // `findOuter(<Repeater class>)` null, twelve times, in silence. The delegate's own `parent`
+        // is wired anyway — `connectNotify(this, "parent", …)` and `bindLeaf` in the late phase —
+        // so recording it as the outer's cost the object everything and bought nothing.
         if (base && qs(base->name.toString()) == "parent" && !g_scope.count("parent")
-                && !g_childIds.count("parent")) {
+                && !g_childIds.count("parent") && g_delegateCls.empty()) {
             if (!g_outerChain.empty()) {
                 g_outerUsed = true;
                 if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;

@@ -1870,7 +1870,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
                 // ...and one more of the same shape: the engine names the delegate INSTANCE's
                 // property (`data[1].v`) and the compiled side has no label for it. The dump and
                 // the timed comparison still judge this document; only the label census is waived.
-                "QDelegateOuterName",
+                "QDelegateOuterName", "QDelegateParentIsNotOuter",
             ];
             auto verifyStep = labelsGap.canFind(name) ? ""
                 : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;
