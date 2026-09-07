@@ -19,7 +19,7 @@ DC="$1"; GENDIR="$2"; BDIR="$3"; WORK="$4"; ROOT="$5"; MODS="$6"
 # vibe-d is not a dependency of this project and must not become one: it is what a USER brings.
 # Absent, the target reports that and passes — the same shape the libsample harness has for its
 # clone. Present, the check is real.
-HOST="${HTTP_TEST_HOST:-example.org}"
+HOST="${HTTP_TEST_HOST:-duckduckgo.com}"
 if ! ls -d "$HOME"/.dub/packages/vibe-d* >/dev/null 2>&1; then
     echo "http-driver SKIP: no vibe-d in ~/.dub/packages — nothing to request with"
     exit 0
@@ -66,8 +66,8 @@ JSON
 
 out=$("$WORK/httpqt" 2>&1) || { echo "http-driver FAIL: it did not run" >&2; echo "$out" >&2; exit 1; }
 echo "$out" | tail -2
-echo "$out" | grep -q "HTTP OVER VIBE, DNS AND ALL WAITS ON QT" || {
-    echo "http-driver FAIL: one of the two halves did not move" >&2
+echo "$out" | grep -q "A REAL DOWNLOAD OVER VIBE, EVERY WAIT ON QT" || {
+    echo "http-driver FAIL: the download, the progress steps or Qt's cadence did not hold" >&2
     exit 1
 }
-echo "http-driver OK: an HTTP request to $HOST over vibe — DNS and every wait on Qt — with the byte count arriving on a Qt property while a Qt timer kept ticking"
+echo "http-driver OK: a 176 kB TLS download from $HOST over vibe — DNS and every wait on Qt — with a progress bar's worth of steps on a Qt property, and Qt keeping its cadence throughout"
