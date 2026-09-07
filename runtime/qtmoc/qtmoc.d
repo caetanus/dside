@@ -1254,6 +1254,14 @@ private extern(C) void* qtd_var_of_str(const(char)*, int);
 /// A typed D value as the untyped thing JavaScript takes. `callJsFunc` hands each argument to the
 /// engine as a QVariant; a function whose D signature is typed — because its parameter's type could
 /// be inferred — still has to cross that way when its BODY is the engine's.
+private extern(C) void* qtd_var_text(void*, const(char)*);
+/// A `var` property rendered as text, the way the differential's oracle renders it. The D field of
+/// a `var` is an empty marker — the runtime owns the value — so reading the field prints nothing.
+string varText(T)(T o, string name) {
+    auto p = qtd_var_text(qobjOf(o), (name ~ "\0").ptr);
+    auto s = qsToD(p); qtd_qs_free(p); return s;
+}
+
 QmlVarRef varOf(T)(T v) {
     static if (is(T == string))        return QmlVarRef(qtd_var_of_str(v.ptr, cast(int) v.length));
     else static if (is(T == bool))     return QmlVarRef(qtd_var_of_bool(v));

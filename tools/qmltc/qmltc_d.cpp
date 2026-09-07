@@ -5280,6 +5280,10 @@ struct ObjNode {
     bool usesOuter = false;   // reads its enclosing object -> needs the __outer back-reference
     int outerHops = -1;       // deepest enclosing level it reached (0 = immediate parent)
     bool hasLate = false;     // it (or a descendant) has late-phase work
+    // ...and a Component.onCompleted of its own or below it. Kept apart from hasLate because the
+    // two cascades run at different times and in opposite directions: bindings first, top-down;
+    // then completion, also top-down but only once every binding in the tree is in place.
+    bool hasCompleted = false;
     // ...and whether it (or a descendant) is a BOUND type, i.e. can implement QQmlFinalizerHook —
     // the third construction phase, which runs after every componentComplete in the tree.
     bool hasFinal = false;
@@ -11056,12 +11060,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (!childWire.empty() || !dcWire.empty()) wire += "        drainComplete(__cmark);\n";
         if (!childWire.empty()) wire += "        runDeferred(this);\n";
         if (!thisParentCompletes) wire += "        componentComplete(this);\n";
-        // Component.onCompleted, LAST — and last means after the late phase, not before it. The
-        // late phase is where a delegated binding is installed, including the one that gives a
-        // property its INITIAL value, so a completion body that ran first had its writes overwritten
-        // a moment later: `rows = [ … ]` in the body, then `bindJs(this, "rows", "[]")` on top of
-        // it. QML evaluates the bindings and then completes; this is that order.
-        wire += "//__QTD_ONCOMPLETED__\n" + onCompletedBody;
+        // Component.onCompleted does NOT go in the wire. It goes at the end of the late phase —
+        // see where lateMethod is assembled — because that is where the delegated bindings are
+        // installed, including the one that gives a property its INITIAL value. A completion body
+        // that ran first had its writes overwritten a moment later: `content = newContent` in the
+        // body, then `bindJs(this, "content", "[]")` on top of it.
+        //
+        // Putting it in the wire was right only for the ROOT, whose wire ends after everything. For
+        // a CHILD the wire ends while the tree is still being built, and the cascade that installs
+        // its bindings runs afterwards — so a reader's page model was set by its completion handler
+        // and then emptied, with nothing anywhere saying so.
         // THE SPLIT. `__qmltcWire` keeps what the object does to ITSELF; everything from the
         // children on becomes `__qmltcKids`, which the parent calls once this object is assigned
         // and parented. Nobody assigns the root (nor a group, attached or value-source child —
@@ -11166,6 +11174,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // its parent's — a delegate reaches its own, and inside one a field can still be null when the
     // engine has not built that level. Null-checked rather than ordered around: a missing child is
     // a fact about the tree, not about the phase.
+    // COMPLETION IS ITS OWN CASCADE, and it runs in the other direction. QML evaluates every
+    // binding in the tree and THEN fires `Component.onCompleted`, parent first — measured against
+    // the engine on a two-object document: with the parent's body reading a property the child's
+    // body sets, the engine answers 0 and a bottom-up order answers 3. So the late phase carries
+    // the bindings and this one carries the bodies, and the root runs them in that order.
+    std::string completedKids;
+    for (auto &k : node.kids)         if (k.second.hasCompleted) completedKids += "        if (" + dIdent(k.first) + " !is null) " + dIdent(k.first) + ".__qmltcCompleted();\n";
+    for (auto &dk : node.defaultKids) if (dk.second.hasCompleted) completedKids += "        if (" + dk.first + " !is null) " + dk.first + ".__qmltcCompleted();\n";
+    for (auto &gk : node.groupKids)   if (gk.second.hasCompleted) completedKids += "        if (" + gk.first + " !is null) " + gk.first + ".__qmltcCompleted();\n";
+    node.hasCompleted = !onCompletedBody.empty() || !completedKids.empty();
     std::string finalKids;
     for (auto &k : node.kids)         if (k.second.hasFinal) finalKids += "        if (" + dIdent(k.first) + " !is null) " + dIdent(k.first) + ".__qmltcFinal();\n";
     for (auto &dk : node.defaultKids) if (dk.second.hasFinal) finalKids += "        if (" + dk.first + " !is null) " + dk.first + ".__qmltcFinal();\n";
@@ -11182,13 +11200,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // labels piled on top of each other in the reader). Every delegated binding in a delegate's
     // late phase was in the same position, and so was componentFinalized for its whole subtree.
     if ((cls == g_rootClass || (!g_delegateCls.empty() && cls == g_delegateCls))
-            && (node.hasLate || node.hasFinal)) {
-        // Before the completion body when there is one — see the note where it is appended.
-        auto pos = wire.find("//__QTD_ONCOMPLETED__\n");
-        if (pos == std::string::npos)
-            pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
+            && (node.hasLate || node.hasCompleted || node.hasFinal)) {
+        auto pos = wire.rfind("    }\n");   // inside __qmltcWire, not after its closing brace
         if (pos != std::string::npos)
             wire.insert(pos, std::string(node.hasLate ? "        __qmltcLate();\n" : "")
+                           + (node.hasCompleted ? "        __qmltcCompleted();\n" : "")
                            + (node.hasFinal ? "        __qmltcFinal();\n" : ""));
     }
     // AN OBJECT THE ENGINE COULD NOT BUILD HAS NOTHING TO WIRE. The wire of such a class returns
@@ -11204,12 +11220,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // by the parent's cascade and knew nothing about that, so it dereferenced the null the
     // resolution had just declined to use. `__qtdWired` is the object's own word for "I finished".
     if (delegRewrite) engineBail += "        if (!__qtdWired) return;\n";
-    {   // the marker is a placement anchor, not output
-        auto mk = wire.find("//__QTD_ONCOMPLETED__\n");
-        if (mk != std::string::npos) wire.erase(mk, std::string("//__QTD_ONCOMPLETED__\n").size());
-    }
+    // ...AND THE COMPLETION BODY LAST OF ALL, after this object's own bindings and after every
+    // child's late phase. That is QML's order — the tree is bound, then completed bottom-up — and
+    // it is what the cascade gives for free: a child's completion runs inside `lateKids`, before
+    // this line is reached.
     std::string lateMethod = node.hasLate
         ? "    void __qmltcLate() {\n" + engineBail + guardWire(lateWire) + lateKids + "    }\n" : "";
+    if (node.hasCompleted)
+        lateMethod += "    void __qmltcCompleted() {\n" + engineBail + onCompletedBody
+                    + completedKids + "    }\n";
     if (node.hasFinal)
         lateMethod += "    void __qmltcFinal() {\n" + engineBail + finalSelf + finalKids + "    }\n";
     if (delegRewrite) {
@@ -11495,6 +11514,14 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         // starts with Q like every Qt value type, so without naming it here it took the propStr
         // branch — which pushes the line with an EMPTY dtype — and the empty-print decision below
         // never saw it.
+        // A `var` is read through the meta-object and formatted like the oracle: its D field is an
+        // empty marker, so printing the field compared a property holding [1,2,3] equal to one
+        // holding nothing — on every document in the corpus, silently.
+        if (s.second == "QmlVar") {
+            out.push_back({lab + s.first, "varText(" + self + ", \"" + s.first + "\")",
+                           "", self, s.first});
+            continue;
+        }
         if (s.second != "QmlObjectList" && s.second != "QmlVar"
                 && (s.second == "QColor" || (!s.second.empty() && std::isupper((unsigned char) s.second[0])
                                              && s.second.rfind("Q", 0) == 0))) {

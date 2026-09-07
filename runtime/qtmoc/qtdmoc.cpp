@@ -1471,6 +1471,23 @@ static QtdVarSlot* qtd_var_slot(QObject* o, const char* name) {
 // A SINGLE VALUE IN A QVariant, so a typed D argument can be handed to JavaScript. The list
 // builder above makes rows; this makes one operand — what a function body delegated to the engine
 // needs for each of its parameters, which arrive here already typed and have to leave untyped.
+// A `var` PROPERTY AS TEXT, formatted the way the differential's oracle formats it: a list joined
+// by commas, anything else through QVariant::toString. Without it the dump printed the D field —
+// which for a `var` is an empty marker struct, since the runtime owns the value — so a property
+// holding [1,2,3] compared EQUAL to one holding nothing, on every document in the corpus.
+extern "C" void* qtd_var_text(void* o, const char* name) {
+    QString out;
+    if (o && name) {
+        QVariant v = static_cast<QObject*>(o)->property(name);
+        if (v.canConvert<QVariantList>() && v.metaType().id() != QMetaType::QString) {
+            const QVariantList l = v.toList();
+            for (const QVariant& e : l) { if (!out.isEmpty()) out += QLatin1Char(','); out += e.toString(); }
+        } else {
+            out = v.toString();
+        }
+    }
+    return new QString(out);
+}
 extern "C" void* qtd_var_of_int(long long v) { return new QVariant(qlonglong(v)); }
 extern "C" void* qtd_var_of_double(double v) { return new QVariant(v); }
 extern "C" void* qtd_var_of_bool(bool v) { return new QVariant(v); }
