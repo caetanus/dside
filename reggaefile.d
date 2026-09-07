@@ -1711,7 +1711,12 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
                                      // handlers never fire. A property dump alone cannot see that
                                      // — nothing has fired yet at t=0 — so the question is asked
                                      // after the timer has, which is what `timed` is for.
-                                     Timed("QConnTargetId", 200, "seen")];
+                                     Timed("QConnTargetId", 200, "seen"),
+                                     // ...and a BARE outer name after the value behind it changes.
+                                     // The promise reads the owner ONCE, so a plain value was a
+                                     // snapshot: right at t=0 and wrong ever after, which a
+                                     // property dump calls agreement. Only time tells them apart.
+                                     Timed("QBareOuterLive", 300, "n")];
 
     // Documents whose KEYBOARD behaviour is compared: send this key to both sides and diff the property.
 struct Keyed { string name; int key; string prop; }

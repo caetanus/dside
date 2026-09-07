@@ -55,6 +55,8 @@
 #include <QtQml/QQmlEngine>
 #include <QtQml/QQmlContext>
 #include <QtQml/private/qqmldata_p.h>
+#include <QtCore/private/qmetaobjectbuilder_p.h>
+#include <QtCore/QPointer>
 #include <QtCore/QTimer>
 #include <QtCore/QCoreApplication>
 #include <QtQml/QQmlComponent>
@@ -297,6 +299,76 @@ extern "C" int qtd_call_js(void* o, const char* src, const char** names, void** 
 // every type name (`ReferenceError: Shape is not defined`, seven of them).
 #ifdef QTD_HAVE_QML
 namespace {
+// WHAT KEEPS A RESOLVED NAME ALIVE AFTER IT RESOLVES.
+//
+// The map holds a VALUE, read once when the promise resolved. When the value is an OBJECT that is
+// enough — reads go through the object and its own notifies still fire. When it is a plain value it
+// was a SNAPSHOT, and this is the gap that left: measured with a list replaced 60 ms in, the
+// qualified read followed the engine to 3 while the bare one stayed at the 1 it had resolved to.
+// A read that is right at startup and wrong ever after is worse than one that is always wrong,
+// because nothing about it looks broken.
+//
+// Refreshing it means hearing the owner's NOTIFY, and hearing a signal means being a receiver with
+// a SLOT — which this runtime has no moc to declare. It does not need one: a meta-object is data,
+// QMetaObjectBuilder builds it, and qt_metacall dispatches it. That is the same channel qtdmoc.cpp
+// already puts D slots on; this is one slot, built once, shared by every watch.
+class QtdScopeWatch : public QObject {
+public:
+    QtdScopeWatch(QQmlPropertyMap* map, QObject* owner, const QByteArray& prop)
+        : QObject(map), m_map(map), m_owner(owner), m_prop(prop) {}
+
+    static const QMetaObject* mo() {
+        static const QMetaObject* m = [] {
+            QMetaObjectBuilder b;
+            b.setClassName("QtdScopeWatch");
+            b.setSuperClass(&QObject::staticMetaObject);
+            b.addSlot("refresh()");
+            return b.toMetaObject();
+        }();
+        return m;
+    }
+
+    const QMetaObject* metaObject() const override { return mo(); }
+    void* qt_metacast(const char* n) override {
+        if (n && std::strcmp(n, "QtdScopeWatch") == 0) return this;
+        return QObject::qt_metacast(n);
+    }
+    int qt_metacall(QMetaObject::Call c, int id, void** a) override {
+        id = QObject::qt_metacall(c, id, a);
+        if (id < 0) return id;
+        if (c == QMetaObject::InvokeMetaMethod) {
+            if (id == 0) refresh();
+            id -= 1;
+        }
+        return id;
+    }
+    void refresh() {
+        if (!m_owner || !m_map) return;
+        m_map->insert(QString::fromUtf8(m_prop), m_owner->property(m_prop.constData()));
+    }
+private:
+    QQmlPropertyMap* m_map;
+    QPointer<QObject> m_owner;      // the owner may be destroyed before the asker
+    QByteArray m_prop;
+};
+
+// Hear `prop` changing on `owner`, and re-read it into `map`. Returns false when there is nothing
+// to hear — a context property, or a property declared with no NOTIFY — which is not a failure:
+// the engine cannot see those change either, and the snapshot is then the whole truth.
+static bool qtd_watch_scope(QQmlPropertyMap* map, QObject* owner, const QByteArray& prop) {
+    if (!map || !owner) return false;
+    const QMetaObject* omo = owner->metaObject();
+    const int pi = omo->indexOfProperty(prop.constData());
+    if (pi < 0) return false;
+    const QMetaMethod notify = omo->property(pi).notifySignal();
+    if (!notify.isValid()) return false;
+    auto* w = new QtdScopeWatch(map, owner, prop);
+    const QMetaObject* wmo = QtdScopeWatch::mo();
+    const int si = wmo->indexOfSlot("refresh()");
+    if (si < 0) { delete w; return false; }
+    return QObject::connect(owner, notify, w, wmo->method(si)) ? true : false;
+}
+
 struct QtdPromise { QQmlPropertyMap* map; QObject* obj; QByteArray prop; };
 }
 static QList<QtdPromise>& qtd_promises() { static QList<QtdPromise> v; return v; }
@@ -343,7 +415,11 @@ static QObject* qtd_scope_up(QObject* o) {
 // chain — each context's own properties, then its context object's — which is exactly the scope
 // lookup the engine performs for a bare name. So it is asked, rather than imitated. The parent walk
 // stays behind it for the case a context cannot serve: an object built outside any engine.
-static bool qtd_resolve_scope(QObject* from, const QByteArray& prop, QVariant& out) {
+// `ownerOut`, when given, receives the ancestor OBJECT the name was read from — the one whose
+// NOTIFY can keep the answer current. It stays null for a context property, which has none.
+static bool qtd_resolve_scope(QObject* from, const QByteArray& prop, QVariant& out,
+                              QObject** ownerOut = nullptr) {
+    if (ownerOut) *ownerOut = nullptr;
     if (QQmlContext* ctx = qmlContext(from)) {
         const QVariant v = ctx->contextProperty(QString::fromUtf8(prop));
         if (v.isValid()) { out = v; return true; }
@@ -372,6 +448,7 @@ static bool qtd_resolve_scope(QObject* from, const QByteArray& prop, QVariant& o
         const QMetaObject* mo = p->metaObject();
         if (mo->indexOfProperty(prop.constData()) >= 0 || p->dynamicPropertyNames().contains(prop)) {
             out = p->property(prop.constData());
+            if (ownerOut) *ownerOut = p;
             return true;
         }
     }
@@ -387,8 +464,8 @@ static void qtd_drain_promises();
 static void qtd_drain_promises() {
     auto& v = qtd_promises();
     for (int i = 0; i < v.size();) {
-        QVariant val;
-        if (!v[i].obj || !qtd_resolve_scope(v[i].obj, v[i].prop, val)) { ++i; continue; }
+        QVariant val; QObject* owner = nullptr;
+        if (!v[i].obj || !qtd_resolve_scope(v[i].obj, v[i].prop, val, &owner)) { ++i; continue; }
         const QByteArray prop = v[i].prop;
         QQmlPropertyMap* map = v[i].map;
         // WHAT IS STORED, AND WHAT THAT MEANS LATER. The value is read once, here. When it is an
@@ -401,6 +478,11 @@ static void qtd_drain_promises() {
             fprintf(stderr, "qtd_scope_promise: '%s' <- %s (valid=%d, null=%d)\n", prop.constData(),
                     val.typeName() ? val.typeName() : "?", (int) val.isValid(), (int) val.isNull());
         map->insert(QString::fromUtf8(prop), val);
+        // ...and KEEP it current where that is possible at all. See QtdScopeWatch: the value read
+        // here is a snapshot, and an owner with a NOTIFY is exactly the case where a snapshot is
+        // avoidable. A context property has no notify and stays a snapshot; so does a property
+        // declared without one, which the engine cannot follow either.
+        if (owner) qtd_watch_scope(map, owner, prop);
         g_promiseRetries = 0;   // progress: the tree is still growing, keep trying for the rest
         v.removeAt(i);
     }
