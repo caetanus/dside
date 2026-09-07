@@ -2396,6 +2396,21 @@ static bool attachedOuterDep(const std::string &d, std::string &objExpr, std::st
 
 static bool outerBareDep(const std::string &d, std::string &objExpr, std::string &leaf) {
     if (d.find('.') != std::string::npos) return false;
+    // THE OBJECT'S OWN PROPERTIES SHADOW AN ENCLOSING OBJECT'S — QML's scope rule, and the one
+    // this walk did not ask about. It claimed any name a frame above happens to declare, and the
+    // names most likely to be declared by BOTH are the ones every Item has.
+    //
+    // Measured on a real reader: `readonly property int lines: Math.floor((height - topMargin*2)
+    // / lineHeight)` in Leaf.qml. Compiled as its own document Leaf is the root, there is no outer
+    // frame, and it wired `heightChanged()` on itself — correct. INLINED into Main.qml as a page of
+    // the spread, the enclosing Item also has a `height`, so the same binding was re-run on the
+    // ENCLOSING object's height instead of its own. The body still read `this.height`; only the
+    // trigger moved. The enclosing height settles once and never changes again, so `lines` kept the
+    // value it had while the page was still being laid out — 19 instead of 26 — and the reader
+    // clipped its page seven lines early, mid-glyph, for the life of the process.
+    //
+    // Nothing reported it. The binding was connected, it just listened to the wrong object.
+    if (g_propType.count(d) || g_baseProps.count(d)) return false;
     std::string pre;
     for (size_t k = 0; k < g_outerChain.size(); ++k) {
         pre += (k ? "." : "") + std::string("__outer");
@@ -2453,6 +2468,23 @@ static bool outerHeadNotifyConn(const std::string &d, const std::string &bare,
         return true;
     }
     return false;
+}
+
+// AN OBJECT EXPRESSION THAT IS STILL NULL WHILE THIS OBJECT WIRES.
+//
+// `_dcN` is a field of an enclosing object (or of this one), and those are assigned as their owner
+// builds its children IN ORDER — so an id declared further down the document is null where our own
+// wire step runs. A connect made there connects to nothing, silently (`tryConnectMeta` is
+// null-tolerant by design), and the first evaluation reads through null and is swallowed by
+// bindEval. The binding then holds its DEFAULT for the life of the process.
+//
+// `g_depIsSibling` answers the same question for the paths that go through the id RESOLVER; this
+// answers it for the ones that arrive already spelled, which is how objPathFromString hands them
+// over. Measured on QSiblingLaterHandover: `color: panel.open ? … : …` with `panel` declared below
+// it painted #ffffff — a Rectangle's default — against the engine's #445566.
+static bool objExprNullAtWire(const std::string &oe) {
+    return oe.find("._dc") != std::string::npos || oe.rfind("_dc", 0) == 0
+        || oe.find("propObj(") != std::string::npos || oe.find("instOf(") != std::string::npos;
 }
 
 static bool outerDepIsPath(const std::string &d) {
@@ -2762,7 +2794,25 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             // injected the declared ones. So in such a delegate a bare context name is a value the
             // engine does not have (undeclared: it has nothing) or one we cannot see (declared: it
             // left our context), and reading it invents an answer either way.
-            if (!g_delegateCls.empty() && !g_hasRequiredDecl
+            // ...NOR A PROPERTY THE OBJECT'S OWN TYPE HAS. `g_baseProps` holds the base
+            // properties this document BINDS, which is not the same set: `parent` is a property of
+            // every QQuickItem and is usually only READ, so it was absent and a bare `parent`
+            // inside a delegate was answered from the per-item context — as TEXT.
+            //
+            // `anchors.fill: parent` then compiled to `setProp(…, "fill", contextStr(this,
+            // "parent"))`, writing a QString into a property that takes an ITEM. Measured on a real
+            // reader: 76 anchor writes in ONE document went that way, `fill` and `centerIn` both,
+            // every one of them inside a delegate. Nothing anchored, nothing said so, and the same
+            // two lines outside a delegate compiled correctly to `setPropObj(…, instOf(propObj(
+            // this, "parent")))` — which is why a corpus of Qt's own styles never showed it.
+            //
+            // g_qmlCxxType is the table to ask: it carries EVERY property of the type, including
+            // the ones with no D scalar name, which is exactly the set g_qmlProps drops.
+            const bool selfHas = [&] {
+                auto qc = g_qmlCxxType.find(g_selfQmlType);
+                return qc != g_qmlCxxType.end() && qc->second.count(n) > 0;
+            }();
+            if (!g_delegateCls.empty() && !g_hasRequiredDecl && !selfHas
                     && !g_scope.count(n) && !g_childIds.count(n) && !g_propType.count(n)
                     && !g_baseProps.count(n)) {
                 // ...and the object's body waits for the context, but only when one is actually
@@ -4011,6 +4061,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // Comparisons yield bool and their operands are NOT the target type; compile them with a
         // neutral hint so numeric-literal formatting isn't skewed by a string/bool target.
         bool cmp = false, logical = false;
+        bool rel = false;   // a RELATIONAL comparison, whose operands are numbers
         std::string op;
         switch (bin->op) {
         case QSOperator::And: op = "&&"; logical = true; break;   // QML `&&` (BitAnd is `&`)
@@ -4020,10 +4071,10 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         case QSOperator::Mul: if (dtype == "string") return false; op = "*"; break;
         case QSOperator::Div: if (dtype == "string") return false; op = "/"; break;
         case QSOperator::Mod: if (dtype == "string") return false; op = "%"; break;
-        case QSOperator::Lt: op = "<";  cmp = true; break;
-        case QSOperator::Gt: op = ">";  cmp = true; break;
-        case QSOperator::Le: op = "<="; cmp = true; break;
-        case QSOperator::Ge: op = ">="; cmp = true; break;
+        case QSOperator::Lt: op = "<";  cmp = true; rel = true; break;
+        case QSOperator::Gt: op = ">";  cmp = true; rel = true; break;
+        case QSOperator::Le: op = "<="; cmp = true; rel = true; break;
+        case QSOperator::Ge: op = ">="; cmp = true; rel = true; break;
         case QSOperator::Equal:
         case QSOperator::StrictEqual:    op = "==";  cmp = true; break;
         case QSOperator::NotEqual:
@@ -4051,7 +4102,31 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             }
         }
         QString sub = logical ? QString("bool") : (cmp ? QString("") : dtype);
+        // A RELATIONAL COMPARISON READS NUMBERS. `<`, `>`, `<=`, `>=` convert both operands to
+        // numbers in JS, so `bool` is never what one of them wants — and `bool` is exactly what the
+        // untyped attempt below settles for when the registry cannot type a member. The read then
+        // compiles, and compiles WRONG: measured on a real reader, `visible: stage.sheetCount > 1`
+        // became `propBool(…, "sheetCount") > 1.0`, and neither `true > 1.0` nor `false > 1.0` is
+        // ever true — the scroll indicator was invisible for the life of the process while the
+        // engine drew it on every multi-page chapter. The same property read for a `width` two
+        // lines away came out `propDouble`, because there the TARGET typed it; a comparison has no
+        // target to lend, which is the whole reason this needs an answer of its own.
+        //
+        // Asked FIRST here, unlike the equality fallback below, and it falls through to the untyped
+        // attempt when inference yields nothing, yields `bool`, or does not compile.
         std::string l, r;
+        if (rel) {
+            std::string tyR = inferType(bin->left, g_propType);
+            if (tyR.empty() || tyR == "bool") tyR = inferType(bin->right, g_propType);
+            if (!tyR.empty() && tyR != "bool") {
+                QString qR = QString::fromStdString(tyR);
+                std::string l0, r0;
+                if (compileExpr(bin->left, qR, l0) && compileExpr(bin->right, qR, r0)) {
+                    out = "(" + l0 + " " + op + " " + r0 + ")";
+                    return true;
+                }
+            }
+        }
         if (op == "~") {
             // JS `+` CONCATENATES when either side is a string, converting the other one
             // (`"n=" + 5` -> "n=5"). Two consequences, and getting either wrong is silent:
@@ -9143,8 +9218,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // reason as every other read through an object assigned later.
                 // ...and a scopePromise() handover, for the same reason and more so: the promise is
                 // filled from the object's ANCESTORS, and an object has none until it is parented.
+                // ...and, the shape this test was MISSING, when one of them is a SIBLING: a
+                // field of an enclosing object, spelled `__outer…._dcN`. Those are assigned as
+                // that object builds its children IN ORDER, so an id declared further down the
+                // document is still null where the binding is installed. Measured on a real
+                // reader's header: `color: fontMenu.open ? … : "transparent"` handed over
+                // `__outer.__outer.__outer._dc15` at wire time, threw `Cannot read property
+                // 'open' of null`, and left the Rectangle at its DEFAULT — a 38x24 block of pure
+                // white where the page's paper should show through. Its neighbour on the same
+                // object, `border.color`, was late only by accident: it also reads `theme`, so
+                // the scopePromise test above caught it. Two bindings on one element, one alive
+                // and one dead, and the difference was which clause happened to match.
+                //
+                // The `__outer` chain itself is safe — each hop is assigned in its object's own
+                // wire step, before that object builds anything — so the field read is what to
+                // look for, not the prefix.
                 if (js.find("propObj(") != std::string::npos
-                        || js.find("scopePromise(") != std::string::npos) lateWire += js;
+                        || js.find("scopePromise(") != std::string::npos
+                        || js.find("._dc") != std::string::npos) lateWire += js;
                 else baseWire += js;
                 g_ctxUsed = true;   // ...so a delegate's body waits for the per-item context
                 ++g_delegated;
@@ -9347,7 +9438,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         // lateConns, not conns: a sibling built after us is still null while our
                         // own wire runs. The late phase already exists for exactly this, and it
                         // re-evaluates once after connecting.
-                        std::string &sink = g_depIsSibling ? sibConns : conns;
+                        std::string &sink = (g_depIsSibling || objExprNullAtWire(oe6))
+                                            ? sibConns : conns;
                         sink += "        tryConnectMeta(" + oe6 + ", \"" + sig6 + "\", this, \"__rcb_" + ba.first + "()\");\n";
                         // ...and the object's OWN "something changed" signal. A value group can
                         // change what it RESOLVES to without any member signal firing: disabling a
@@ -9379,9 +9471,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         std::string oeW, oqW;
                         if (objPathWalkDotted(headD, oeW, oqW)
                                 && typeKnownWithoutMember(oqW, leafD)) {
-                            conns += "        tryConnectMeta(" + oeW + ", \"" + leafD
+                            // ...into the LATE sink when that object cannot exist yet — the same
+                            // question objExprNullAtWire answers for the branch above. This one
+                            // reached a sibling declared further down the document and connected
+                            // to null in silence, which is what `tryConnectMeta` is for and also
+                            // what hides it.
+                            std::string &sinkW = objExprNullAtWire(oeW) ? sibConns : conns;
+                            sinkW += "        tryConnectMeta(" + oeW + ", \"" + leafD
                                    + "Changed()\", this, \"__rcb_" + ba.first + "()\");\n";
-                            conns += "        tryConnectMeta(" + oeW + ", \"changed()\", this, \"__rcb_"
+                            sinkW += "        tryConnectMeta(" + oeW + ", \"changed()\", this, \"__rcb_"
                                    + ba.first + "()\");\n";
                             continue;
                         }
