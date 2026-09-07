@@ -26,6 +26,7 @@
 #include <cstring>
 #include <string>
 #include <type_traits>
+#include <tuple>
 #include <vector>
 #include <algorithm>
 #include <deque>
@@ -5509,7 +5510,13 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
     // rather than by matching text: a whole-token rewrite over the source is what put `__sp_s.s`
     // inside a function's parameter list, and the parser already knows exactly which characters
     // are this identifier.
-    std::vector<std::pair<int, int>> selfHits;   // (offset from the start of src, length)
+    // (offset from the start of src, length, the name that should be there). The name is kept so
+    // the rewrite can CHECK before it edits: a body can be spliced from another document — a merged
+    // local type, a use-site member — and then the identifier's offsets belong to that file, not to
+    // this slice. Unverified, that wrote `__qtdSelf.` into the middle of an expression and the
+    // engine answered `SyntaxError` for the whole handler. A missed qualification is a value left
+    // to the engine; a corrupted one loses everything in the body.
+    std::vector<std::tuple<int, int, std::string>> selfHits;
     const int base0 = int(e->firstSourceLocation().offset);
     for (auto *id : sc.ids) {
         std::string n = qs(id->name.toString());
@@ -5541,7 +5548,7 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
             for (auto *id2 : sc.ids)
                 if (qs(id2->name.toString()) == n)
                     selfHits.push_back({int(id2->identifierToken.offset) - base0,
-                                        int(id2->identifierToken.length)});
+                                        int(id2->identifierToken.length), n});
             continue;
         }
         // ...and a BASE property of this object, which the scope object answers exactly as it
@@ -5789,12 +5796,21 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
     // promise.
     if (prop.empty() && !selfHits.empty()) {
         std::sort(selfHits.begin(), selfHits.end(),
-                  [](auto &a, auto &b) { return a.first > b.first; });
-        for (auto &h : selfHits)
-            if (h.first >= 0 && h.first + h.second <= (int) src.size())
-                src.insert(size_t(h.first), "__qtdSelf.");
-        names = names.empty() ? "\"__qtdSelf\"" : "\"__qtdSelf\", " + names;
-        objs = ", " + recv + objs;
+                  [](auto &a, auto &b) { return std::get<0>(a) > std::get<0>(b); });
+        bool any = false;
+        for (auto &h : selfHits) {
+            const int off = std::get<0>(h), len = std::get<1>(h);
+            const std::string &nm = std::get<2>(h);
+            // Checked, not trusted: the slice at that offset must BE this identifier.
+            if (off < 0 || off + len > (int) src.size()) continue;
+            if (src.compare(size_t(off), size_t(len), nm) != 0) continue;
+            src.insert(size_t(off), "__qtdSelf.");
+            any = true;
+        }
+        if (any) {
+            names = names.empty() ? "\"__qtdSelf\"" : "\"__qtdSelf\", " + names;
+            objs = ", " + recv + objs;
+        }
     }
     if (callArgs)
         out = "        callJsFunc(" + recv + ", " + dstr(QString::fromStdString(src))
@@ -10028,6 +10044,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         } else
         if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
                 || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
+            // ...AND THE ENGINE CAN WRITE IT, which is the whole of what was missing. A grouped
+            // member is an ordinary property PATH — `QQmlProperty(obj, "font.family")` resolves one
+            // — so a delegated binding writes it by the same route it writes any other. Refusing
+            // left the member at its default: measured on a reader, `font.family: root.bookFace`
+            // and `font.pixelSize: …` were both skipped, so every verse of the page had a box of
+            // the right height and no usable font, and the text was invisible while the geometry
+            // said the document had compiled.
+            if (std::string gj; jsDelegate(ga.second, ga.first, gj)) {
+                lateWire += gj;
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s: value-group member '%s' in %s delegated to the "
+                             "engine\n", inPath, ga.first.c_str(), cls.c_str());
+                continue;
+            }
             std::fprintf(stderr, "qmltc-d: %s: value-group member '%s' in %s: value is not a scalar "
                          "the channel can convert [%s] — skipped (later phase)\n",
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
@@ -10050,6 +10080,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         } else
         if ((vty != "int" && vty != "double" && vty != "bool" && vty != "string")
                 || !compileExpr(ga.second, QString::fromStdString(vty), val)) {
+            // ...AND THE ENGINE CAN WRITE IT, which is the whole of what was missing. A grouped
+            // member is an ordinary property PATH — `QQmlProperty(obj, "font.family")` resolves one
+            // — so a delegated binding writes it by the same route it writes any other. Refusing
+            // left the member at its default: measured on a reader, `font.family: root.bookFace`
+            // and `font.pixelSize: …` were both skipped, so every verse of the page had a box of
+            // the right height and no usable font, and the text was invisible while the geometry
+            // said the document had compiled.
+            if (std::string gj; jsDelegate(ga.second, ga.first, gj)) {
+                lateWire += gj;
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s: value-type member '%s' in %s delegated to the "
+                             "engine\n", inPath, ga.first.c_str(), cls.c_str());
+                continue;
+            }
             std::fprintf(stderr, "qmltc-d: %s: value-type member '%s' in %s: value is not a scalar "
                          "the channel can convert [%s] — skipped (later phase)\n",
                          inPath, ga.first.c_str(), cls.c_str(), srcOf(ga.second).c_str());
@@ -10194,6 +10238,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 handlerSlots += "    @Slot void " + slot + "() {\n" + ost + "    }\n";
                 wireGroupDeps(ga.second, slot, ost, "object-group member '" + ga.first + "'", false);
                 lateWire += "        " + slot + "();\n";
+                continue;
+            }
+            // ...AND THE ENGINE CAN WRITE IT, which is the whole of what was missing. A grouped
+            // member is an ordinary property PATH — `QQmlProperty(obj, "font.family")` resolves one
+            // — so a delegated binding writes it by the same route it writes any other. Refusing
+            // left the member at its default: measured on a reader, `font.family: root.bookFace`
+            // and `font.pixelSize: …` were both skipped, so every verse of the page had a box of
+            // the right height and no usable font, and the text was invisible while the geometry
+            // said the document had compiled.
+            if (std::string gj; jsDelegate(ga.second, ga.first, gj)) {
+                lateWire += gj;
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s delegated to the "
+                             "engine\n", inPath, ga.first.c_str(), cls.c_str());
                 continue;
             }
             std::fprintf(stderr, "qmltc-d: %s: object-group member '%s' in %s: value is not a scalar "
