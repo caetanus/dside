@@ -5790,6 +5790,21 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
                        const std::set<std::string> *bound = nullptr,
                        const std::string *callArgs = nullptr) {
     std::string src = srcRaw(e);
+    // THE PARSER COUNTS UTF-16 UNITS AND THIS STRING HOLDS UTF-8 BYTES, which are the same number
+    // only while the source is ASCII. Every accented character is one unit and two bytes, so an
+    // offset taken from the AST runs further and further ahead of the byte it means — measured on a
+    // real reader's map, 6 bytes early a third of the way into `read()` and 10 by the end of it,
+    // because the body says "o atlas não chegou" on the way past.
+    //
+    // Every qualification after the first accented character then landed just before its own name,
+    // the verify declined (rightly — it must never write into the middle of an expression), and the
+    // name was left BARE. A bare write inside a delegated function is a global assignment that QML
+    // drops in silence: `read()` loaded the atlas and threw away `meta`, `places`, `journeys` and
+    // `tileset`, so the map drew with no basemap and no place names.
+    //
+    // Kept as the UTF-16 slice srcOf identified, so an offset can be converted rather than guessed.
+    // It is captured HERE because a nested srcOf overwrites the global.
+    const QString srcU16 = g_srcSlice;
     if (src.empty()) return false;
     // A BINDING WHOSE BODY IS A BLOCK. `readonly property int wantedZoom: { … return z }` is
     // ordinary QML and it is not an expression, so the delegation — which is handed one — was never
@@ -5814,6 +5829,10 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
     // engine answered `SyntaxError` for the whole handler. A missed qualification is a value left
     // to the engine; a corrupted one loses everything in the body.
     std::vector<std::tuple<int, int, std::string>> selfHits;
+    // Set by the qualification pass and consumed where the hand-over lists exist. The two
+    // halves are apart on purpose: the EDIT has to happen before the text rewrites that
+    // would invalidate its offsets, and `names`/`objs` are not built until after them.
+    bool selfQualified = false;
     const int base0 = int(e->firstSourceLocation().offset);
     for (auto *id : sc.ids) {
         std::string n = qs(id->name.toString());
@@ -5911,6 +5930,52 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
             continue;
         }
         binds.push_back({n, oe});
+    }
+    // ...AND IT RUNS HERE, BEFORE EVERY TEXT REWRITE BELOW, which is the whole point of the move.
+    // These offsets come from the AST, so they describe the ORIGINAL source; the attached-type and
+    // `as`-cast rewrites that follow are text scans which make the body LONGER, and after the first
+    // of them every later offset points somewhere else. The verify below then declines — correctly,
+    // it must never write into the middle of an expression — and the name is left BARE, in silence.
+    //
+    // Measured on a real reader's map: `read()` writes five of the document's own properties, and
+    // only `problem` — the first statement in the body, where the shift is still zero — came out
+    // qualified. `meta`, `journeys`, `places` and `tileset` after it did not, so the atlas loaded
+    // and the map drew with no basemap and no place names. Nothing was raised: a bare write inside
+    // a function is a global assignment and QML drops it, which is exactly what the comment above
+    // this pass says it exists to prevent.
+    //
+    // The scans below are unaffected. They look for attached TYPE names and casts, and each of them
+    // already refuses a name preceded by '.' — which is what a name this pass has qualified now is.
+    // UTF-16 index in the slice -> byte offset in `src`. Exact, not calibrated.
+    auto u8 = [&srcU16](int i) {
+        if (i <= 0) return 0;
+        if (i >= srcU16.size()) return int(srcU16.toUtf8().size());
+        return int(srcU16.left(i).toUtf8().size());
+    };
+    if (prop.empty() && !selfHits.empty()) {
+        std::sort(selfHits.begin(), selfHits.end(),
+                  [](auto &a, auto &b) { return std::get<0>(a) > std::get<0>(b); });
+        bool any = false;
+        for (auto &h : selfHits) {
+            const int off = u8(std::get<0>(h)), len = u8(std::get<0>(h) + std::get<1>(h)) - u8(std::get<0>(h));
+            const std::string &nm = std::get<2>(h);
+            // Checked, not trusted: the slice at that offset must BE this identifier.
+            const bool inRange = off >= 0 && off + len <= (int) src.size();
+            const bool matches = inRange && src.compare(size_t(off), size_t(len), nm) == 0;
+            // A DECLINED QUALIFICATION IS NOT NOTHING: the name stays bare, and a bare write inside
+            // a delegated function is a global assignment that QML drops in silence. Said out loud
+            // under the switch, with what was there instead, because the two reasons it declines —
+            // an offset outside the slice and an offset that lands on other text — need different
+            // fixes and look identical from the generated code.
+            if (!matches && std::getenv("QTD_SELFQUAL_DEBUG"))
+                std::fprintf(stderr, "qmltc-d:   selfqual DECLINED '%s' at %d (len %d, src %zu): [%s]\n",
+                             nm.c_str(), off, len, src.size(),
+                             inRange ? src.substr(size_t(off), size_t(len) + 8).c_str() : "<out of range>");
+            if (!matches) continue;
+            src.insert(size_t(off), "__qtdSelf.");
+            any = true;
+        }
+        selfQualified = any;
     }
     // `control.Material.theme` — an ATTACHED read inside a delegated expression. The engine
     // resolves `Material` as a TYPE NAME, through the context's import namespace, and a context
@@ -6091,23 +6156,9 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
     // ids. By AST OFFSET, back to front, so an earlier rewrite cannot move a later one — and so
     // that a name inside a string or a parameter list is not touched, which a text scan cannot
     // promise.
-    if (prop.empty() && !selfHits.empty()) {
-        std::sort(selfHits.begin(), selfHits.end(),
-                  [](auto &a, auto &b) { return std::get<0>(a) > std::get<0>(b); });
-        bool any = false;
-        for (auto &h : selfHits) {
-            const int off = std::get<0>(h), len = std::get<1>(h);
-            const std::string &nm = std::get<2>(h);
-            // Checked, not trusted: the slice at that offset must BE this identifier.
-            if (off < 0 || off + len > (int) src.size()) continue;
-            if (src.compare(size_t(off), size_t(len), nm) != 0) continue;
-            src.insert(size_t(off), "__qtdSelf.");
-            any = true;
-        }
-        if (any) {
-            names = names.empty() ? "\"__qtdSelf\"" : "\"__qtdSelf\", " + names;
-            objs = ", " + recv + objs;
-        }
+    if (selfQualified) {
+        names = names.empty() ? "\"__qtdSelf\"" : "\"__qtdSelf\", " + names;
+        objs = ", " + recv + objs;
     }
     if (callArgs)
         out = "        callJsFunc(" + recv + ", " + dstr(QString::fromStdString(src))
