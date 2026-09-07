@@ -191,6 +191,15 @@ Build reggaeBuild() {
             // whether the driver is finished: two libp2p hosts, a dial, a security handshake, a
             // muxer, Identify and Ping. Skipped when the library is not beside this checkout —
             // it is the user's, not a dependency.
+            // ...and the one that leaves the machine: a name lookup and a host that is not
+            // loopback, with the byte count landing on a Qt property while a Qt timer ticks.
+            version (Posix)
+            if (tag == "qt6")
+                advisoryGates ~= Target.phony("http-driver-" ~ dc,
+                    "sh " ~ buildPath(root, "tests", "vibe", "http.sh") ~ " " ~ dc ~ " " ~ b.genDir
+                    ~ " " ~ b.bdir ~ " " ~ buildPath(b.bdir, "http-" ~ dc) ~ " " ~ root
+                    ~ " \"" ~ b.mods.join(" ") ~ "\"",
+                    [qtdBindLib(b, dc), b.shims]);
             version (Posix)
             if (tag == "qt6")
                 advisoryGates ~= Target.phony("libp2p-driver-" ~ dc,
