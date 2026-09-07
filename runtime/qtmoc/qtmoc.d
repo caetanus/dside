@@ -1716,8 +1716,26 @@ extern(C) void* qtd_make_component(const(char)*, const(char)*, const(char)*, con
 // The QQmlComponent for a compiled delegate class: `uri`/`typeName` are what the generated code
 // registered it as. Returned as an opaque pointer — the caller wraps it in whatever QQmlComponent
 // binding its module has, because this unit compiles for bindings that have no QtQml at all.
-void* makeComponent(string uri, string typeName, string docUrl = "") {
-    return qtd_make_component((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr, null);
+void* makeComponent(string uri, string typeName, string docUrl = "", string decls = "") {
+    return qtd_make_component((uri ~ "\0").ptr, (typeName ~ "\0").ptr, (docUrl ~ "\0").ptr,
+                              decls.length ? (decls ~ "\0").ptr : null);
+}
+
+/// The QQmlComponent for a delegate whose TYPE this compiler does not bind but the engine knows —
+/// a `Shape` from QtQuick.Shapes, say. `uri` is the ';'-separated list of the document's own
+/// imports, so the body may name types from any of them; `decls` is the delegate's body verbatim.
+///
+/// The same containment an engine-built CHILD already uses, applied to a Component: what the view
+/// receives is a real QQmlComponent of the engine's own type, not a D shell wrapping one.
+void bindComponentText(U)(U owner, string prop, string uri, string typeName,
+                          string docUrl, string decls) {
+    auto c = makeComponent(uri, typeName, docUrl, decls);
+    if (c is null)
+        throw new Exception("bindComponentText: no QQmlComponent could be made for '" ~ typeName
+                            ~ "' bound to '" ~ prop ~ "'");
+    if (!qtd_prop_set_obj(qobjOf(owner), (prop ~ "\0").ptr, c))
+        throw new Exception("bindComponentText: property '" ~ prop ~ "' did not take the component for '"
+                            ~ typeName ~ "'");
 }
 
 extern(C) void* qtd_qml_create_object(const(char)*, const(char)*);

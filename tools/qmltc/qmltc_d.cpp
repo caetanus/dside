@@ -7801,6 +7801,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // a QML element, which is the only handle a view accepts.
                 auto dbt = boundTypeFor(cb.type);
                 if (unboundChildType(cb.type, dbt.first, inPath)) {
+                    // ...UNLESS THE ENGINE KNOWS THE TYPE, which is the same answer a non-bound
+                    // CHILD already gets and this branch never asked for. A `Shape` written as a
+                    // direct child is built by createQmlObjectAny with the document's imports and
+                    // renders; the same `Shape` written as a Repeater's delegate was refused
+                    // outright. Measured on a real reader's map: the journey route (one Shape, a
+                    // direct child) drew, and every coastline and border (Shapes, all delegates)
+                    // was absent — the bulk of a 42.6% frame difference, and neither a missing
+                    // plugin nor a renderer difference.
+                    //
+                    // So the delegate is handed over as TEXT with the document's own imports, which
+                    // is what the engine would have read. The view receives a real QQmlComponent of
+                    // the engine's type rather than a D shell wrapping one — the same containment
+                    // the engine-built child uses, applied to a Component.
+                    if (!g_bareImports.empty()) {
+                        std::string tried;
+                        for (auto &u : g_bareImports) tried += (tried.empty() ? "" : ";") + u;
+                        componentWire += "        bindComponentText(this, \"" + cb.field + "\", \""
+                                       + tried + "\", \"" + cb.type + "\", \"" + selfDocUrl + "\", "
+                                       + dstr(QString::fromStdString(bodyOfInit(cb.init))) + ");\n";
+                        // ...and the document hands a VIEW a Component, which is what makes a
+                        // static `data[N]` label a guess: the view decides where its items land,
+                        // and Qt's Repeater puts them BEFORE itself. Same reason and same flag as
+                        // the compiled-delegate path beside it — without it the value dump compared
+                        // an index that named a Shape on one side and the Repeater on the other.
+                        g_hasComponentBind = true;
+                        ++g_delegated;
+                        std::fprintf(stderr, "qmltc-d: %s: the Component bound to '%s' in %s is a "
+                                     "'%s' the engine knows — handed over with the document's "
+                                     "imports\n", inPath, cb.field.c_str(), cls.c_str(),
+                                     cb.type.c_str());
+                        continue;
+                    }
                     std::fprintf(stderr, "qmltc-d: %s: the Component bound to '%s' in %s is a '%s', "
                                  "which is not a bound Qt type — skipped (later phase)\n",
                                  inPath, cb.field.c_str(), cls.c_str(), cb.type.c_str());

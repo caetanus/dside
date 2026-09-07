@@ -1011,9 +1011,20 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
     // `Component { X {} }` built BY a document gives a real one, which is what the engine itself
     // hands to that call. The document's own url is used, so a relative path inside the component
     // resolves where the engine resolves it.
+    // EVERY IMPORT THE DOCUMENT HAD, not one. `uri` arrives as the ';'-separated list the engine
+    // child path already builds from the document's own imports, because a delegate's body names
+    // types from more than one module: a `Shape` delegate's `ShapePath`/`PathLine` are
+    // QtQuick.Shapes while everything around them is QtQuick. Given only the first, the engine
+    // answered `Shape is not a type` and the delegate was lost.
+    QByteArray imports("import QtQml\n");
+    for (const QByteArray &u : QByteArray(uri).split(';'))
+        if (!u.trimmed().isEmpty()) imports += "import " + u.trimmed() + "\n";
+    if (qEnvironmentVariableIsSet("QTD_COMPONENT_DEBUG"))
+        std::fprintf(stderr, "qtd_make_component: uri='%s' type='%s' imports=[%s]\n",
+                     uri, typeName, imports.trimmed().replace('\n', ' ').constData());
     {
         QQmlComponent host(e, e);
-        host.setData(QByteArray("import QtQml\nimport ") + uri + "\nComponent { " + typeName
+        host.setData(imports + "Component { " + typeName
                          + " { " + (decls ? decls : "") + " } }",
                      url);
         if (!host.isError())
@@ -1026,7 +1037,7 @@ extern "C" void* qtd_make_component(const char* uri, const char* typeName, const
     // ...and the old shape as a fallback: a type the hosted form cannot spell is still better
     // instantiated than refused. It is only unusable where Qt asks for the creation context.
     QQmlComponent* c = new QQmlComponent(e, e);
-    c->setData(QByteArray("import ") + uri + "\n" + typeName + " {}", url);
+    c->setData(imports + typeName + " { " + (decls ? decls : "") + " }", url);
     if (c->isError()) {
         std::fprintf(stderr, "qtd: delegate component for '%s' failed: %s\n", typeName,
                      qPrintable(c->errorString()));
