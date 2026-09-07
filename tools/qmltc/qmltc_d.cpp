@@ -761,6 +761,12 @@ static std::string g_engineChildCls, g_engineChildType, g_engineChildUri;
 // `Connections { target: bible; function onTranslationChanged() { … } }`, whose target is a name
 // this compiler cannot resolve and the engine can. Set by the parent beside the three above.
 static std::string g_engineChildBody;
+// ...and the names that body reads which belong to THIS document, with the expression for each.
+static std::string g_engineChildNames, g_engineChildObjs;
+// ...and whether that handover names the enclosing object. The expressions are written against
+// `__qmltcOuter`, which the PARENT only assigns when a child asks for it — so a child that reads it
+// from this path has to ask, or the back-reference is null and the wire dereferences it.
+static bool g_engineChildNeedsOuter = false;
 // ...and whether the object being compiled RIGHT NOW is one. g_engineChildCls is set by the PARENT
 // around each child's compile, so by the time a grandchild pushes its frame it already names the
 // GRANDCHILD. This holds the answer for the object that is actually enclosing.
@@ -5488,6 +5494,40 @@ static std::string vgroupMemberType(const std::string &selfQmlType, const std::s
 // like them inside the body: handing `newContent` over as a document name would shadow the argument
 // the call actually passes. `callArgs`, when given, emits the CALL form — the whole function to the
 // engine plus its arguments — instead of a binding or a handler.
+// THE DOCUMENT'S OBJECTS THAT A BODY THE ENGINE OWNS NAMES. `Connections { target: t; … }` is
+// built by the engine from the document's own text, and `t` is an id of ours — a D field, with no
+// name the engine could look up. Handed nothing, the Connections had no target and its handlers
+// never fired: a real reader's search results were computed and never collected, and the screen
+// said "nothing found".
+//
+// Only what RESOLVES is handed over; a name that does not is left to the engine, which is where a
+// context property or an import lives. That is the difference from jsDelegate, which must account
+// for every name because it is deciding whether to delegate at all — here the decision is already
+// made.
+// `self` is how to say "this object" from where the handover is USED. The names resolve in the
+// PARENT's scope and the createQmlObject line sits in the child's wire, where the parent's fields
+// have no names of their own — `instOf(_dc0)` there is `undefined identifier _dc0`. Everything is
+// rewritten against `self`, which the caller spells as a cast of __qmltcOuter.
+static void engineBodyHandover(Node *n, const std::string &self, std::string &names,
+                               std::string &objs) {
+    if (!n) return;
+    FreeIdScan sc;
+    n->accept(&sc);
+    std::set<std::string> done;
+    for (auto *id : sc.ids) {
+        std::string nm = qs(id->name.toString());
+        if (nm.empty() || sc.bound.count(nm) || !done.insert(nm).second) continue;
+        if (std::isupper((unsigned char) nm[0])) continue;   // a type name, not an object
+        std::string oe, oq;
+        if (!objPathExpr(id, oe, oq) || oe.empty()) continue;
+        // outerQualify puts the prefix on the ID and not on the call around it, which is what
+        // `instOf(_dc0)` needs: `instOf(<self>._dc0)`, never `<self>.instOf(_dc0)`.
+        const std::string ex = oe == "this" ? self : outerQualify(self + ".", oe);
+        names += (names.empty() ? "" : ", ") + ("\"" + nm + "\"");
+        objs += ", " + ex;
+    }
+}
+
 static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
                        const std::string &recv = "this",
                        const std::set<std::string> *bound = nullptr,
@@ -7971,6 +8011,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         if (!dcEngineUri.empty()) {
             g_engineChildCls = childCls; ++g_engineKids; g_engineChildType = childType; g_engineChildUri = dcEngineUri;
             g_engineChildBody = connDelegateBody ? bodyOfInit(od->initializer) : std::string();
+            g_engineChildNames.clear(); g_engineChildObjs.clear();
+            if (connDelegateBody)
+                engineBodyHandover(od->initializer, "(cast(" + cls + ") __qmltcOuter)",
+                                   g_engineChildNames, g_engineChildObjs);
+            g_engineChildNeedsOuter = !g_engineChildNames.empty();
             // From OUTSIDE, the only thing anyone wants of an engine-built child is the instance:
             // its signals and its properties are the engine object's, and the wrapper has neither.
             // So the id resolves to the instance from here on — a connect naming the wrapper threw
@@ -7997,6 +8042,8 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         ObjNode kid = compileObject(childInit, childCls, classes, partial, inPath, childBase, nullptr, childType);
         g_engineChildCls = savedDEC; g_engineChildType = savedDET; g_engineChildUri = savedDEU;
         g_engineChildBody = savedDECB;
+        g_engineChildNames.clear(); g_engineChildObjs.clear();
+        g_engineChildNeedsOuter = false;
         g_srcStack.pop_back(); g_srcText = savedSrc;   // back to THIS document, so our own diagnostics quote it
         g_docUrl = savedDocUrl;   // ...and so a class emits ITS document's baseUrl, not ours
         g_bareImports = savedDcBare; g_qualifiedTypes = savedDcQual;
@@ -11245,7 +11292,11 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the wire, exactly like __outer.
     if (g_isValueSource)
         afterClassBegin("        attachValueSource(this, __qmltcVsTarget, __qmltcVsProp);\n");
-    node.usesOuter = g_outerUsed && !g_outerClass.empty();
+    // ...or the handover of a body the engine owns names it, which is the same need reached by a
+    // different road: those expressions are written against `__qmltcOuter` and the parent assigns
+    // it only when asked. Unasked, the wire dereferenced null and the document segfaulted before
+    // printing a line.
+    node.usesOuter = (g_outerUsed || g_engineChildNeedsOuter) && !g_outerClass.empty();
     // The late pass: this object's deferred connects, then every child's. Emitted only where
     // there is something to do, so the common object is unchanged.
     std::string lateKids;
@@ -11495,8 +11546,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                  // id of ours is not a name there. `root.readTranslations()` in a
                                  // delegated Connections answered `root is not defined` — and Qt's
                                  // default handler is where that went, so nothing printed it.
-                                 + (g_engineChildBody.empty() || g_outerId.empty()
-                                        || g_outerClass.empty()
+                                 // The body's own names first — the ids it reads — then this
+                                 // object under the document's id, which is the fallback for a
+                                 // body that says `root.x` and nothing more specific.
+                                 + (g_engineChildBody.empty() || g_engineChildNames.empty()
+                                        ? std::string()
+                                        : ", [" + g_engineChildNames + "]" + g_engineChildObjs)
+                                 + (g_engineChildBody.empty() || !g_engineChildNames.empty()
+                                        || g_outerId.empty() || g_outerClass.empty()
                                         ? std::string()
                                         // __qmltcOuter, not the `__outer` FIELD: the creation is
                                         // the first line of the wire and the field is assigned

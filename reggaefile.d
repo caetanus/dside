@@ -1704,7 +1704,14 @@ Target[] qmltcTargets(string root, QtdBinding bind, string corpusDir, string tag
     // a correct NumberAnimation that never ticks — invisible to a property dump (reads the initial
     // value), to a frame comparison (one frame) and to a click test (an event, not time).
     static struct Timed { string name; int ms; string prop; }
-    static immutable Timed[] timed = [Timed("QAnim", 400, "v")];
+    static immutable Timed[] timed = [Timed("QAnim", 400, "v"),
+                                     // ...and a Connections whose target is a SIBLING'S id. The
+                                     // element is handed to the engine, and the ids it names have
+                                     // to go with it; without them it has no target and its
+                                     // handlers never fire. A property dump alone cannot see that
+                                     // — nothing has fired yet at t=0 — so the question is asked
+                                     // after the timer has, which is what `timed` is for.
+                                     Timed("QConnTargetId", 200, "seen")];
 
     // Documents whose KEYBOARD behaviour is compared: send this key to both sides and diff the property.
 struct Keyed { string name; int key; string prop; }
