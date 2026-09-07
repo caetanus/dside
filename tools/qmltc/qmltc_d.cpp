@@ -4177,6 +4177,29 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 }
             }
         }
+        // ...AND A `+` BETWEEN TWO NUMBERS IS ADDITION, whatever the target is. JS concatenates
+        // when an OPERAND is a string; the target has no say in it. Compiled as `~` because the
+        // property it feeds is text, `text: index + 1` in a chapter grid printed
+        // 01, 11, 21, 31 … 101, 111 — `to!string(index) ~ to!string(1)` — where the engine numbered
+        // the chapters 1 to 28. `2 + 3` came out "23".
+        //
+        // Only a pair that is DEFINITELY numeric takes this path; an unknown type keeps the old
+        // answer, since a string target usually does mean text and JS would agree there.
+        if (op == "~") {
+            const std::string lt0 = inferType(bin->left, g_propType);
+            const std::string rt0 = inferType(bin->right, g_propType);
+            auto isNum = [](const std::string &t) {
+                return t == "int" || t == "double" || t == "real" || t == "float";
+            };
+            if (isNum(lt0) && isNum(rt0)) {
+                std::string ln, rn;
+                if (compileExpr(bin->left, QString::fromStdString(lt0), ln)
+                        && compileExpr(bin->right, QString::fromStdString(rt0), rn)) {
+                    out = "to!string((" + ln + " + " + rn + "))";
+                    return true;
+                }
+            }
+        }
         if (op == "~") {
             // JS `+` CONCATENATES when either side is a string, converting the other one
             // (`"n=" + 5` -> "n=5"). Two consequences, and getting either wrong is silent:
@@ -4506,6 +4529,14 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
         std::string n = qs(id->name.toString());
         auto it = ptype.find(n); if (it != ptype.end()) return it->second;
         auto bp = g_baseProps.find(n); if (bp != g_baseProps.end()) return bp->second;
+        // `index` INSIDE A DELEGATE IS AN INT. QML puts it in the per-item context and it is never
+        // anything else, so a read of it has a type even though the registry has no row for it —
+        // and without one, the type flowed in from the TARGET instead. `text: index + 1` in a
+        // chapter grid compiled the read as `contextStr(this, "index")` and the `+` as `~`,
+        // printing 01, 11, 21 … 101, 111 where the engine numbered 1 to 28. Naming the type here is
+        // what lets the numeric-add rule below see two numbers.
+        if (n == "index" && !g_delegateCls.empty() && !g_scope.count(n) && !g_childIds.count(n))
+            return "int";
         return "";
     }
     if (auto *fm = cast<FieldMemberExpression *>(e)) {
