@@ -1650,6 +1650,9 @@ private extern(C) void* qtd_ctx_fill_qs(void*, const(char)*);
 /// shadow. Only for filling such a property: an ordinary context read must NOT skip the shadow,
 /// because the engine does not skip it either (a plain declared `index` reads 0 on every item there
 /// too). See qtd_item_context.
+private extern(C) void qtd_ctx_fill_var(void*, const(char)*);
+/// ...and a `var` role, which goes straight into the slot: a `var`'s value is not in the D field.
+void fillVar(T)(T o, string n) { qtd_ctx_fill_var(qobjOf(o), (n ~ "\0").ptr); }
 int fillInt(T)(T o, string n) { return qtd_ctx_fill_int(qobjOf(o), (n ~ "\0").ptr); }
 double fillDouble(T)(T o, string n) { return qtd_ctx_fill_double(qobjOf(o), (n ~ "\0").ptr); }
 string fillStr(T)(T o, string n) {

@@ -1601,6 +1601,27 @@ extern "C" void qtd_moc_var_write(void* o, const char* name, void* in_) {
     if (o && in_) qtd_var_slot(static_cast<QObject*>(o), name)->v = *static_cast<QVariant*>(in_);
 }
 
+// ...AND A `var` ROLE, WHICH HAD NO FILL AT ALL. The table above types a required role as string,
+// int, bool or double and a `var` is none of those, so the whole branch was skipped and the
+// property was never given the view's value — it stayed at its (empty) default while every typed
+// role beside it was filled.
+//
+// Measured on a real reader's search panel: the delegate declares `required property string label`
+// and `required property var refs`; the section heading painted from `label` and the verses under
+// it never appeared, because the inner Repeater's model is `refs`. A whole role type missing from
+// a per-type table, which is the shape this compiler keeps producing.
+//
+// The value goes straight into the var slot rather than being returned, because a `var`'s value is
+// not in the D field: the field is a marker and the runtime owns the value.
+extern "C" void qtd_ctx_fill_var(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (o && name) qtd_var_slot(static_cast<QObject*>(o), name)->v = qtd_ctx_role(o, name);
+#else
+    (void) o; (void) name;
+#endif
+}
+
+
 // Fills `*out` with the QQmlListProperty for `<o>.<name>` — the only way one is ever handed out.
 extern "C" void qtd_moc_list_read(void* o, const char* name, void* out) {
 #ifdef QTD_HAVE_QML

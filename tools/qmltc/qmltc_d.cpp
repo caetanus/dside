@@ -1760,10 +1760,11 @@ static bool isItemType(const std::string &qmlType) {
 // the object-group path so both agree on what "a read" is.
 static void resolveReadSrc(ExpressionNode *e, std::string &obj, std::string &grp, std::string &prp) {
     obj.clear(); grp.clear(); prp.clear();
+    const OuterFrame *srcFrame = nullptr;
     auto resolveObj = [&](IdentifierExpression *b) -> std::string {
         std::string bn = qs(b->name.toString()), pre;
         const OuterFrame *fr = nullptr;
-        if (outerHop(bn, pre, &fr)) return pre.substr(0, pre.size() - 1);
+        if (outerHop(bn, pre, &fr)) { srcFrame = fr; return pre.substr(0, pre.size() - 1); }
         if (auto ci = g_childIds.find(bn); ci != g_childIds.end()) return ci->second.field;
         if (isSelfId(bn)) return "this";
         // ...and a SIBLING's id — a child of an enclosing object, which QML resolves anywhere in
@@ -1796,6 +1797,26 @@ static void resolveReadSrc(ExpressionNode *e, std::string &obj, std::string &grp
         if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
             obj = resolveObj(b1);
             if (!obj.empty()) { grp = qs(fmb->name.toString()); prp = qs(fmv->name.toString()); }
+            // ...BUT A `var` IN THE MIDDLE IS NOT A GROUP. `a.b.c` splits into object/group/property
+            // and the copy then reads `b` as an OBJECT — which is right when the `var` holds one (a
+            // palette published from D is exactly that, and `theme.paper` has always worked this
+            // way) and wrong when it holds a plain JS value. There the object read gives null and
+            // the copy does nothing at all, in silence.
+            //
+            // Measured on a real reader's search panel: `model: search.results.themes`, where
+            // `results` is `property var results: ({ … themes: [] … })`. The compiled panel showed
+            // the right count — that text is delegated, so it is ordinary JS there — above an empty
+            // list, while the engine listed eight verses under their heading.
+            //
+            // Declining sends the read to the engine, which is always correct for a `var`: it reads
+            // the property and indexes it in JS, object or not. The only cost is that a `var`
+            // holding an object stops being copied and starts being delegated, and that path was
+            // already carrying most of them.
+            if (!grp.empty() && srcFrame) {
+                auto pv = srcFrame->propType.find(grp);
+                if (pv != srcFrame->propType.end() && pv->second == "@var")
+                    { obj.clear(); grp.clear(); prp.clear(); }
+            }
         }
     }
 }
@@ -7387,11 +7408,33 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 }
                 continue;
             }
+            // A REQUIRED `var` ROLE IS DECLARED LIKE ANY OTHER `var`, and it used to be excluded
+            // here. Excluded, it became nothing at all: no property on the class, so an id-qualified
+            // read of it from a child (`themeGroup.refs`) had nothing to find, and the fill table —
+            // which types a role as string, int, bool or double — had no entry for it either.
+            //
+            // Measured on a real reader's search panel, whose delegate declares `required property
+            // string label` beside `required property var refs`: the heading painted from `label`
+            // and the verses under it never appeared, because the inner Repeater's model is `refs`.
+            // One role type missing from two per-type tables at once.
             if (!dt[0] && (qmlType == QLatin1String("var") || qmlType == QLatin1String("variant"))
-                    && pub->typeModifier.isEmpty()
-                    && !(isRequiredMem(pub) && !g_delegateCls.empty())) {
+                    && pub->typeModifier.isEmpty()) {
                 props.push_back({name, "QmlVar", "", false, {}}); ++g_weakTyped;
                 g_propType[name] = "@var";
+                // A REQUIRED `var` ROLE IS FILLED LIKE ANY OTHER, and it was the one type the fill
+                // table did not carry. Required roles are typed string/int/bool/double there and a
+                // `var` is none of those, so the branch was skipped entirely and the property kept
+                // its empty default while every typed role beside it was given the view's value.
+                //
+                // Measured on a real reader's search panel: the delegate declares `required
+                // property string label` and `required property var refs`, the heading painted
+                // from `label`, and the verses under it never appeared — the inner Repeater's model
+                // is `refs`. A call rather than an assignment, because a `var`'s value is not in
+                // the D field: the field is a marker and the runtime owns the value.
+                if (isRequiredMem(pub) && !g_delegateCls.empty()) {
+                    g_requiredFill += "        fillVar(this, \"" + name + "\");\n";
+                    g_ctxUsed = true;
+                }
                 // ...and its INITIAL VALUE, which was dropped in silence — no write, no refusal.
                 // A `var` holding an OBJECT is the shape Qt's Material SliderHandle is built on
                 // (`readonly property var control: parent`), and every colour inside it is written
@@ -9133,6 +9176,28 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                     if (auto *b1 = cast<IdentifierExpression *>(fmb->base)) {
                         o = resolveObj(b1);
                         if (!o.empty()) { g = qs(fmb->name.toString()); pr = qs(fmv->name.toString()); }
+                        // ...BUT A `var` IN THE MIDDLE IS NOT A GROUP. The copy reads `g` as an
+                        // OBJECT through the meta-object, which is right when the `var` holds one —
+                        // a palette published from D is exactly that, and it is why `theme.paper`
+                        // goes this way — and wrong when it holds a plain JS value. There the
+                        // object read gives null and the copy does nothing at all, in silence.
+                        //
+                        // Measured on a real reader's search panel: `model: search.results.themes`,
+                        // where `results` is `property var results: ({ … themes: [] … })`. The
+                        // compiled panel printed the right count above an EMPTY list — the count is
+                        // delegated, so it is ordinary JS there — while the engine listed eight
+                        // verses under their heading.
+                        //
+                        // Declining sends the read to the engine, which is always right for a
+                        // `var`: it reads the property and indexes it in JS, object or not.
+                        if (!g.empty()) {
+                            std::string preV; const OuterFrame *frV = nullptr;
+                            if (outerHop(qs(b1->name.toString()), preV, &frV) && frV) {
+                                auto pv = frV->propType.find(g);
+                                if (pv != frV->propType.end() && pv->second == "@var")
+                                    { o.clear(); g.clear(); pr.clear(); }
+                            }
+                        }
                     }
                 }
             };
@@ -9406,9 +9471,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // The `__outer` chain itself is safe — each hop is assigned in its object's own
                 // wire step, before that object builds anything — so the field read is what to
                 // look for, not the prefix.
+                // ...and a handover that reads an ENCLOSING object at all. Those install their
+                // OWN delegated values in the late phase — a `var` whose initial value went to the
+                // engine is written there — so a child that reads one during its wire step reads a
+                // property that does not exist yet. Measured on a real reader's search panel:
+                // `model: search.results.themes` threw `Cannot read property 'themes' of undefined`
+                // at wire time, and a delegated binding that throws never captured the dependency,
+                // so it never ran again: the panel printed the right count above an empty list for
+                // the life of the process, while the engine listed eight verses.
+                //
+                // The late phase runs after the whole tree exists, and within it an object's own
+                // values are installed before its children's — which is the engine's order.
                 if (js.find("propObj(") != std::string::npos
                         || js.find("scopePromise(") != std::string::npos
-                        || js.find("._dc") != std::string::npos) lateWire += js;
+                        || js.find("._dc") != std::string::npos
+                        || js.find("__outer") != std::string::npos) lateWire += js;
                 else baseWire += js;
                 g_ctxUsed = true;   // ...so a delegate's body waits for the per-item context
                 ++g_delegated;
