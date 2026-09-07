@@ -7051,7 +7051,34 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 // Slider, Dial and RangeSlider transparent against the engine's accent. A QVariant
                 // carries a QObject fine; what was missing is anyone writing one. Late phase,
                 // because `parent` is not set until the parent assigns us.
-                if (auto *ves = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr) {
+                // A BLOCK BODY REACHED NONE OF THIS AND SAID NOTHING. The branch asked for an
+                // ExpressionStatement and a `var` bound to a block is not one, so the whole thing
+                // was skipped in silence: no write, no refusal, no line in the census. Measured on
+                // a real reader, whose book list is
+                //
+                //     readonly property var visibleBooks: { … for (…) out.push(…) ; return out }
+                //
+                // — declared, never written, and every view over it empty. The document said the
+                // property was bound and nothing anywhere disagreed.
+                auto *ves = pub->statement ? cast<ExpressionStatement *>(pub->statement) : nullptr;
+                if (!ves && pub->statement) {
+                    if (std::string js; jsDelegate(pub->statement, name, js)) {
+                        varJsInit.push_back(js);
+                        g_ctxUsed = true;
+                        ++g_delegated;
+                        std::fprintf(stderr, "qmltc-d: %s: the initial value of `var` property '%s' "
+                                     "in %s delegated to the engine\n", inPath, name.c_str(),
+                                     cls.c_str());
+                    } else {
+                        std::fprintf(stderr, "qmltc-d: %s: the initial value of `var` property '%s' "
+                                     "in %s is a block this compiler cannot hand over — the "
+                                     "property is DECLARED, its value is not\n",
+                                     inPath, name.c_str(), cls.c_str());
+                        ++partial;
+                    }
+                    continue;
+                }
+                if (ves) {
                     std::string voe, voq;
                     if (objPathExpr(ves->expression, voe, voq)) varObjInit.push_back({name, voe});
                     // ...and LOUD when it is not taken. Taking only the plain object path and
@@ -7278,6 +7305,22 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // registered before the members were compiled (see the prescan) and is resolved wherever a
         // local type is.
         if (cast<UiInlineComponent *>(m->member)) continue;
+        // A SCRIPT BINDING ON A BASE PROPERTY — `x: { var centred = …; return … }` — reached no
+        // branch at all and fell to the refusal below. It is a binding like any other and the
+        // engine evaluates blocks: handed over, the property gets its value instead of its default.
+        // This was the largest remaining cluster in a real application, and every one of them is
+        // this shape.
+        if (auto *sbm = cast<UiScriptBinding *>(m->member); sbm && sbm->statement
+                && !cast<ExpressionStatement *>(sbm->statement)) {
+            std::string bn2 = qname(sbm->qualifiedId);
+            if (std::string sj; !bn2.empty() && jsDelegate(sbm->statement, bn2, sj)) {
+                propLateWire += sj;   // this loop runs long before lateWire exists
+                ++g_delegated;
+                std::fprintf(stderr, "qmltc-d: %s: script binding for '%s' in %s delegated to the "
+                             "engine\n", inPath, bn2.c_str(), cls.c_str());
+                continue;
+            }
+        }
         // Say WHAT was refused. This was the largest remaining cluster and carried no detail at
         // all, so it could not be acted on — the same reason the expression diagnostics were made
         // to quote their source.
