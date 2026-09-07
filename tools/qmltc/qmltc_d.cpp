@@ -6067,6 +6067,30 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
         for (size_t k = 0; (k = src.find(pat, k)) != std::string::npos; ) {
             if (k > 0 && (std::isalnum((unsigned char) src[k - 1]) || src[k - 1] == '_' || src[k - 1] == '.'))
                 { k += pat.size(); continue; }
+            // AN UPPERCASE MEMBER IS AN ENUM OF THE TYPE, NOT A PROPERTY OF THE ATTACHED OBJECT,
+            // and the rewrite cannot serve it. `ListView.Center` is QQuickItemView::PositionMode
+            // read through the TYPE; the attached object has no such member, so the rewritten
+            // expression reads `undefined` and every use of it silently takes a default.
+            //
+            // Measured on a real reader's book navigator: `positionViewAtIndex(i, ListView.Center)`
+            // received `undefined` as its mode, which positionViewAtIndex reads as Beginning — the
+            // list opened at the right INDEX with the wrong alignment, so the current book sat at
+            // the top where the engine centres it. The whole 4% of that frame is this one argument.
+            //
+            // Leaving the name alone is not the answer either: measured, an unrewritten
+            // `ListView.Center` in a delegated body throws `ReferenceError: ListView is not
+            // defined`, because the child context the hand-over needs does not carry the document's
+            // import namespace. Serving it means splicing the VALUE into the source at wire time,
+            // which is a mechanism this compiler does not have yet. Until it does, it is said out
+            // loud rather than answered wrongly in silence.
+            const size_t memAt = k + pat.size();
+            if (memAt < src.size() && std::isupper((unsigned char) src[memAt])) {
+                size_t e = memAt;
+                while (e < src.size() && (std::isalnum((unsigned char) src[e]) || src[e] == '_')) ++e;
+                std::fprintf(stderr, "qmltc-d: '%s%s' in a delegated body is a type-scoped ENUM — "
+                             "it reads as undefined there and the value falls back to 0 "
+                             "(later phase)\n", pat.c_str(), src.substr(memAt, e - memAt).c_str());
+            }
             src.replace(k, pat.size(), rep); k += rep.size();
         }
         binds.push_back({alias, attachedExpr(tn)});
