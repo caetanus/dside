@@ -831,11 +831,33 @@ static QQmlContext* qtd_item_context(QObject* obj) {
     return c ? c : qmlContext(obj);
 }
 #endif
+// THE VALUE A REQUIRED PROPERTY SHOULD BE FILLED WITH. The per-item context carries the model's
+// roles by name for a QAbstractItemModel, and for a plain list of objects it carries `modelData` —
+// the element itself. A delegate written `required property string t` over a QVariantList of
+// QVariantMap (which is what setModel produces) found nothing under `t` and kept its default: every
+// row of a real reader's page came out with an empty string and a number of 0, so the text was
+// there and invisible and every row believed it was the chapter title.
+//
+// Asked in the order the engine resolves it: the context first, then the element's own key.
+#ifdef QTD_HAVE_QML
+static QVariant qtd_ctx_role(void* o, const char* name) {
+    QQmlContext* c = o && name ? qtd_item_context(static_cast<QObject*>(o)) : nullptr;
+    if (!c) return QVariant();
+    const QString n = QString::fromUtf8(name);
+    QVariant v = c->contextProperty(n);
+    if (v.isValid()) return v;
+    const QVariant md = c->contextProperty(QStringLiteral("modelData"));
+    if (md.canConvert<QVariantMap>()) {
+        const QVariantMap m = md.toMap();
+        auto it = m.find(n);
+        if (it != m.end()) return *it;
+    }
+    return QVariant();
+}
+#endif
 extern "C" int qtd_ctx_fill_int(void* o, const char* name) {
 #ifdef QTD_HAVE_QML
-    if (o && name)
-        if (QQmlContext* c = qtd_item_context(static_cast<QObject*>(o)))
-            return c->contextProperty(QString::fromUtf8(name)).toInt();
+    return qtd_ctx_role(o, name).toInt();
 #else
     (void) o; (void) name;
 #endif
@@ -843,9 +865,7 @@ extern "C" int qtd_ctx_fill_int(void* o, const char* name) {
 }
 extern "C" double qtd_ctx_fill_double(void* o, const char* name) {
 #ifdef QTD_HAVE_QML
-    if (o && name)
-        if (QQmlContext* c = qtd_item_context(static_cast<QObject*>(o)))
-            return c->contextProperty(QString::fromUtf8(name)).toDouble();
+    return qtd_ctx_role(o, name).toDouble();
 #else
     (void) o; (void) name;
 #endif
@@ -853,9 +873,7 @@ extern "C" double qtd_ctx_fill_double(void* o, const char* name) {
 }
 extern "C" void* qtd_ctx_fill_qs(void* o, const char* name) {
 #ifdef QTD_HAVE_QML
-    if (o && name)
-        if (QQmlContext* c = qtd_item_context(static_cast<QObject*>(o)))
-            return new QString(c->contextProperty(QString::fromUtf8(name)).toString());
+    return new QString(qtd_ctx_role(o, name).toString());
 #else
     (void) o; (void) name;
 #endif

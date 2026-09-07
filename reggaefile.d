@@ -1847,7 +1847,7 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // list exists so the weaker gate does not claim a gap the stronger one covers.
             static immutable string[] labelsGap = [
                 "QDelegateKidCtx", "QDelegateRole", "QDelegateRoleReq", "QDelegateReqNoModel",
-                "QDelegateReqFill", "QJsDelegatedFrame",
+                "QDelegateReqFill", "QJsDelegatedFrame", "QDelegateRequiredRole",
             ];
             auto verifyStep = labelsGap.canFind(name) ? ""
                 : " && QT_QPA_PLATFORM=offscreen " ~ oracleBin ~ " " ~ qmlFile ~ " --verify-props " ~ props;
