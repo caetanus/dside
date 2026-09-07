@@ -831,7 +831,7 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
     }
     enum sigs = signalSigs!T;
     enum slts = slotSigs!T;
-    enum pnames = propMembers!T ~ aliasPropNames!T;
+    enum pnames = propPubNames!T ~ aliasPropNames!T;   // the PUBLISHED names, not the fields'
     enum ptypes = propTypes!T ~ aliasPropTypes!T;
     enum pnotif = propNotify!T ~ aliasPropNotify!T;
     const(char)*[sigs.length + 1] sigp;
@@ -1109,7 +1109,7 @@ mixin template QtdWidget(Base) {
 
         // 2. attach the runtime meta-object (own signals/slots/props)
         enum sigs = signalSigs!_Self; enum slts = slotSigs!_Self;
-        enum pnames = propMembers!_Self ~ aliasPropNames!_Self;
+        enum pnames = propPubNames!_Self ~ aliasPropNames!_Self;   // published, not the fields'
         enum ptypes = propTypes!_Self ~ aliasPropTypes!_Self;
         enum pnotif = propNotify!_Self ~ aliasPropNotify!_Self;
         const(char)*[sigs.length + 1] sigp; const(char)*[slts.length + 1] sltp;
@@ -1392,7 +1392,14 @@ string colorLighter(C)(C c, double f = 1.5) { return __shade(c, f, 1); }
 /// A real crossing the meta channel as TEXT. `to!string` formats a double with six significant
 /// digits, which does not round-trip: `Color.transparent(c, 210 / 255)` reached Qt as 0.823529 and
 /// came back one alpha step short of what the engine computed. 17 digits always round-trips.
-string numText(double v) { import std.format : format; return format("%.17g", v); }
+/// A NUMBER RENDERED AS TEXT, and still a number as far as a call is concerned. Everything scalar
+/// crosses a metacall as text, and the generator wraps a numeric literal in this before an invoke —
+/// so by the time `invokeMixed` looked at the argument its D type was `string` and the far side
+/// built a QString. Harmless for a typed parameter, which converts; wrong for a `var` one, which
+/// takes whatever it is given: `v + base` came out "25" where the engine gives 7. The `alias this`
+/// keeps every existing use working, since this IS its text.
+struct QmlNum { string t; alias t this; }
+QmlNum numText(double v) { import std.format : format; return QmlNum(format("%.17g", v)); }
 /// The QML global `Qt.alpha`: the same colour at a new opacity. Same two argument shapes as the
 /// shade helpers, for the same reason — a colour arrives here as text or as a declared QColor.
 string colorAlpha(C)(C c, double a) {
@@ -1457,7 +1464,9 @@ string invokeMixed(T, A...)(T recv, string method, A args) {
     int[A.length] kinds; const(void)*[A.length] vals;
     string[A.length] keep;
     static foreach (i, a; args) {
-        static if (is(typeof(a) == string)) {
+        static if (is(typeof(a) == QmlNum)) {
+            keep[i] = a.t ~ "\0"; kinds[i] = 2; vals[i] = keep[i].ptr;
+        } else static if (is(typeof(a) == string)) {
             keep[i] = a ~ "\0"; kinds[i] = 0; vals[i] = keep[i].ptr;
         // A COLOUR is a value, not an object: `Fusion.buttonColor(control.palette, …, tint)` mixes
         // the two in one call. It crosses as TEXT, which is how a colour crosses everywhere else

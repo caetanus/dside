@@ -5501,6 +5501,12 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
     std::vector<std::pair<std::string, std::string>> binds;   // name -> the D expression for it
     std::set<std::string> seen, typeNames;   // QML type names the source still spells
     std::set<std::string> scopeNames;        // names the SCOPE OBJECT answers (a shadow has none)
+    // WHERE each own-property name occurs, for the qualification below. Recorded by AST offset
+    // rather than by matching text: a whole-token rewrite over the source is what put `__sp_s.s`
+    // inside a function's parameter list, and the parser already knows exactly which characters
+    // are this identifier.
+    std::vector<std::pair<int, int>> selfHits;   // (offset from the start of src, length)
+    const int base0 = int(e->firstSourceLocation().offset);
     for (auto *id : sc.ids) {
         std::string n = qs(id->name.toString());
         if (n.empty() || !seen.insert(n).second) continue;
@@ -5526,7 +5532,14 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
         // A DECLARED property of this object is answered by the scope object too, and needs the
         // same handing-over as a base one — `hasIcon` on Qt's Material Button is declared, so
         // prefixing only the base names left it resolving against nothing in the shadow.
-        if (g_propType.count(n) || g_scope.count(n)) { scopeNames.insert(n); continue; }
+        if (g_propType.count(n) || g_scope.count(n)) {
+            scopeNames.insert(n);
+            for (auto *id2 : sc.ids)
+                if (qs(id2->name.toString()) == n)
+                    selfHits.push_back({int(id2->identifierToken.offset) - base0,
+                                        int(id2->identifierToken.length)});
+            continue;
+        }
         // ...and a BASE property of this object, which the scope object answers exactly as it
         // answers a declared one. Leaving it out is why `Material.buttonLeftPadding(flat, hasIcon
         // && …)` was refused rather than delegated on every Material button: `flat`, `hasIcon` and
@@ -5758,6 +5771,26 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
                 + dstr(QString::fromStdString(block ? "(function()" + ssrc + ")()" : ssrc))
                 + ", [" + snames + "]" + sobjs + ");\n";
         return true;
+    }
+    // A BODY IS WRAPPED IN A FUNCTION, AND THAT COSTS THE QML SCOPE. Inside a binding a bare name
+    // reads AND writes the scope object's property, which is how `onClicked: open = true` works.
+    // Inside a plain JS function it does not: the read still finds the scope object, and the write
+    // is a global assignment, which QML refuses — `Error: Invalid write to global property "out"`.
+    // Measured on a ten-line document, and it is why a real reader's `content = newContent` left
+    // the property untouched while raising nothing at all on the way past.
+    //
+    // So each own-property occurrence is qualified with the object itself, handed over beside the
+    // ids. By AST OFFSET, back to front, so an earlier rewrite cannot move a later one — and so
+    // that a name inside a string or a parameter list is not touched, which a text scan cannot
+    // promise.
+    if (prop.empty() && !selfHits.empty()) {
+        std::sort(selfHits.begin(), selfHits.end(),
+                  [](auto &a, auto &b) { return a.first > b.first; });
+        for (auto &h : selfHits)
+            if (h.first >= 0 && h.first + h.second <= (int) src.size())
+                src.insert(size_t(h.first), "__qtdSelf.");
+        names = names.empty() ? "\"__qtdSelf\"" : "\"__qtdSelf\", " + names;
+        objs = ", " + recv + objs;
     }
     if (callArgs)
         out = "        callJsFunc(" + recv + ", " + dstr(QString::fromStdString(src))
@@ -11469,7 +11502,10 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
                            "", self, s.first});
             continue;
         }
-        out.push_back({lab + s.first, acc + s.first, s.second, self, s.first});
+        // dIdent, because the FIELD may be spelled otherwise than the property: a document is
+        // free to declare `property string out`, and the dump reads the field, not the name. The
+        // label keeps the QML spelling — that is what the oracle answers to.
+        out.push_back({lab + s.first, acc + dIdent(s.first), s.second, self, s.first});
     }
     // "" dtype keeps it out of the mutation block below (a list is not settable from a token).
     for (auto &s : n.valueLists)
