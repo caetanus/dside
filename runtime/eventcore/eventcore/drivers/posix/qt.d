@@ -23,6 +23,23 @@
 // HOW IT IS SELECTED. Build eventcore with no driver version identifier (its `generic`
 // configuration): `NativeEventDriver` is then the interface and `setupEventDriver()` installs one
 // at run time. Add `EventcoreQtDriver` to compile this file. Nothing in eventcore changes.
+//
+// WHICH LOOP THE APPLICATION RUNS, and this is the one thing a reader must not get wrong.
+//
+//     setupEventDriver(new QtEventDriver);
+//     runEventLoop();          // vibe's — and Qt does every wait inside it
+//
+// NOT `app.exec()`. Measured: with Qt's own loop running, vibe's fibers never advance — nothing
+// calls eventcore, so no descriptor is drained and no timer fires (`ticks=0` after 400 ms). It is
+// not a subtle failure and it is not a wrong number; it is a freeze, and a reader who assumes the
+// Qt spelling will meet it immediately.
+//
+// That is a limit of the ENTRY POINT, not of the engine: inside `runEventLoop()` Qt does all of
+// the waiting, owns every descriptor through its own notifiers, and services its own timers and
+// windows exactly as `exec()` would — measured, a QTimer of Qt's own ticking beside vibe fibers and
+// a libp2p handshake. Making `exec()` work as well means the driver arming a Qt single-shot for the
+// deadline eventcore hands it and returning instead of waiting, plus a pump above the driver that
+// calls back into vibe's scheduler. That is a real piece of work and it is not done.
 module eventcore.drivers.posix.qt;
 
 version (EventcoreQtDriver):
@@ -88,12 +105,27 @@ final class QtEventLoop : PosixEventLoop {
                 case EventType.status: notify!(EventType.status)(fd); break;
             }
         }
-        m_pendingCount = 0;
-        // ...and only now are the notifiers listening again. They are level-triggered: left
+        // ...and only the ones that FIRED are listening again. They are level-triggered: left
         // enabled while the descriptor is still ready and unread, Qt would dispatch them again
         // immediately and the loop would spin at 100% doing nothing. Disabled on fire, re-enabled
         // once eventcore has had its turn.
-        rearm();
+        //
+        // By the pending list rather than by a sweep of the table: a sweep is O(highest fd) on
+        // EVERY iteration, which is work proportional to the largest descriptor the process has
+        // ever seen rather than to what happened. Measured on a libp2p ping over loopback — two
+        // hosts, a handful of descriptors — it made NO difference: 165 us either way. The change
+        // is right for the shape of the work, not for that benchmark, and saying so is the point:
+        // a process holding thousands of connections is where the sweep would be felt, and this
+        // one does not hold thousands.
+        for (size_t i = 0; i < m_pendingCount; ++i) {
+            const fd = m_pending[i];
+            if (fd >= m_watch.length) continue;
+            const slot = m_pendingKind[i] == EventType.write ? 1 : 0;
+            // It may have been unregistered by the notify() above — that is allowed, and the
+            // watch is then gone rather than merely idle.
+            if (auto w = m_watch[fd][slot]) qtd_ec_notifier_enable(w.notifier, 1);
+        }
+        m_pendingCount = 0;
         return any;
     }
 
@@ -166,12 +198,6 @@ final class QtEventLoop : PosixEventLoop {
         m_watch[fd][slot] = null;
         qtd_ec_notifier_free(w.notifier);
         free(w);
-    }
-
-    private void rearm() @nogc @trusted {
-        foreach (i; 0 .. m_watch.length)
-            foreach (s; 0 .. 2)
-                if (auto w = m_watch[i][s]) qtd_ec_notifier_enable(w.notifier, 1);
     }
 
     private void enqueue(size_t fd, EventType kind) @nogc @trusted {

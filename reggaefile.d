@@ -187,6 +187,17 @@ Build reggaeBuild() {
             // reachable by name (`./build vibe-driver-ldc2`), which is what the integration needs.
             // ...and posix for the same reason: the driver it exercises is
             // `eventcore.drivers.posix.qt`.
+            // ...and the same thing under a REAL library, which is the only thing that settles
+            // whether the driver is finished: two libp2p hosts, a dial, a security handshake, a
+            // muxer, Identify and Ping. Skipped when the library is not beside this checkout —
+            // it is the user's, not a dependency.
+            version (Posix)
+            if (tag == "qt6")
+                advisoryGates ~= Target.phony("libp2p-driver-" ~ dc,
+                    "sh " ~ buildPath(root, "tests", "vibe", "libp2p.sh") ~ " " ~ dc ~ " " ~ b.genDir
+                    ~ " " ~ b.bdir ~ " " ~ buildPath(b.bdir, "libp2p-" ~ dc) ~ " " ~ root
+                    ~ " \"" ~ b.mods.join(" ") ~ "\"",
+                    [qtdBindLib(b, dc), b.shims]);
             version (Posix)
             if (tag == "qt6")
                 advisoryGates ~= Target.phony("vibe-driver-" ~ dc,
