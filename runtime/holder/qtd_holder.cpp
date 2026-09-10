@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QCoreApplication>
 #include <unordered_map>
+#include <mutex>
 
 extern "C" {
 
@@ -20,6 +21,14 @@ static QtdDestroyedFn g_onDestroyed = nullptr;
 // destructors, so a static map object would be a use-after-free (destruction-order fiasco).
 static std::unordered_map<void *, void *> &g_wrappers() {
     static std::unordered_map<void *, void *> *m = new std::unordered_map<void *, void *>();
+    return *m;
+}
+
+// The map is touched from any thread: the GC finalizer of a wrapper runs on whichever
+// thread triggered the collection, while the Qt thread registers new wrappers. Same
+// lifetime rule as the map (heap, never freed).
+static std::recursive_mutex &g_lock() {
+    static std::recursive_mutex *m = new std::recursive_mutex();
     return *m;
 }
 
@@ -42,8 +51,8 @@ void qtd_holder_delete_later(void *obj) { static_cast<QObject *>(obj)->deleteLat
 int  qtd_holder_is_app(void *obj) { return obj == QCoreApplication::instance() ? 1 : 0; }
 
 // identity map
-void  qtd_holder_reg(void *cptr, void *wrapper) { g_wrappers()[cptr] = wrapper; }
-void *qtd_holder_find(void *cptr) { auto it = g_wrappers().find(cptr); return it == g_wrappers().end() ? nullptr : it->second; }
-void  qtd_holder_unreg(void *cptr) { g_wrappers().erase(cptr); }
+void  qtd_holder_reg(void *cptr, void *wrapper) { std::lock_guard<std::recursive_mutex> g(g_lock()); g_wrappers()[cptr] = wrapper; }
+void *qtd_holder_find(void *cptr) { std::lock_guard<std::recursive_mutex> g(g_lock()); auto it = g_wrappers().find(cptr); return it == g_wrappers().end() ? nullptr : it->second; }
+void  qtd_holder_unreg(void *cptr) { std::lock_guard<std::recursive_mutex> g(g_lock()); g_wrappers().erase(cptr); }
 
 } // extern "C"
