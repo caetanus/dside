@@ -846,7 +846,20 @@ string mapCxxType(CXType t, ref string imp) {
                 PENDING_ENUMSCOPE[pn] = pdef;   // stub must still carry the enum (see decl)
             imp = pn; return pn ~ "." ~ en;
         }
-        ENUMS[en] = decl; imp = en; return en;    // namespace/global -> own module
+        // A LEADING DOT: module scope, not class scope. A namespace enum lands in its own module
+        // and was referenced by its bare name — which an inherited NESTED enum of the same name
+        // shadows inside a class body. QQuickLayout declares `enum Orientation`, so in
+        // QQuickGridLayoutBase, whose C++ constructor takes `Qt::Orientation` (the mangled name
+        // says N2Qt11OrientationE), the wrapper's parameter resolved to
+        // `QQuickLayout.Orientation` while the extern(C++) forwarder beside it resolved to the
+        // imported one — and the generated D would not build:
+        //     cannot pass argument `a1` of type `qt.controls.qquicklayout.QQuickLayout.Orientation`
+        //     to parameter `qt.controls.orientation.Orientation a1`
+        // It took binding QtQuick.Layouts to produce a class that inherits such a collision; the
+        // defect was waiting for one. `.X` is the D idiom for exactly this and cannot be shadowed.
+        // Safe in every position this string reaches: a mapped enum is used as a TYPE, never as an
+        // identifier (the only name-building consumer is the ITERATOR type, a record).
+        ENUMS[en] = decl; imp = en; return "." ~ en;   // namespace/global -> own module
     }
     if (ck.kind == CXType_Pointer) {
         auto pt = clang_getPointeeType(ck);

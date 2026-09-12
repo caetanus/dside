@@ -1,12 +1,15 @@
 {
   "qt_version": "6.11",
-  "pkg_config": "Qt6QuickControls2Impl Qt6QuickTemplates2 Qt6Quick Qt6QmlModels Qt6Qml Qt6Gui Qt6Core",
+  "pkg_config": "Qt6QuickLayouts Qt6QuickControls2Impl Qt6QuickTemplates2 Qt6Quick Qt6QmlModels Qt6Qml Qt6Gui Qt6Core",
   "out_dir": "../generated/qt-6.11/cxx-controls",
   "d_package": "qt.controls",
   "abi": "cxx",
   "wrapper": true,
   "discover_module": "QtQuickTemplates2",
   "headers": [
+    "QtQuickLayouts/private/qquicklayout_p.h",
+    "QtQuickLayouts/private/qquicklinearlayout_p.h",
+    "QtQuickLayouts/private/qquickstacklayout_p.h",
     "QtQuick/private/qquickanimatedimage_p.h",
     "QtQuick/private/qquickanimation_p.h",
     "QtQuick/private/qquickanimator_p.h",
@@ -130,6 +133,8 @@
     "QtQuickTemplates2/private/qquickweeknumbercolumn_p.h"
   ],
   "include_paths": [
+    "/usr/include/qt6/QtQuickLayouts/6.11.1",
+    "/usr/include/qt6/QtQuickLayouts/6.11.1/QtQuickLayouts",
     "/usr/include/qt6/QtQuickControls2Impl/6.11.1/QtQuickControls2Impl",
     "/usr/include/qt6/QtQuickControls2Impl/6.11.1",
     "/usr/include/qt6/QtQuickTemplates2/6.11.1",
@@ -153,6 +158,7 @@
     "QQuickPathElement"
   ],
   "qmltypes": [
+    "/usr/lib/qt6/qml/QtQuick/Layouts/plugins.qmltypes",
     "/usr/lib/qt6/qml/QML/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/Templates/plugins.qmltypes",
     "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes",
@@ -191,5 +197,6 @@
   "_excluded_headers_reason": "qquick{,double,abstract}spinbox: QQuickAbstractSpinBox<T> is a template whose INLINE handleComponentComplete() calls QQuickIndicatorButtonPrivate::executeIndicator, a private Qt symbol that is not exported. Instantiating it in a trampoline compiles and then fails at link. Nothing in the headers marks this, so it cannot be detected in the generator \u2014 it is excluded by name.",
   "_subclass_reason": "QQuickAction/ActionGroup/ButtonGroup are non-visual QObject types, so a QQuickItem/QQuickPopup-rooted subclass_derived sweep never reaches them; they are named here instead. QQuickCalendar/QQuickCalendarModel are NOT listed on purpose: they declare QML_NAMED_ELEMENT but carry no export macro, so a subclass could not link against them.",
   "_basic_style_impl_reason": "QtQuick.Controls.Basic.impl (ProgressBarImpl, BusyIndicatorImpl, DialImpl) is NOT bindable: qquickbasic*_p.h declare their classes with no export macro and libQt6QuickControls2BasicStyleImpl.so exports zero symbols for them (nm -D), so a trampoline would link against nothing. TumblerView is different -- it lives in QtQuickControls2Impl, is exported, and IS bound. This is why Basic's ProgressBar/BusyIndicator/Dial cannot compile whole.",
-  "_spinbox_not_bindable_reason": "QQuickSpinBox/QQuickDoubleSpinBox are NOT bindable, measured 2026-08-02: adding their headers DOES map them, and then every subclass fails to LINK. QQuickAbstractSpinBox is a TEMPLATE whose inline handleComponentComplete calls QQuickIndicatorButtonPrivate::executeIndicator(bool), which libQt6QuickTemplates2 does not export -- so the trampoline instantiates code against a symbol that is not there. Same shape as the Basic style impls above. A compiled-but-unlinkable root is worse than an honestly refused one: the controls-runtime gate went from 0 failures to 2. ApplicationWindow, Calendar, CalendarModel, DayOfWeekRow, MonthGrid and WeekNumberColumn were added in the same experiment and are INERT -- their classes generate but nothing maps them, because none is a QQuickItem (subclass_derived) and QQuickCalendar has no export macro at all."
+  "_spinbox_not_bindable_reason": "QQuickSpinBox/QQuickDoubleSpinBox are NOT bindable, measured 2026-08-02: adding their headers DOES map them, and then every subclass fails to LINK. QQuickAbstractSpinBox is a TEMPLATE whose inline handleComponentComplete calls QQuickIndicatorButtonPrivate::executeIndicator(bool), which libQt6QuickTemplates2 does not export -- so the trampoline instantiates code against a symbol that is not there. Same shape as the Basic style impls above. A compiled-but-unlinkable root is worse than an honestly refused one: the controls-runtime gate went from 0 failures to 2. ApplicationWindow, Calendar, CalendarModel, DayOfWeekRow, MonthGrid and WeekNumberColumn were added in the same experiment and are INERT -- their classes generate but nothing maps them, because none is a QQuickItem (subclass_derived) and QQuickCalendar has no export macro at all.",
+  "_layouts_reason": "QtQuick.Layouts is bound because an application uses it everywhere and nothing else could: measured on a 23-document corpus, 15 import it, and a `ColumnLayout` child was refused with `building it as a bare object would drop every property set on it`. Three private headers give the four containers (Row/Column/Grid/StackLayout) AND the attached `Layout` type \u2014 `Layout.fillWidth` is the half an application touches most, and binding the containers without it would look like a fix and leave every anchor-free size unset. FlexboxLayout and LayoutItemProxy are deliberately absent: neither appeared in the corpus, and a type nothing exercises is a coverage row nobody has measured."
 }

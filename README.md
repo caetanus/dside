@@ -133,7 +133,14 @@ Measured against Qt's own shipped Controls, and against this project's own appli
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
 | Qt's Controls | 329 | 247 | 37 | 45 | 0 |
-| application-shaped | 18 | 9 | 9 | 0 | **0** |
+| application-shaped | 18 | 10 | 8 | 0 | **0** |
+
+<!-- The application row moved 9/9 -> 10/8 on 2026-09-12, and this one IS the compiler's doing,
+     unlike the drift recorded above: binding QtQuick.Layouts took ALayouts.qml from
+     `DEMOTED to -O0 (the frame differs — 9336/19200 px (48.6%) at -Ox)` to COMPILED. Nearly half
+     the rendered frame was wrong, because `Layout.fillWidth` and its 21 siblings were bindings the
+     document handed to the engine while the compiled side sized nothing. The five STYLE rows did
+     not move: Qt's own Controls styles do not use Layouts. -->
 
 <!-- RE-MEASURED 2026-09-12. Both rows moved and NEITHER moved because of this compiler: the same
      `qmltc-o3-gate-<style>` and `qmltc-o3-gate-app` run against the committed compiler of the day
@@ -142,7 +149,7 @@ Measured against Qt's own shipped Controls, and against this project's own appli
      toolchain, which nothing here records — see the longer note under the per-style table in
      docs/qmltc-d.md. -->
 
-**Nine of eighteen** on application-shaped QML is the honest number and the interesting one:
+**Ten of eighteen** on application-shaped QML is the honest number and the interesting one:
 that dialect is where the compiler is weak today, and the ladder is what keeps it correct
 anyway — all eighteen behave identically to the engine.
 

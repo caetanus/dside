@@ -418,9 +418,18 @@ Build reggaeBuild() {
         // Qt6QuickControls2Impl carries IconLabel/CheckLabel/ColorImage — the types every
         // Basic contentItem is built from. Binding their headers without linking the library
         // gets you a clean compile and undefined references at link time.
+        // Qt6QuickLayouts is in this list AND in the spec's pkg_config, and both are needed for
+        // different halves: the spec's entry gives the GENERATOR its include flags, while this list
+        // is the LINK MANIFEST (see qtdBinding). Adding only the first bound the four containers and
+        // the attached `Layout` type, and then nothing linked —
+        //     mold: error: undefined symbol: QQuickGridLayoutBase::componentComplete()
+        //     referenced by qtvirt.cpp … Qtd_QQuickGridLayoutBase::componentComplete()
+        // — about a symbol the library does export (`nm -D` finds it under Qt_6_PRIVATE_API). The
+        // library simply was not on the link line, which reads like a missing symbol and is a
+        // missing `-l`.
         auto ctrl = qtdBinding(root, "spec_cxx_controls.json",
-                               ["Qt6QuickControls2Impl", "Qt6QuickTemplates2", "Qt6Quick",
-                                "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
+                               ["Qt6QuickLayouts", "Qt6QuickControls2Impl", "Qt6QuickTemplates2",
+                                "Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, ctrl, buildPath(root, "tests", "qmltc", "controls"), "c");
         // AGREEING WITH THE ENGINE IS NOT THE SAME AS COMPILING IT. An expression the compiler
         // refuses is handed to the engine, which then produces the right value — so the corpus

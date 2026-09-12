@@ -69,8 +69,24 @@ fi
 # THE LINK LINE IS THE PLATFORM'S. `-lQt6Core` is GNU ld's; lld-link answers `could not open
 # 'Qt6Core.lib'` for each of them, and `stdc++` does not exist on Windows at all. Where pkg-config
 # is absent the modules are named by FILE, out of the prefix the build already resolved.
+# ...AND THE MODULES ARE THE BUILD'S, NOT A COPY. `$3/qtlibs.txt` is written by qtdBinding with the
+# flags it resolved for this binding; the list below is the fallback for running this script by hand.
+# They drifted the moment a module was added to the build and not here: every one of the 18
+# application documents came back UNPLACED — "at -Ox it does not build or run" — which reads like a
+# corpus that stopped compiling and was a missing -l.
 _qtmods="Qt6QuickControls2Impl Qt6QuickTemplates2 Qt6Quick Qt6OpenGL Qt6QmlModels Qt6Qml Qt6Network Qt6Gui Qt6Core"
 QTD_QTLIBS=""
+if [ -f "$3/qtlibs.txt" ]; then
+    # The file holds what pkg-config answered — `-lQt6Quick …`, which is the C linker's spelling and
+    # what every clang++ link in this build wants. The D compiler wants each one behind `-L`, so the
+    # translation happens here rather than in the file: one form on disk, and the consumer that needs
+    # the other says so. Handed over verbatim, ldc2/dmd take `-lQt6Quick` as a source file.
+    for _f in $(cat "$3/qtlibs.txt"); do
+        case "$_f" in -l*) QTD_QTLIBS="$QTD_QTLIBS -L$_f" ;; *) QTD_QTLIBS="$QTD_QTLIBS $_f" ;; esac
+    done
+    [ -n "$QTD_QTLIBS" ] && QTD_QTLIBS="$QTD_QTLIBS -L-lstdc++"
+fi
+if [ -z "$QTD_QTLIBS" ]; then
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Core 2>/dev/null; then
     for m in $_qtmods; do QTD_QTLIBS="$QTD_QTLIBS -L-l$m"; done
     QTD_QTLIBS="$QTD_QTLIBS -L-lstdc++"
@@ -79,6 +95,7 @@ else
     for m in $_qtmods; do
         [ -f "$_pfx/lib/$m.lib" ] && QTD_QTLIBS="$QTD_QTLIBS -L$_pfx/lib/$m.lib"
     done
+fi
 fi
 D="$SP/o3_$ST"; mkdir -p "$D"
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software

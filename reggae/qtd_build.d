@@ -1050,6 +1050,14 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     // linger (a flat qfoo.d beside the nested qt/pkg/qfoo.d would clash on the module).
     // The stamp lives in bdir, not genDir, so wiping genDir doesn't delete it.
     auto stamp = buildPath(bdir, "gen.stamp");
+    // THE LINK MANIFEST, ON DISK, so a test script does not have to carry its own copy. There were
+    // two lists of the same modules — this binding's `mods` and a `_qtmods` in tests/qmltc/o3.sh —
+    // and adding Qt6QuickLayouts to one of them left every one of the 18 application documents
+    // UNPLACED (`at -Ox it does not build or run`), because the o3 gate's own link line had no
+    // -lQt6QuickLayouts. Written as the FLAGS this build resolved rather than as module names: on
+    // the platform that wrote it they are correct by construction, which the two spellings inside
+    // that script exist to get right.
+    writeIfChanged(buildPath(bdir, "qtlibs.txt"), qtLibsOf(mods) ~ "\n");
     auto xiboca = gendPath(root);
 
     // WHERE PKG-CONFIG IS ABSENT, THE BUILD ANSWERS FOR IT. The shipped specs name Qt modules

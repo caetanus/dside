@@ -57,6 +57,7 @@ verified-for	5.15.17	qt.io/licensing read 2026-08-14; Qt5 parity builds only
 # dependency enters a product.
 6.11.1	Qt6QmlModels	lgpl	qt.io/licensing — part of Qt Declarative (qtdeclarative), LGPLv3 for open-source use
 6.11.1	Qt6QuickControls2Impl	lgpl	qt.io/licensing — ships with Qt Quick Controls (qtdeclarative), same terms
+6.11.1	Qt6QuickLayouts	lgpl	qt.io/licensing — ships with Qt Quick (qtdeclarative), same terms; read 2026-09-12 from the installed package: libQt6QuickLayouts.so.6 belongs to qt6-declarative 6.11.1-3, declaring GPL-3.0-only / LGPL-3.0-only / LicenseRef-Qt-Commercial / Qt-GPL-exception-1.0 — the same set as its siblings above
 6.11.1	Qt6Test	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
 6.11.1	Qt6Concurrent	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
 6.11.1	Qt6DBus	lgpl	qt.io/licensing — Qt Essentials, LGPLv3 for open-source use
