@@ -74,17 +74,25 @@ category() {
     manifest-gate-*|registry-gate-*|ownership-gate-*|expected-fails-lint|expected-fails-run|ctor-guard) echo gate ;;
     wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*|noqml_helpers*) echo lifetime ;;
     cannon*) echo moc ;;
+    # QT AS A FOREIGN EVENT LOOP'S DRIVER, which is neither moc nor qml nor a gate: `eventloop_fd`
+    # measures that a Qt notifier actually WAKES on a descriptor (it times the wait), and the three
+    # driver targets run vibe-core, libp2p and an HTTPS download on top of that. Their own category
+    # because they answer a distinct question — whether another runtime's descriptors can be handed
+    # to Qt's wait — and because filing them under `misc` would hide what the build proves.
+    eventloop_fd-*|vibe-driver-*|libp2p-driver-*|http-driver-*) echo eventloop ;;
     uic-*|dialog-*|tabs-*|mainwin-*|hello-*|egroup-*|combo-*|spacer-*|icon-*|uicheck*|corpus-check*) echo uic ;;
     # The transpiler families, which are 472 of the 667 targets. `qml-*` never matched them (no
     # hyphen after `qml`), so the report called the MAJORITY of what it ran `other` — the run was
     # right and the artifact told a wrong story about it. Kept ahead of the qml rule, since
     # `qmltc*` would otherwise have to out-specific it.
-    qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*|leaf-lifetime-*) echo qmltc ;;
+    qmltc-*|qmltc5-*|qmltcq-*|qmltcc-*|qmltcd-*|qmltcg-*|leaf-lifetime-*) echo qmltc ;;
     # The AGGREGATES answer a question ("is the generator healthy?", "is the compiler healthy?")
     # rather than testing a unit. They run their members, so counting them as tests would count
     # every member twice — they are their own category on purpose.
     binding-core|qmltc-smoke|qmltc-corpus) echo aggregate ;;
-    qml-*|qmlreg-*|qmlinvoke-*|qmlaot-*|shadowaot-*|qmltc-o3-gate-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
+    # `qmlmodel-*` needs saying separately: the `qml-*` pattern wants a hyphen right after `qml`,
+    # which is the same near-miss that once filed 472 transpiler targets as `other`.
+    qml-*|qmlmodel-*|qmlreg-*|qmlinvoke-*|qmlaot-*|shadowaot-*|qmltc-o3-gate-*|qmltypes-*|moclife-*|qmltwo-*|homonym-*|homocollide-*|metacast-*|metacontract-*|boom-*|metathread-*) echo qml ;;
     reglife-*|valuetypeprop-*|subclasscast-*) echo qml ;;
     slotoverload-*) echo moc ;;
     # ...and the ratchets/probes that answer the long-lived structural findings (r4 #9, r9 #2,
@@ -175,6 +183,10 @@ if [ "$selftest" = yes ]; then
   ck deploy-qml-dmd                  deploy    qt6 dmd
   ck tr-ldc2                         i18n      qt6 ldc2
   ck qrc-ldc2                        misc      qt6 ldc2
+  ck eventloop_fd-ldc2-qt6           eventloop qt6 ldc2
+  ck eventloop_fd-dmd-qt5            eventloop qt5 dmd
+  ck vibe-driver-ldc2                eventloop qt6 ldc2
+  ck qmlmodel-qt5-dmd                qml       qt5 dmd
   ck xiboca-quickstart               gate      qt6 -
   ck docs-sphinx                     gate      qt6 -
   ck docs-spec-keys                  gate      -   -

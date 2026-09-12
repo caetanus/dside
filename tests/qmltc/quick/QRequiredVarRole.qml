@@ -30,7 +30,12 @@ Item {
     Column {
         Repeater {
             model: root.groups
-            delegate: Column {
+            // AN ITEM, NOT A COLUMN, and only because of what the object-path variant compares: the
+            // two sides disagree on the `__class` of a delegate whose root is a type that declares no
+            // properties of its own (QQuickColumn), which is a real difference in the class walk and
+            // has a probe of its own (`delegate-class-walk` in expected-fails.json). Nothing in this
+            // fixture's subject — a required property filled by the VIEW — depends on the type.
+            delegate: Item {
                 required property string label
                 required property var refs
                 Component.onCompleted: {

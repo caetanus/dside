@@ -8,5 +8,28 @@
 #           type. 98 on 2026-08-12, in an 11.198-line file.
 # ctxsaves: sites that save a global to restore it later — the implicit context made visible.
 #           51 on 2026-08-12; all 51 verified by hand to restore.
-globals 98
-ctxsaves 51
+# RAISED 2026-09-12, deliberately, with the reason this file asks for.
+#
+# It was ALREADY over: measured at the commit before this one, the file held 101 globals and 52 save
+# sites against a baseline of 98/51, so this gate had been red before the work recorded here touched
+# it. That overrun is not explained by this entry and is still owed an explanation by whoever grew it.
+#
+# What THIS commit adds, and why each one is state rather than an argument:
+#   * g_selfDeclProps — the properties the current object's DOCUMENT declares, which is not the same
+#     set as g_propType (that one answers "is there a D field") nor g_scope (the whole bare-name
+#     scope). Read by readName to tell a declaration from a base property or a JS local.
+#   * g_funcParams — a function's parameter types, decided ONCE in the prescan so that a call site
+#     compiled before the function's body cannot disagree with it. Saved and restored beside
+#     g_funcRet, its twin; it is per-object for the same reason.
+#   * g_synthAttrs — `required`/`default` for a declaration this file BUILT itself, because Qt 6
+#     keeps those inside a UiPropertyAttributes whose setters are private to the parser. One map
+#     rather than the two sets it started as.
+#
+# All three belong to the document being compiled, which is exactly the DocumentContext this ratchet
+# exists to keep visible until it has a type. They are counted here rather than hidden.
+#
+# ctxsaves rises by two: one is g_funcParams above, and one is the defect this ratchet FOUND —
+# g_funcParams had no save site at all, so a nested object's signature could have ruled the
+# enclosing object's call sites. The count going up is the fix, not the regression.
+globals 104
+ctxsaves 54

@@ -278,6 +278,38 @@
           "unjudgeable_when": "is not a release this licence matrix was verified"
         }
       ]
+    },
+    {
+      "id": "repeater-sibling-position",
+      "title": "a positioner holding a Repeater AND a later static sibling does not place the Repeater's items",
+      "kind": "known_gap",
+      "area": "qmltc/construction-order",
+      "since": "2026-09-12",
+      "reason": "The engine reports y = 0 and 10 for two delegate instances of a Repeater inside a Column; the compiled document reports 0 and 0. Narrowed to three conditions, each necessary: the container is a POSITIONER (an Item matches the engine), the delegate root takes its height from a CHILD rather than setting it, and a STATIC sibling follows the Repeater in the same positioner.\n\nThe cause is construction order rather than layout, and it is visible in the generated wire: the Repeater is appended to the Column, then the sibling, and the Repeater's items are created only at `drainComplete` — so the sibling is in place before the items exist, where the engine has the items before the Column completes.\n\nFound by the differential of the QInlineUseTwice fixture, which needs two use sites of an inline component and therefore had a static sibling after a Repeater. That fixture now uses a plain Item so that it fails for its own reason only; this probe carries the difference instead. It is NOT caused by the inline-component work of commit beb7bb7 — it reproduces at that commit and before the fixes on top of it.",
+      "remove_when": "`qmltcg-GRepeaterSiblingPos-all-ldc2` passes — the compiled document places the Repeater's items where the engine does",
+      "gap_probes": [
+        {
+          "target": "qmltcg-GRepeaterSiblingPos-all-ldc2",
+          "exit": 1,
+          "match": "data[0].data[1].y"
+        }
+      ]
+    },
+    {
+      "id": "delegate-class-walk",
+      "title": "the two sides disagree on the `__class` of a delegate whose root type declares no properties of its own",
+      "kind": "known_gap",
+      "area": "qmltc/dump-harness",
+      "since": "2026-09-12",
+      "reason": "For a Repeater delegate rooted in a type that adds nothing to its base — `Column` over QQuickBasePositioner — and declaring REQUIRED properties, the engine's dump reports `QQuickColumn` and the compiled document reports `QQuickBasePositioner`, one class further up.\n\nThe cause is the class walk in tests/qmltc/qtd_qmlvalues.cpp, which climbs while the class name does not start with 'Q' OR the class declares no properties of its own. The comment there already names the weakness of the leading-Q test: every fixture in this corpus is called `Q…` by convention, so a generated class passes it too. Both conditions are needed to reproduce — remove the required declarations and the two walks agree (measured).\n\nThis is a HARNESS question, not an emit one: no property value differs, only the name the dump reports for the object. Found by the object-path differential of QRequiredVarRole, whose delegate root was a Column for no reason of its own; that fixture now uses an Item so it fails for its own subject only. It reproduces at commit beb7bb7 and before it.",
+      "remove_when": "`qmltcg-GDelegateClassWalk-all-ldc2` passes — the walk identifies a generated class by something other than its initial letter",
+      "gap_probes": [
+        {
+          "target": "qmltcg-GDelegateClassWalk-all-ldc2",
+          "exit": 1,
+          "match": "QQuickBasePositioner"
+        }
+      ]
     }
   ]
 }

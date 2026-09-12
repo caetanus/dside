@@ -203,12 +203,27 @@ Over Qt's five Controls styles, walked recursively (`impl/` included):
 |---|---:|---:|---:|---:|---:|---:|
 | Basic | 70 | 39 | 39 | 54 | 5 | 11 |
 | Fusion | 70 | 37 | 37 | 54 | 3 | 13 |
-| Universal | 66 | 27 | 27 | 51 | 4 | 11 |
-| Imagine | 56 | 0 | 0 | 41 | 11 | 4 |
-| Material | 67 | 7 | 7 | 48 | 13 | 6 |
-| **total** | **329** | **110** | **110** | **248** | **36** | **45** |
+| Universal | 66 | 27 | 27 | 52 | 3 | 11 |
+| Imagine | 56 | 0 | 0 | 36 | 16 | 4 |
+| Material | 67 | 7 | 7 | 51 | 10 | 6 |
+| **total** | **329** | **110** | **110** | **247** | **37** | **45** |
 
-<!-- Measured 2026-08-14 from `qmltc-optlevels-controls-<style>` and `qmltc-o3-gate-<style>`. The
+<!-- RE-MEASURED 2026-09-12, and the three rows that moved did NOT move because of anything in
+     this compiler. Imagine went 41/11 -> 36/16, Material 48/13 -> 51/10, Universal 51/4 -> 52/3;
+     the same gates run against the COMMITTED compiler of the day before give exactly the new
+     numbers (36/16, 51/10, 52/3, and Fusion unchanged at 54/3), so the code is not what changed.
+     Measured by stashing the working tree and re-running each `qmltc-o3-gate-<style>`.
+
+     What is left as the variable is the HOST TOOLCHAIN, which this marker does not record: the
+     machine's libclang went from 18 to 22 between the two measurements (`ldd xiboca/xiboca` says
+     libclang.so.22.1 today, and the NDK-clang pairing this tree needs for Android names 18). That
+     is circumstantial — it is not proven here, because proving it would mean installing clang 18 —
+     and it is named rather than left blank, because a table that drifts with a variable nobody
+     writes down goes stale invisibly, which is what happened. The five Imagine documents moved from
+     "compiled and proven equivalent" to "demoted" on a run where every fixture in the suite still
+     matches the engine.
+
+     Measured 2026-08-14 from `qmltc-optlevels-controls-<style>` and `qmltc-o3-gate-<style>`. The
      `-O3` column previously read 329, which was the count of documents HANDLED rather than
      compiled, under a heading that says "compiles"; and `-O1` read 111 with Fusion at 38, one more
      than the gate now reports. Imagine has no optlevels line at all — it is excluded as vacuous,
@@ -227,8 +242,15 @@ Two corpora, the same two axes, both gated in `./build`.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls (5 styles) | 329 | 248 | 36 | 45 | **0** |
-| application-shaped | 18 | 7 | 11 | 0 | **0** |
+| Qt's Controls (5 styles) | 329 | 247 | 37 | 45 | **0** |
+| application-shaped | 18 | 9 | 9 | 0 | **0** |
+
+<!-- RE-MEASURED 2026-09-12. Both rows moved and NEITHER moved because of this compiler: the same
+     `qmltc-o3-gate-<style>` and `qmltc-o3-gate-app` run against the committed compiler of the day
+     before give exactly these numbers, and for the application corpus the per-document verdicts are
+     byte-identical between the two runs (0 documents differ). The remaining variable is the host
+     toolchain, which nothing here records — see the longer note under the per-style table in
+     docs/qmltc-d.md. -->
 
 Every document the engine can draw standalone behaves **identically** to it: same frame byte for
 byte, and the same value for every property of every named object. What is compiled reaches that as

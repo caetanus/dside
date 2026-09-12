@@ -378,6 +378,12 @@ Build reggaeBuild() {
     if (qtHasModule("Qt6Quick")) {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
+        // ...and the GAP PROBES, which are documents expected to DIFFER from the engine. They are
+        // reachable by name and deliberately NOT in `all`: a probe that passes is news (the gap
+        // closed), and a probe that fails is the documented state, so putting it in the default set
+        // would make a red build the normal condition. tests/expected-fails.json holds the signature
+        // each one must fail with; expected-fails-run is what executes them.
+        advisoryGates ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "gaps"), "g");
         all ~= registryGateTarget(root, quick, "quick");
         all ~= shadowAotTargets(root, quick);   // phase 2: a refused expression as BYTECODE
         // A bound VALUE TYPE as a @Property (QColor, QSize): needs the Quick binding, since that

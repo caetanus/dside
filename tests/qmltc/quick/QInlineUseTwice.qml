@@ -45,7 +45,11 @@ Item {
         width: 10; height: 10
     }
 
-    Column {
+    // AN ITEM, NOT A POSITIONER. A Column here would also compare where it PUTS its children, and
+    // two Repeater items followed by a static sibling land at the wrong y — a real difference, but
+    // one this fixture was not written to catch and which would make it fail for a second reason.
+    // It has a probe of its own (see the `repeater-sibling-position` entry in expected-fails.json).
+    Item {
         Repeater {
             model: root.rows
             // The delegate declares NOTHING of its own: a property here would be a name the engine

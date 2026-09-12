@@ -570,6 +570,19 @@ template <class T, class = void> struct QtdHasToString : std::false_type {};
 template <class T>
 struct QtdHasToString<T, std::void_t<decltype(std::declval<T>()->toString())>> : std::true_type {};
 
+// Declared OUTSIDE the version branch: BOTH spellings of the helpers below consult it, and
+// putting it inside the Qt 6 arm left the Qt 5 build of this tool not compiling at all
+// (`use of undeclared identifier`) — which means the Qt5 half of the suite
+// never ran, which is not the same thing as passing.
+// `required` and `default` on a DECLARATION THIS FILE BUILT ITSELF (spliceUseSite's bare copy).
+// Qt 6 keeps both inside a UiPropertyAttributes whose setters are private to the parser, so a
+// synthesized node cannot carry them and says so from beside itself instead. Consulted by the two
+// helpers below, which are the only place either attribute is read.
+// ONE map rather than two sets: this is state with no owner, and the compiler-context ratchet
+// counts it. 1 = required, 2 = default.
+static std::map<UiPublicMember *, unsigned> g_synthAttrs;
+enum : unsigned { QtdSynthRequired = 1, QtdSynthDefault = 2 };
+
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
 // A TEMPLATE, because `if constexpr` only discards inside one. In a plain function both branches
 // are type-checked whatever the condition says, so the first attempt at this compiled exactly as
@@ -585,11 +598,6 @@ static QString paramTypeName(UiParameterList *p) { return qtdParamType(p); }
 // refused the function when it could not. Qt draws the same line the other way round ("Functions
 // without type annotations won't be compiled"), which means an annotated one is exactly the case
 // it does compile. Reading it is not a guess: it is what the document says.
-// `required` and `default` on a DECLARATION THIS FILE BUILT ITSELF (spliceUseSite's bare copy).
-// Qt 6 keeps both inside a UiPropertyAttributes whose setters are private to the parser, so a
-// synthesized node cannot carry them and says so from beside itself instead. Consulted by the two
-// helpers below, which are the only place either attribute is read.
-static std::set<UiPublicMember *> g_synthRequired, g_synthDefault;
 
 static QString formalTypeName(PatternElement *e) {
     if (!e) return QString();
@@ -597,16 +605,16 @@ static QString formalTypeName(PatternElement *e) {
     return ta && ta->type && ta->type->typeId ? QString::fromStdString(qname(ta->type->typeId))
                                               : QString();
 }
-static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember() || g_synthDefault.count(p); }
-static bool isRequiredMem(UiPublicMember *p) { return p->isRequired() || g_synthRequired.count(p); }
+static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember() || (g_synthAttrs[p] & QtdSynthDefault); }
+static bool isRequiredMem(UiPublicMember *p) { return p->isRequired() || (g_synthAttrs[p] & QtdSynthRequired); }
 #else
 static QString paramTypeName(UiParameterList *p) { return QString::fromStdString(qname(p->type)); }
 // Qt 5's PatternElement carries no type annotation, so there is nothing to read and the inference
 // below is all there is. Same answer as an unannotated function on Qt 6.
 static QString formalTypeName(PatternElement *) { return QString(); }
-static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember || g_synthDefault.count(p); }
+static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember || (g_synthAttrs[p] & QtdSynthDefault); }
 static bool isRequiredMem(UiPublicMember *p) {
-    return p->requiredToken.isValid() || g_synthRequired.count(p);
+    return p->requiredToken.isValid() || (g_synthAttrs[p] & QtdSynthRequired);
 }
 #endif
 
@@ -3304,6 +3312,21 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     if (pv != fr->propType.end() && pv->second != "@var")
                         { out = pre + dIdent(mem); return true; }
                 }
+                // ...and a property of the enclosing object reached through the META-OBJECT, whose
+                // type the FRAME knows even when the registry cannot. baseProps carries it — a base
+                // property the document assigns, or (see instDecls) one declared on an object the
+                // engine builds. This path had no branch for it, so such a read fell all the way to
+                // the "member the type does not declare" rule at the bottom, which takes its reader
+                // from the CALLER's target type — and an operand of `===` is compiled with the
+                // neutral `bool` hint, so `root.mode === "years"` read a string property with
+                // propBool and D refused the comparison. Asking what the frame recorded costs
+                // nothing and cannot guess wrong.
+                if (auto bpO = fr->baseProps.find(mem); bpO != fr->baseProps.end()) {
+                    const std::string &tyO = bpO->second;
+                    const char *rdO = tyO == "string" ? "propStr(" : tyO == "double" ? "propDouble("
+                                    : tyO == "bool" ? "propBool(" : tyO == "int" ? "propInt(" : nullptr;
+                    if (rdO) { out = rdO + obj + ", \"" + mem + "\")"; return true; }
+                }
                 if (auto qp = g_qmlProps.find(fr->qmlType); qp != g_qmlProps.end()) {
                     auto t = qp->second.find(mem);
                     if (t != qp->second.end()) {
@@ -5658,10 +5681,11 @@ static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectIni
                 bare->identifierToken = pubD->identifierToken;
                 bare->colonToken = pubD->colonToken;
                 bare->semicolonToken = pubD->semicolonToken;
-                bare->lparenToken = pubD->lparenToken;
-                bare->rparenToken = pubD->rparenToken;
-                if (isRequiredMem(pubD)) g_synthRequired.insert(bare);
-                if (isDefaultMem(pubD)) g_synthDefault.insert(bare);
+                // NOT the paren tokens: they delimit a SIGNAL's parameter list, this copy only ever
+                // applies to a Property (the branch above tests it), and Qt 5's UiPublicMember does
+                // not declare them at all — which stopped the Qt5 build of this tool compiling.
+                if (isRequiredMem(pubD)) g_synthAttrs[bare] |= QtdSynthRequired;
+                if (isDefaultMem(pubD)) g_synthAttrs[bare] |= QtdSynthDefault;
                 mem = bare;
                 keep = true;
             }
@@ -6704,6 +6728,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     // the main loop below can resolve/coerce a call `f()` to its return type. (Declared types are
     // enough here — the binding VALUES aren't needed to type a return expression.)
     auto savedFuncRet = g_funcRet;
+    // ...AND ITS TWIN. g_funcParams is decided in the same prescan and is just as per-object: a
+    // function name is an ordinary word (`pad`, `same`), so a nested object's signature left in
+    // place would rule the ENCLOSING object's call sites — boxing an int for a QmlVarRef parameter
+    // that its own `pad` does not have. The same shape of leak as the shared-AST one this commit
+    // fixes, and found the same way something has to: the compiler-context ratchet counts save
+    // sites, and the new global had none.
+    auto savedFuncParams = g_funcParams;
     auto savedFuncReads = g_funcReads;
     auto savedEnumMember = g_enumMember;
     auto savedClassName = g_className;
@@ -12422,6 +12453,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_requiredDecls = savedRequired; g_hasRequiredDecl = savedHasRequired;
     g_requiredFill = savedRequiredFill;
     g_funcRet = savedFuncRet;
+    g_funcParams = savedFuncParams;
     g_funcReads = savedFuncReads;
     g_enumMember = savedEnumMember;
     g_className = savedClassName;
@@ -13217,6 +13249,16 @@ int main(int argc, char **argv) {
                                 l.label.c_str(), parentExpr.c_str());
                 } else if (seg.find('[') == std::string::npos && parentExpr == "o"
                            && path.find('.') == std::string::npos
+                           // A setObj carrying a COMMA is not an object expression — a VALUE-group
+                           // member records `<object>, "<group>"` there, because mutating one needs
+                           // both halves — so `qobjOf(<that>)` is not even D. The --objpaths block
+                           // below already skips such a setObj for the same reason. Found while
+                           // experimenting with engine-built document ROOTS, where the root's own
+                           // expression gains a `.__inst` and the line surfaced as
+                           // `qobjOf(o.__inst, "font")`; that experiment is not in the tree (it
+                           // disagreed with the engine on 34 values of Qt's own ApplicationWindow),
+                           // but the guard is right independently of it.
+                           && l.setObj.find(',') == std::string::npos
                            && isBoundObjectProp2(rootType, seg)) {
                     // Single-segment paths only. `Overlay.modal.x` names a property of the ATTACHED
                     // object, not of the root, so asking the root for `modal` fails for a reason

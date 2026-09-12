@@ -132,10 +132,17 @@ Measured against Qt's own shipped Controls, and against this project's own appli
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls | 329 | 248 | 36 | 45 | 0 |
-| application-shaped | 18 | 7 | 11 | 0 | **0** |
+| Qt's Controls | 329 | 247 | 37 | 45 | 0 |
+| application-shaped | 18 | 9 | 9 | 0 | **0** |
 
-**Seven of eighteen** on application-shaped QML is the honest number and the interesting one:
+<!-- RE-MEASURED 2026-09-12. Both rows moved and NEITHER moved because of this compiler: the same
+     `qmltc-o3-gate-<style>` and `qmltc-o3-gate-app` run against the committed compiler of the day
+     before give exactly these numbers, and for the application corpus the per-document verdicts are
+     byte-identical between the two runs (0 documents differ). The remaining variable is the host
+     toolchain, which nothing here records — see the longer note under the per-style table in
+     docs/qmltc-d.md. -->
+
+**Nine of eighteen** on application-shaped QML is the honest number and the interesting one:
 that dialect is where the compiler is weak today, and the ladder is what keeps it correct
 anyway — all eighteen behave identically to the engine.
 
