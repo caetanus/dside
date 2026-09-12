@@ -86,7 +86,12 @@ the `-O` scale.**
 
 Every name has a known D type, so the expression becomes D. Arithmetic, `a === b`, string
 concatenation, ternaries, enum keys, property reads, `Math.*`, `for` loops and locals in a function
-body all live here. Trivial JS is not a problem; *untypable* JS is. The limit is the type registry,
+body all live here — and so do the JS globals that are FUNCTIONS rather than methods of a receiver:
+`String`, `parseInt`, `isNaN`, `encodeURIComponent` and `decodeURIComponent`. Those five are compiled
+rather than delegated because each one's semantics are exact: RFC 3986's unreserved set is the one JS
+keeps, and `parseInt` reads the longest numeric prefix (`to!int` would throw). It diverges in one
+documented place — `parseInt` with no numeric prefix at all gives 0 here and NaN in the engine, which
+agree wherever the value reaches an `int` property and differ if it is read back as text. Trivial JS is not a problem; *untypable* JS is. The limit is the type registry,
 not the language.
 
 ### 2 — QVariant, for what is typed only at run time

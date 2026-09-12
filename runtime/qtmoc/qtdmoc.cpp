@@ -1569,6 +1569,23 @@ extern "C" int qtd_varlist_count(void* l) {
 // ...and the list itself is consumed by the write. `out` is a QVariant the caller owns.
 // The caller's QVariant storage is a plain byte box on the D side (see QmlVarBox): built here,
 // released here, never named there.
+// ...AND THE OTHER DIRECTION. A function with an untyped parameter is declared to the meta-object
+// and delegated to the engine (see callJsFunc), so its RESULT crosses as a QVariant — and a
+// compiled call site needs it as the scalar the surrounding expression is typed for. QVariant's own
+// conversion is the one the engine would have applied.
+extern "C" long long qtd_varbox_as_int(void* v) {
+    return v ? static_cast<QVariant*>(v)->toLongLong() : 0;
+}
+extern "C" double qtd_varbox_as_double(void* v) {
+    return v ? static_cast<QVariant*>(v)->toDouble() : 0.0;
+}
+extern "C" bool qtd_varbox_as_bool(void* v) {
+    return v ? static_cast<QVariant*>(v)->toBool() : false;
+}
+extern "C" void* qtd_varbox_as_str(void* v) {
+    return new QString(v ? static_cast<QVariant*>(v)->toString() : QString());
+}
+
 extern "C" void qtd_var_box_clear(void* v) { if (v) static_cast<QVariant*>(v)->~QVariant(); }
 extern "C" void qtd_varlist_into(void* l, void* out) {
     if (out) new (out) QVariant();

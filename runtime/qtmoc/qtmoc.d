@@ -359,6 +359,12 @@ template cppSig(T) {
     // what a QML `property Item control` needs — the property has to EXIST for whoever instantiates
     // the type to write it, and dropping it made those writes throw at construction.
     else static if (is(T == class)) enum cppSig = T.stringof ~ "*";
+    // A `void*` in this position is an object the ENGINE built. A compiled QML type whose Qt type
+    // exports no symbol cannot be subclassed, so the generated class holds the instance as an
+    // untyped pointer (`void* __inst`) — and `property alias body: someEngineChild` publishes that
+    // pointer. The engine's own meta-object records such a property as QObject*, which is also the
+    // only thing Qt can be told about it, and the pointer crosses in exactly the same slot.
+    else static if (is(T == void*)) enum cppSig = "QObject*";
     else static assert(0, "qtmoc: signal/slot type not yet supported: " ~ T.stringof);
 }
 string sigString(string name, Args...)() {
@@ -1278,6 +1284,28 @@ QmlVarRef varOf(T)(T v) {
     else static assert(0, "varOf: no QVariant for " ~ T.stringof);
 }
 
+private extern(C) long qtd_varbox_as_int(void*);
+private extern(C) double qtd_varbox_as_double(void*);
+private extern(C) bool qtd_varbox_as_bool(void*);
+private extern(C) void* qtd_varbox_as_str(void*);
+
+/// The scalar inside the QVariant a DELEGATED function returned, converted the way the engine
+/// converts it. A function with an untyped parameter is declared to the meta-object and its body
+/// handed to the engine, so its D signature returns a QmlVarRef — and a compiled caller that needs
+/// a `bool` cannot use the box.
+///
+/// The box is this call's to free: `callJsFunc` allocated it for the return and, outside a metacall,
+/// nothing else will. That is why this is the only reader — one place owning the free.
+T varAs(T)(QmlVarRef v) {
+    scope (exit) if (v.p !is null) qtd_var_free(v.p);
+    static if (is(T == bool))        return qtd_varbox_as_bool(v.p);
+    else static if (is(T == string)) { auto q = qtd_varbox_as_str(v.p);
+                                       auto s = qsToD(q); qtd_qs_free(q); return s; }
+    else static if (is(T : long))    return cast(T) qtd_varbox_as_int(v.p);
+    else static if (is(T : double))  return cast(T) qtd_varbox_as_double(v.p);
+    else static assert(0, "varAs: no conversion to " ~ T.stringof);
+}
+
 /// `ids`/`objs` publish the names the body reads that are not its own — the enclosing document's
 /// ids — on a context of its own, exactly as a delegated binding gets them.
 QmlVarRef callJsFunc(T, A...)(T o, string src, QmlVarRef[] argv, string[] ids = null,
@@ -1786,6 +1814,14 @@ bool listAppendDefault(P, C)(P parent, C child) {
 void* createQmlObjectAny(A...)(string uris, string typeName, string docUrl = "", string decls = "",
                                string[] ids = null, A objs = A.init) {
     import std.algorithm : splitter;
+    // ONE CALL WITH EVERY IMPORT FIRST. qtd_make_component takes this ';'-separated list and emits
+    // an `import` line for each of them, which is exactly what a type whose BODY names a second
+    // module needs (a Shape's ShapePath is QtQuick.Shapes while everything around it is QtQuick).
+    // Splitting here before calling defeated that: every module but the right one became a FAILED
+    // attempt, and each failure prints its own "X is not a type" — so a call that then succeeded
+    // left a run looking broken. Found by the fixture for the engine-built paths.
+    if (uris.length) if (auto o = createQmlObject(uris, typeName, docUrl, decls, ids, objs)) return o;
+    // ...then one at a time, for a type that resolves only under a single import.
     foreach (u; uris.splitter(';')) {
         if (u.length == 0) continue;
         if (auto o = createQmlObject(u.idup, typeName, docUrl, decls, ids, objs)) return o;
@@ -1829,6 +1865,90 @@ void bindComponent(T, U)(U owner, string prop, string docUrl = "", string uri = 
         throw new Exception("bindComponent: property '" ~ prop ~ "' did not take the component for '"
                             ~ T.stringof ~ "'");
 }
+/// JavaScript's `encodeURIComponent`, which a QML document reaches for whenever it builds a
+/// `data:` URL — an inline SVG in an `Image.source` is the shape that brought this in.
+///
+/// The unreserved set is the one RFC 3986 names and JS keeps: A-Z a-z 0-9 and `-_.!~*'()`.
+/// Everything else becomes %XX of its UTF-8 BYTES, which is why this walks the string as bytes and
+/// not as characters: `%C3%A1` for `á` is two escapes, and a per-character loop would emit one.
+string encodeURIComponentD(string s) @safe {
+    static immutable char[16] hex = "0123456789ABCDEF";
+    char[] out_;
+    out_.reserve(s.length);
+    foreach (char c; s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                || c == '-' || c == '_' || c == '.' || c == '!' || c == '~' || c == '*'
+                || c == '\'' || c == '(' || c == ')')
+            out_ ~= c;
+        else {
+            out_ ~= '%';
+            out_ ~= hex[(cast(ubyte) c) >> 4];
+            out_ ~= hex[(cast(ubyte) c) & 0xF];
+        }
+    }
+    // The array is local and never escapes, so the cast to immutable is sound — but @safe cannot
+    // see that, so it is the cast that is trusted rather than the whole loop above it.
+    return (() @trusted => cast(string) out_)();
+}
+
+/// JavaScript's `parseInt`, which is not `to!int`: it reads the LONGEST NUMERIC PREFIX and ignores
+/// the rest, so `parseInt("12px")` is 12 and `to!int` would throw. Leading whitespace, an optional
+/// sign and a `0x` prefix (radix 16, as JS does when no radix is given) are all part of it.
+///
+/// WHERE THIS DIVERGES, said plainly: JS returns NaN when there is no numeric prefix at all, and
+/// this returns 0. The two agree wherever the value reaches an `int` property, which is every use in
+/// the corpus this was written for — the engine coerces that NaN to 0 on the way in. They differ if
+/// the result is read as a string or a `var`: `String(parseInt("x"))` is "NaN" in the engine and "0"
+/// here. Returning a NaN-capable double instead would trade that for a cast at every int target.
+int parseIntD(string s, int radix = 0) @safe {
+    size_t i = 0;
+    while (i < s.length && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
+    bool neg = false;
+    if (i < s.length && (s[i] == '+' || s[i] == '-')) { neg = s[i] == '-'; ++i; }
+    if (radix == 0) {
+        radix = 10;
+        if (i + 1 < s.length && s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) {
+            radix = 16; i += 2;
+        }
+    } else if (radix == 16 && i + 1 < s.length && s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) {
+        i += 2;
+    }
+    long v = 0; bool any = false;
+    for (; i < s.length; ++i) {
+        int d = -1;
+        if (s[i] >= '0' && s[i] <= '9') d = s[i] - '0';
+        else if (s[i] >= 'a' && s[i] <= 'z') d = s[i] - 'a' + 10;
+        else if (s[i] >= 'A' && s[i] <= 'Z') d = s[i] - 'A' + 10;
+        if (d < 0 || d >= radix) break;
+        v = v * radix + d; any = true;
+        if (v > int.max) return neg ? int.min : int.max;
+    }
+    if (!any) return 0;
+    return cast(int) (neg ? -v : v);
+}
+
+/// ...and its counterpart, for the same reason.
+string decodeURIComponentD(string s) @safe {
+    static int nib(char c) @safe {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+    char[] out_;
+    out_.reserve(s.length);
+    for (size_t i = 0; i < s.length; ++i) {
+        if (s[i] == '%' && i + 2 < s.length) {
+            const hi = nib(s[i + 1]), lo = nib(s[i + 2]);
+            if (hi >= 0 && lo >= 0) { out_ ~= cast(char) ((hi << 4) | lo); i += 2; continue; }
+        }
+        out_ ~= s[i];
+    }
+    // The array is local and never escapes, so the cast to immutable is sound — but @safe cannot
+    // see that, so it is the cast that is trusted rather than the whole loop above it.
+    return (() @trusted => cast(string) out_)();
+}
+
 /// A QML singleton's one instance — the engine's, not one of ours: a singleton has state, and a
 /// second instance would be a different object that happens to share a type.
 void* qmlSingleton(string uri, string name, int major, int minor) {

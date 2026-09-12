@@ -207,6 +207,14 @@ static std::string g_selfQmlType;
 // Return types of this object's no-arg functions (name -> "int"/"double"/"string"/"bool"), so a
 // call `f()` in a binding can be coerced to the target property's type. Scoped per object.
 static std::map<std::string, std::string> g_funcRet;
+// ...AND ITS PARAMETER TYPES, decided once (in the prescan) and read by both the emitter and every
+// call site. A function with an untyped parameter is declared to the meta-object with QmlVarRef
+// throughout and its body delegated, so a COMPILED caller has to box its arguments and unbox the
+// result — and it can only do that if it is told. Without this the call site typed each argument
+// after the CALL's target type: `dateActive(y, m, d)` from a slot whose own parameters are `int`
+// gave `function dateActive is not callable using argument types (int, int, int)`, in two documents
+// of a real application. An empty type in a slot means "that one crosses as a QVariant".
+static std::map<std::string, std::vector<std::pair<std::string, std::string>>> g_funcParams;
 
 // Property names a no-arg function reads, so a binding calling `f()` becomes reactive to them
 // (transitive dependency). Scoped per object.
@@ -577,21 +585,29 @@ static QString paramTypeName(UiParameterList *p) { return qtdParamType(p); }
 // refused the function when it could not. Qt draws the same line the other way round ("Functions
 // without type annotations won't be compiled"), which means an annotated one is exactly the case
 // it does compile. Reading it is not a guess: it is what the document says.
+// `required` and `default` on a DECLARATION THIS FILE BUILT ITSELF (spliceUseSite's bare copy).
+// Qt 6 keeps both inside a UiPropertyAttributes whose setters are private to the parser, so a
+// synthesized node cannot carry them and says so from beside itself instead. Consulted by the two
+// helpers below, which are the only place either attribute is read.
+static std::set<UiPublicMember *> g_synthRequired, g_synthDefault;
+
 static QString formalTypeName(PatternElement *e) {
     if (!e) return QString();
     auto *ta = e->typeAnnotation;
     return ta && ta->type && ta->type->typeId ? QString::fromStdString(qname(ta->type->typeId))
                                               : QString();
 }
-static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember(); }
-static bool isRequiredMem(UiPublicMember *p) { return p->isRequired(); }
+static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember() || g_synthDefault.count(p); }
+static bool isRequiredMem(UiPublicMember *p) { return p->isRequired() || g_synthRequired.count(p); }
 #else
 static QString paramTypeName(UiParameterList *p) { return QString::fromStdString(qname(p->type)); }
 // Qt 5's PatternElement carries no type annotation, so there is nothing to read and the inference
 // below is all there is. Same answer as an unannotated function on Qt 6.
 static QString formalTypeName(PatternElement *) { return QString(); }
-static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember; }
-static bool isRequiredMem(UiPublicMember *p) { return p->requiredToken.isValid(); }
+static bool isDefaultMem(UiPublicMember *p) { return p->isDefaultMember || g_synthDefault.count(p); }
+static bool isRequiredMem(UiPublicMember *p) {
+    return p->requiredToken.isValid() || g_synthRequired.count(p);
+}
 #endif
 
 // `import QtQuick.Templates as T` writes the root as `T.Button`. The qualifier names an IMPORT,
@@ -806,7 +822,16 @@ struct OuterFrame { std::string id, cls, qmlType;
                     // g_engineChildCls): everything it inherits from its Qt base lives on the
                     // INSTANCE, not on the wrapper, so a child reaching it has to say so. Last in
                     // the struct on purpose — every construction of it is a brace list.
-                    bool engineInst = false; };
+                    bool engineInst = false;
+                    // Properties the DOCUMENT declares on this object which nonetheless live on the ENGINE's
+                    // instance (see engineDecls). They are kept OUT of propType, because that map answers
+                    // "is there a D field" and there is not — but they are still declarations, so their
+                    // notify is `<name>Changed()` rather than anything the registry knows. Leaving that to
+                    // the registry lost the connect entirely: the read became a one-shot copy, and
+                    // `strokeWidth: sh.faceId` kept the value faceId had before the object's own handler
+                    // incremented it — 3 against the engine's 4. Caught by the fixture for these paths, not
+                    // by the application that needed them.
+                    std::set<std::string> instDecls; };
 static std::vector<OuterFrame> g_outerChain;
 static int g_outerHopsNeeded = -1;   // deepest hop this object used; drained by its parent
 // Out-channel: a child that connects to `__outer.<prop>` needs that property to CARRY a notify,
@@ -826,6 +851,28 @@ struct DeepRead { std::string obj, inner, member, innerQmlType;
                   bool dyn = false;   // the member is not on the DECLARED type; resolve it live
                 };
 static std::vector<DeepRead> g_deepReads;
+// The notify signal for a dependency on an ENCLOSING object's property, and the request the
+// enclosing class may have to answer. THREE sites made this decision with the same eight lines, so
+// a rule added to one of them reached neither of the others — which is how the instDecls case below
+// was half-fixed twice before this became one function.
+static std::string outerDepNotify(const OuterFrame *fr, const std::string &obj,
+                                  const std::string &mem) {
+    // Declared by the document but living on the ENGINE's instance: the engine created the property
+    // and its notify together, so nothing needs to be asked of the enclosing class.
+    if (fr->instDecls.count(mem)) return mem + "Changed()";
+    // A DECLARED property of ours: the enclosing class has to be told to carry the signal, or the
+    // connect throws at wire time ("no such signal padChanged()").
+    if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
+        g_outerNeedsNotify.push_back({(int) std::count(obj.begin(), obj.end(), '.'), mem});
+        return mem + "Changed()";
+    }
+    if (auto qn = g_qmlNotify.find(fr->qmlType); qn != g_qmlNotify.end()) {
+        auto nt = qn->second.find(mem);
+        if (nt != qn->second.end()) return nt->second;
+    }
+    return "";
+}
+
 // The D type a leaf read lands in when the property table cannot say what the member is. Only the
 // scalars the deep-read path already handles: anything else keeps refusing, because guessing a
 // conversion is how a wrong value becomes an invisible one.
@@ -1276,6 +1323,11 @@ static bool singletonDeclaredInQmldir(const QString &dir, const std::string &nam
 // compileExpr decide COERCIONS — notably JS `+` string concatenation, where QML converts the
 // non-string side and D's `~` does not. Maintained alongside g_scope.
 static std::map<std::string, std::string> g_propType;
+// The properties THIS OBJECT'S DOCUMENT DECLARES on it, and only those. g_scope is the wrong
+// question — it is the whole bare-name scope, base properties and JS locals included — and
+// g_propType carries types for far more than the declarations. Needed by readName to tell a
+// declaration (which, for a type the engine owns, lives on the instance) from anything else.
+static std::set<std::string> g_selfDeclProps;
 
 // `property list<int> nums: [3, 1, 4]` — a list of a VALUE type. Unlike list<QtObject>, whose
 // elements are separate objects the engine reaches through a QQmlListReference, these live in the
@@ -2145,6 +2197,20 @@ static bool readName(const std::string &n, std::string &out) {
     // the fourth place that decides how a `var` is read; objPathExpr already had the rule. A
     // refusal is the honest answer: a read with no type cannot be compiled, only delegated.
     if (auto vt = g_propType.find(n); vt != g_propType.end() && vt->second == "@var") return false;
+    // ...AND THERE IS NO FIELD AT ALL when the engine owns this object: a type with no exported
+    // symbol gets the properties the document declares as `decls` handed to createQmlObject (see
+    // engineDecls), so they live on the instance and both sides read them through the meta-object.
+    // Emitting the bare name gave `undefined identifier `currentName`` — a Dialog with
+    // `property string currentName` reading its own property in a handler, in three documents of a
+    // real application. The write direction already knew this (setPropAny at the assignment site);
+    // only the read did not.
+    if (g_selfIsEngineInst && g_selfDeclProps.count(n))
+        if (auto dt = g_propType.find(n); dt != g_propType.end()) {
+            const std::string &ty = dt->second;
+            const char *rd = ty == "string" ? "propStr(this, \"" : ty == "double" ? "propDouble(this, \""
+                           : ty == "bool" ? "propBool(this, \"" : ty == "int" ? "propInt(this, \"" : nullptr;
+            if (rd) { out = rd + n + "\")"; return true; }
+        }
     out = n; return true;
 }
 
@@ -2490,7 +2556,7 @@ static bool outerHeadNotifyConn(const std::string &d, const std::string &bare,
         const std::string oe = pre.substr(0, pre.size() - 1);
         const OuterFrame &fr = g_outerChain[k];
         std::string sig;
-        if (fr.propType.count(head)) sig = head + "Changed()";
+        if (fr.propType.count(head) || fr.instDecls.count(head)) sig = head + "Changed()";
         else if (auto qn = g_qmlNotify.find(fr.qmlType); qn != g_qmlNotify.end()) {
             auto nt = qn->second.find(head);
             if (nt != qn->second.end() && !nt->second.empty()) sig = nt->second;
@@ -3165,7 +3231,24 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                         && ci->second.field.rfind("instOf(", 0) != 0)
                     ci->second.field = "instOf(" + ci->second.field + ")";
                 auto pt = ci->second.propType.find(mem);
-                if (pt != ci->second.propType.end()) { out = ci->second.field + "." + mem; return true; }
+                if (pt != ci->second.propType.end()) {
+                    // ...AND NOT AS A FIELD when the ENGINE built this child. Its declaration went
+                    // into the `decls` handed to createQmlObject (see engineDecls), so the property
+                    // is on the instance and the shell has no field for it: `namer.tag` read from
+                    // outside compiled to `instOf(_dc0).tag` — "no property `tag` for … `void*`".
+                    // The field has already been wrapped in instOf above, which is the object to
+                    // ask. Same channel the base properties below use, for the same reason.
+                    if (g_engineIds.count(qs(base->name.toString()))) {
+                        const std::string &pty = pt->second;
+                        const char *rd0 = pty == "string" ? "propStr(" : pty == "double" ? "propDouble("
+                                        : pty == "bool" ? "propBool(" : pty == "int" ? "propInt(" : nullptr;
+                        if (!rd0) return false;   // no scalar channel for it: delegate the read
+                        out = rd0 + ci->second.field + ", \"" + mem + "\")";
+                        return true;
+                    }
+                    out = ci->second.field + "." + mem;
+                    return true;
+                }
                 auto bp = ci->second.baseProps.find(mem);
                 if (bp == ci->second.baseProps.end()) {
                     // An ENUM or FLAGS member read as a NUMBER (`bb.alignment`, and QML says
@@ -3668,6 +3751,52 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         return false;
     }
     if (auto *call = cast<CallExpression *>(e)) {
+        // A JS GLOBAL THAT IS A FUNCTION, not a method: `encodeURIComponent("<svg/>")`, which is
+        // how a document builds a `data:` URL for an inline image. `Math.*` is handled below as a
+        // member call; these have no receiver, so they parse as a bare identifier and were emitted
+        // verbatim — `undefined identifier encodeURIComponent`, and with it the whole document.
+        //
+        // Compiled rather than delegated because the semantics are exact: RFC 3986's unreserved
+        // set is the one JS keeps, and everything else is %XX of the UTF-8 bytes.
+        if (auto *gid = cast<IdentifierExpression *>(call->base)) {
+            const std::string gname = qs(gid->name.toString());
+            // The argument's own target type differs per global: `String(x)` wants x AS a string,
+            // which is exactly what compiling it with a string target already produces, so the call
+            // becomes the coercion and disappears.
+            const char *shim = nullptr, *argType = "string";
+            if (gname == "encodeURIComponent") shim = "encodeURIComponentD";
+            else if (gname == "decodeURIComponent") shim = "decodeURIComponentD";
+            else if (gname == "parseInt") shim = "parseIntD";
+            else if (gname == "isNaN") { shim = "__qmltcIsNaN"; argType = "double"; }
+            // `String(x)` PRODUCES a string, whatever the surrounding target is. The first version
+            // compiled the argument with the target type and let the call disappear into that
+            // coercion — right in a string context and wrong everywhere else: inside a ternary whose
+            // other branch decided the target it came out as the bare operand, and D refused the
+            // mixed types (`("0" ~ to(n)) : (n)`: `string` and `int`). So the argument is compiled in
+            // its OWN type and the conversion is explicit.
+            else if (gname == "String") { shim = "to!string"; argType = nullptr; }
+            if (shim && !g_propType.count(gname) && !g_scope.count(gname)
+                    && !g_childIds.count(gname) && call->arguments
+                    // `parseInt(s, 16)` is the one two-argument form here, and the radix is a
+                    // literal wherever it is written — compiled like any other int.
+                    && (!call->arguments->next
+                        || (gname == "parseInt" && !call->arguments->next->next))) {
+                std::string a0, a1;
+                // A null argType means "in whatever type it already is".
+                std::string at0 = argType ? std::string(argType)
+                                          : inferType(call->arguments->expression, g_propType);
+                if (at0.empty() || at0[0] == '@') at0 = "string";
+                bool ok = compileExpr(call->arguments->expression,
+                                      QString::fromStdString(at0), a0);
+                if (ok && call->arguments->next)
+                    ok = compileExpr(call->arguments->next->expression, "int", a1);
+                if (ok) {
+                    out = shim[0] ? std::string(shim) + "(" + a0 + (a1.empty() ? "" : ", " + a1) + ")"
+                                  : a0;
+                    return true;
+                }
+            }
+        }
         // Math.max/min(a,b), Math.abs(x) -> inline D (no import needed); other calls are later.
         auto *fm = cast<FieldMemberExpression *>(call->base);
         auto *recv = fm ? cast<IdentifierExpression *>(fm->base) : nullptr;
@@ -3878,17 +4007,45 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                 out = nm + ".emit(" + joined + ")";
                 return true;
             }
-            std::string joined;
-            for (auto *a = call->arguments; a; a = a->next) {
+            // EACH ARGUMENT TO ITS OWN PARAMETER'S TYPE, which is what the signal emit above has
+            // always done. Typing them after the CALL's target type instead is how
+            // `dateActive(y, m, d)` came out with `int` arguments for a signature the compiler had
+            // already decided was QmlVarRef throughout.
+            auto fpIt = g_funcParams.find(nm);
+            std::string joined; size_t ai = 0;
+            for (auto *a = call->arguments; a; a = a->next, ++ai) {
+                std::string pty;                      // the parameter's declared D type
+                bool boxed = false;                   // ...or it crosses as a QVariant
+                if (fpIt != g_funcParams.end() && ai < fpIt->second.size()) {
+                    pty = fpIt->second[ai].second;
+                    if (pty.empty()) {                // an untyped parameter: QmlVarRef
+                        boxed = true;
+                        pty = inferType(a->expression, g_propType);
+                        if (pty.empty() || pty[0] == '@') return false;   // nothing to box
+                    }
+                } else {
+                    pty = dtype.toStdString();        // no signature known: as before
+                }
                 std::string s;
-                if (!compileExpr(a->expression, dtype, s)) return false;
-                joined += (joined.empty() ? "" : ", ") + s;
+                if (!compileExpr(a->expression, QString::fromStdString(pty), s)) return false;
+                joined += (joined.empty() ? "" : ", ") + (boxed ? "varOf(" + s + ")" : s);
             }
             out = nm + "(" + joined + ")";
             // Coerce a double-returning function into an int target (QML coerces on assignment;
             // D has no implicit double->int). g_funcRet holds this object's function return types.
             auto it = g_funcRet.find(nm);
             if (it != g_funcRet.end() && it->second == "double" && dtype == "int") out = "cast(int)(" + out + ")";
+            // ...and a DELEGATED function hands back a QVariant, so the caller unboxes it into
+            // whatever the surrounding expression is typed for. `if (dateActive(…))` needs a bool
+            // and the box is not one.
+            if (it != g_funcRet.end() && it->second == "QmlVarRef" && !dtype.isEmpty()
+                    && dtype != "QmlVarRef") {
+                const std::string dt2 = dtype.toStdString();
+                if (dt2 == "bool" || dt2 == "string" || dt2 == "int" || dt2 == "double"
+                        || dt2 == "float" || dt2 == "real")
+                    out = "varAs!(" + (dt2 == "real" ? std::string("double") : dt2) + ")(" + out + ")";
+                else return false;   // no conversion: let the expression be delegated whole
+            }
             return true;
         }
         return false;
@@ -4651,13 +4808,64 @@ static std::string inferType(ExpressionNode *e, const std::map<std::string, std:
             std::string fn = qs(fm->name.toString());
             if (fn == "darker" || fn == "lighter" || fn == "alpha") return "string";
         }
-        if (auto *fnId = cast<IdentifierExpression *>(call->base)) { auto it = g_funcRet.find(qs(fnId->name.toString())); return it != g_funcRet.end() ? it->second : ""; }
+        if (auto *fnId = cast<IdentifierExpression *>(call->base)) {
+            // The JS GLOBALS that are functions: their result type is fixed, and the compiled forms
+            // below depend on this agreeing with them. It did not, and the property's recompute is
+            // where that showed: `property string s1: String(7)` inferred `double` for `_v` and the
+            // generated D would not build ("cannot implicitly convert expression `_v` of type
+            // `double` to `string`"). Found by the fixture for the globals themselves.
+            const std::string gn = qs(fnId->name.toString());
+            if (gn == "String" || gn == "encodeURIComponent" || gn == "decodeURIComponent")
+                return "string";
+            if (gn == "parseInt") return "int";
+            if (gn == "isNaN") return "bool";
+            auto it = g_funcRet.find(gn);
+            return it != g_funcRet.end() ? it->second : "";
+        }
     }
     return "";
 }
 
 // Does `e` use param `p` as a string (an operand of `+` whose sibling is a string)? QML params are
 // untyped; numeric params become D `double` (JS number semantics), string params `string`.
+// Is the parameter used in a way only a NUMBER can be used — a relational comparison, or
+// subtraction/multiplication/division/remainder? JavaScript coerces both operands to numbers there,
+// so this is DEFINITE evidence, unlike `"0" + n`, which coerces the other way and proves nothing.
+// It is the contradiction that matters: `function pad(n) { return n < 10 ? "0" + n : String(n) }` was
+// typed `string` from the concatenation, and the generated D then compared a string with 10.0
+// ("incompatible types for `(n) < (10.0)`"). With the two kinds of evidence in conflict the type is
+// not knowable here, which is the case the compiler already has an answer for: leave it untyped and
+// let the engine run the body.
+static bool paramUsedNumerically(const std::string &p, ExpressionNode *e) {
+    if (!e) return false;
+    auto isP = [&](ExpressionNode *x) {
+        while (auto *n0 = cast<NestedExpression *>(x)) x = n0->expression;
+        auto *id = cast<IdentifierExpression *>(x);
+        return id && qs(id->name.toString()) == p;
+    };
+    if (auto *n = cast<NestedExpression *>(e)) return paramUsedNumerically(p, n->expression);
+    if (auto *u = cast<UnaryMinusExpression *>(e))
+        return isP(u->expression) || paramUsedNumerically(p, u->expression);
+    if (auto *nt = cast<NotExpression *>(e)) return paramUsedNumerically(p, nt->expression);
+    if (auto *c = cast<ConditionalExpression *>(e))
+        return paramUsedNumerically(p, c->expression) || paramUsedNumerically(p, c->ok)
+            || paramUsedNumerically(p, c->ko);
+    if (auto *b = cast<BinaryExpression *>(e)) {
+        switch (b->op) {
+        case QSOperator::Lt: case QSOperator::Gt: case QSOperator::Le: case QSOperator::Ge:
+        case QSOperator::Sub: case QSOperator::Mul: case QSOperator::Div: case QSOperator::Mod:
+            if (isP(b->left) || isP(b->right)) return true;
+            break;
+        default: break;
+        }
+        return paramUsedNumerically(p, b->left) || paramUsedNumerically(p, b->right);
+    }
+    if (auto *call = cast<CallExpression *>(e))
+        for (auto *a = call->arguments; a; a = a->next)
+            if (paramUsedNumerically(p, a->expression)) return true;
+    return false;
+}
+
 static bool paramIsString(const std::string &p, ExpressionNode *e, const std::map<std::string, std::string> &ptype) {
     if (!e) return false;
     if (auto *n = cast<NestedExpression *>(e)) return paramIsString(p, n->expression, ptype);
@@ -4761,7 +4969,8 @@ static std::vector<std::pair<std::string, std::string>> funcParams(FunctionExpre
             // concatenates and the generated D would add. Qt refuses these outright
             // ("Functions without type annotations won't be compiled"); an empty type here means
             // the same, and the caller reports it.
-            if (ty.empty() && ret && paramIsString(pn, ret, pt0)) ty = "string";
+            if (ty.empty() && ret && paramIsString(pn, ret, pt0)
+                    && !paramUsedNumerically(pn, ret)) ty = "string";
             if (ty.empty()) {   // no body evidence: the call sites may still pin it
                 auto ca = g_callArgs.find(qs(fn->name.toString()));
                 if (ca != g_callArgs.end() && ps.size() < ca->second.size()) {
@@ -4940,6 +5149,17 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                     body += "        setPropAny(__inst, \"" + nm + "\", " + coerceTo(ty, val) + ");\n";
                     return true;
                 }
+                // A META READ IS NOT AN LVALUE. readName answers with the channel the value really
+                // lives on, and for a property of an object the ENGINE owns that is
+                // `propBool(__outer.__outer, "cursor")` — D says "cannot modify expression". The
+                // write is that same channel in the other direction, aimed at the same object.
+                if (lv.rfind("prop", 0) == 0)
+                    if (size_t lp = lv.find('('), cm = lv.rfind(", \"");
+                            lp != std::string::npos && cm != std::string::npos && cm > lp) {
+                        body += "        setProp(" + lv.substr(lp + 1, cm - lp - 1) + ", \"" + nm
+                              + "\", " + coerceTo(ty, val) + ");\n";
+                        return true;
+                    }
                 body += "        " + lv + " = " + coerceTo(ty, val) + ";\n";
                 // ...AND THE NOTIFY. In QML an assignment IS a change notification — it is the whole
                 // reason anything bound downstream moves. `Component.onCompleted: root.target = 40`
@@ -5152,8 +5372,27 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
                         return true;
                     }
                 }
+            // The TYPE first: compiled against an empty target the reader chooser defaults to
+            // bool, so `cursor++` on an int property of an enclosing object read it with propBool.
+            const std::string ity0 = inferType(inner, g_propType);
+            const std::string ity = ity0.empty() || ity0[0] == '@' ? "int" : ity0;
             std::string lv;   // the lvalue: an identifier or a self member (`foo.count` -> count)
-            if (!compileExpr(inner, "", lv)) return false;
+            if (!compileExpr(inner, QString::fromStdString(ity), lv)) return false;
+            // ...and a META READ IS NOT AN LVALUE, exactly as at the assignment site: a property of
+            // an object the engine owns, or of an enclosing one, is reached through the meta-object,
+            // and `propInt(__outer.__outer, "cursor")++` is not D. Read-modify-write through the
+            // same channel — the shape the group and attached paths above already use.
+            if (lv.rfind("prop", 0) == 0)
+                if (size_t lp = lv.find('('), cm = lv.rfind(", \"");
+                        lp != std::string::npos && cm != std::string::npos && cm > lp) {
+                    const size_t nq = lv.find('"', cm + 3);
+                    if (nq != std::string::npos) {
+                        body += "        setProp(" + lv.substr(lp + 1, cm - lp - 1) + ", \""
+                              + lv.substr(cm + 3, nq - cm - 3) + "\", cast(" + ity + ")("
+                              + lv + (op[0] == '+' ? " + 1" : " - 1") + "));\n";
+                        return true;
+                    }
+                }
             body += "        " + lv + op + ";\n";
             return true;
         }
@@ -5262,9 +5501,35 @@ static bool compileStmt(Node *st, const std::map<std::string, std::string> &ptyp
         }
     }
     // Bare call statement `foo()` (calling a QML function of this class).
+    // ...unless the ENGINE owns this object, in which case a name this class does not declare is a
+    // method of the Qt base and lives on the instance: `forceActiveFocus()` compiled to exactly
+    // that and D answered "undefined identifier". Everything the document itself declares — a
+    // function, a signal — is in g_scope and stays a real D call.
     if (cast<CallExpression *>(es->expression)) {
         std::string c;
-        if (compileExpr(es->expression, "", c)) { body += "        " + c + ";\n"; return true; }
+        if (compileExpr(es->expression, "", c)) {
+            // A BARE CALL ON THIS OBJECT reaches a method of its Qt base, which is not a member of
+            // the generated class: `onVisibleChanged: if (visible) forceActiveFocus()` on a
+            // Rectangle compiled to exactly that and D answered "undefined identifier". Base
+            // PROPERTIES have gone through the meta-object here all along; base METHODS had not.
+            //
+            // Applied only when compileExpr's own answer is still an unqualified call — everything
+            // it resolves (a function this document declares, one reached through an object, an
+            // enclosing scope's) keeps the expression it produced. `typeKnownWithoutMember` is the
+            // test the `obj.method()` path beside this one uses, for the same reason: QML is
+            // dynamically typed, the method table is not flattened over inheritance, and an invoke
+            // that finds nothing is the engine's own outcome for the same line.
+            if (auto *c0 = cast<CallExpression *>(es->expression); c0 && !c0->arguments)
+                if (auto *id0 = cast<IdentifierExpression *>(c0->base)) {
+                    const std::string n0 = qs(id0->name.toString());
+                    if (c == n0 + "()" && !g_scope.count(n0)
+                            && (g_selfIsEngineInst || typeKnownWithoutMember(g_selfQmlType, n0))) {
+                        body += "        invoke0(this, \"" + n0 + "\");\n";
+                        return true;
+                    }
+                }
+            body += "        " + c + ";\n"; return true;
+        }
     }
     return false;
 }
@@ -5312,6 +5577,27 @@ static std::string memberBoundName(UiObjectMember *m) {
 // Members spliced in from a use site (see spliceUseSite).
 static std::set<UiObjectMember *> g_useSiteMembers;
 
+// THE DEFINITION IS SHARED, so this may not write to it. `loadLocalType` hands back the SAME
+// UiObjectDefinition for every use of an inline component (`component Head: Item { … }`), and the
+// first version of this merge welded the use site's members onto that node — `defn->members = first`
+// with `last->next = use->members` — and stripped the definition's own default values in passing
+// (`pubD->statement = nullptr`). So use site number two inherited use site number one's bindings and
+// lost the component's defaults. Reduced to 20 lines:
+//
+//     component Head: Item { required property string title; property bool open: true }
+//     Repeater { delegate: Column { id: sect; property bool shown: true
+//                                   Head { title: "inner"; open: sect.shown } } }
+//     Head { title: "after" }                 // <- got `open: sect.shown` as well
+//
+// and `sect` does not exist in that second frame, so it compiled to `__outer._dc0.delegate` — a
+// field naming a Component, which is nothing at all. Two of the 23 documents in a real application
+// failed to build on exactly that, with an error (`not `delegate``) that named the D keyword and
+// pointed nowhere near the cause.
+//
+// So the merged body is FRESH: new list cells over the same member nodes, and a COPY of any
+// declaration whose value the use site replaces. AST nodes carry a plain `operator new` (the pool
+// overload is the other one), and the tool is a short-lived process, so the copies are simply not
+// freed — the same trade the parser itself makes.
 static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectInitializer *use) {
     if (!use || !use->members) return defn;
     if (!defn || !defn->members) return use;
@@ -5335,9 +5621,21 @@ static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectIni
     for (auto *m = use->members; m; m = m->next)
         if (m->member) g_useSiteMembers.insert(m->member);
     UiObjectMemberList *first = nullptr, *last = nullptr;
-    for (auto *m = defn->members; m;) {
-        auto *nx = m->next;
-        std::string n = memberBoundName(m->member);
+    // AST nodes allocate from a MemoryPool (that is the only operator new they declare), and this
+    // one outlives the run, like the two others the tool keeps.
+    static QQmlJS::MemoryPool pool;
+    auto append = [&](UiObjectMember *mem) {
+        // The parser's list nodes are CIRCULAR until `finish()` linearizes them — the one-argument
+        // constructor sets `next = this` — so a cell built here and left alone is an infinite list.
+        // Measured as a hang, not as wrong output.
+        auto *cell = new (&pool) UiObjectMemberList(mem);
+        cell->next = nullptr;
+        if (!first) first = cell; else last->next = cell;
+        last = cell;
+    };
+    for (auto *m = defn->members; m; m = m->next) {
+        UiObjectMember *mem = m->member;
+        std::string n = memberBoundName(mem);
         bool keep = n.empty() || !overridden.count(n);
         // A DECLARATION is not a binding: `property bool highlighted: <expr>` both declares the
         // property and gives it a first value, and the use site only replaces the VALUE. Dropping it
@@ -5346,22 +5644,34 @@ static UiObjectInitializer *spliceUseSite(UiObjectInitializer *defn, UiObjectIni
         // ButtonPanel, through ComboBox/CheckBox/DelayButton). Keep the declaration, strip its
         // binding: two bindings for one name is what this dedup exists to prevent.
         if (!keep)
-            if (auto *pubD = cast<UiPublicMember *>(m->member);
+            if (auto *pubD = cast<UiPublicMember *>(mem);
                     pubD && pubD->type == UiPublicMember::Property) {
-                pubD->statement = nullptr;
-                pubD->binding = nullptr;
+                // THE DECLARATION WITHOUT ITS VALUE. Built rather than copied: the node's copy
+                // constructor is deleted, and on Qt 6 `required`/`default` live in a
+                // UiPropertyAttributes only the parser can fill — hence the two side tables.
+                auto *bare = new (&pool) UiPublicMember(pubD->memberType, pubD->name);
+                bare->type = pubD->type;
+                bare->typeModifier = pubD->typeModifier;   // `list`, read when a list is declared
+                bare->parameters = pubD->parameters;
+                bare->typeModifierToken = pubD->typeModifierToken;
+                bare->typeToken = pubD->typeToken;
+                bare->identifierToken = pubD->identifierToken;
+                bare->colonToken = pubD->colonToken;
+                bare->semicolonToken = pubD->semicolonToken;
+                bare->lparenToken = pubD->lparenToken;
+                bare->rparenToken = pubD->rparenToken;
+                if (isRequiredMem(pubD)) g_synthRequired.insert(bare);
+                if (isDefaultMem(pubD)) g_synthDefault.insert(bare);
+                mem = bare;
                 keep = true;
             }
-        if (keep) {
-            if (!first) first = m; else last->next = m;
-            last = m; last->next = nullptr;
-        }
-        m = nx;
+        if (keep) append(mem);
     }
-    if (!first) { defn->members = use->members; return defn; }
-    last->next = use->members;
-    defn->members = first;
-    return defn;
+    for (auto *m = use->members; m; m = m->next) append(m->member);
+    auto *merged = new (&pool) UiObjectInitializer(first);
+    merged->lbraceToken = defn->lbraceToken;   // ...the brace span srcRaw/bodyOfInit read
+    merged->rbraceToken = defn->rbraceToken;
+    return merged;
 }
 
 // A child whose type we cannot bind must be REFUSED, not built as a bare @QObject: every property
@@ -6330,6 +6640,26 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             OuterFrame fr{savedId, g_selfClass, savedSelfQmlType, savedIds,
                           g_propType, g_baseProps, g_childDeclType, sibs};
             fr.engineInst = g_selfIsEngineInst;   // ...the ENCLOSING object's answer, not ours
+            // ...AND WHAT THAT MAKES OF ITS DECLARED PROPERTIES: they are not D fields. A type the
+            // engine owns gets them as `decls` handed to createQmlObject (see engineDecls), so both
+            // sides read them through the meta-object — while a child reaching one across `__outer`
+            // was emitting a FIELD read. Qt's own `Menu` is such a type, so
+            //
+            //     Menu { id: faceMenu; property int faceId: 0
+            //            MenuItem { onTriggered: namer.faceId = faceMenu.faceId } }
+            //
+            // compiled to `__outer.faceId` — "no property `faceId` for `this.__outer`" — and took
+            // three documents of a real application with it. Recorded as BASE properties, which is
+            // the table meaning "reached through the meta-object"; the rewrite further down then
+            // aims them at the instance. A property-bound CHILD is the exception: that one really
+            // is a field, named after the property.
+            if (fr.engineInst)
+                for (auto it = fr.propType.begin(); it != fr.propType.end(); ) {
+                    if (fr.childTypes.count(it->first)) { ++it; continue; }
+                    fr.baseProps.emplace(it->first, it->second);
+                    fr.instDecls.insert(it->first);   // ...still a declaration: see instDecls
+                    it = fr.propType.erase(it);
+                }
             g_outerChain.insert(g_outerChain.begin(), fr);
         }
     }
@@ -6381,6 +6711,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     auto savedSignalParams = g_signalParams;
     auto savedBaseProps = g_baseProps;
     auto savedScope = g_scope;
+    auto savedSelfDecl = g_selfDeclProps;
     auto savedPropType = g_propType;
     auto savedChildIds = g_childIds;
     // An inline component is usable ANYWHERE in the document, including above its declaration
@@ -6403,6 +6734,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_hasSelector.clear();
     g_rebinds.clear();
     g_scope.clear();
+    g_selfDeclProps.clear();
     g_propType.clear();
     g_aliasRead.clear();
     g_aliasDep.clear();
@@ -6501,8 +6833,15 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
           for (auto *m = init ? init->members : nullptr; m; m = m->next) m->member->accept(&scan); }
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *se = cast<UiSourceElement *>(m->member))
-                if (auto *fn = se->sourceElement->asFunctionDefinition())
-                    if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
+                if (auto *fn = se->sourceElement->asFunctionDefinition()) {
+                    // THE SIGNATURE IS DECIDED HERE, like the return type below it, so that a call
+                    // site compiled before the function's own body cannot disagree with it.
+                    auto fps = funcParams(fn, pt0);
+                    g_funcParams[qs(fn->name.toString())] = fps;
+                    bool anyUntyped = false;
+                    for (auto &pp : fps) if (pp.second.empty()) anyUntyped = true;
+                    if (anyUntyped) g_funcRet[qs(fn->name.toString())] = "QmlVarRef";
+                    if (auto *rexpr = !anyUntyped && fn->body ? findReturnExpr(fn->body) : nullptr) {
                         auto pt = pt0;
                         for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;   // params in scope
                         // ...and the body's `var` LOCALS, which type the return just as a parameter
@@ -6530,12 +6869,14 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                             for (auto &r : reads) if (pt0.count(r)) g_funcReads[qs(fn->name.toString())].push_back(r);
                         }
                     }
+                }
         // The object's bare-name scope (see g_scope): every declared property (even one whose
         // type we can't map — the name still exists in QML), every base Q_PROPERTY we set, every
         // `function`, and every declared signal.
         for (auto *m = init ? init->members : nullptr; m; m = m->next) {
             if (auto *pub = cast<UiPublicMember *>(m->member); pub && pub->type == UiPublicMember::Property) {
                 g_scope.insert(qs(pub->name.toString()));
+                g_selfDeclProps.insert(qs(pub->name.toString()));
                 if (isRequiredMem(pub)) {
                     g_requiredDecls.insert(qs(pub->name.toString()));
                     g_hasRequiredDecl = true;
@@ -6616,7 +6957,13 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto *m = init ? init->members : nullptr; m; m = m->next)
             if (auto *se = cast<UiSourceElement *>(m->member))
                 if (auto *fn = se->sourceElement->asFunctionDefinition())
-                    if (auto *rexpr = fn->body ? findReturnExpr(fn->body) : nullptr) {
+                    // ...EXCEPT A FUNCTION THAT WILL BE DELEGATED: its D return type is QmlVarRef,
+                    // decided in the prescan along with its parameters, and re-inferring the QML
+                    // return type here replaced that with `bool` — so a compiled caller unboxed
+                    // nothing and D refused the box in a boolean context.
+                    if (auto *rexpr = g_funcRet[qs(fn->name.toString())] == "QmlVarRef"
+                                      ? nullptr
+                                      : (fn->body ? findReturnExpr(fn->body) : nullptr)) {
                         auto pt = g_propType;
                         for (auto &pp : funcParams(fn, pt0)) pt[pp.first] = pp.second;
                         // ...and the locals, same as the first pass. This one RE-DOES the
@@ -8641,10 +8988,24 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         // order-independent, so `typeof` names it exactly and cannot drift.
                         std::string cty = "typeof(" + dIdent(ci->second.field) + ")";
                         {
+                            // ...AND THE FIELD IS NOT ALWAYS ASSIGNABLE. For an ENGINE-BUILT child
+                            // the recorded field is `instOf(_dc0)` — a call, so `instOf(_dc0) = v`
+                            // is not D ("cannot modify expression … because it is not an lvalue"),
+                            // and it took two documents of a real application with it. The
+                            // marshaller calls `<name>_set` unconditionally, so the setter has to
+                            // exist; what it does is throw, which is also the engine's own answer
+                            // to assigning an alias that names an object.
+                            const std::string fld2 = dIdent(ci->second.field);
+                            const bool assignable = fld2.find('(') == std::string::npos;
                             aliasProps += "    @PropertyAlias(\"" + al.first + "\") " + cty
-                                        + " __pa_" + al.first + "() { return " + dIdent(ci->second.field) + "; }\n"
+                                        + " __pa_" + al.first + "() { return " + fld2 + "; }\n"
                                         + "    void __pa_" + al.first + "_set(" + cty + " v) { "
-                                        + dIdent(ci->second.field) + " = v; }\n";
+                                        + (assignable
+                                            ? fld2 + " = v;"
+                                            : "throw new Exception(\"alias '" + al.first
+                                              + "' names an object built by the engine and cannot "
+                                                "be assigned\");")
+                                        + " }\n";
                             continue;
                         }
                     }
@@ -9615,14 +9976,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                      "(later phase)\n", inPath, cls.c_str(), d.c_str());
                         ++partial; continue;
                     }
-                    if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
-                        sig = mem + "Changed()";
-                        g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
-                    }
-                    else if (auto qn = g_qmlNotify.find(fr->qmlType); qn != g_qmlNotify.end()) {
-                        auto nt = qn->second.find(mem);
-                        if (nt != qn->second.end()) sig = nt->second;
-                    }
+                    sig = outerDepNotify(fr, obj, mem);
                     if (!sig.empty()) {
                         conns += "        connectMeta(" + obj + ", \"" + sig + "\", this, \"__rcb_"
                                + ba.first + "()\");\n";
@@ -9811,7 +10165,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                         for (size_t i = 0; i <= k; ++i) preN += "__outer.";
                         const OuterFrame &fr = g_outerChain[k];
                         std::string oeN = preN.substr(0, preN.size() - 1);
-                        if (fr.propType.count(headN)) {
+                        if (fr.propType.count(headN) || fr.instDecls.count(headN)) {
                             g_outerUsed = true;
                             if ((int) k > g_outerHopsNeeded) g_outerHopsNeeded = (int) k;
                             conns += "        connectMeta(" + oeN + ", \"" + headN
@@ -10328,13 +10682,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             if (d.rfind("__outer.", 0) == 0 && !outerDepIsPath(d)) {
                 std::string obj, mem, sig; const OuterFrame *fr = nullptr;
                 if (!splitOuterDep(d, obj, mem, &fr)) continue;
-                if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
-                    sig = mem + "Changed()";
-                    g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
-                } else if (auto qn = g_qmlNotify.find(fr->qmlType); qn != g_qmlNotify.end()) {
-                    auto nt = qn->second.find(mem);
-                    if (nt != qn->second.end()) sig = nt->second;
-                }
+                sig = outerDepNotify(fr, obj, mem);
                 if (!sig.empty()) conns += "        connectMeta(" + obj + ", \"" + sig + "\", this, \""
                                          + slot + "()\");\n";
                 continue;
@@ -10793,7 +11141,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         for (auto &p : props) pt0[p.name] = p.dtype;
         for (auto *fn : functions) {
             std::string name = qs(fn->name.toString());
-            auto params = funcParams(fn, pt0);
+            // The PRESCAN's answer, so the signature a call site was compiled against is the one
+            // that gets emitted (see g_funcParams).
+            auto params = g_funcParams.count(qs(fn->name.toString()))
+                        ? g_funcParams[qs(fn->name.toString())] : funcParams(fn, pt0);
             // A parameter whose type the graph does not reduce to something definite: refuse the
             // function rather than pick one. Guessing `double` compiled `f(x, y) { return x + y }`
             // into numeric addition, which is wrong the moment it is called with strings — QML
@@ -11028,6 +11379,10 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     };
     bool colorDefaultEmitted = false;   // one CTFE helper per class, and only where a colour exists
     std::string engineDecls, engineInit;   // what the document adds to a type the engine builds
+    // ...and WHICH NAMES went that way, because those are precisely the ones that are NOT answered
+    // by the wrapper — see the `ownNames` exception below, which was keeping every declared name on
+    // the wrapper and so reading a storage the value never reaches.
+    std::set<std::string> engineDeclNames;
     for (auto &p : props) {
         // A declared `var` whose value is a CHILD OBJECT is held by the child's own field, which is
         // named after the property and already carries @Property. Emitting the marker as well gave
@@ -11052,6 +11407,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             auto qt0 = qmlTy.find(p.dtype);
             engineDecls += "property " + (qt0 == qmlTy.end() ? "var" : qt0->second) + " "
                          + p.name + "; ";
+            engineDeclNames.insert(p.name);
             if (!p.expr.empty() && !p.bound)
                 engineInit += "        setPropAny(__inst, \"" + p.name + "\", " + p.expr + ");\n";
             if (p.bound) {
@@ -11241,13 +11597,39 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             }
             return false;
         };
+        // ...and the unit that moves is a STATEMENT, which is not always a line. A conditional
+        // copy compiles to a block (see copyChain), and splitting it by lines sent the `if` head —
+        // the only line naming the child — after the children while its body stayed behind:
+        //
+        //     __qmltcWire:  bindEval({ \n     copyGroupProp(…); \n } else { … } \n });
+        //     __qmltcKids:  if (propBool(instOf(instOf(_dc1)), "hovered")) {
+        //
+        // which is not D at all ("found `else` when expecting `)`"), and took three documents of a
+        // real application with it. So lines are grouped by brace depth and the whole group goes
+        // wherever ANY of its lines names a child. String literals are skipped when counting: a
+        // delegate handed over as text carries its own braces in a D string.
         std::string baseBeforeKids, baseAfterKids;
+        std::string group; bool groupKid = false; int depth = 0;
         for (size_t i = 0, j; i < baseWire.size(); i = j + 1) {
             j = baseWire.find('\n', i);
             if (j == std::string::npos) j = baseWire.size() - 1;
             std::string line = baseWire.substr(i, j - i + 1);
-            (mentionsKid(line) ? baseAfterKids : baseBeforeKids) += line;
+            group += line;
+            groupKid = groupKid || mentionsKid(line);
+            for (size_t k = 0; k < line.size(); ++k) {
+                if (line[k] == '"') {   // skip the literal, escapes included
+                    for (++k; k < line.size() && line[k] != '"'; ++k)
+                        if (line[k] == '\\') ++k;
+                    continue;
+                }
+                if (line[k] == '{') ++depth;
+                else if (line[k] == '}' && depth > 0) --depth;
+            }
+            if (depth > 0) continue;   // mid-statement: the rest of the block comes with it
+            (groupKid ? baseAfterKids : baseBeforeKids) += group;
+            group.clear(); groupKid = false;
         }
+        if (!group.empty()) (groupKid ? baseAfterKids : baseBeforeKids) += group;
         // VALUE SOURCES before every write, base ones included: `X on prop` must be in place
         // before `prop` is assigned, which is where the engine puts it. The base `source` of an
         // Imagine control is written here, so a selector built after it never saw the only write
@@ -11396,14 +11778,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                                      "(later phase)\n", inPath, cls.c_str(), d.c_str());
                         ++partial; continue;
                     }
-                    if (!fr->baseProps.count(mem) && fr->propType.count(mem)) {
-                        sig = mem + "Changed()";
-                        g_outerNeedsNotify.push_back({(int)std::count(obj.begin(), obj.end(), '.'), mem});
-                    }
-                    else if (auto qn = g_qmlNotify.find(fr->qmlType); qn != g_qmlNotify.end()) {
-                        auto nt = qn->second.find(mem);
-                        if (nt != qn->second.end()) sig = nt->second;
-                    }
+                    sig = outerDepNotify(fr, obj, mem);
                     if (!sig.empty()) {
                         wire += "        connectMeta(" + obj + ", \"" + sig + "\", this, \"__rc_"
                               + p.name + "()\");\n";
@@ -11906,6 +12281,12 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         // class declares is answered by this class.
         std::set<std::string> ownNames;
         for (auto &p0 : props) {
+            // ...unless the declaration was handed to the ENGINE (engineDeclNames): then the
+            // property and its notify are on the instance, and keeping the access on the wrapper
+            // read a storage that never receives the value. The names left here are the ones that
+            // really do stay — a declared `var` whose value is a child object, which is held by the
+            // child's own field.
+            if (engineDeclNames.count(p0.name)) continue;
             ownNames.insert(p0.name);
             ownNames.insert(p0.name + "Changed()");
         }
@@ -11965,6 +12346,21 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string mk = "    void* __inst;\n";
         // Created FIRST: every line of the wire writes through it.
         auto wp = wire.find("__qmltcWire() {\n");
+        // ...BUT AFTER THE MODULE REGISTRATIONS the wire opens with. A QML module's types are
+        // registered lazily, so asking the engine to build one before its own module is registered
+        // is exactly the "Shape is not a type" the component path reports — a first attempt that
+        // failed and a fallback that then succeeded, which left the value right and stderr saying
+        // otherwise. Registering first costs nothing and is the order the engine itself uses.
+        // Found by the fixture for the engine-built paths, not by any document in the corpora.
+        size_t insAt = wp == std::string::npos ? wp : wp + 16;
+        if (wp != std::string::npos) {
+            static const std::string ens = "        ensureModule(\"";
+            while (wire.compare(insAt, ens.size(), ens) == 0) {
+                size_t nl = wire.find('\n', insAt);
+                if (nl == std::string::npos) break;
+                insAt = nl + 1;
+            }
+        }
         if (wp != std::string::npos)
             // VERSIONLESS: Qt 6 resolves the latest, and a style's impl module does not
             // necessarily register its types at 2.0 — Fusion's DialImpl is not a type at that
@@ -11973,7 +12369,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // baseUrl, so a relative path inside it resolves where the engine resolves it. Without
             // it the object reported the synthetic `file:///qtd_delegate.qml` (measured in the dump
             // of Qt's Material TextField).
-            wire.insert(wp + 16, std::string("        __inst = ")
+            wire.insert(insAt, std::string("        __inst = ")
                                  + (g_engineChildUri.rfind("\x01", 0) == 0
                                         ? "createQmlObjectAny(\"" + g_engineChildUri.substr(1)
                                         : "createQmlObject(\"" + g_engineChildUri) + "\", \""
@@ -12037,6 +12433,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
     g_groups = savedGroups;
     g_attached = savedAttached;
     g_scope = savedScope;
+    g_selfDeclProps = savedSelfDecl;
     g_propType = savedPropType;
     g_aliasRead = savedAliasRead;
     g_aliasDep = savedAliasDep;
@@ -12129,6 +12526,16 @@ static void collectDump(const ObjNode &n, const std::string &acc, const std::str
         // dIdent, because the FIELD may be spelled otherwise than the property: a document is
         // free to declare `property string out`, and the dump reads the field, not the name. The
         // label keeps the QML spelling — that is what the oracle answers to.
+        // ...AND THERE IS NO FIELD when the engine owns the object: the declaration went into the
+        // `decls` handed to createQmlObject, so the value is on the instance and this is the same
+        // meta-object read the base properties below use. Reading the field did not compile.
+        if (n.engineInst) {
+            const char *fn0 = s.second == "int" ? "propInt(" : s.second == "double" ? "propDouble("
+                            : s.second == "bool" ? "propBool(" : "propStr(";
+            out.push_back({lab + s.first, fn0 + self + ", \"" + s.first + "\")",
+                           s.second == "string" ? "" : s.second, self, s.first});
+            continue;
+        }
         out.push_back({lab + s.first, acc + dIdent(s.first), s.second, self, s.first});
     }
     // "" dtype keeps it out of the mutation block below (a list is not settable from a token).
@@ -12686,7 +13093,8 @@ int main(int argc, char **argv) {
     // Aliased so a QML property called `max` or `min` cannot collide with the import.
     std::printf("import qtmoc;\nimport std.conv : to;   // JS `+` string concatenation coerces\n"
                 "import std.algorithm : __qmltcMax = max, __qmltcMin = min;   // Math.max/min (variadic)\n"
-                "import std.math : __qmltcFloor = floor, __qmltcCeil = ceil;   // Math.round/ceil/floor\n%s\n%s%s",
+                "import std.math : __qmltcFloor = floor, __qmltcCeil = ceil,\n"
+                "                  __qmltcIsNaN = isNaN;   // Math.round/ceil/floor, isNaN\n%s\n%s%s",
                 g_extraImports.c_str(), singletonDecls.c_str(), classes.c_str());
     if (g_needsModuleRegistration) {
         std::string sym = g_qmlUri;
