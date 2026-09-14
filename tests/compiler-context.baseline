@@ -31,5 +31,18 @@
 # ctxsaves rises by two: one is g_funcParams above, and one is the defect this ratchet FOUND —
 # g_funcParams had no save site at all, so a nested object's signature could have ruled the
 # enclosing object's call sites. The count going up is the fix, not the regression.
-globals 104
+# RAISED AGAIN 2026-09-14, +2 globals, no new save site:
+#   * g_namedComponents — a named `Component { id: x; … }` by its id, recorded in the PRESCAN so the
+#     order objects compile in cannot matter. `delegate: x` names a template that is SKIPPED as a
+#     child, so the ordinary child path resolved it to a `_dc<n>` never emitted; this is what lets
+#     the hand-over use the template's body instead. Reported from a real application.
+#   * g_skippedComponentChild — whether any object in this run skipped a Component child, which is
+#     what makes every `data[N]` after it name a different object on the two sides. Read by the dump
+#     emitter AND the objpaths list, which must agree: filtering only one produced the mirror of the
+#     asymmetry the note in that code already warns about.
+#
+# Neither is saved/restored, and for once that is the right granularity rather than an omission: the
+# dump is emitted for the whole tree, and a Component skipped inside a LOCAL TYPE shifts the nested
+# `data[N]` paths of that type in the same dump. Run-wide is the scope the question actually has.
+globals 106
 ctxsaves 54

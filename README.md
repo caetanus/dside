@@ -132,7 +132,7 @@ Measured against Qt's own shipped Controls, and against this project's own appli
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls | 329 | 247 | 37 | 45 | 0 |
+| Qt's Controls | 329 | 250 | 34 | 45 | 0 |
 | application-shaped | 18 | 10 | 8 | 0 | **0** |
 
 <!-- The application row moved 9/9 -> 10/8 on 2026-09-12, and this one IS the compiler's doing,

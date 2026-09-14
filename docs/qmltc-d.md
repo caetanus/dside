@@ -203,10 +203,18 @@ Over Qt's five Controls styles, walked recursively (`impl/` included):
 |---|---:|---:|---:|---:|---:|---:|
 | Basic | 70 | 39 | 39 | 54 | 5 | 11 |
 | Fusion | 70 | 37 | 37 | 54 | 3 | 13 |
-| Universal | 66 | 27 | 27 | 52 | 3 | 11 |
-| Imagine | 56 | 0 | 0 | 36 | 16 | 4 |
-| Material | 67 | 7 | 7 | 51 | 10 | 6 |
-| **total** | **329** | **110** | **110** | **247** | **37** | **45** |
+| Universal | 66 | 27 | 27 | 53 | 2 | 11 |
+| Imagine | 56 | 0 | 0 | 37 | 15 | 4 |
+| Material | 67 | 7 | 7 | 52 | 9 | 6 |
+| **total** | **329** | **110** | **110** | **250** | **34** | **45** |
+
+<!-- +2 on 2026-09-14, and this one IS the compiler's doing: a `delegate:`/handle property naming a
+     shared `Component { id: … }` used to resolve to a `_dc<n>` that is never emitted (a Component is
+     skipped — it is a template), so the document did not build. Qt's own SelectionRectangle writes
+     exactly that shape — `topLeftHandle: handle` and `bottomRightHandle: handle` over one Component —
+     in Imagine, Material AND Universal, and all three moved DEMOTED -> COMPILED. Reported first from an
+     application (Lectio's Settings.qml, two Repeaters sharing one Component); Qt's own styles had it
+     too. -->
 
 <!-- RE-MEASURED 2026-09-12, and the three rows that moved did NOT move because of anything in
      this compiler. Imagine went 41/11 -> 36/16, Material 48/13 -> 51/10, Universal 51/4 -> 52/3;
@@ -242,7 +250,7 @@ Two corpora, the same two axes, both gated in `./build`.
 
 | corpus | documents | compiled | at `-O0` | unjudgeable | unplaced |
 |---|---:|---:|---:|---:|---:|
-| Qt's Controls (5 styles) | 329 | 247 | 37 | 45 | **0** |
+| Qt's Controls (5 styles) | 329 | 250 | 34 | 45 | **0** |
 | application-shaped | 18 | 10 | 8 | 0 | **0** |
 
 <!-- The application row moved 9/9 -> 10/8 on 2026-09-12, and this one IS the compiler's doing,

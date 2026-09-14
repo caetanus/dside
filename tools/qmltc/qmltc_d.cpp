@@ -806,6 +806,14 @@ static bool g_parentCompletes = false;
 // those labels rather than comparing a guessed index (the object PATHS keep them: there both sides
 // resolve the same index through the same list, which is a real comparison).
 static bool g_hasComponentBind = false;
+// A named `Component {}` child was SKIPPED somewhere in this document. It is a template rather than
+// an object, so we emit no field for it — but the ENGINE keeps it in `data`, and every `data[N]`
+// after it therefore names a different object on the two sides. The label dump already drops indices
+// a view decides (g_hasComponentBind); the OBJECT-PATH dump reasoned that both sides "resolve the
+// same index through the same list", which stops being true the moment one side is missing a child.
+// Measured on a two-Repeater document sharing one Component: ours reported QQuickRepeater at
+// data[0].data[0] and the engine `<missing>`, because its own data[0] is the Component.
+static bool g_skippedComponentChild = false;
 // The chain of ENCLOSING objects, innermost first. `__outer` is always the IMMEDIATE parent, so an
 // id further up is reached by hopping: `__outer.__outer.gap`. Without this the field was declared
 // as the id-bearing ancestor's class while the value published was the immediate parent's — and
@@ -1510,6 +1518,22 @@ static void prescanChildBody(UiObjectInitializer *ci, const std::string &field,
 // application QML, where a child inside a layout is the normal shape. `prefix` is the accessor path
 // to the object being scanned, so a grandchild's id records `_dc0._dc1` and every consumer of
 // g_childIds keeps working unchanged.
+// A NAMED `Component { id: x; Foo { … } }`, by its id. The Component itself is SKIPPED as a child —
+// it is a template, and compiling it would instantiate its contents eagerly — but a `delegate: x`
+// elsewhere still names it, and resolving that through the ordinary child path produced a field for
+// the child that was never emitted:
+//     setPropObj(this, "delegate", instOf(__outer.__outer._dc0._dc2));
+//     Error: no property `_dc2` for type `L_dc0`   (only _dc0 exists)
+// Reported from a real application (Lectio's Settings.qml, two Repeaters sharing one Component) and
+// reduced to eight lines. It disappears with an inline delegate because then no child is skipped.
+// Recorded in the PRESCAN so the order the objects compile in cannot matter: the Component may sit
+// after — or outside — the object whose `delegate:` names it.
+struct NamedComponent { UiObjectInitializer *tmpl; std::string type; };
+static std::map<std::string, NamedComponent> g_namedComponents;
+// Both defined further down; the prescan below is the first user of either.
+static bool isComponentType(const std::string &t);
+static std::string idOfInit(UiObjectInitializer *ci);
+
 static void prescanChildIds(UiObjectInitializer *init, const std::string &prefix = "");
 static void prescanChildIds(UiObjectInitializer *init, const std::string &prefix) {
     // A DEFAULT child (`Text { id: placeholder }` written bare) is a child with an id like any
@@ -1541,6 +1565,17 @@ static void prescanChildIds(UiObjectInitializer *init, const std::string &prefix
             std::string tnG = qname(dod->qualifiedTypeNameId);
             if (!tnG.empty() && std::islower((unsigned char) tnG[0])
                     && tnG.find('.') == std::string::npos) continue;
+            // ...and a NAMED Component is remembered by its id rather than counted as a child: see
+            // g_namedComponents. Its one object definition is the template a `delegate:` wants.
+            if (isComponentType(tnG) && dod->initializer)
+                if (std::string cidC = idOfInit(dod->initializer); !cidC.empty())
+                    for (auto *cm2 = dod->initializer->members; cm2; cm2 = cm2->next)
+                        if (auto *tpl = cast<UiObjectDefinition *>(cm2->member); tpl && tpl->initializer) {
+                            g_namedComponents[cidC] = {tpl->initializer,
+                                                       tpl->qualifiedTypeNameId
+                                                           ? typeName(tpl->qualifiedTypeNameId) : ""};
+                            break;
+                        }
             ci = dod->initializer;
             field = prefix + "_dc" + std::to_string(dcn++);
             if (!ci) continue;
@@ -1650,7 +1685,7 @@ static std::string bodyOfInit(UiObjectInitializer *ci) {
     return s;
 }
 
-static std::string idOfInit(UiObjectInitializer *ci) {
+std::string idOfInit(UiObjectInitializer *ci) {
     for (auto *cm = ci ? ci->members : nullptr; cm; cm = cm->next)
         if (auto *sb = cast<UiScriptBinding *>(cm->member))
             if (qname(sb->qualifiedId) == "id")
@@ -1684,7 +1719,7 @@ static void dropSkippedChildId(UiObjectInitializer *ci) {
 // builds its contents eagerly, which is a different program — and silently, since the
 // differential only checks that everything the ENGINE has is covered, never that we built
 // something extra. Refused until it can be compiled as a factory.
-static bool isComponentType(const std::string &t) { return t == "Component"; }
+bool isComponentType(const std::string &t) { return t == "Component"; }
 
 static bool connectionsHandlers(UiObjectInitializer *init, std::vector<RawHandler> &out) {
     std::vector<RawHandler> found;
@@ -8663,7 +8698,7 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::fprintf(stderr, "qmltc-d: %s: `Component` in %s is a template, not an object — "
                          "compiling it would instantiate its contents eagerly; skipped (later "
                          "phase)\n", inPath, cls.c_str());
-            ++partial; skippedAKid = true; continue;
+            ++partial; skippedAKid = true; g_skippedComponentChild = true; continue;
         }
         bool connHandled = true;
         bool connDelegateBody = false;
@@ -9840,6 +9875,38 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             // -- how Qt's Drawer puts itself in the window's overlay -- had no branch at all, and
             // the ternary just above (object-or-null on a base property) was the only base-object
             // assignment the compiler could do.
+            // `delegate: someNamedComponent` — a QQmlComponent-typed property whose value NAMES a
+            // `Component { id: … }` of this document. That Component is not an object and has no
+            // field (it is skipped as a template), so the ordinary object path below resolved it to
+            // a `_dc<n>` that is never emitted. What the document means is the same thing an inline
+            // `delegate: Foo {}` means, so it is handed over the same way: the template's body, with
+            // this document's imports, as a Component the engine builds. Two Repeaters may share one
+            // Component — that is the shape this arrived as — and each gets its own hand-over.
+            if (auto ncIt = g_namedComponents.end(); true) {
+                if (auto *idc = cast<IdentifierExpression *>(ba.second))
+                    ncIt = g_namedComponents.find(qs(idc->name.toString()));
+                if (ncIt != g_namedComponents.end() && !g_bareImports.empty())
+                    if (auto qcN = g_qmlCxxType.find(g_selfQmlType); qcN != g_qmlCxxType.end()) {
+                        auto itN = qcN->second.find(ba.first);
+                        if (itN != qcN->second.end()
+                                && itN->second.find("QQmlComponent") != std::string::npos) {
+                            std::string tried;
+                            for (auto &u : g_bareImports) tried += (tried.empty() ? "" : ";") + u;
+                            componentWire += "        bindComponentText(this, \"" + ba.first
+                                           + "\", \"" + tried + "\", \"" + ncIt->second.type
+                                           + "\", \"" + selfDocUrl + "\", "
+                                           + dstr(QString::fromStdString(bodyOfInit(ncIt->second.tmpl)))
+                                           + ");\n";
+                            g_hasComponentBind = true;
+                            ++g_delegated;
+                            std::fprintf(stderr, "qmltc-d: %s: '%s' in %s names the Component '%s' — "
+                                         "handed over with this document's imports\n", inPath,
+                                         ba.first.c_str(), cls.c_str(),
+                                         qs(cast<IdentifierExpression *>(ba.second)->name.toString()).c_str());
+                            continue;
+                        }
+                    }
+            }
             if ((isObjProp(ba.first) || (!ty.empty() && ty.back() == '*'))
                     && objPathExpr(ba.second, oe9, oq9)) {
                 (oe9.rfind("__outer", 0) == 0 ? earlyWire : baseWire)
@@ -12963,6 +13030,12 @@ int main(int argc, char **argv) {
             if (lp == std::string::npos) continue;
             std::string path = l.label.substr(0, lp);
             if (path.find('@') != std::string::npos) continue;
+            // ...and no `data[N]` at all once a Component child was skipped: see
+            // g_skippedComponentChild. Declaring a path we cannot number makes the oracle walk to a
+            // different object and report `<missing>`, which is a harness artefact reported as a
+            // compiler gap. Only OUR list shrinks — the oracle walks exactly what we declare — so
+            // this cannot produce the "absent in ours" direction the note below warns about.
+            if (g_skippedComponentChild && path.find("data[") != std::string::npos) continue;
             if (!objs.insert(l.setObj).second) continue;
             std::printf("%s\n", path.c_str());
         }
@@ -13322,6 +13395,11 @@ int main(int argc, char **argv) {
                 if (lp == std::string::npos) continue;
                 std::string path = l.label.substr(0, lp);
                 if (path.find('@') != std::string::npos) continue;
+                // ...and no `data[N]` once a Component child was skipped — the SAME condition the
+                // objpaths list uses, and it has to be both: filtering only the list we hand the
+                // oracle left our side dumping objects it was not told to walk, which is the very
+                // asymmetry the note there warns about, mirrored.
+                if (g_skippedComponentChild && path.find("data[") != std::string::npos) continue;
                 if (!objs.insert(l.setObj).second) continue;
                 // A path with a LIST INDEX is resolved the way the oracle resolves it: by walking
                 // the meta-object list, not by reading the D field that happens to hold that child.
