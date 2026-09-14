@@ -1885,7 +1885,12 @@ static immutable string[] renderable = ["QEnumCmp", "QEnumProp", "QGroupReactive
             // would see -- except for the files whose REFUSAL is the thing under test. There the
             // diagnostic is the expected output, and the differential beside it is what proves the
             // refusal is the right one (both sides read empty). Any other exit code still fails.
-            static immutable string[] partialOk = ["QDelegateReqNoModel", "QDelegateReqFill"];
+            // QSharedComponent is here for the same reason with a different shape: it CONTAINS a
+            // `Component {}`, which is skipped by design — a template is not an object — and that
+            // skip is the subject, not an accident. The compiler hands the template over instead of
+            // losing it (bindComponentText), and the differential beside this proves the values.
+            static immutable string[] partialOk = ["QDelegateReqNoModel", "QDelegateReqFill",
+                                                   "QSharedComponent"];
             string genCmd;
             version (Windows)
                 // bind.mods: the tool needs its own Qt on PATH to LOAD, not just to link. Without

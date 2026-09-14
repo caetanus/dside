@@ -13,6 +13,10 @@
 // the file is flagged PARTIAL (exit 3) so nothing is silently dropped.
 #include <QtQml/private/qqmljsengine_p.h>
 #include <QtQml/private/qqmljsmemorypool_p.h>
+#include <QLibraryInfo>
+#include <QProcess>
+#include <QDir>
+#include <QFile>
 #include <QtQml/private/qqmljslexer_p.h>
 #include <QtQml/private/qqmljsparser_p.h>
 #include <QtQml/private/qqmljsast_p.h>
@@ -6517,7 +6521,15 @@ static bool jsDelegate(Node *e, const std::string &prop, std::string &out,
         names += (names.empty() ? "" : ", ") + ("\"" + b.first + "\"");
         objs += ", " + b.second;
     }
-    if (!g_shadowDir.empty()) {
+    // A SHADOW IS A BINDING, and only a binding. The document it becomes holds
+    // `readonly property var value: <src>`, so a multi-statement body is not QML at all and a
+    // FUNCTION captures no dependencies — which is the rule docs/qmltc-d.md already states and this
+    // block did not keep. It wrote a shadow for every delegated form, including the two whose emitted
+    // call (`callJsFunc`, `runJs`) does not even reference it: a real application produced
+    // `Main_e160.qml` wrapping `leftPage.content = …; leftPage.offset = …` as a property VALUE,
+    // qmlcachegen answered `Expected token ':'`, and nothing referenced the file. Orphan and invalid
+    // at once. Those forms fall through to the runtime path below, which is what they always used.
+    if (!g_shadowDir.empty() && !callArgs && !prop.empty() && !block) {
         // One FILE per expression, not one object with many bindings: each shadow then declares
         // exactly the names its own expression uses, unsuffixed, and the source needs no rewriting.
         std::string file = g_shadowCls + "_e" + std::to_string(g_shadows.size()) + ".qml";
@@ -13192,6 +13204,107 @@ int main(int argc, char **argv) {
         }
         std::fprintf(stderr, "qmltc-d: %s: %zu shadow document(s) written to %s\n",
                      inPath, g_shadows.size(), g_shadowDir.c_str());
+        // ...AND STRAIGHT TO BYTECODE, from this same run. The plan this implements is one
+        // sentence: qmltc-d compiles what it can and emits the rest as qmlcachegen bytecode, from
+        // the SAME generator. Everything below was already proven — it is the recipe
+        // tests/qmltc/shadow_aot.sh drove from outside — and all that changes is who runs it, so a
+        // consumer gets the whole answer from one invocation instead of wiring three steps.
+        //
+        // Where qmlcachegen is absent this is simply skipped: the emitted D already calls the
+        // runtime (bindJs/runJs/callJsFunc) for every shadow, which is the fallback the shadow path
+        // has always carried, so the document still works — it parses at run time instead.
+        // `path()` is Qt 6's spelling and `location()` is Qt 5's — the same question, renamed. Asking
+        // for the Qt 6 one unconditionally stopped the Qt5 build of this tool compiling, which is the
+        // second time in this session I have written a Qt6-only name into a file that must build on
+        // both. The Qt5 tool is cheap to build and fails early; it is the first check now, not the last.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const QString cachegen = QLibraryInfo::path(QLibraryInfo::LibraryExecutablesPath)
+                               + "/qmlcachegen";
+#else
+        const QString cachegen = QLibraryInfo::location(QLibraryInfo::LibraryExecutablesPath)
+                               + "/qmlcachegen";
+#endif
+        if (!QFileInfo(cachegen).isExecutable()) {
+            std::fprintf(stderr, "qmltc-d: qmlcachegen is not at %s — the shadows stay source and "
+                         "the engine parses them at run time\n", qPrintable(cachegen));
+        } else {
+            // One unit per shadow, and every path handed to the loader as its OWN argument:
+            // collapsed into one, qmlcachegen mangles them into a single symbol nothing defines.
+            const QString dir = QString::fromStdString(g_shadowDir);
+            // ONE REFUSAL MUST NOT POISON THE BATCH. The first version stopped at the first
+            // failure and left the directory inconsistent — half the units written, `all_units.cpp`
+            // still `#include`-ing one that was never produced, and the D already calling
+            // bindShadow for every expression. A real application hit it: 161 of 322 units, and a
+            // link that named every missing one. So each shadow is attempted independently and only
+            // what qmlcachegen ACCEPTED goes into all_units.cpp and the loader's resource list. A
+            // shadow left out simply has no bytecode: its bindShadow call carries the expression and
+            // falls to the engine, which is the fallback this path has always had.
+            QFile qrc(dir + "/shadows.qrc");
+            QFile units(dir + "/all_units.cpp");
+            QStringList resPaths, made;
+            bool ok = qrc.open(QIODevice::WriteOnly | QIODevice::Text)
+                   && units.open(QIODevice::WriteOnly | QIODevice::Text);
+            size_t refused = 0;
+            for (auto &u : g_shadows) {
+                if (!ok) break;
+                const QString b = QString::fromStdString(u.file);
+                QProcess cg;
+                cg.start(cachegen, {"--resource-path", "/qtdshadow/" + b,
+                                    "-o", dir + "/unit_" + b + ".cpp", dir + "/" + b});
+                cg.waitForFinished(-1);
+                if (cg.exitStatus() != QProcess::NormalExit || cg.exitCode() != 0) {
+                    std::fprintf(stderr, "qmltc-d: qmlcachegen refused %s (it falls to the engine): "
+                                 "%s\n", qPrintable(b),
+                                 cg.readAllStandardError().trimmed().constData());
+                    QFile::remove(dir + "/unit_" + b + ".cpp");   // no half-written unit behind us
+                    ++refused;
+                    continue;
+                }
+                made << b;
+                resPaths << "/qtdshadow/" + b;
+            }
+            if (ok && made.isEmpty()) {
+                std::fprintf(stderr, "qmltc-d: qmlcachegen accepted none of the %zu shadow(s)\n",
+                             g_shadows.size());
+                ok = false;
+            }
+            if (ok) {
+                qrc.write("<RCC><qresource prefix=\"/qtdshadow\">\n");
+                for (auto &b : made) {
+                    qrc.write(QString("  <file>%1</file>\n").arg(b).toUtf8());
+                    units.write(QString("#include \"unit_%1.cpp\"\n").arg(b).toUtf8());
+                }
+            }
+            if (ok) {
+                qrc.write("</qresource></RCC>\n");
+                qrc.close(); units.close();
+                QDir().mkpath(dir + "/ld");
+                // The loader's output MUST be named qmlcache_loader.cpp — that is how qmlcachegen
+                // switches modes — and it is run FROM the shadow directory, because the .qrc names
+                // its files relative to itself.
+                QProcess ld;
+                ld.setWorkingDirectory(dir);
+                ld.start(cachegen, QStringList{"--resource-name", "qmlcache_qtdshadow",
+                                               "-o", "ld/qmlcache_loader.cpp",
+                                               "--resource", "shadows.qrc"} + resPaths);
+                ld.waitForFinished(-1);
+                if (ld.exitStatus() != QProcess::NormalExit || ld.exitCode() != 0) {
+                    std::fprintf(stderr, "qmltc-d: qmlcachegen refused the loader: %s\n",
+                                 ld.readAllStandardError().trimmed().constData());
+                    ok = false;
+                }
+            }
+            if (ok)
+                std::fprintf(stderr, "qmltc-d: %s: %lld of %zu shadow(s) compiled to bytecode "
+                             "(%zu refused, those fall to the engine) — all_units.cpp and "
+                             "ld/qmlcache_loader.cpp in %s; compile both and link them beside the "
+                             "D\n", inPath, (long long) made.size(), g_shadows.size(), refused,
+                             g_shadowDir.c_str());
+            else
+                std::fprintf(stderr, "qmltc-d: %s: the %zu shadow(s) in %s stay SOURCE — the engine "
+                             "parses them at run time\n", inPath, g_shadows.size(),
+                             g_shadowDir.c_str());
+        }
     }
     qtdEmitNotice(stdout, inPath, "compiled to D");
     std::printf("module %s;\n", qPrintable(cls));
