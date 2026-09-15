@@ -16,6 +16,42 @@ command that produced it, and a three-line reproduction that a fixture can be bu
 **88% of everything the compiler refuses is a single shape: a name that belongs to another
 document.** Not eighty-seven separate gaps — one, seen from many angles.
 
+## What has since been built, and what it moved (2026-09-15, 59559c0)
+
+The largest sub-shape of rows 1 and 2 — a **member read through a name the application published**
+(`theme.ink`, `bible.<x>`: a context property, so no registry can type it) — is now COMPILED rather
+than delegated. The read goes through the meta-object off the object the context answers with, and
+its notify is connected when that name becomes reachable rather than when the code is emitted; the
+mechanism and its three measurements are in that commit, and the fixture is
+`tests/qmltc/dtypes/DCtxTheme.qml` with `qmltc-pedantic-DCtxTheme` asserting that the document
+compiles with no delegation at all.
+
+Re-measured on the same application by the session that owns it, with the tool rebuilt and the
+diagnostics recounted from scratch rather than subtracted on paper:
+
+| | before | after |
+|---|---|---|
+| expressions delegated to the engine | 339 | **214** |
+| of those, `theme.<member>` | 88 | **4** |
+| shadow documents (`bindShadow`) | 206 | **89** |
+| startup, restored→ready, engine tier | 183–191 ms | **~80 ms** |
+| startup, restored→ready, bytecode tier | 226 ms | **~86 ms** |
+| the same application, not compiled at all | 110–118 ms | 110–118 ms |
+
+The last row is the one that matters, and it is why this gap was ranked first: **compiling that
+document used to COST startup time** — the compiler was adding machinery (an engine expression or a
+bytecode unit per refusal) to a document that stayed interpreted, and the arithmetic of 68% refusals
+came out exactly as it had to. Both tiers are now under the interpreted time.
+
+Two readings worth keeping, because neither was obvious before the measurement. The tiers have
+converged and *crossed*: with 89 shadows the per-expression component loads cost marginally more
+than the same number of engine expressions, so the bytecode tier is no longer the faster one — it is
+the one that reads no `.qml` at run time, which is a different property and the one a strict build
+would want. And what is left is no longer one shape: the 214 spread across handlers, `Connections`
+with no id, functions with an untyped parameter, `var` initialisers, and calls on a published name
+(`theme.nameAt(i)` — a call, not a read, and still refused). Rows 1 and 2 below remain as measured
+at `7301574`; they are the baseline this table moved, not a current count.
+
 ## What was measured, and on what
 
 A real Portuguese Bible reader (`lectio`), whose interface is 12 QML documents, compiled against
