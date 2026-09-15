@@ -51,6 +51,34 @@ also what made the second type defect visible: compiling the tail is what put an
 external scope name into a comparison, where a read that answered an untyped request with `string`
 could not survive. One document had been enough to measure the gain and not enough to find the bug.
 
+### ...and on the phone, where the gain was supposed to be larger, it is smaller
+
+The desktop figures above invite one inference and it is wrong. The reason this was expected to pay
+on a phone is that the parse it removes is ~40 ms on a desktop and was estimated at ~410 ms on the
+device, so the same change should have been worth ten times more there. Measured on an SM-M625F,
+restored→ready from logcat, 8 launches, median:
+
+| | |
+|---|---|
+| interpreted | **433 ms** (398–530) |
+| qmltc, the dominant document | **392 ms** (344–785) |
+| qmltc, five documents | **404 ms** (363–457) |
+
+So about 30–40 ms, where the desktop ratio (75 against 118) projected something like 40%. The gain
+did not amplify on the slower machine — it **shrank**, and the second row explains why: compiling
+four more documents did not move the pointer, which it must have if parse were the cost being paid.
+What dominates `restored→ready` on the device is building the object tree, evaluating the bindings
+and the first layout, and a compiled document does all three — in D, on the same slow CPU. The
+~410 ms attributed to parse was mostly INSTANTIATION.
+
+**What that means for the order of the work below**, which is the only reason this file exists: the
+remaining categories are worth compiling for the property a strict build wants (no `.qml` read at run
+time) and for the desktop number, and they should not be sold as cold-start work on a device. The
+bottleneck there is not the one this compiler attacks. Whoever wants the device's cold start should
+measure the split between construction and first paint before writing any more compiler.
+
+Measured by the session that owns that application, like the rest of this section.
+
 Two readings worth keeping, because neither was obvious before the measurement. The tiers have
 converged and *crossed*: with 89 shadows the per-expression component loads cost marginally more
 than the same number of engine expressions, so the bytecode tier is no longer the faster one — it is
