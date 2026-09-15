@@ -36,12 +36,20 @@ diagnostics recounted from scratch rather than subtracted on paper:
 | shadow documents (`bindShadow`) | 206 | **89** |
 | startup, restored→ready, engine tier | 183–191 ms | **~80 ms** |
 | startup, restored→ready, bytecode tier | 226 ms | **~86 ms** |
+| ...engine tier, with the four tail documents compiled too | — | **~75 ms** |
 | the same application, not compiled at all | 110–118 ms | 110–118 ms |
 
 The last row is the one that matters, and it is why this gap was ranked first: **compiling that
 document used to COST startup time** — the compiler was adding machinery (an engine expression or a
 bytecode unit per refusal) to a document that stayed interpreted, and the arithmetic of 68% refusals
 came out exactly as it had to. Both tiers are now under the interpreted time.
+
+The `~75 ms` row is the same application with its four tail documents (a leaf, a selection bar, a
+tooltip, a page turn) compiled as well as the dominant one, and it is there because the 5 ms it buys
+is the honest size of that tail ON A DESKTOP — where the parse it removes is ~40 ms in total. It is
+also what made the second type defect visible: compiling the tail is what put an `int` member of an
+external scope name into a comparison, where a read that answered an untyped request with `string`
+could not survive. One document had been enough to measure the gain and not enough to find the bug.
 
 Two readings worth keeping, because neither was obvious before the measurement. The tiers have
 converged and *crossed*: with 89 shadows the per-expression component loads cost marginally more
