@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
+# Mutates the PUBLISHED object, not this document's own properties: `retheme()` is a slot of the D
+# base type that writes theme.paper and theme.ink and emits both notify spellings. A compiled read
+# that never connected keeps the old colour here while the engine shows the new one.
+retheme()

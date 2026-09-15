@@ -2353,6 +2353,25 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
         "clang++ " ~ pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 " ~ cxxPic() ~ " -O2 "
         ~ "-DQTD_QMLVALUES_NO_MAIN -c " ~ oracleCpp ~ " -o $out", [Target(oracleCpp)]);
 
+    // A DOCUMENT THAT DELEGATES NEEDS AN APPLICATION OBJECT, and this corpus never linked the helper
+    // that provides one: the generated main calls qtd_qmltc_init_gui_app() as soon as any binding
+    // goes to the engine (an engine cannot exist without an application), so the first fixture here
+    // with a delegated read did not link at all — `undefined reference to qtd_qmltc_init_gui_app`,
+    // about a corpus whose every previous document compiled whole. The same target the quick corpus
+    // uses, memoised by build directory so the two consumers share one rule rather than each
+    // declaring how to build the same file.
+    auto appCpp = buildPath(here, "qtd_qmltc_app.cpp");
+    auto appObj = buildPath(bind.bdir, "qtd_qmltc_app.o");
+    auto appHelper = () {
+        if (auto p = bind.bdir in _qmltcAppObjs) return *p;
+        auto t = Target(appObj, guarded(appObj ~ ".lock",
+            "clang++ " ~ pkgCflags(["Qt6Qml", "Qt6Gui", "Qt6Core"]) ~ " -std=c++17 " ~ cxxPic()
+            ~ " -O2 -c " ~ appCpp ~ " -o " ~ appObj, null, appObj, [appCpp]),
+            [Target(appCpp)]);
+        _qmltcAppObjs[bind.bdir] = t;
+        return t;
+    }();
+
     Target[] ts;
     auto corpus = dirEntries(dir, "*.qml", SpanMode.shallow).map!(e => fwdSlash(e.name)).array;
     corpus.sort();
@@ -2394,10 +2413,11 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
                 gdCmd = toolBin ~ " --dump " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > $out";
             auto gd = Target(genD, gdCmd, [tool, Target(qmlFile), types]);
             auto appBin = buildPath(bind.bdir, "qmltcd_" ~ name ~ "_" ~ dc ~ "_check");
-            auto appCmd = dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ genD ~ " " ~ appD ~ dcLink;
+            auto appCmd = dc ~ " -of=$out" ~ dSupport(root) ~ " " ~ genD ~ " " ~ appD ~ " "
+                ~ appObj ~ dcLink;
             auto app = Target(appBin, guardedLink(appBin ~ ".lock", appCmd, appBin,
-                [genD, appD, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"), buildPath(bind.bdir, "libshims.a")]),
-                [gd, Target(appD), qtdBindLib(bind, dc), bind.shims]);
+                [genD, appD, appObj, buildPath(bind.bdir, "libbinding_" ~ dc ~ ".a"), buildPath(bind.bdir, "libshims.a")]),
+                [gd, Target(appD), appHelper, qtdBindLib(bind, dc), bind.shims]);
             // 4) run both over the SAME .qml and diff (same --labels/--props protocol as the corpus).
             auto a = genD ~ ".dvals", b = genD ~ ".qmlvals", props = genD ~ ".props";
             auto mkProps = toolBin ~ " --labels " ~ qmlFile ~ " " ~ name ~ dtypesArg ~ " > " ~ props ~ " 2>/dev/null; ";
@@ -2418,6 +2438,30 @@ Target[] qmltcDTypeTargets(string root, QtdBinding bind) {
                     ~ " && diff " ~ a ~ " " ~ b
                     ~ " && echo \"qmltcd " ~ name ~ " (" ~ dc ~ "): $(wc -l < " ~ a ~ ") value lines match the engine\"'";
             ts ~= Target.phony("qmltcd-" ~ name ~ "-" ~ dc, dCmd, [app, oracle, tool]);
+            // ...AND, FOR NAMED DOCUMENTS, THAT NOTHING WAS DELEGATED. The differential above
+            // compares VALUES, and a delegated read produces the right value — the engine evaluates
+            // it, which is the whole point of the tier. So a value match cannot tell "compiled" from
+            // "handed to the engine", and for a fixture whose subject IS the compiling it has to be
+            // said separately: `--pedantic` makes a delegation an error. Named documents only, for
+            // the same reason the controls corpus does it that way.
+            if (name == "DCtxTheme" && dc == "ldc2") {
+                auto pargs = ["--pedantic", "--dump", qmlFile, name, "--dtypes", typesFile, "apptypes"];
+                auto plabel = "qmltc-pedantic " ~ name ~ ": compiled with no delegation";
+                string pcmd;
+                version (Windows) {
+                    auto pout = buildPath(bind.bdir, "pedantic-" ~ name ~ ".d");
+                    pcmd = psInline(root, "qmltc-pedantic-" ~ name, [
+                        psRedirect(toolBin, pargs, pout),
+                        "Write-Output ('" ~ plabel ~ " (' + (Get-Content -LiteralPath '"
+                            ~ pout ~ "').Count + ' lines emitted)')",
+                    ], bind.mods);
+                } else {
+                    pcmd = "sh -c 'OUT=$(" ~ toolBin ~ " " ~ pargs.join(" ") ~ ")"
+                         ~ " && echo \"" ~ plabel ~ " ($(printf %s \"$OUT\" | wc -l) lines emitted)\"'";
+                }
+                ts ~= Target.phony("qmltc-pedantic-" ~ name, pcmd, [Target(qmlFile), tool, types]);
+            }
+
             // 5) LIVE-binding differential: mutate both, re-diff. A binding that lost its
             //    connection to the BASE type's notify signal diverges here.
             auto setFile = buildPath(dir, name ~ ".set");

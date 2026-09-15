@@ -219,6 +219,13 @@ static std::map<std::string, std::string> g_funcRet;
 // gave `function dateActive is not callable using argument types (int, int, int)`, in two documents
 // of a real application. An empty type in a slot means "that one crosses as a QVariant".
 static std::map<std::string, std::vector<std::pair<std::string, std::string>>> g_funcParams;
+// Whether any read in this run went through a PUBLISHED name (scopeObj/scopeNotify). Run-wide on
+// purpose, like g_skippedComponentChild: it answers one question for the whole emitted file — does
+// this document need a QML engine to be correct — and the answer is read once, by the dump main,
+// which must create an application object for it. A compiled scope read with no QCoreApplication
+// resolves to null forever: attachContext is a no-op without one, so there is no context to ask and
+// the value stays empty. Measured exactly that way before this existed.
+static bool g_usedScopeRead = false;
 
 // Property names a no-arg function reads, so a binding calling `f()` becomes reactive to them
 // (transitive dependency). Scoped per object.
@@ -2979,6 +2986,52 @@ static std::string modelRoleRead(const QString &dtype, const std::string &keyExp
     return "";
 }
 
+// A NAME NOTHING IN THIS DOCUMENT CAN ANSWER, and therefore one the CONTEXT answers.
+//
+// This is the same conclusion the delegation path reaches by a different route — there it is
+// `!objPathExpr(id, …)`, "resolves nowhere", and the expression is handed to the engine with a
+// scopePromise. Said as a predicate on the NAME so a compiled read can ask it too, and kept to the
+// tables objPathExpr itself consults, so the two cannot disagree about what a scope name is.
+//
+// The exclusions after those tables are the names that resolve nowhere AS PROPERTIES but are not
+// context names either: a type, an attached type, an import alias (each has its own branch above),
+// and the JS/QML globals this compiler compiles itself. Without them `Qt.platform` would have been
+// read as the member `platform` of a published object called `Qt`.
+static bool isScopeName(const std::string &n) {
+    if (n.empty() || isSelfId(n)) return false;
+    // ...in scope HERE: an id, a value group, a property this object declares, a function's own
+    // parameter (a body is compiled with its parameters in scope, and one may well be an object).
+    if (g_scope.count(n) || g_childIds.count(n) || g_vgroups.count(n) || g_propType.count(n))
+        return false;
+    for (auto &fp : g_funcParams)
+        for (auto &p : fp.second) if (p.first == n) return false;
+    // ...or in scope one or more frames OUT: an enclosing object's id, its declaration, or a sibling.
+    { std::string pre; const OuterFrame *fr = nullptr; if (outerHop(n, pre, &fr)) return false; }
+    { std::string oq; if (objPropQml(g_selfQmlType, n, oq)) return false; }
+    for (auto &f : g_outerChain) {
+        std::string oq;
+        if (objPropQml(f.qmlType, n, oq) || f.propType.count(n) || f.baseProps.count(n)
+                || f.childIds.count(n) || f.instDecls.count(n)) return false;
+    }
+    // ...or a name the REGISTRY owns rather than the context.
+    if (g_qmlTypeUri.count(n) || g_qmlProps.count(n) || g_qmlMap.count(n) || g_qmlCxxType.count(n)
+            || g_qmlAttachedCxx.count(n) || g_importAliases.count(n))
+        return false;
+    // ...AND THE THREE NAMES A VIEW INJECTS, which resolve but not to an OBJECT. `modelData` for a
+    // model of JS objects (`model: [ { r: "aaa" } ]`) is a JS value, so a compiled read of
+    // `modelData.r` finds no QObject to ask, aborts, and writes nothing — where the engine reads the
+    // key. Measured: QDelegateSibWidth's row went from 114.328125 to 0, because every cell sized
+    // itself from a label whose text had vanished. They stay delegated, which is what they were, and
+    // it is the same special case the delegation path already makes for exactly these three.
+    if (n == "model" || n == "modelData" || n == "index") return false;
+    static const std::set<std::string> jsGlobals = {
+        "Qt", "Math", "JSON", "console", "String", "Number", "Boolean", "Date", "Object", "Array",
+        "RegExp", "Error", "parseInt", "parseFloat", "isNaN", "isFinite", "undefined", "null",
+        "NaN", "Infinity", "encodeURIComponent", "decodeURIComponent", "escape", "unescape",
+    };
+    return !jsGlobals.count(n);
+}
+
 static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &out) {
     if (!e) return false;
     if (auto *nested = cast<NestedExpression *>(e)) {
@@ -3859,6 +3912,38 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             std::string b;
             if (!namesVar(fm->base) && compileExpr(fm->base, "string", b))
                 { out = "cast(int)(" + b + ".length)"; return true; }
+        }
+        // A MEMBER OF A NAME THE APPLICATION PUBLISHED, which is the LAST thing tried and the
+        // commonest thing refused. `theme.paper`: `theme` resolves to nothing here — not an id, not
+        // a property, not a type, not an enclosing frame — because it is a CONTEXT property, set by
+        // the program on the engine's root context. Every branch above has already declined, so by
+        // elimination this is a name the context answers, which is the same conclusion the engine
+        // reaches for it.
+        //
+        // Measured on one real reader's Main.qml: 75 of 210 refused expressions have such a name at
+        // their head, 91 mentions of `theme.<member>` alone (paper 22, ink 21, accent 20, muted 16).
+        // Refusing them is why that document arrived at the engine almost whole, and why compiling
+        // it COST startup time instead of saving it (118 ms interpreted against 226 ms compiled) —
+        // the machinery was being added to a document that stayed interpreted.
+        //
+        // The TYPE was never what was missing, and no flag is added here to declare one. Three
+        // mechanisms answer this and each already existed: scopeObj resolves the object the way the
+        // engine does (QQmlContext::contextProperty, then up the tree), propAny reads the member by
+        // name and THROWS when the receiver is null or the member absent — so the binding aborts and
+        // writes nothing, which is what the engine does with `undefined.x` — and scopeNotify
+        // connects the member's notify once the name becomes reachable, because during the wire it
+        // is not. See collectIds for the dependency and the `@scope ` consumer for the connect.
+        if (auto *sid = cast<IdentifierExpression *>(fm->base)) {
+            const std::string sn = qs(sid->name.toString());
+            std::string sdt = dtype.isEmpty() ? std::string("string") : dtype.toStdString();
+            if (sdt == "color" || sdt == "url") sdt = "string";   // both cross as text, as ever
+            const bool scalar = sdt == "string" || sdt == "double" || sdt == "bool" || sdt == "int";
+            if (scalar && isScopeName(sn)) {
+                g_usedScopeRead = true;
+                out = "propAny!" + sdt + "(scopeObj(this, \"" + sn + "\"), \""
+                    + qs(fm->name.toString()) + "\")";
+                return true;
+            }
         }
         return false;
     }
@@ -4773,6 +4858,14 @@ static void collectIds(ExpressionNode *e, std::vector<std::string> &ids) {
                      return path7(fm, dp7) && objPathFromString(dp7, oe7, sig7);
                  }())
             ids.push_back(dp7);
+        // A MEMBER OF A PUBLISHED NAME, recorded as its own KIND of dependency. It cannot be
+        // written as a path like the ones above: nothing resolves the head, so every resolver in the
+        // wiring declines it and it would end up recorded as the bare head — which has no notify
+        // anywhere and would be reported as "no known notify" for a member that has one. The tag
+        // says which rule owns it; see the `@scope ` consumer.
+        else if (auto *sidD = cast<IdentifierExpression *>(fm->base);
+                 sidD && isScopeName(qs(sidD->name.toString())))
+            ids.push_back("@scope " + qs(sidD->name.toString()) + "." + qs(fm->name.toString()));
         else collectIds(fm->base, ids);   // e.g. `title.length` depends on title
         return;
     }
@@ -10098,6 +10191,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
             std::string sibConns;
             for (auto &d : deps) {
                 if (d == ba.first || !seen.insert(d).second) continue;   // self-reference is not a dep
+                // `@scope <name>.<member>` — a member of a name the APPLICATION published. The
+                // object is not reachable while this runs (the context chain only answers once the
+                // tree exists), so there is nothing to connect to yet: the request is queued and the
+                // runtime connects — and re-runs this slot once — when the name arrives. See
+                // qtd_scope_notify. It goes with the SIBLING connects for the same reason they wait.
+                if (d.rfind("@scope ", 0) == 0) {
+                    const std::string rest = d.substr(7);
+                    const auto dotS = rest.find('.');
+                    if (dotS != std::string::npos) {
+                        sibConns += "        scopeNotify(this, \"" + rest.substr(0, dotS) + "\", \""
+                              + rest.substr(dotS + 1) + "\", \"" + "__rcb_" + ba.first + "()\");\n";
+                        continue;
+                    }
+                }
                 // `@Type.prop` — an ATTACHED read: connect to the attached object's own notify.
                 if (d.rfind("@", 0) == 0) {
                     auto dot = d.find('.');
@@ -10839,6 +10946,20 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
         std::string sibConns;
         for (auto &d : deps) {
             if (!seen.insert(d).second) continue;
+            // `@scope <name>.<member>` — a member of a name the APPLICATION published. The
+            // object is not reachable while this runs (the context chain only answers once the
+            // tree exists), so there is nothing to connect to yet: the request is queued and the
+            // runtime connects — and re-runs this slot once — when the name arrives. See
+            // qtd_scope_notify. It goes with the SIBLING connects for the same reason they wait.
+            if (d.rfind("@scope ", 0) == 0) {
+                const std::string rest = d.substr(7);
+                const auto dotS = rest.find('.');
+                if (dotS != std::string::npos) {
+                    sibConns += "        scopeNotify(this, \"" + rest.substr(0, dotS) + "\", \""
+                          + rest.substr(dotS + 1) + "\", \"" + slot + "()\");\n";
+                    continue;
+                }
+            }
             if (d.rfind("__outer.", 0) == 0 && !outerDepIsPath(d)) {
                 std::string obj, mem, sig; const OuterFrame *fr = nullptr;
                 if (!splitOuterDep(d, obj, mem, &fr)) continue;
@@ -11871,6 +11992,16 @@ static ObjNode compileObject(UiObjectInitializer *init, const std::string &cls,
                 lateWire += "        __rcd_" + p.name + "();\n";
             }
             for (auto &d : p.deps) {
+                // `@scope <name>.<member>` — see the other two consumers: queued, connected and
+                // re-run by the runtime when the published name becomes reachable.
+                if (d.rfind("@scope ", 0) == 0) {
+                    const std::string rest = d.substr(7);
+                    if (const auto dotS = rest.find('.'); dotS != std::string::npos) {
+                        wire += "        scopeNotify(this, \"" + rest.substr(0, dotS) + "\", \""
+                              + rest.substr(dotS + 1) + "\", \"__rc_" + p.name + "()\");\n";
+                        continue;
+                    }
+                }
                 if (isProp(d)) {   // a property of THIS object: qmltc-d named its notify <p>Changed
                     wire += "        connectMeta(this, \"" + d + "Changed()\", this, \"__rc_" + p.name + "()\");\n";
                     continue;
@@ -13400,7 +13531,8 @@ int main(int argc, char **argv) {
     // ...and so does a document that DELEGATES a binding to the engine: a QQmlEngine cannot exist
     // before the application object, so with none the expression has no context to evaluate in and
     // the binding silently does nothing (measured: the value stayed empty against the engine's).
-    if (!bt.first.empty() || g_delegated) std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
+    if (!bt.first.empty() || g_delegated || g_usedScopeRead)
+        std::printf("extern(C) void qtd_qmltc_init_gui_app();\n");
     // --render draws the object into a PNG; the helper lives in the test harness, so the
     // declaration is only emitted where the mode can actually be used.
     if (isItemType(rootType)) {
@@ -13425,7 +13557,8 @@ int main(int argc, char **argv) {
         std::printf("    import std.stdio : writefln; import std.conv : to; import std.string : indexOf;\n    import std.algorithm : map; import std.array : join;\n");
         // A bound-type subclass is constructed with `new` (the mixin ctor builds the trampoline);
         // a fresh @QObject uses newQObject!T.
-        if (!bt.first.empty() || g_delegated) std::printf("    qtd_qmltc_init_gui_app();\n");
+        if (!bt.first.empty() || g_delegated || g_usedScopeRead)
+            std::printf("    qtd_qmltc_init_gui_app();\n");
         if (g_needsModuleRegistration) {
             std::string sym = g_qmlUri;
             for (auto &c : sym) if (c == '.') c = '_';
@@ -13465,6 +13598,14 @@ int main(int argc, char **argv) {
         // (imperative binding installs, resets, counters). Everything else is `name=value`.
         for (auto &m : rootNode.methods0)
             std::printf("        if (a == \"%s()\") { o.%s(); continue; }\n", m.c_str(), m.c_str());
+        // ...and any OTHER no-arg method the object answers to, through the meta-object. The ORACLE
+        // has always done this (QMetaObject::invokeMethod on whatever the name is), and this side
+        // only knew the methods the DOCUMENT declares — so a `.set` naming a slot of the D BASE type
+        // mutated the engine's object and not ours, and the two sides differed for a reason that had
+        // nothing to do with the compiler. A mutation channel that reaches only one side of a
+        // differential is worse than none.
+        std::printf("        if (a.length > 2 && a[$ - 2 .. $] == \"()\")"
+                    " { invoke0(o, a[0 .. $ - 2]); continue; }\n");
         std::printf("        auto i = a.indexOf('='); if (i < 0) continue;\n");
         std::printf("        auto k = a[0 .. i]; auto v = a[i + 1 .. $];\n");
         for (auto &l : lines) {   // dynamic mutation of any int/double/bool/string prop (via meta, dotted path)

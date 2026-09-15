@@ -44,5 +44,20 @@
 # Neither is saved/restored, and for once that is the right granularity rather than an omission: the
 # dump is emitted for the whole tree, and a Component skipped inside a LOCAL TYPE shifts the nested
 # `data[N]` paths of that type in the same dump. Run-wide is the scope the question actually has.
-globals 106
+# RAISED AGAIN 2026-09-14, +1 global, no new save site:
+#   * g_usedScopeRead — whether any read in this run went through a name the APPLICATION published
+#     (`theme.paper`, where `theme` is a context property). Run-wide, like g_skippedComponentChild
+#     above, and for the same reason: it answers one question about the whole emitted file — does
+#     this document need a QML engine to be correct — and exactly one place reads it, the dump main,
+#     which must then create the application object. Not per-object state, so not saved: a document
+#     that needs an engine anywhere needs it for the program.
+#
+#     It is state rather than an argument because the reader is nowhere near the writer: the branch
+#     that emits the read is in compileExpr, the consumer prints `main` thousands of lines later, and
+#     threading a flag back through every caller between them would be the same context with more
+#     places to forget it. Measured cost of NOT having it: the generated main created no
+#     QCoreApplication, so attachContext was a no-op, there was no context to resolve the published
+#     name in, and every such read answered null forever — the fixture's values were empty on the
+#     compiled side while the engine read them correctly.
+globals 107
 ctxsaves 54

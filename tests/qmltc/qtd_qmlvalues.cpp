@@ -84,10 +84,17 @@ static std::string fmt(const QVariant &v) {
 // The oracle body is a callable ENTRY POINT, not `main`, so a D driver can register the app's
 // D-defined QML types (qmlRegisterType!T) and THEN hand over to exactly this code — the same
 // walk/format/dump the C++-only oracle has been running. `main` below keeps the plain C++ use.
+// THE ENGINE, OFFERED TO WHOEVER DRIVES THIS. The oracle owns its engine and creates it here, four
+// lines before it is needed — but a D driver that publishes a CONTEXT PROPERTY has to reach that
+// engine, and it runs before this function is even entered. So the engine is handed out through a
+// hook the driver may set (qtd_qmlvalues_d.d sets it to the runtime's own hand-over, which then
+// drains whatever the app queued). Null for the plain C++ use, where there is nothing to publish.
+extern "C" void (*qtd_qmlvalues_on_engine)(void *) = nullptr;
 extern "C" int qtd_qmlvalues_main(int argc, char **argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: %s <file.qml>\n", argv[0]); return 2; }
     QGuiApplication app(argc, argv);
     QQmlEngine engine;
+    if (qtd_qmlvalues_on_engine) qtd_qmlvalues_on_engine(&engine);
     QQmlComponent comp(&engine, QUrl::fromLocalFile(argv[1]));
     if (comp.isError()) {
         for (const auto &e : comp.errors()) std::fprintf(stderr, "%s\n", qPrintable(e.toString()));

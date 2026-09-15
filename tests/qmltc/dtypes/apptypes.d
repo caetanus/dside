@@ -20,12 +20,54 @@ import qtmoc;
     @Property("valueChanged") int value = 0;
     @Property("labelChanged") string label = "";
     @Slot void bump() { value = value + 1; valueChanged.emit(); }
+    /// CHANGES THE PUBLISHED OBJECT, which is the only way a differential can ask whether a compiled
+    /// read of `theme.<member>` is LIVE or a one-shot snapshot. Invoked by name on the root from the
+    /// `.set` file, on both sides: the engine re-evaluates its binding, and ours has to hear the
+    /// notify the runtime connected when the name resolved. Without this the fixture proves the
+    /// value is right once and says nothing about whether it stays right.
+    @Slot void retheme() {
+        appTheme.paper = "#ffffff";
+        appTheme.paperChanged.emit();
+        appTheme.ink = "#101010";
+        appTheme.changed.emit();
+    }
 }
 
 /// A second type, to prove the registry is a table and not a special case.
 @QObject class Meter {
     Signal!() readingChanged;
     @Property("readingChanged") double reading = 0.0;
+}
+
+/// AN OBJECT THE APPLICATION PUBLISHES BY NAME, not a type QML instantiates — a palette, which is
+/// what a real application's `theme` is. It is here rather than in the type list above because a
+/// context property is a different thing from a registered type: nothing in the document names
+/// `Theme`, and the compiler cannot look the name up in any registry. What it CAN do is what the
+/// engine does — ask the context at run time and read the member through the meta-object — and that
+/// is what the fixture beside this measures.
+///
+/// One notify for the whole object (`changed`) as well as per-property ones, because both spellings
+/// occur in the wild and a reader has to try both.
+@QObject class Theme {
+    Signal!() changed;
+    Signal!() paperChanged;
+    @Property("paperChanged") string paper = "#fdf6e3";
+    @Property("changed") string ink = "#073642";
+    @Property("changed") int steps = 3;
+}
+
+/// ...and the publication itself, in a MODULE CONSTRUCTOR, so it happens in every program this
+/// module is linked into — the compiled fixture and the oracle both — with no driver having to
+/// remember. There is no engine yet at this point and there does not need to be: the name is queued
+/// and applied to whichever engine appears first. See publishContext.
+__gshared Theme appTheme;
+shared static this() {
+    // `newQObject!T`, not `new T`: a D-defined @QObject's C++ carrier is built by the factory (it is
+    // what registers the instance and hands it a QMetaObject), and `new` alone leaves `qobjOf` null.
+    // Measured — the first version of this published a null and BOTH sides of the differential then
+    // answered `Cannot read property 'paper' of null`, which compared equal and looked green.
+    appTheme = newQObject!Theme();
+    publishContext("theme", appTheme);
 }
 
 /// ONE list, two consumers — the registry can never drift from what is registered:

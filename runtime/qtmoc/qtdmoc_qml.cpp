@@ -461,6 +461,7 @@ static bool qtd_resolve_scope(QObject* from, const QByteArray& prop, QVariant& o
 static int g_promiseRetries = 0;   // consecutive drains that resolved nothing
 static bool g_promiseRetryArmed = false;
 static void qtd_drain_promises();
+static void qtd_drain_scope_conns();   // the compiled reads waiting on the same names, below
 static void qtd_drain_promises() {
     auto& v = qtd_promises();
     for (int i = 0; i < v.size();) {
@@ -486,6 +487,9 @@ static void qtd_drain_promises() {
         g_promiseRetries = 0;   // progress: the tree is still growing, keep trying for the rest
         v.removeAt(i);
     }
+    // ...and the COMPILED reads waiting on the same names, for the same reason and on the same
+    // schedule. One drain, two lists: a name becomes reachable for both at the same instant.
+    qtd_drain_scope_conns();
     // A name that stays unreachable is the compiler's remaining gap, and it is invisible from the
     // JS side: the binding says "of undefined" and names the PROPERTY, never the scope name that
     // failed. Asked for by name so it costs nothing when it is not.
@@ -602,6 +606,94 @@ extern "C" void* qtd_scope_promise(void* o, const char* prop) {
     return map;
 #else
     (void) o; (void) prop; return nullptr;
+#endif
+}
+
+// THE OBJECT A SCOPE NAME STANDS FOR, for code that was COMPILED rather than delegated.
+//
+// `theme.paper` — where `theme` is a name the application published and no registry can type — was
+// refused outright, and that one shape is most of what this compiler refuses on a real application:
+// 75 of 210 refused expressions in one reader's Main.qml, 91 mentions of `theme.<member>`. The type
+// was never the missing part. The engine answers such a read by asking the CONTEXT for the object
+// and then reading the member off it, and both halves already exist here: qtd_resolve_scope is the
+// same context lookup the promise uses, and the meta-object reads a member by name.
+//
+// Null when the name is not reachable YET, which is the normal case during the wire: a compiled read
+// is `propAny!T(scopeObj(...), "paper")`, and propAny throws QmlNullDeref on a null receiver, which
+// is what makes the binding abort and write nothing — the engine's own behaviour for `undefined.x`.
+// The value arrives when the name does; see qtd_scope_notify.
+extern "C" void* qtd_scope_object(void* o, const char* name) {
+#ifdef QTD_HAVE_QML
+    if (!o || !name) return nullptr;
+    QVariant v;
+    if (!qtd_resolve_scope(static_cast<QObject*>(o), QByteArray(name), v)) return nullptr;
+    if (!v.isValid()) return nullptr;          // not reachable yet — the normal answer during a wire
+    // ...RESOLVED, BUT NOT TO AN OBJECT, which is a different thing and must not pass for the first.
+    // A published name may hold a JS value or a map (`modelData` for a model of JS objects), and a
+    // member of one of those is not something a meta-object read can answer: the binding will abort
+    // and write nothing where the engine reads a key. That is a silent wrong value, so it says so —
+    // once per name, because a binding re-evaluates.
+    if (!v.canConvert<QObject*>()) {
+        static QSet<QByteArray> told;
+        if (!told.contains(QByteArray(name))) {
+            told.insert(QByteArray(name));
+            std::fprintf(stderr, "qtd_scope_object: '%s' resolved to %s, which is not an object — a "
+                         "compiled member read of it writes nothing (the engine would read a key)\n",
+                         name, v.typeName() ? v.typeName() : "?");
+        }
+        return nullptr;
+    }
+    return v.value<QObject*>();
+#else
+    (void) o; (void) name; return nullptr;
+#endif
+}
+
+#ifdef QTD_HAVE_QML
+extern "C" int qtd_connect_by_name(void* sndrV, const char* signalName, void* recvV, const char* slot);
+namespace {
+// One request to keep a compiled read of `<name>.<prop>` current. The asker is held weakly: it may
+// die before the name it is waiting for ever resolves.
+struct QtdScopeConn { QPointer<QObject> asker; QByteArray name, prop, slot; };
+}
+static QList<QtdScopeConn>& qtd_scope_conns() { static QList<QtdScopeConn> v; return v; }
+
+// WHEN, not whether. This is the whole difficulty of compiling a read through a published name: the
+// object is not reachable while the wire runs (the context is hung off the engine's root in the
+// constructor, and an ancestor's context only becomes reachable once the tree exists), so a connect
+// made at emit time connects to nothing and the first read is null. So the request is QUEUED and
+// retried by the same drain the promises use — every finalization, and once more after the event
+// cycle. When it lands, the slot is invoked ONCE: that is the evaluation that finally has a value.
+//
+// Both notify spellings are tried, because both occur: a per-property `<prop>Changed()` and the
+// object's own `changed()`. Neither being present is not a failure — it is a value that cannot
+// change, which the engine cannot follow either.
+static void qtd_drain_scope_conns() {
+    auto& v = qtd_scope_conns();
+    for (int i = 0; i < v.size();) {
+        QObject* asker = v[i].asker.data();
+        if (!asker) { v.removeAt(i); continue; }          // the reader is gone; so is the request
+        QObject* owner = static_cast<QObject*>(qtd_scope_object(asker, v[i].name.constData()));
+        if (!owner) { ++i; continue; }                    // not reachable yet — try again later
+        const QByteArray sig = v[i].prop + "Changed";
+        qtd_connect_by_name(owner, sig.constData(), asker, v[i].slot.constData());
+        qtd_connect_by_name(owner, "changed", asker, v[i].slot.constData());
+        QByteArray slot = v[i].slot;
+        if (int cut = slot.indexOf('('); cut >= 0) slot.truncate(cut);
+        v.removeAt(i);
+        QMetaObject::invokeMethod(asker, slot.constData(), Qt::DirectConnection);
+    }
+}
+#endif
+
+extern "C" void qtd_scope_notify(void* o, const char* name, const char* prop, const char* slot) {
+#ifdef QTD_HAVE_QML
+    if (!o || !name || !prop || !slot) return;
+    qtd_scope_conns().append({QPointer<QObject>(static_cast<QObject*>(o)),
+                              QByteArray(name), QByteArray(prop), QByteArray(slot)});
+    qtd_drain_scope_conns();   // it may already be reachable
+#else
+    (void) o; (void) name; (void) prop; (void) slot;
 #endif
 }
 

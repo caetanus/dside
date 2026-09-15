@@ -1750,6 +1750,35 @@ int bindShadow(T, A...)(T o, string prop, string url, string src, string[] ids, 
                            ns.ptr, ps.ptr, cast(int) A.length);
 }
 
+private extern(C) void* qtd_scope_object(void*, const(char)*);
+private extern(C) void qtd_scope_notify(void*, const(char)*, const(char)*, const(char)*);
+/// The OBJECT a scope name stands for — a name this document does not declare and the application
+/// published (`theme`, `bible`), resolved the way the engine resolves it: up the context chain.
+///
+/// Null while the name is not reachable, which during the wire is the normal answer. That is not a
+/// failure and must not be papered over: the generated read is `propAny!T(scopeObj(...), "x")`, and
+/// propAny throws on a null receiver so the binding aborts and writes nothing — exactly what the
+/// engine does with `undefined.x`. [scopeNotify] is what brings the value in when the name arrives.
+void* scopeObj(T)(T o, string name) {
+    return qtd_scope_object(qobjOf(o), (name ~ "\0").ptr);
+}
+
+/// Keep such a read current: when `name` resolves, connect the member's notify (both spellings) to
+/// `slot` on `o` and run `slot` once — the evaluation that finally has a value. Queued until then.
+void scopeNotify(T)(T o, string name, string prop, string slot) {
+    qtd_scope_notify(qobjOf(o), (name ~ "\0").ptr, (prop ~ "\0").ptr, (slot ~ "\0").ptr);
+}
+
+private extern(C) void qtd_publish_context(const(char)*, void*);
+/// Publish `obj` to QML under `name`, as a CONTEXT PROPERTY — the way an application hands QML an
+/// object it owns (`theme`, `bible`) rather than a type QML instantiates.
+///
+/// It may be called before there is a QCoreApplication, which is where a program naturally wants to
+/// say it: the name is queued and applied the first time an engine exists. See qtd_publish_context.
+void publishContext(T)(string name, T obj) {
+    qtd_publish_context((name ~ "\0").ptr, qobjOf(obj));
+}
+
 extern(C) void* qtd_make_component(const(char)*, const(char)*, const(char)*, const(char)*);
 // The QQmlComponent for a compiled delegate class: `uri`/`typeName` are what the generated code
 // registered it as. Returned as an opaque pointer — the caller wraps it in whatever QQmlComponent

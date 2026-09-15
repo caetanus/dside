@@ -1263,9 +1263,43 @@ extern "C" int qtd_connect_notify(void* ownerV, const char* prop, void* recvV, c
 //
 // So the application may name one. Nothing changes for a program that does not.
 static QQmlEngine* g_qtdEngine = nullptr;
+#ifdef QTD_HAVE_QML
+// A NAME THE APPLICATION PUBLISHES, QUEUED UNTIL THERE IS AN ENGINE TO PUT IT ON.
+//
+// A context property is how an application hands QML an object it owns — `theme`, `bible` — and
+// every expression that reads one is at the mercy of WHEN it was published. The natural place for a
+// program to say it is before anything else happens, which is before QCoreApplication exists, and a
+// QQmlEngine cannot be built that early (it qFatals). So it is a QUEUE: said whenever the program
+// likes, applied the first time an engine is asked for or handed over.
+//
+// It is also the one place both sides of the differential can share. The oracle builds its own
+// QQmlEngine and hands it here; the compiled program uses the engine below. One list, drained onto
+// whichever exists, so a published name cannot be on one side and missing from the other.
+static QList<QPair<QByteArray, QObject*>>& qtd_pending_ctx() {
+    static QList<QPair<QByteArray, QObject*>> v; return v;
+}
+static void qtd_drain_pending_ctx(QQmlEngine* eng) {
+    if (!eng) return;
+    auto& v = qtd_pending_ctx();
+    for (const auto& p : v)
+        eng->rootContext()->setContextProperty(QString::fromUtf8(p.first), p.second);
+    v.clear();
+}
+#endif
+extern "C" void qtd_publish_context(const char* name, void* obj) {
+#ifdef QTD_HAVE_QML
+    if (!name || !*name) return;
+    qtd_pending_ctx().append({QByteArray(name), static_cast<QObject*>(obj)});
+    // ...and at once, when there already is an engine: a program may publish after startup.
+    if (g_qtdEngine) qtd_drain_pending_ctx(g_qtdEngine);
+#else
+    (void) name; (void) obj;
+#endif
+}
 extern "C" void qtd_set_qml_engine(void* e) {
 #ifdef QTD_HAVE_QML
     g_qtdEngine = static_cast<QQmlEngine*>(e);
+    qtd_drain_pending_ctx(g_qtdEngine);
 #else
     (void) e;
 #endif
@@ -1273,7 +1307,10 @@ extern "C" void qtd_set_qml_engine(void* e) {
 static QQmlEngine* qtd_qml_engine() {
     if (g_qtdEngine) return g_qtdEngine;
     static QQmlEngine* eng = nullptr;
-    if (!eng) eng = new QQmlEngine;   // leaked on purpose: it outlives every object pointing at it
+    if (!eng) {
+        eng = new QQmlEngine;   // leaked on purpose: it outlives every object pointing at it
+        qtd_drain_pending_ctx(eng);
+    }
     return eng;
 }
 #endif
