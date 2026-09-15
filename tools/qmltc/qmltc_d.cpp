@@ -2293,6 +2293,46 @@ static bool objPropQml(const std::string &owner, const std::string &prop, std::s
 // carries the notify. `searchIndicator` itself never changes — `implicitIndicatorHeight` on it
 // does — so connecting to the head is connecting to nothing.
 static bool objPathFromString(const std::string &dotted, std::string &objExpr, std::string &leafSig);
+// HOW DEEP A `parent` CHAIN GOES, and therefore WHICH enclosing object it names. `parent` is the
+// object this one is nested in, `parent.parent` the one above that, and so on — a chain is the only
+// spelling that names an enclosing object without naming an id, so nothing that resolves ids can
+// answer it. Returns the number of steps, or 0 for anything else.
+//
+// Said once because three rules need the same answer and only one of them had it: the member read
+// below handled `parent.<prop>` and objPathExpr handled `parent.parent` at exactly that depth, so
+// `parent.parent.<prop>` reached neither. It did not refuse — it fell through to the branch for a
+// member the TYPE does not declare, which answers in the target's own terms, and
+// `"n=" + parent.parent.rows.length` compiled to the length of the text an empty read renders as:
+// `n=0` against the engine's `n=3`, silently, on a document that compiled clean.
+static int parentChainDepth(Node *n) {
+    for (int d = 0;; ++d) {
+        if (auto *id = cast<IdentifierExpression *>(n))
+            return qs(id->name.toString()) == "parent" ? d + 1 : 0;
+        auto *fm = cast<FieldMemberExpression *>(n);
+        if (!fm || qs(fm->name.toString()) != "parent") return 0;
+        n = fm->base;
+    }
+}
+
+// ...and the FRAME it lands on, with the hops recorded exactly as an id's resolution records them.
+// A local `parent` — an id, or a property this document declares — is not the visual parent and
+// must not be read as one, which is the guard both call sites already carried.
+// `record` is false where this is only being ASKED — the `.length` guard decides whether to refuse,
+// and a question that marks the hop as needed would have the generated class carry an `__outer` it
+// never reads. Writing during a read is its own class of defect; it is a parameter so that the two
+// call sites which really do reach the frame still record the hop exactly as an id's lookup does.
+static const OuterFrame *parentChainFrame(Node *n, int *depthOut, bool record = true) {
+    const int d = parentChainDepth(n);
+    if (d <= 0 || g_scope.count("parent") || g_childIds.count("parent")) return nullptr;
+    if ((int) g_outerChain.size() < d) return nullptr;
+    if (record) {
+        g_outerUsed = true;
+        if (g_outerHopsNeeded < d - 1) g_outerHopsNeeded = d - 1;
+    }
+    if (depthOut) *depthOut = d;
+    return &g_outerChain[d - 1];
+}
+
 static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
     // `(contentItem as ListView).width` — parentheses and a type assertion wrap the object without
     // changing it, so the walk continues through both. Not unwrapping them stopped the path at the
@@ -2412,15 +2452,17 @@ static bool objPathExpr(ExpressionNode *x, std::string &oe, std::string &oq) {
         // construction, so it resolves to the back-reference, not to propObj(this,"parent")), and
         // its parent is one level further out. Reading it through the meta-object would read null
         // at wire time, which is exactly what the `parent` special case exists to avoid.
-        if (auto *bp = cast<IdentifierExpression *>(f2->base);
-                bp && qs(bp->name.toString()) == "parent"
-                && qs(f2->name.toString()) == "parent"
-                && !g_scope.count("parent") && !g_childIds.count("parent")
-                && g_outerChain.size() >= 2) {
-            g_outerUsed = true;
-            if (g_outerHopsNeeded < 1) g_outerHopsNeeded = 1;
-            oe = "__outer.__outer"; oq = g_outerChain[1].qmlType;
-            return true;
+        // ...AT ANY DEPTH, by the one rule that counts the steps: this said `>= 2` and exactly two,
+        // so a third `parent` was refused rather than resolved one frame further out.
+        {
+            int pd = 0;
+            if (const OuterFrame *pf = parentChainFrame(f2, &pd)) {
+                std::string pre;
+                for (int i = 0; i < pd; ++i) pre += "__outer.";
+                oe = pre.substr(0, pre.size() - 1);
+                oq = pf->qmlType;
+                return true;
+            }
         }
         std::string be, bq;
         if (!objPathExpr(f2->base, be, bq)) return false;
@@ -3518,25 +3560,27 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // member's TYPE is taken from the enclosing frame, which is sound because a child's visual
         // parent IS the enclosing object (Qt reparents contentItem/background to the control too),
         // and a mismatch would still convert through the QVariant rather than misread memory.
-        if (base && qs(base->name.toString()) == "parent" && !g_scope.count("parent")
-                && !g_childIds.count("parent")) {
+        // ...AND `parent.parent.<prop>`, and deeper: the rule is the same one frame further out, and
+        // having it only at depth one is what let `parent.parent.rows` fall through to the branch
+        // for a member the TYPE does not declare — which answers empty, in silence. See
+        // parentChainDepth, and tests/qmltc/quick/QParentChain.qml for the measurement.
+        if (int pdepth = 0; const OuterFrame *pfr = parentChainFrame(fm->base, &pdepth)) {
             // Fetching the object with propObj(this, "parent") reads null: Qt sets the parent
             // AFTER construction and the wire runs inside the constructor. A child's visual parent
             // IS its enclosing object here — Qt reparents contentItem/background to the control
             // too — so `parent` resolves to the same back-reference as an enclosing id, which is
             // already correct about ordering, hops and notifies. (A child reparented at runtime,
             // or one built by a Repeater, is not compiled at all, so this cannot silently drift.)
-            if (g_outerChain.empty()) return false;
             std::string mem = qs(fm->name.toString()), ty;
-            const OuterFrame &fr = g_outerChain[0];
-            g_outerUsed = true;
-            if (g_outerHopsNeeded < 0) g_outerHopsNeeded = 0;
+            const OuterFrame &fr = *pfr;
+            std::string pre;
+            for (int i = 0; i < pdepth; ++i) pre += "__outer.";
             // ...EXCEPT A `var`, whose value is not in the field: the field is a marker and the runtime owns
                 // the value, so handing it back made a member read compile to `__outer.selection.length` and
                 // D answered `no property 'length' for ... QmlVar`. Same rule readName keeps for a bare one.
                 if (!fr.baseProps.count(mem)) {
                 auto pv2 = fr.propType.find(mem);
-                if (pv2 != fr.propType.end() && pv2->second != "@var") { out = "__outer." + mem; return true; }
+                if (pv2 != fr.propType.end() && pv2->second != "@var") { out = pre + mem; return true; }
             }
             if (auto qp = g_qmlProps.find(fr.qmlType); qp != g_qmlProps.end()) {
                 auto t = qp->second.find(mem);
@@ -3545,7 +3589,7 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
             if (ty == "string" || ty == "double" || ty == "bool" || ty == "int") {
                 const char *rd = ty == "string" ? "propStr(" : ty == "double" ? "propDouble("
                                : ty == "bool" ? "propBool(" : "propInt(";
-                out = rd + std::string("__outer, \"") + mem + "\")";
+                out = rd + pre.substr(0, pre.size() - 1) + ", \"" + mem + "\")";
                 return true;
             }
             return false;
@@ -3799,10 +3843,16 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
                     return v != g_propType.end() && v->second == "@var";
                 }
                 auto *bfm = cast<FieldMemberExpression *>(bn);
-                auto *bid = bfm ? cast<IdentifierExpression *>(bfm->base) : nullptr;
-                if (!bid) return false;
-                std::string pre; const OuterFrame *fr = nullptr;
-                if (!outerHop(qs(bid->name.toString()), pre, &fr) || !fr) return false;
+                if (!bfm) return false;
+                // Whichever enclosing object the base names — by an id, or by a `parent` chain,
+                // which is the spelling that reaches no id at all.
+                const OuterFrame *fr = nullptr;
+                if (auto *bid = cast<IdentifierExpression *>(bfm->base)) {
+                    std::string pre;
+                    if (!outerHop(qs(bid->name.toString()), pre, &fr) || !fr) return false;
+                } else if (!(fr = parentChainFrame(bfm->base, nullptr, false))) {
+                    return false;
+                }
                 auto v = fr->propType.find(qs(bfm->name.toString()));
                 return v != fr->propType.end() && v->second == "@var";
             };
@@ -13249,8 +13299,32 @@ int main(int argc, char **argv) {
                 if (!ok) break;
                 const QString b = QString::fromStdString(u.file);
                 QProcess cg;
-                cg.start(cachegen, {"--resource-path", "/qtdshadow/" + b,
-                                    "-o", dir + "/unit_" + b + ".cpp", dir + "/" + b});
+                // BYTECODE, AND NOT QT'S AOT C++. What this tier needs from qmlcachegen is the
+                // COMPILED UNIT — the binding without a .qml to read — and Qt 6 additionally emits
+                // a C++ function per binding, which is a speed step over the interpreter and is
+                // where this crashed.
+                //
+                // Measured, one line of QML, nothing else in the document:
+                //     property bool onAndroid: Qt.platform.os === "android"
+                // The AOT function for that expression recurses into
+                // QJSPrimitiveValue::strictlyEquals forever — 523k frames of one address, the
+                // process dies with SIGSEGV before the window opens. It is Qt's code generation and
+                // not ours: `==` in place of `===` is fine, `String(Qt.platform.os) === "android"`
+                // is fine, the same expression as bytecode answers `false` correctly, and
+                // --validate-basic-blocks (which exists to catch an incoherent AOT function) passes
+                // it. So there is nothing here to fix and nothing to detect — a strict comparison
+                // against a value that arrives as a QJSValue is ordinary QML, and a compiler whose
+                // fallback tier can kill the program is worse than no fallback tier.
+                //
+                // It also makes the two Qt versions ONE mechanism: Qt 5's qmlcachegen has no
+                // --only-bytecode because it has no AOT to switch off, so bytecode is all that
+                // tier has ever been there. One behaviour to reason about, verified on both.
+                QStringList cgArgs{"--resource-path", "/qtdshadow/" + b,
+                                   "-o", dir + "/unit_" + b + ".cpp", dir + "/" + b};
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                cgArgs.prepend("--only-bytecode");
+#endif
+                cg.start(cachegen, cgArgs);
                 cg.waitForFinished(-1);
                 if (cg.exitStatus() != QProcess::NormalExit || cg.exitCode() != 0) {
                     std::fprintf(stderr, "qmltc-d: qmlcachegen refused %s (it falls to the engine): "
