@@ -62,28 +62,30 @@ CXX=$TC/bin/clang++
 AR=$TC/bin/llvm-ar
 SYSROOT=$TC/sysroot
 
-# THE RESOURCE DIRECTORY IS THE NDK'S, NOT THE HOST libclang'S. xiboca parses with the libclang
-# that is installed on the machine it runs on, and a compiler's BUILTIN headers - stddef.h,
-# stdarg.h, the rest - live beside that compiler rather than in the sysroot. Handed the NDK's
-# sysroot but the host compiler's idea of builtin, the first parse failed on libc++'s very first
-# include:
+# THE RESOURCE DIRECTORY IS THE HOST libclang'S, and the NDK's clang major does not have to match
+# anything. This is the CORRECTION of a rule that stood here and cost a real user an NDK download.
+#
+# What is true: a compiler's BUILTIN headers — stddef.h, stdarg.h, the rest — live beside the
+# compiler rather than in the sysroot, and they have to belong to the compiler DOING THE PARSING.
+# xiboca parses with the libclang installed on this machine, so the builtin headers that match it
+# are this machine's, not the NDK's. Handing it the NDK's set is what made the two disagree:
 #
 #     <cstddef> tried including <stddef.h> but didn't find libc++'s <stddef.h> header
+#     unknown type name 'int32_t'        (from a <stdint.h> wrapping the compiler's own defines)
 #
-# which reads like a broken NDK and is really two compilers not lining up.
-# ...AND IT HAS TO BE THE SAME CLANG MAJOR AS THE ONE DOING THE PARSING. Taking the NDK's newest
-# was not enough: the runner's NDK ships clang 21 while the host libclang xiboca is linked against
-# is 18, and clang 18 reading clang 21's builtin headers produced
-#     unknown type name 'int32_t'
-# from a <stdint.h> that is a wrapper around the compiler's own definitions. A version mismatch
-# there does not announce itself — the include resolves and defines nothing.
-HOSTCLANG=$( { llvm-config --version 2>/dev/null || ls /usr/bin/llvm-config-* 2>/dev/null |
-              sort -V | tail -1 | xargs -r -I{} {} --version; } | cut -d. -f1 )
-[ -n "$HOSTCLANG" ] || fail "cannot tell which clang libclang is" "llvm-config is not on PATH"
-RESDIR=$TC/lib/clang/$HOSTCLANG
-[ -d "$RESDIR" ] || fail \
-    "this NDK has clang $(ls "$TC"/lib/clang 2>/dev/null | tr '\n' ' ') and libclang here is $HOSTCLANG" \
-    "the parser and the builtin headers must be the same clang; pass an NDK whose lib/clang/$HOSTCLANG exists, or install a matching libclang"
+# Both were read here as "the NDK and libclang must be the same clang", and the fix written was to
+# demand `$TC/lib/clang/$HOSTCLANG` — which turns an ordinary NDK into an error. The NDK on this
+# machine ships clang 18 and the host libclang is 22, and this script refused to run at all:
+#     android: this NDK has clang 18 and libclang here is 22
+# while a working Android binding was being generated beside it with the HOST resource dir and the
+# same NDK. The sysroot supplies Android's libc and libc++; the resource dir supplies the parser's
+# own builtins; they are two different questions and only the second is about who is parsing.
+#
+# `clang -print-resource-dir` is the authoritative answer and needs no version arithmetic.
+RESDIR=$( { clang -print-resource-dir 2>/dev/null || llvm-config --libdir 2>/dev/null; } | head -1 )
+[ -n "$RESDIR" ] && [ -d "$RESDIR" ] || fail \
+    "cannot find the host clang's resource directory" \
+    "clang -print-resource-dir answered '$RESDIR'; install clang, or point RESDIR at the libclang xiboca is linked against"
 
 rm -rf "$WORK"; mkdir -p "$WORK/gen" "$WORK/ocpp" "$WORK/od"
 
@@ -105,7 +107,8 @@ s["cflags"] = ["--target=" + target, "--sysroot=" + sysroot,
               ["-I" + os.path.join(inc, m) for m in mods] + \
               ["-DQT_NO_KEYWORDS"]
 s["libs"] = []
-# The builtin headers come from the NDK's clang, not this machine's: see xiboca/emit.d.
+# The builtin headers come from the clang that PARSES — this machine's libclang — not from the
+# NDK: see the note above, which is the correction of the opposite rule.
 s["resource_dir"] = resdir
 # ...AND WHICH HEADERS ARE "QT'S". Discovery keeps a class whose declaring file contains
 # `qt_marker`, and the default is the path fragment `/qt6/` — true of a distro (/usr/include/qt6/)
