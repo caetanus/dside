@@ -3933,9 +3933,25 @@ static bool compileExpr(ExpressionNode *e, const QString &dtype, std::string &ou
         // writes nothing, which is what the engine does with `undefined.x` — and scopeNotify
         // connects the member's notify once the name becomes reachable, because during the wire it
         // is not. See collectIds for the dependency and the `@scope ` consumer for the connect.
-        if (auto *sid = cast<IdentifierExpression *>(fm->base)) {
+        //
+        // A TARGET TYPE IS REQUIRED, and defaulting it is what made this branch's first version
+        // wrong. The read is `propAny!T`, so T is named at the call site and cannot be guessed: an
+        // empty `dtype` means the CALLER has no type to offer, and a comparison is exactly that
+        // caller — "what two values are compared as is their own business", so it compiles its
+        // operands untyped FIRST and asks inferType only when that attempt FAILS. Answering the
+        // untyped attempt with `string` took that fallback away:
+        //
+        //     readonly property bool landed: !isTitle && root.landed === number
+        //     Leaf.d(630): incompatible types: `propAny(scopeObj(this,"root"),"landed") ==
+        //                  this.number`: `string` and `int`
+        //
+        // on a real document, where `landed` is an int — it survived the theme fixture only because
+        // colours are text. Declining an empty type lets the comparison do what it already knows how
+        // to do: infer `int` from the other operand and compile this read again with it. Where
+        // nothing can offer a type the expression goes to the engine, which is where it went before.
+        if (auto *sid = cast<IdentifierExpression *>(fm->base); sid && !dtype.isEmpty()) {
             const std::string sn = qs(sid->name.toString());
-            std::string sdt = dtype.isEmpty() ? std::string("string") : dtype.toStdString();
+            std::string sdt = dtype.toStdString();
             if (sdt == "color" || sdt == "url") sdt = "string";   // both cross as text, as ever
             const bool scalar = sdt == "string" || sdt == "double" || sdt == "bool" || sdt == "int";
             if (scalar && isScopeName(sn)) {

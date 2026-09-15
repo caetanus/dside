@@ -28,7 +28,9 @@
 import AppTypes 1.0
 
 Backend {
-    value: 1
+    // 3, so that `same` below is TRUE: false is what a bool property holds when nothing wrote it,
+    // and a comparison that is false either way cannot tell a correct read from a read that threw.
+    value: 3
 
     // A string member, under a per-property notify (`paperChanged`).
     property string p: theme.paper
@@ -39,4 +41,11 @@ Backend {
     property int steps: theme.steps
     // ...and inside a larger expression, which is where a refusal costs the whole binding.
     property string both: "p=" + theme.paper + " n=" + theme.steps
+    // ...and COMPARED, which is the caller that offers no type at all. A comparison compiles its
+    // operands untyped first and infers from the other side only when that fails, so a read which
+    // answers an untyped request with a guess breaks it: `propAny!string(...) == value` against an
+    // int is a D compile error, and it was a real document that found it (a `landed` that is an int,
+    // where every theme member so far had been a colour).
+    property bool same: theme.steps === value
+    property bool via: theme.steps > 2 && theme.paper !== ""
 }
