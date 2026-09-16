@@ -900,8 +900,33 @@ string mapCxxType(CXType t, ref string imp) {
         throw new Unmappable("ref to " ~ clang_getTypeSpelling(pt).str);
     }
     // value-type record BY VALUE (QPoint/QSize/QRect) -> the extern(C++) struct
+    //
+    // ...AND IT HAS TO BE EMITTED AS A STRUCT, which `isValueRecord` does not answer. The two
+    // predicates disagree on exactly one family and the disagreement is an ABI LIE.
+    //
+    // `isValueRecord` names an exception for QPaintDevice's subclasses — QImage, QPixmap, QBitmap,
+    // QPicture — so that a POINTER to one binds as a value rather than going unmapped (400 symbols).
+    // In a pointer position that is sound: a pointer is a pointer whichever way the type is spelled.
+    // The EMISSION rule is a different one line (`bool valueType = !hasVirtual`), and those four
+    // carry QPaintDevice's vtable, so D emits them as CLASSES — references.
+    //
+    // A by-value return then declares `QImage read()` on a D CLASS: D returns a pointer in a
+    // register, while C++ returns a non-trivial class through the hidden sret pointer (X8 on
+    // AArch64, RDI on x86-64) that D never passes. The callee CONSTRUCTS THE OBJECT AT WHATEVER
+    // ADDRESS that register happens to hold. It is an arbitrary memory write, it does not crash at
+    // the call, and because the two ABIs put the pointer in different registers it can be survivable
+    // on one architecture and lethal on the other — which is how it was found: a phone application
+    // that lost its GL surface on arm64 while the same code ran clean on an x86-64 emulator. Its
+    // author had already worked out to avoid `read()` and had written the reason in a comment.
+    //
+    // So the by-value position asks the question the emission asks. `QImageReader::read()` goes back
+    // to unmapped-type, where the overload that takes a `QImage*` already does the job correctly.
     if (ck.kind == CXType_Record) {
         if (!isValueRecord(t)) throw new Unmappable("object-type by value: " ~ c);
+        auto rdecl = clang_getCursorDefinition(clang_getTypeDeclaration(ck));
+        if ((rdecl.kind == CXCursor_ClassDecl || rdecl.kind == CXCursor_StructDecl)
+                && hasVirtualMethods(rdecl))
+            throw new Unmappable("class-emitted record by value (sret): " ~ c);
         auto n = nestedInClass(t) ? registerNested(t) : lastNs(c); imp = n; return n;
     }
     throw new Unmappable("cxx type " ~ clang_getTypeSpelling(t).str);
