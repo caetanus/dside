@@ -494,7 +494,10 @@ __gshared CtorShim[] CTORSHIM;
 // getter/setter gets an out-of-line C++ trampoline that calls `self->method(args)`,
 // compiled against the headers. Restricted to ABI-simple return+params (scalars/
 // pointers/void) — the getter/setter shape. Each entry emits one qtd_m_<Class>_<i>.
-struct MethodShim { string shimFn, cppName, cppRet, method; string[] cppParams, argNames; bool isStatic, isConst; }
+// `newRet`, when set, is the C++ type the shim must HEAP-COPY the result into: the method
+// returns it BY VALUE and D binds it as a wrapper class, so the shim returns `void*` and the
+// D side takes ownership of the copy. See ownedReturnClass.
+struct MethodShim { string shimFn, cppName, cppRet, method; string[] cppParams, argNames; bool isStatic, isConst; string newRet; }
 __gshared MethodShim[] METHODSHIM;
 
 // ============================================================================================
@@ -960,6 +963,41 @@ void recordSym(string cppClass, string sym, string fate, CXCursor c, string why 
     MANIFEST ~= cppClass ~ "\t" ~ sym ~ "\t" ~ usr ~ "\t" ~ why ~ "\t" ~ fate;
     if (fate == "unmapped-type" || fate == "inline-failed") CXX_SKIP++;   // only real drops
 }
+// THE CLASS A BY-VALUE RETURN MUST BE COPIED INTO, or "" when the return is not one.
+//
+// The neighbour above answers "this param/return is a POINTER to a wrapped class, unwrap it".
+// This answers the harder one: the method returns a record BY VALUE and D emits that record as a
+// CLASS, so there is no D type that can receive it — a class reference is a register and the C++
+// ABI hands such a value back through the hidden sret pointer. Binding it directly is a crash, and
+// was: `QImageReader::read()` died inside Qt at an address D never supplied (353fc41).
+//
+// The set is exactly the family isValueRecord admits by its QPaintDevice exception — QImage,
+// QPixmap, QBitmap, QPicture — because everything else fails isValueRecord's first test and never
+// reaches a by-value position at all. They are C++ VALUES that carry a vtable, which is why the
+// emission (`valueType = !hasVirtual`) makes them classes while the type map calls them values.
+// The type name to say after `new`. The canonical spelling of a return can carry cv-qualifiers —
+// QSplashScreen::pixmap() returns `const QPixmap` — and `new const QPixmap(...)` yields a
+// `const QPixmap*`, which is not a `void*`:
+//     error: cannot initialize return object of type 'void *' with an rvalue of type 'const QPixmap *'
+// The copy the shim makes is OURS and mutable; the const belonged to the expression, not to it.
+string newableType(CXType t) {
+    auto n = clang_getTypeSpelling(clang_getCanonicalType(t)).str.strip;
+    while (n.startsWith("const ")) n = n["const ".length .. $].strip;
+    while (n.startsWith("volatile ")) n = n["volatile ".length .. $].strip;
+    while (n.length && (n[$ - 1] == '&' || n[$ - 1] == ' ')) n = n[0 .. $ - 1].strip;
+    return n;
+}
+
+string ownedReturnClass(CXType t) {
+    auto ck = clang_getCanonicalType(t);
+    if (ck.kind != CXType_Record) return "";
+    if (!isValueRecord(t) || nestedInClass(t)) return "";
+    auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(ck));
+    if (decl.kind != CXCursor_ClassDecl && decl.kind != CXCursor_StructDecl) return "";
+    if (!hasVirtualMethods(decl)) return "";   // emitted as a struct: D receives it correctly
+    return lastNs(canon(t));
+}
+
 string wrapperTypeOf(CXType t) {
     auto ck = clang_getCanonicalType(t);
     // A REFERENCE to a wrapped class needs the same treatment as a pointer: C++ wants the address
@@ -1786,6 +1824,10 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
     // that work). Construct via D field literal `QRect(x1, y1, x2, y2)`. ----------
     if (valueType) {
         string[] fields, rawDecls, inlineDefs;
+        // Module-scope extern(C) declarations for the by-value-return shims: a static
+        // member would not get C linkage, and this emitter's other tail (ctorFactories) is
+        // declared further down than the loop that needs this one.
+        string[] rvDecls;
         // Trampoline fallbacks, index-aligned with inlineDefs (see InlineJob): filled for
         // every mappable inline method so verifyInlinesBatched can recover a dropped one.
         string[] inFwd, inDecl; MethodShim[] inShim;
@@ -1794,6 +1836,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         bool[string] seenF;
         int opIdx;
         int ptrConvIdx;   // unique names for the wrapper->C++ forwarders
+        int rvIdx;        // ...and for the by-value-return shims (see ownedReturnClass)
         bool[string] seenPtrConv;
         collectValueFields(cur, fields, seenF);   // base fields flattened in first (layout order)
         // A value type whose ONLY data member is an anonymous union / bitfield struct
@@ -1825,7 +1868,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             string _fate = "bound"; string _why;
             scope(exit) recordSym(cppName, mn, _fate, c, _why);
             try {
-                string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
+                // A BY-VALUE RETURN OF A CLASS-EMITTED RECORD: a VALUE type handing back a QImage
+                // or a QPixmap (QIcon::pixmap, QCursor::mask, QImageReader::read). There is no
+                // direct declaration that can receive one — see ownedReturnClass — so it goes
+                // through a shim that returns a heap copy, below.
+                auto ownRetS = ownedReturnClass(clang_getCursorResultType(c));
+                string imp; string retD;
+                if (ownRetS.length) { retD = ownRetS; imp = ownRetS; }
+                else retD = mapCxxType(clang_getCursorResultType(c), imp);
                 if (imp.length) impSet[imp] = true;
                 auto na = clang_Cursor_getNumArguments(c);
                 auto cst = clang_CXXMethod_isConst(c) ? " const" : "";
@@ -1929,6 +1979,41 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         auto rk = retD == "void" ? "" : "return ";
                         rawDecls ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
                             kw, retD, dname(mn), psPub.join(", "), cst, rk, rawn, pcall.join(", "));
+                    } else if (ownRetS.length) {
+                        // The value stays on the C++ side and D receives a pointer to the copy.
+                        auto shimFn = format("qtd_rv_%s_%d", name, rvIdx++);
+                        auto cppPsR = new string[](cast(size_t) na);
+                        auto anamesR = new string[](cast(size_t) na);
+                        foreach (i; 0 .. na) {
+                            auto a = clang_Cursor_getArgument(c, i);
+                            cppPsR[i] = format("%s a%d",
+                                clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str, i);
+                            anamesR[i] = format("a%d", i);
+                        }
+                        const isStatR = clang_CXXMethod_isStatic(c) != 0;
+                        METHODSHIM ~= MethodShim(shimFn, cppName,
+                            clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str,
+                            mn, cppPsR, anamesR, isStatR, clang_CXXMethod_isConst(c) != 0,
+                            newableType(clang_getCursorResultType(c)));
+                        auto selfD = isStatR ? "" : (ps.length ? "void* self, " : "void* self");
+                        // ...at MODULE scope: a static member would not get C linkage. This
+                        // emitter's module-scope sink is the factory list.
+                        rvDecls ~= format("extern(C) private void* %s(%s%s);",
+                                          shimFn, selfD, ps.join(", "));
+                        // `&this`, not `this`: these forwarders are emitted for CONST methods too
+                        // (QIcon::pixmap, QCursor::mask are const), and casting a const `this`
+                        // straight to void* is a const violation D refuses. The address with the
+                        // const cast away is the same pointer the C++ shim wants.
+                        auto selfE = "cast(void*) &this";
+                        auto argsR = isStatR ? anamesR.join(", ")
+                            : (anamesR.length ? selfE ~ ", " ~ anamesR.join(", ") : selfE);
+                        auto psR = new string[](cast(size_t) na);
+                        foreach (i; 0 .. na) psR[i] = format("%s a%d", pds[i], i);
+                        rawDecls ~= format("    extern(D) %s%s %s(%s)%s { return %s%s(%s)%s; }",
+                            kw, retD, dname(mn), psR.join(", "), cst,
+                            WRAPPER ? ownRetS ~ ".__own(" : "cast(" ~ ownRetS ~ ") ",
+                            shimFn, argsR, WRAPPER ? ")" : "");
+                        _fate = "shimmed";
                     } else
                     rawDecls ~= format("    pragma(mangle, \"%s\") %s%s %s(%s)%s;",
                         mg, kw, retD, dname(mn), ps.join(", "), cst);
@@ -2046,7 +2131,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         auto bodyV = (nestedEnumLines(cur) ~ fields ~ rawDecls ~ inlineDefs ~ ctorMethods).join("\n");
         return format("%s\nmodule %s.%s;\n%s\n\nextern (C++%s) struct %s {\n%s\n}\n%s\n",
             manifest, dpkg, modBase(name), impLines, nsClause(cppName), name, bodyV,
-            ctorFactories.join("\n"));
+            (ctorFactories ~ rvDecls).join("\n"));
     }
 
     // ---- WRAPPER mode: a GC wrapper class extending holder.QtdObject that holds a
@@ -2207,7 +2292,14 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             }
             try {
                 bool isStat = clang_CXXMethod_isStatic(c) != 0;
-                string imp; auto retD = mapCxxType(rrt, imp); if (imp.length) impSet[imp] = true;
+                // A BY-VALUE RETURN OF A CLASS-EMITTED RECORD is bound through the shim below
+                // rather than refused: mapCxxType declines it (it would be an ABI lie in a direct
+                // declaration), so the name is taken here and the value crosses as a heap copy.
+                auto ownRet = ownedReturnClass(rrt);
+                string imp; string retD;
+                if (ownRet.length) { retD = ownRet; imp = ownRet; }
+                else retD = mapCxxType(rrt, imp);
+                if (imp.length) impSet[imp] = true;
                 retD = disambigType(retD, rrt, cur, dpkg);
                 auto retW = wrapperTypeOf(rrt);
                 string[] wps, declps, callargs, wrapArgs, cppPs, anames;
@@ -2256,13 +2348,17 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 if (classSymsVisible && !inl && !symbolDefined(clang_Cursor_getMangling(c).str)) {
                     _fate = "unmapped-type"; return;
                 }
-                auto declRet = retW.length ? "void*" : retD;
-                auto callFn = format(inl ? "qtd_m_%s_%d" : "__%s_%d", name, wi);
+                auto declRet = (retW.length || ownRet.length) ? "void*" : retD;
+                // ...and such a return ALWAYS needs the trampoline, inline or not: there is no
+                // direct declaration that can receive it.
+                const viaShimRet = inl || ownRet.length;
+                auto callFn = format(viaShimRet ? "qtd_m_%s_%d" : "__%s_%d", name, wi);
                 auto declSelf = isStat ? "" : (declps.length ? "void* self, " : "void* self");
-                if (inl) {
+                if (viaShimRet) {
                     auto cppRet = retW.length ? clang_getTypeSpelling(clang_getCanonicalType(rrt)).str
                         : retD == "void" ? "void" : clang_getTypeSpelling(clang_getCanonicalType(rrt)).str;
-                    METHODSHIM ~= MethodShim(callFn, cppName, cppRet, mn, cppPs, anames, isStat, isConst0);
+                    METHODSHIM ~= MethodShim(callFn, cppName, cppRet, mn, cppPs, anames, isStat, isConst0,
+                                             ownRet.length ? newableType(rrt) : "");
                     _fate = "shimmed";   // reached through the C++ trampoline (inline, or virtual)
                     wd ~= format("extern(C) private %s %s(%s%s);", declRet, callFn, declSelf, declps.join(", "));
                 } else
@@ -2290,14 +2386,25 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         if (tkey in TRANSFER_OUT) reck ~= format("holder.takenBack(%s);", an);
                     }
                 string body_;
+                // The heap copy a by-value return hands back, turned into the D value. In WRAPPER
+                // mode the wrapper takes ownership (__own, so the holder frees it); in RAW mode an
+                // `extern(C++) class` reference IS the C++ pointer, so it is a cast — and it leaks,
+                // which is what raw mode already does with everything it returns.
+                string ownExpr(string e) {
+                    return WRAPPER ? format("%s.__own(%s)", ownRet, e)
+                                   : format("cast(%s) %s", ownRet, e);
+                }
                 // ref returns are accessors that don't reparent -> keep the one-liner (a
                 // local + `return _r` would escape a reference to the local anyway).
                 if (reck.length && !retD.startsWith("ref ")) {   // multi-statement: call, re-check, return
                     auto pre = retD == "void" ? format("%s;", callE) : format("auto _r = %s;", callE);
-                    auto ret = retD == "void" ? "" : (retW.length ? format(" return %s.wrap(_r);", retW) : " return _r;");
+                    auto ret = retD == "void" ? ""
+                        : ownRet.length ? format(" return %s;", ownExpr("_r"))
+                        : retW.length ? format(" return %s.wrap(_r);", retW) : " return _r;";
                     body_ = pre ~ " " ~ reck.join(" ") ~ ret;
                 } else {
                     body_ = retD == "void" ? format("%s;", callE)
+                        : ownRet.length ? format("return %s;", ownExpr(callE))
                         : retW.length ? format("return %s.wrap(%s);", retW, callE) : format("return %s;", callE);
                 }
                 wm ~= format("    %s%s %s(%s) { %s }", kw, retD, dname(mn), wps.join(", "), body_);
@@ -2409,14 +2516,34 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // the ownership bit). Set on the adopt ctor because every path — `new X(...)`, `wrap()`,
         // a subclass — goes through it.
         string delSet;
-        if (name in DISPOSABLE && !valueType) {
+        // ...AND A C++ VALUE THAT CARRIES A VTABLE (the QPaintDevice family: QImage, QPixmap,
+        // QBitmap, QPicture) always knows how it is freed, without being listed as disposable.
+        //
+        // The `disposable` list is narrow because of one risk: deleting something QT will also
+        // delete. That risk cannot exist for these — they are VALUES in C++, so no Qt API holds a
+        // heap pointer to one and nothing else can free it. Every instance the binding owns came
+        // from `new` on this side: a `new QImage(...)` constructor, or the heap copy a by-value
+        // return makes (see ownedReturnClass). Whether to call this is still the holder's decision
+        // and a borrowed wrapper never does, so a pointer Qt handed us stays untouched.
+        //
+        // It also closes a leak that predates the by-value work: `new QImage()` had no deleter, so
+        // every D-constructed image leaked its pixels for the life of the process.
+        const ownedValue = !valueType && isValueRecord(clang_getCursorType(cur));
+        if ((name in DISPOSABLE || ownedValue) && !valueType) {
             DELSHIM ~= name;
             wd ~= format("extern(C) private void qtd_del_%s(void*) nothrow @nogc;", name);
             delSet = format(" _setDeleter(&qtd_del_%s);", name);
         }
+        // `__own` is `wrap`'s opposite number and exists only for a by-value return: the pointer is
+        // a heap copy this binding just made, so there is no identity to look up (nothing else can
+        // hold it) and the wrapper takes ownership rather than borrowing.
+        auto ownFn = ownedValue
+            ? format("\n    static %s __own(void* c) { if (c is null) return null; "
+                     ~ "auto w = new %s(QtdAdopt(c)); w._register(true); return w; }", name, name)
+            : "";
         auto ctorBody = format("    this(QtdAdopt __a) @nogc nothrow { %s;%s }\n"
-            ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(QtdAdopt(p))); }",
-            ctorSuper, delSet, name, name, name);
+            ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(QtdAdopt(p))); }%s",
+            ctorSuper, delSet, name, name, name, ownFn);
         // Un-hide the base overloads a same-named derived method would shadow in D. The
         // `static if (hasMember)` guard is the same safety net the raw path uses: the base may
         // have skipped that method for an unmappable type, in which case there is nothing to alias.
@@ -2532,12 +2659,27 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // The shim body is exception-wrapped identically to the guard (Lippincott). A virtual with
         // a NON-simple signature (value/container/QList return, fn-ptr) can't use the shim, so it
         // falls through to the direct guard path below — bound, but non-virtually (a known gap).
+        // ...and a BY-VALUE RETURN OF A CLASS-EMITTED RECORD has no direct form at all: there is
+        // no D declaration that can receive it (see ownedReturnClass), so the shim is the only
+        // route. `QImageReader::read()` is out-of-line and non-virtual, so without this it fell
+        // through to the direct path and was refused while its inline neighbours came back.
         bool viaShim = isInline(c) || needsSretShim(c)
+            || ownedReturnClass(clang_getCursorResultType(c)).length > 0
             || (clang_CXXMethod_isVirtual(c) != 0 && clang_CXXMethod_isStatic(c) == 0);
         if (viaShim) {
             bool handled = false;   // emitted, or deliberately skipped -> `continue` (don't fall through)
             try {
-                string imp; auto retD = mapCxxType(clang_getCursorResultType(c), imp);
+                // ...AND A BY-VALUE RETURN OF A CLASS-EMITTED RECORD, which this emitter meets
+                // from the other direction: a value type (QIcon, QCursor, QBrush, QImageReader)
+                // whose method hands back a QImage or a QPixmap. Same treatment as the wrapper
+                // emitter — the shim keeps the value on the C++ side and returns a heap copy — and
+                // it has to be said here too because those are structs, emitted by a different
+                // loop. Without it `QIcon::pixmap`, `QCursor::pixmap` and `QImageReader::read`
+                // stayed refused while `QImage::scaled` came back.
+                auto ownRetV = ownedReturnClass(clang_getCursorResultType(c));
+                string imp; string retD;
+                if (ownRetV.length) { retD = ownRetV; imp = ownRetV; }
+                else retD = mapCxxType(clang_getCursorResultType(c), imp);
                 // A VALUE-record return (QSize/QRect/…) is fine: the C++ shim returns it by value
                 // (sret) and the extern(C) D decl matches that ABI — exactly what the guard path
                 // already does, so we just gain virtual dispatch. The only returns the shim can't
@@ -2575,14 +2717,16 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         auto shimFn = format("qtd_m_%s_%d", name, methodLines.length);
                         auto cppRet = clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorResultType(c))).str;
                         bool isCst = clang_CXXMethod_isConst(c) != 0;
-                        METHODSHIM ~= MethodShim(shimFn, cppName, cppRet, mn, cppPs, ca, isStat, isCst);
+                        METHODSHIM ~= MethodShim(shimFn, cppName, cppRet, mn, cppPs, ca, isStat, isCst,
+                                                 ownRetV.length ? newableType(clang_getCursorResultType(c)) : "");
                         auto kw = isStat ? "static " : "final ";
                         auto cst = isCst ? " const" : "";
                         auto selfDecl = isStat ? "" : "void* self";
                         auto declPs = (selfDecl.length && rps.length) ? selfDecl ~ ", " ~ rps.join(", ")
                                     : selfDecl ~ rps.join(", ");
                         // extern(C) decl at MODULE scope (a static member wouldn't get C linkage)
-                        shimDecls ~= format("extern(C) private %s %s(%s);", retD, shimFn, declPs);
+                        shimDecls ~= format("extern(C) private %s %s(%s);",
+                                            ownRetV.length ? "void*" : retD, shimFn, declPs);
                         auto callArgs = isStat ? ca.join(", ")
                             : (ca.length ? "cast(void*) this, " ~ ca.join(", ") : "cast(void*) this");
                         auto ret = retD == "void" ? "" : "return ";
@@ -2591,8 +2735,16 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         // Qt's own calls would then loop through our shim. extern(D) keeps it a
                         // D-only method (same gotcha the guard forwarder documents). Harmless for
                         // inline methods (their Qt symbol doesn't exist out-of-line anyway).
-                        methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
-                            kw, retD, dname(mn), rps.join(", "), cst, ret, shimFn, callArgs);
+                        // RAW mode has no wrapper and no ownership: an `extern(C++) class`
+                        // reference IS the C++ pointer, so the heap copy is simply cast. It leaks,
+                        // which is raw mode's standing contract for everything it returns — the
+                        // holder that decides otherwise exists only in wrapper mode.
+                        auto ownOpen = !ownRetV.length ? ""
+                            : WRAPPER ? ownRetV ~ ".__own(" : "cast(" ~ ownRetV ~ ") ";
+                        auto ownClose = (ownRetV.length && WRAPPER) ? ")" : "";
+                        methodLines ~= format("    extern(D) %s%s %s(%s)%s { %s%s%s(%s)%s; }",
+                            kw, retD, dname(mn), rps.join(", "), cst, ret, ownOpen, shimFn,
+                            callArgs, ownClose);
                         handled = true; _fate = "shimmed";
                     }
                 }
@@ -3540,6 +3692,16 @@ string ctorCpp(string manifest, string includeLine) {
             : format("%s->%s(%s)", selfCast, m.method, m.argNames.join(", "));
         auto ps = m.isStatic ? m.cppParams.join(", ")
             : (m.cppParams.length ? "void* self, " ~ m.cppParams.join(", ") : "void* self");
+        if (m.newRet.length) {
+            // BY-VALUE RETURN OF A CLASS-EMITTED TYPE. D cannot receive it: the C++ ABI returns
+            // such a type through the hidden sret pointer and a D class reference is a register.
+            // So the shim keeps the value on the C++ side of the boundary and hands D a POINTER to
+            // a heap copy, which is a thing D can hold. The copy is ours by construction — nobody
+            // else has ever seen this address — so the wrapper owns it and frees it.
+            body ~= format("void* %s(%s) { %sreturn new %s(%s);%s }\n",
+                m.shimFn, ps, tryO, m.newRet, call, tryC("void*"));
+            continue;
+        }
         body ~= format("%s %s(%s) { %s%s%s;%s }\n",
             m.cppRet, m.shimFn, ps, tryO, ret, call, tryC(m.cppRet));
     }
