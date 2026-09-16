@@ -24,6 +24,31 @@
 // @QObject from another thread ABORTS with a message (qtd_thread_guard) instead of corrupting a map.
 // Create and destroy D @QObjects only on the thread that first used the runtime (typically the main one).
 // Real support for worker QObjects (locking / per-thread tables) is a structural follow-up.
+//
+// ...AND ON ANDROID THE RULE IS WIDER THAN THIS RUNTIME, in a way nothing here can enforce. Qt's own
+// documentation calls QImage and QImageReader REENTRANT — decoding in a worker thread is a normal Qt
+// pattern, and on a desktop it is — but on an Adreno device it destroys the EGL surface. Measured on
+// a Samsung with a real application (2026-09-16): worker threads decoding 3186 thumbnails left the
+// window BLACK while the program stayed fully alive inside — its own watchdog kept logging, the
+// model was populated, the QML engine reported no error at all — and the logcat showed
+// `onWindowVisibilityChanged(8)=GONE` -> `surfaceDestroyed` -> "Skipping create egl on invalid or
+// not yet created surface". The same code on an x86-64 emulator with the same .so rendered
+// perfectly. Moving the decode onto the Qt thread, in slices that yield to the event loop, fixed it
+// with the same work and the same memory.
+//
+// Two things it is NOT, both ruled out by measurement rather than by argument, because each would
+// have implied a different fix:
+//   * not memory pressure — the same decoding load on the Qt thread survives;
+//   * not this runtime's side-tables — the C++ wrapper registry is mutex-protected
+//     (qtd_holder.cpp), and the meta-object runtime ABORTS off its owner thread rather than
+//     corrupting anything, so it would have said so;
+//   * and not the D GC's stop-the-world, which cannot reach the render thread at all: the GC
+//     suspends the threads the D runtime KNOWS, and Qt's Scene Graph render thread is created by
+//     C++ and never registered. Heavy D allocation in a worker (1.3 MB of JSON, collections
+//     throughout) coexists with a live render; it was measured alongside the fix.
+//
+// So: on Android, keep Qt image objects on the Qt thread even where Qt says they are reentrant. The
+// failure has no error message, which is what makes it worth a paragraph.
 module qtmoc;
 
 import std.traits : Parameters, hasUDA, getUDAs, ReturnType;
