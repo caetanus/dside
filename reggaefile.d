@@ -147,6 +147,7 @@ Build reggaeBuild() {
     foreach (dc; DCS) {
         all ~= qtdTest("wraptest-" ~ dc, t("wrapper", "wraptest.d"), wrap, dc);
         all ~= qtdTest("ownership-" ~ dc, t("wrapper", "ownership.d"), wrap, dc);   // destruction invariants
+        all ~= qtdTest("conn-" ~ dc, t("wrapper", "conn.d"), wrap, dc);             // connection-handle lifetime
     }
 
     // The bindings the ctor-guard gate reads. Collected as they are created so the gate depends on

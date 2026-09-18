@@ -3527,7 +3527,12 @@ string signalsCpp(string manifest, string includeLine) {
         ~ "}; }\n"
         ~ "extern \"C\" {\n" ~ body
         ~ "void qtd_disconnect(void* c) { auto* p = static_cast<QMetaObject::Connection*>(c);\n"
-        ~ "    QObject::disconnect(*p); delete p; }\n}\n";
+        ~ "    QObject::disconnect(*p); delete p; }\n"
+        ~ "// ...and DROPPING the handle without severing the connection, which is the common case:\n"
+        ~ "// a caller that ignores the returned QtdConnection still wants the signal wired. Only the\n"
+        ~ "// QMetaObject::Connection this allocated is freed; the connection itself belongs to the\n"
+        ~ "// sender and dies with it (releasing the delegate box through DHolder).\n"
+        ~ "void qtd_conn_free(void* c) { delete static_cast<QMetaObject::Connection*>(c); }\n}\n";
 }
 
 // D side: the connection handle + delegate box + trampoline + per-signal extern(C)
@@ -3561,11 +3566,26 @@ string signalsD(string manifest, string dpkg) {
         ~ "import core.memory : GC;\nimport qtmoc : qtdOnCallbackError;\n" ~ impLines ~ "\n"
         ~ "// C++ DHolder dtor calls this when the connection dies -> unroot the box.\n"
         ~ "private extern (C) void __qtd_release(void* box) nothrow { GC.removeRoot(box); }\n"
-        ~ "// A live signal->delegate connection. Optional disconnect(); otherwise it and\n"
-        ~ "// the delegate box are freed when the sender QObject dies.\n"
+        ~ "// A live signal->delegate connection. Optional disconnect(); otherwise the connection\n"
+        ~ "// and the delegate box are freed when the sender QObject dies.\n"
+        ~ "//\n"
+        ~ "// THE HANDLE HAS AN OWNER, and it needs one because the usual spelling discards it:\n"
+        ~ "// `timer.connectTimeout(&dg);` never names the result. `qtd_conn_*` heap-allocates a\n"
+        ~ "// QMetaObject::Connection so a later disconnect() can name the connection, and nothing\n"
+        ~ "// freed it on that path — one small allocation per connect, for the life of the process.\n"
+        ~ "// So ~this frees it. It does NOT disconnect: dropping the handle means losing the ability\n"
+        ~ "// to sever the connection early, not severing it. The two are separate operations here\n"
+        ~ "// precisely because the discarding caller wants one and not the other.\n"
+        ~ "//\n"
+        ~ "// Non-copyable for the same reason: two owners of one handle is a double free, and a\n"
+        ~ "// handle is exactly the kind of thing a caller would otherwise copy into a field without\n"
+        ~ "// thinking about it. Returning one is a move, so the spellings that matter still compile.\n"
         ~ "struct QtdConnection {\n    void* _c;\n"
-        ~ "    void disconnect() { if (_c !is null) { qtd_disconnect(_c); _c = null; } }\n}\n"
-        ~ "private extern (C) void qtd_disconnect(void*) nothrow;\n"
+        ~ "    @disable this(this);\n"
+        ~ "    ~this() @nogc nothrow { if (_c !is null) { qtd_conn_free(_c); _c = null; } }\n"
+        ~ "    /// Sever the connection now (and free the handle). Idempotent.\n"
+        ~ "    void disconnect() @nogc nothrow { if (_c !is null) { qtd_disconnect(_c); _c = null; } }\n}\n"
+        ~ "private extern (C) nothrow @nogc { void qtd_disconnect(void*); void qtd_conn_free(void*); }\n"
         ~ perSig;
 }
 
