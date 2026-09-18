@@ -32,6 +32,7 @@ extern (C) nothrow @nogc {
     void  qtd_holder_reg(void *, void *);
     void *qtd_holder_find(void *);
     void  qtd_holder_unreg(void *);
+    size_t qtd_holder_count();
 }
 
 /// The tag that selects the ADOPT constructor — "wrap this existing C++ pointer" — as opposed to
@@ -144,6 +145,18 @@ private __gshared bool _live = false;
 
 shared static this() { qtd_holder_set_destroyed_hook(&onDestroyed); _live = true; }
 shared static ~this() { _live = false; }
+
+/// ---- leak instrumentation ---------------------------------------------------------------
+///
+/// Two numbers, because the two tables fail differently and a single total would hide which one
+/// did. `wrapperCount` is every C++ pointer that currently has a D wrapper; `pinnedCount` is the
+/// subset the binding holds as a GC root, which is the one that can retain memory the collector
+/// would otherwise have taken back. A probe reads both at the start and end of a workload: flat
+/// across a cycle that allocates means the retention is NOT here, and that reading is worth as
+/// much as the positive one — it is what lets a caller stop looking at this layer.
+size_t wrapperCount() @nogc nothrow { return qtd_holder_count(); }
+/// ...and the pinned subset (parented children + adopted D subclasses). See `_pinned`.
+size_t pinnedCount() @nogc nothrow { return _pinned.length; }
 
 /// The existing wrapper for a C++ pointer, or null.
 QtdObject find(void *cptr) @nogc nothrow {

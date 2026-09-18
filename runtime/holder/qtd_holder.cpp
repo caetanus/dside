@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QCoreApplication>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 
 extern "C" {
@@ -34,12 +35,28 @@ static std::recursive_mutex &g_lock() {
 
 void qtd_holder_set_destroyed_hook(QtdDestroyedFn fn) { g_onDestroyed = fn; }
 
+// Which objects already have the destroyed() connection below. NOT answerable from g_wrappers:
+// that map is erased when a WRAPPER dies, which for a borrowed pointer happens while the C++
+// object is still alive and still connected. Without this set, every re-wrap of such an object
+// added another connection to it — measured at 20 hooks for 20 re-wraps of one object, a list
+// that only ever grows on a long-lived sender. Same lifetime rule as the map (heap, never freed).
+static std::unordered_set<void *> &g_tracked() {
+    static std::unordered_set<void *> *m = new std::unordered_set<void *>();
+    return *m;
+}
+
 // Route obj->destroyed() to the D hook; the connection dies with the object and
-// forwards the dying pointer as the map key.
+// forwards the dying pointer as the map key. ONCE PER OBJECT — see g_tracked.
 void qtd_holder_track(void *obj) {
+    {
+        std::lock_guard<std::recursive_mutex> g(g_lock());
+        if (!g_tracked().insert(obj).second) return;   // already connected
+    }
     QObject *o = static_cast<QObject *>(obj);
     QObject::connect(o, &QObject::destroyed, [](QObject *dead) {
-        if (g_onDestroyed) g_onDestroyed(static_cast<void *>(dead));
+        void *p = static_cast<void *>(dead);
+        { std::lock_guard<std::recursive_mutex> g(g_lock()); g_tracked().erase(p); }
+        if (g_onDestroyed) g_onDestroyed(p);
     });
 }
 
@@ -54,5 +71,9 @@ int  qtd_holder_is_app(void *obj) { return obj == QCoreApplication::instance() ?
 void  qtd_holder_reg(void *cptr, void *wrapper) { std::lock_guard<std::recursive_mutex> g(g_lock()); g_wrappers()[cptr] = wrapper; }
 void *qtd_holder_find(void *cptr) { std::lock_guard<std::recursive_mutex> g(g_lock()); auto it = g_wrappers().find(cptr); return it == g_wrappers().end() ? nullptr : it->second; }
 void  qtd_holder_unreg(void *cptr) { std::lock_guard<std::recursive_mutex> g(g_lock()); g_wrappers().erase(cptr); }
+// How many C++ pointers currently have a live D wrapper. A leak probe watches this: it is the
+// only number that grows when wrappers are created and not released, and it cannot be faked by
+// a run that does nothing (an idle run leaves it flat, which is what makes the reading falsifiable).
+size_t qtd_holder_count(void) { std::lock_guard<std::recursive_mutex> g(g_lock()); return g_wrappers().size(); }
 
 } // extern "C"
