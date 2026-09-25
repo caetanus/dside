@@ -1188,6 +1188,22 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
                                            .map!(f => JSONValue(f)).array);
             jw.object["libs"]   = JSONValue(qtLibsOf(mods).split(" ").filter!(f => f.length).array
                                            .map!(f => JSONValue(f)).array);
+        } else if (auto qm = "qt_marker" in jw.object) {
+            // ...and where pkg-config IS present, a marker that does not match the Qt it found is
+            // DROPPED, which hands the question back to xiboca: with no marker it takes the `-I`
+            // that holds QtCore, a fact about this Qt. The Qt 5 specs say `/qt/` — Arch's
+            // /usr/include/qt/ — and Ubuntu files Qt 5 under /usr/include/x86_64-linux-gnu/qt5/,
+            // so on the CI runner every Qt 5 header was filtered out and 28 targets failed on
+            // `unable to read module qapplication`: a binding generated with no classes in it.
+            // Kept where it matches, so a machine it was written for generates exactly as before.
+            string incRoot;
+            foreach (f; cflags.split)
+                // A DIRECTORY named QtCore: `…/QtCore/QtCore` is also a FILE (the module header), and
+                // matching it would take `…/QtCore` itself for the include root.
+                if (f.startsWith("-I") && exists(buildPath(f[2 .. $], "QtCore"))
+                        && isDir(buildPath(f[2 .. $], "QtCore"))) { incRoot = f[2 .. $]; break; }
+            if (incRoot.length && !(incRoot ~ "/").canFind(qm.str))
+                jw.object.remove("qt_marker");
         }
         writeIfChanged(derived, jw.toPrettyString);
         useSpec = derived;

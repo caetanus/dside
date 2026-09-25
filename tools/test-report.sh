@@ -72,7 +72,7 @@ category() {
     # governance gate under `lifetime` and the self-test still said "0 unclassified". Classified
     # must mean the RIGHT class, not merely a non-empty one — hence the canary below.
     manifest-gate-*|registry-gate-*|ownership-gate-*|expected-fails-lint|expected-fails-run|ctor-guard) echo gate ;;
-    wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*|noqml_helpers*) echo lifetime ;;
+    wraptest*|widget_test*|moc_test*|moclife_widget*|ownership*|noqml_helpers*|conn-*) echo lifetime ;;
     cannon*) echo moc ;;
     # QT AS A FOREIGN EVENT LOOP'S DRIVER, which is neither moc nor qml nor a gate: `eventloop_fd`
     # measures that a Qt notifier actually WAKES on a descriptor (it times the wait), and the three
@@ -107,7 +107,7 @@ category() {
     # a library that is not Qt — and refuses the build when the documentation stops being true.
     consumer-smoke-*|dub-consumer-*|xiboca-quickstart|docs-sphinx|docs-spec-keys) echo gate ;;
     # Wrapper LIFETIME, which is neither moc nor qml: who owns a pointer, and who may delete it.
-    borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*|threadguard-*|nonqobject-*|dangle-*) echo lifetime ;;
+    borrowed-*|ownership-*|wraptest-*|moclife*|thread_test*|threadguard-*|nonqobject-*|dangle-*|conn-*) echo lifetime ;;
     # The application constructor's symbol, derived and then read back off the library that
     # defines it. A gate: it fails the build the day the derivation and the shipped Qt disagree,
     # which is the whole reason it is not just a compile.
