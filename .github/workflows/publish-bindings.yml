@@ -1,0 +1,172 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
+#
+# PUBLISH THE GENERATED BINDINGS AS A dub PACKAGE. The other half of qt-watch.yml: that one
+# proposes which Qt to target, this one ships what targeting it produced.
+#
+# WHAT IT PUBLISHES. One repository (`dside`) whose subpackages are the module sets — `dside:quick`,
+# `dside:widgets`, `dside:controls` — tagged with the Qt release they were generated against. The
+# version IS the Qt version, which is not a convention but the constraint a user needs: dub's
+# `"dside:quick": "~>6.12.0"` is >=6.12.0 <6.13.0, and a Qt minor is exactly the boundary across
+# which a binding is not interchangeable. Qt's private API carries its release in the mangled name,
+# so the failure this prevents is a crash inside Qt rather than a link error.
+#
+# WHY IT BUILDS EVERYTHING FIRST. `./build` with no target runs the project's default gate set, and
+# nothing is packaged from a tree that has not passed it. Publishing the archives of a build that
+# was never run against its own tests is how a binding ships broken in a way no consumer can
+# diagnose, because they have no generator to bisect with.
+#
+# THIS DOES NOT RUN WITHOUT SETUP, and it fails saying so rather than skipping:
+#   - a repository to push to (default `caetanus/dside`, override with the `repo` input)
+#   - a `DSIDE_PUBLISH_TOKEN` secret with push rights to it
+# Neither can be created from here. The first step checks both and stops with the reason.
+name: Publish bindings
+on:
+  push:
+    branches: [master]
+    paths: ["qt-version.txt"]      # the bump landed — the Qt we target changed
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "owner/name of the bindings repository"
+        type: string
+        default: "caetanus/dside"
+      dry_run:
+        description: "Assemble and report, but push nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What we can and cannot do
+        id: pre
+        env:
+          HAVE_TOKEN: ${{ secrets.DSIDE_PUBLISH_TOKEN != '' }}
+          REPO_IN: ${{ inputs.repo }}
+        run: |
+          set -euo pipefail
+          qt=$(tr -d '[:space:]' < qt-version.txt)
+          repo=${REPO_IN:-caetanus/dside}
+          echo "qt=$qt"     >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "Targeting Qt $qt; bindings repository $repo."
+
+          # A MISSING SECRET IS A FAILURE, NOT A SKIP. A publish workflow that quietly does nothing
+          # is the worst of the three possible states: the release notes say it ran, the tag is
+          # absent, and nobody looks until a user reports that the version does not exist.
+          if [ "$HAVE_TOKEN" != "true" ] && [ "${{ inputs.dry_run }}" != "true" ]; then
+            echo "::error::DSIDE_PUBLISH_TOKEN is not set, so nothing can be pushed to $repo."
+            echo "::error::Create the repository and add the secret, or run with dry_run."
+            exit 1
+          fi
+
+      # The same Qt, from the same place, read from the same pin as ci.yml — see its `prepare` job.
+      - name: Install Qt5 (distribution), clang/libclang, and Qt 6's own dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qtbase5-dev qtbase5-private-dev qtdeclarative5-dev qtdeclarative5-private-dev \
+            qttools5-dev qttools5-dev-tools libqt5webenginecore5 qtwebengine5-dev \
+            clang libclang-dev llvm-dev pkg-config python3-pip \
+            libasound2t64 libbrotli1 libdbus-1-3 libdrm2 libegl1 libexpat1 libfontconfig1 \
+            libfreetype6 libgbm1 libglib2.0-0t64 libgl1 libgssapi-krb5-2 libnspr4 libnss3 libudev1 \
+            libwayland-client0 libwayland-cursor0 libx11-6 libx11-xcb1 libxcb1 libxcb-cursor0 \
+            libxcb-dri3-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 libxcb-xfixes0 \
+            libxcb-xkb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 \
+            libxkbcommon-x11-0 libxkbfile1 libxrandr2 libxtst6 zlib1g libzstd1
+
+      - name: Cache Qt 6
+        id: qt6cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Qt/${{ steps.pre.outputs.qt }}
+          key: qt6-linux-${{ steps.pre.outputs.qt }}-v1-${{ hashFiles('tools/linux/get-qt.sh') }}
+
+      - name: Install Qt ${{ steps.pre.outputs.qt }}
+        if: steps.qt6cache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m pip install --user py7zr
+          tools/linux/get-qt.sh --version "${{ steps.pre.outputs.qt }}" --dest "$HOME/Qt"
+
+      - name: Put that Qt first on PATH, pkg-config and the loader path
+        run: |
+          q="$HOME/Qt/${{ steps.pre.outputs.qt }}/gcc_64"
+          echo "$q/bin" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_PATH=$q/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$q/lib" >> "$GITHUB_ENV"
+          echo "QT_PLUGIN_PATH=$q/plugins" >> "$GITHUB_ENV"
+
+      - name: Assert the Qt in use is the one we target
+        run: |
+          v=$(pkg-config --modversion Qt6Core)
+          test "$v" = "${{ steps.pre.outputs.qt }}" \
+            || { echo "::error::pkg-config answers Qt $v, not ${{ steps.pre.outputs.qt }}"; exit 1; }
+
+      - uses: dlang-community/setup-dlang@v2
+        with: { compiler: ldc-latest }
+      - uses: dlang-community/setup-dlang@v2
+        with: { compiler: dmd-latest }
+
+      - name: Build everything, gates included
+        run: |
+          dub run reggae -- -b binary . --reggaefile-import-path "$PWD/reggae"
+          ./build
+
+      - name: Assemble the package tree
+        id: asm
+        run: |
+          set -euo pipefail
+          tools/ci/assemble-bindings.sh "$RUNNER_TEMP/dside"
+          {
+            echo "## dside for Qt ${{ steps.pre.outputs.qt }}"
+            echo
+            echo '```'
+            (cd "$RUNNER_TEMP/dside" && cat dub.json)
+            echo '```'
+            du -sh "$RUNNER_TEMP/dside"/*/ | sed 's|.*/dside/|  |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push the tag
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ secrets.DSIDE_PUBLISH_TOKEN }}
+          REPO: ${{ steps.pre.outputs.repo }}
+          QT: ${{ steps.pre.outputs.qt }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/dside"
+          git init -q -b main
+          git config user.name  "dside-publish"
+          git config user.email "dside-publish@users.noreply.github.com"
+          git add -A
+          git commit -q -m "dside for Qt $QT" \
+                        -m "Generated by xiboca from ${{ github.repository }}@${{ github.sha }}. Do not patch these sources: regenerate."
+          git remote add origin "https://x-access-token:$GH_TOKEN@github.com/$REPO.git"
+
+          # THE TAG IS THE VERSION AND IT IS WRITTEN ONCE. A moved tag is a package whose contents
+          # changed under a version somebody already depends on — dub caches by version, so half the
+          # world would keep the old bytes and the other half would get the new ones, with no way to
+          # tell which they had. If this release was already published, that is a fact to report,
+          # not to overwrite.
+          if git ls-remote --exit-code --tags origin "v$QT" >/dev/null 2>&1; then
+            echo "::error::$REPO already has the tag v$QT. A published version is never rewritten."
+            echo "::error::If the bindings genuinely changed, that is a new Qt release or a new tag."
+            exit 1
+          fi
+
+          # `main` is force-pushed because the tree is REGENERATED, not edited: its history is the
+          # sequence of Qt releases, and each one replaces the last. The tags are what anybody
+          # depends on, and those are immutable by the check above.
+          git push -f origin main
+          git tag "v$QT"
+          git push origin "v$QT"
+          echo "Published $REPO v$QT" >> "$GITHUB_STEP_SUMMARY"
