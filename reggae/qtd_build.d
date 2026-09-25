@@ -978,6 +978,19 @@ void writeIfChanged(string path, string content) {
     std.file.write(path, content);
 }
 
+// Qt 6's QML directory as the Qt 6 on PATH reports it — the explicitly-6 tools, never the
+// unsuffixed ones, which on a machine with both are Qt 5's (see the same order in reggaefile.d).
+// "" when neither tool answers with a directory that exists; the caller then leaves the spec alone.
+string qt6InstallQml() {
+    foreach (probe; [["qtpaths6", "--query", "QT_INSTALL_QML"], ["qmake6", "-query", "QT_INSTALL_QML"]]) {
+        try {
+            auto r = execute(probe);
+            if (r.status == 0 && r.output.strip.length && exists(r.output.strip)) return r.output.strip;
+        } catch (Exception) { }
+    }
+    return "";
+}
+
 // Build the `gen` + `shims` targets for a spec. `root` is the repo root; `spec` is the
 // spec basename under generator/. `mods` are the pkg-config modules the binding needs.
 QtdBinding qtdBinding(string root, string spec, string[] mods) {
@@ -1060,16 +1073,22 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
     writeIfChanged(buildPath(bdir, "qtlibs.txt"), qtLibsOf(mods) ~ "\n");
     auto xiboca = gendPath(root);
 
-    // WHERE PKG-CONFIG IS ABSENT, THE BUILD ANSWERS FOR IT. The shipped specs name Qt modules
-    // through `pkg_config`, which is the right thing to write down — it is a fact about the
-    // binding, not about a machine. On Windows there is no pkg-config to resolve it, and xiboca
-    // refuses rather than guessing. But the build already knows where Qt is, so it derives a spec
-    // beside the binding with `cflags` and `libs` filled in from the probe. The shipped spec stays
-    // platform-neutral; the platform knowledge stays in the build, which is the only place that
-    // has it.
+    // THE SPEC XIBOCA READS IS ALWAYS DERIVED FROM THE SHIPPED ONE, on every platform. The shipped
+    // specs carry facts about ONE machine — private include dirs written as
+    // `/usr/include/qt6/QtQuick/6.11.1`, a QML type registry under `/usr/lib/qt6/qml` — and the
+    // corrections below (drop what does not exist, add what the probe found for THIS Qt, re-root
+    // the registry) were applied only where pkg-config was absent, i.e. on Windows. Linux took the
+    // shipped spec as written, so on any Linux that is not this one the quick binding refused to
+    // generate: CI run 36075980131, with Qt 6.11.1 correctly installed, still failed 685 targets on
+    // `'QtQuick/private/qquickrectangle_p.h' file not found` — a header that was there, under the
+    // runner's prefix rather than under the path the spec named.
+    //
+    // WHERE PKG-CONFIG IS ABSENT the build additionally answers for it: `cflags`, `libs` and the
+    // discovery marker are filled in from the probe (see the end of this block). That part stays
+    // Windows-only; everything else is a fact about the Qt in front of us, wherever that is.
     auto useSpec = specPath;
-    if (!havePkgConfigForBuild()) {
-        auto derived = buildPath(bdir, "spec.win.json");
+    {
+        auto derived = buildPath(bdir, "spec.derived.json");
         auto jw = parseJSON(readText(specPath));
         // The derived spec lives somewhere else, so anything RELATIVE in it has to be resolved
         // first. out_dir is written relative to generator/; left alone it pointed at
@@ -1137,8 +1156,13 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
             // result is absent: xiboca now names the file it could not find, and a path pointing
             // at THIS Qt is the one worth naming.
             if (auto qt = "qmltypes" in jw.object) {
-                auto qmlRoot = buildPath(QtProbe.prefixOf(mods), "qml");
-                jw.object["qmltypes"] = JSONValue(qt.array.map!((e) {
+                // The root is <QTDIR>/qml where a prefix is named (Windows), and otherwise what
+                // the Qt on PATH says it is. QTDIR is empty on Linux, and `buildPath("", "qml")`
+                // is the RELATIVE path `qml/` — which would have re-rooted this machine's correct
+                // registry into a directory that does not exist.
+                auto pfx = QtProbe.prefixOf(mods);
+                auto qmlRoot = pfx.length ? buildPath(pfx, "qml") : qt6InstallQml();
+                if (qmlRoot.length) jw.object["qmltypes"] = JSONValue(qt.array.map!((e) {
                     auto s = e.str.replace("\\", "/");
                     auto i = s.lastIndexOf("/qml/");
                     return JSONValue(i < 0 ? s : buildPath(qmlRoot, s[i + 5 .. $]));
@@ -1157,12 +1181,14 @@ QtdBinding qtdBinding(string root, string spec, string[] mods) {
         // the installation ourselves we know exactly which headers are its, and that is a better
         // answer than a path fragment written for another platform. A headers-mode spec
         // (source_filter) is describing the user's own sources and is left alone.
-        if ("source_filter" !in jw.object)
-            jw.object["qt_marker"] = JSONValue(QtProbe.prefixOf(mods));
-        jw.object["cflags"] = JSONValue(qtCflags(mods).split(" ").filter!(f => f.length).array
-                                       .map!(f => JSONValue(f)).array);
-        jw.object["libs"]   = JSONValue(qtLibsOf(mods).split(" ").filter!(f => f.length).array
-                                       .map!(f => JSONValue(f)).array);
+        if (!havePkgConfigForBuild()) {
+            if ("source_filter" !in jw.object)
+                jw.object["qt_marker"] = JSONValue(QtProbe.prefixOf(mods));
+            jw.object["cflags"] = JSONValue(qtCflags(mods).split(" ").filter!(f => f.length).array
+                                           .map!(f => JSONValue(f)).array);
+            jw.object["libs"]   = JSONValue(qtLibsOf(mods).split(" ").filter!(f => f.length).array
+                                           .map!(f => JSONValue(f)).array);
+        }
         writeIfChanged(derived, jw.toPrettyString);
         useSpec = derived;
     }
