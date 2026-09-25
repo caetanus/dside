@@ -23,6 +23,11 @@
 # on the very first archive, which is every archive Qt publishes. py7zr is already on the machine
 # as an aqtinstall dependency, and it is the same library aqt would have unpacked with.
 param(
+    # THE AUTHORITY IS qt-version.txt AT THE REPOSITORY ROOT, which the CI reads and always passes
+    # here explicitly. This default exists only for a hand-run on Windows; if the two ever disagree,
+    # the file is right and this is stale. Left as a literal deliberately: reading the file from a
+    # param default needs code that cannot be exercised on this machine, and a silently wrong
+    # PowerShell default is worse than an openly duplicated one.
     [string]   $Version = "6.11.1",
     [string]   $Arch    = "win64_msvc2022_64",
     [string]   $Dest    = "C:/Qt",

@@ -1,0 +1,157 @@
+# SPDX-FileCopyrightText: 2026 Marcelo A Caetano
+# SPDX-License-Identifier: BSL-1.0
+#
+# WATCH Qt'S OWN REPOSITORY AND PROPOSE THE BUMP. Nothing here publishes anything: it reads the
+# mirror, and if a release exists that is newer than `qt-version.txt`, it opens a pull request
+# changing that one line. The matrix then runs on the pull request, and a human decides.
+#
+# WHY A PULL REQUEST AND NOT A PUBLISH. The manifest gates' baselines are recorded against one Qt
+# MINOR (6.11 today), and ci.yml already demotes them to advisory when the installed Qt is a
+# different minor — see its header. So on exactly the event this workflow exists to catch, the gates
+# that measure generator regression do NOT run as mandatory. Publishing automatically there would
+# ship a binding checked only by the version-independent gates. The pull request puts that fact in
+# front of somebody before anything leaves the repository, and the body below says so explicitly
+# rather than leaving it to be remembered.
+#
+# THE TOKEN MATTERS, and getting it wrong makes this workflow decorative rather than broken, which
+# is worse. GitHub does not trigger workflows for events raised by the repository's own
+# GITHUB_TOKEN: a pull request opened with it will sit there with NO CI run, and the whole point is
+# that the bump is validated by the matrix. So a PAT (`QT_WATCH_TOKEN`) is used when present, and
+# when it is absent this falls back to GITHUB_TOKEN and SAYS, in the job summary and in the pull
+# request itself, that the checks will be missing and why. It does not pretend to have done the job.
+name: Qt watch
+on:
+  schedule:
+    - cron: "0 5 * * *"     # daily; Qt releases a handful of times a year, this is not a hot path
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Bump to this version instead of the newest available (e.g. 6.11.2)"
+        type: string
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: What we target, and what the mirror has
+        id: look
+        env:
+          # THROUGH THE ENVIRONMENT, not interpolated into the script. `${{ inputs.x }}` is pasted
+          # into the shell source before bash ever sees it, so a value containing a quote or a
+          # semicolon is not a bad argument — it is extra code. Only collaborators can dispatch this
+          # workflow, which lowers the stakes and does not change the rule.
+          WANT: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          pin=$(tr -d '[:space:]' < qt-version.txt)
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "We target Qt $pin."
+
+          # NOT `|| true`. qt-latest.sh exits non-zero when it cannot see the version we already
+          # target, which means it no longer understands the repository layout — and a watcher in
+          # that state answers "nothing new" forever. Letting that failure through is the entire
+          # difference between a check and a decoration, so the step fails with it.
+          newer=$(tools/ci/qt-latest.sh --newer-than "$pin")
+          if [ -z "$newer" ]; then
+            echo "Nothing newer than $pin on the mirror." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "found=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Newer releases available:"; printf '  %s\n' $newer
+          target="$WANT"
+          if [ -n "$target" ]; then
+            grep -qxF "$target" <<<"$newer" || {
+              echo "::error::$target is not among the releases newer than $pin"; exit 1; }
+          else
+            target=$(tail -1 <<<"$newer")
+          fi
+          {
+            echo "found=$target"
+            echo "all=$(tr '\n' ' ' <<<"$newer")"
+          } >> "$GITHUB_OUTPUT"
+
+          # A MINOR bump moves away from the baselines; a PATCH bump inside the same minor does not.
+          # The reader of the pull request needs that distinction more than any other fact here.
+          bl_minor=$(cut -d. -f1,2 <<<"$pin")
+          nw_minor=$(cut -d. -f1,2 <<<"$target")
+          [ "$bl_minor" = "$nw_minor" ] && echo "sameminor=1" >> "$GITHUB_OUTPUT" \
+                                        || echo "sameminor=" >> "$GITHUB_OUTPUT"
+
+      - name: Open (or update) the bump pull request
+        if: steps.look.outputs.found != ''
+        env:
+          # The PAT when it exists, the repository token when it does not — see the header.
+          GH_TOKEN: ${{ secrets.QT_WATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          HAVE_PAT: ${{ secrets.QT_WATCH_TOKEN != '' }}
+          PIN: ${{ steps.look.outputs.pin }}
+          TARGET: ${{ steps.look.outputs.found }}
+          ALL: ${{ steps.look.outputs.all }}
+          SAME_MINOR: ${{ steps.look.outputs.sameminor }}
+        run: |
+          set -euo pipefail
+          branch="qt-bump/$TARGET"
+
+          # Idempotent by construction: the branch is named after the TARGET version, so a daily run
+          # finding the same release force-pushes the same one-line diff instead of opening a second
+          # pull request every morning.
+          git config user.name  "qt-watch"
+          git config user.email "qt-watch@users.noreply.github.com"
+          git checkout -b "$branch"
+          printf '%s\n' "$TARGET" > qt-version.txt
+          git add qt-version.txt
+          # Two -m rather than one message with embedded newlines: inside a YAML block scalar a
+          # continuation line at column 0 ends the block, and the workflow stops being parseable.
+          git commit -m "ci: target Qt $TARGET" \
+                     -m "Proposed by tools/ci/qt-latest.sh: Qt $TARGET is on Qt's own repository and this build targets $PIN. The matrix on this pull request is what decides whether it is taken."
+          git push -f origin "$branch"
+
+          # The body is BUILT, not quoted, for the same reason.
+          {
+            echo "Qt **$TARGET** is available and this build targets **$PIN**."
+            echo
+            echo "Newer on the mirror: \`$ALL\`"
+            echo "(this bumps to the newest — edit \`qt-version.txt\` on this branch to take another)"
+            echo
+            if [ "$SAME_MINOR" = "1" ]; then
+              echo "**Same minor as the baselines** — the manifest gates run as MANDATORY here."
+            else
+              echo "**Different minor from the baselines** (recorded against ${PIN%.*}). ci.yml demotes"
+              echo "the manifest gates to ADVISORY on a different minor, so a generator regression would"
+              echo "NOT fail this run. Re-record the baselines, or read the advisory step before merging."
+            fi
+            echo
+            if [ "$HAVE_PAT" = "true" ]; then
+              echo "The matrix runs on this pull request."
+            else
+              echo "> **No checks will run on this pull request.** It was opened with the repository's own"
+              echo "> GITHUB_TOKEN, and GitHub does not trigger workflows for events that token raises."
+              echo "> Add a PAT as the \`QT_WATCH_TOKEN\` secret, or push an empty commit to this branch"
+              echo "> to start the matrix by hand."
+            fi
+            echo
+            echo "Merging publishes nothing — it only changes what the build targets."
+          } > /tmp/pr-body.md
+
+          # `gh pr create` fails when one is already open for the branch; that is the daily re-run and
+          # it is not an error. The force-push above has already updated its diff.
+          gh pr create --head "$branch" --base "${{ github.ref_name }}" \
+             --title "ci: target Qt $TARGET" --body-file /tmp/pr-body.md \
+          || echo "A pull request for $branch already exists; it now carries the updated diff."
+
+          {
+            echo "## Qt $TARGET proposed"
+            echo
+            echo "Branch \`$branch\`. Newer on the mirror: \`$ALL\`"
+            if [ "$HAVE_PAT" != "true" ]; then
+              echo
+              echo "No \`QT_WATCH_TOKEN\` secret: the pull request will have no CI run."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

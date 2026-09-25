@@ -32,7 +32,34 @@ on:
         default: false
 
 jobs:
+  # THE Qt THIS PROJECT TARGETS, read from one file so a release bump is a one-line diff. It used to
+  # be spelled sixteen times in here — in a cache key, a path, an install argument, an assertion and
+  # four `QTDIR6`s — and a version bump that missed one of them does not fail loudly: it caches
+  # under the old key, or asserts against the version it just stopped installing. The watcher
+  # (tools/ci/qt-latest.sh) proposes bumps by editing that one file, which is also what makes the
+  # resulting pull request reviewable.
+  #
+  # The ANDROID job deliberately does NOT follow this. It installs Qt 6.8.2 for android_arm64_v8a
+  # through aqtinstall, which is a different fact from the desktop target and is pinned separately
+  # on purpose — do not "fix" the inconsistency by wiring it here.
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      qt6: ${{ steps.pin.outputs.qt6 }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pin
+        run: |
+          v=$(tr -d '[:space:]' < qt-version.txt)
+          case "$v" in
+            6.*.*) ;;
+            *) echo "::error::qt-version.txt does not hold a Qt 6 version triple: '$v'"; exit 1 ;;
+          esac
+          echo "qt6=$v" >> "$GITHUB_OUTPUT"
+          echo "targeting Qt $v"
+
   matrix:
+    needs: prepare
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -68,32 +95,32 @@ jobs:
         id: qt6cache
         uses: actions/cache@v4
         with:
-          path: ~/Qt/6.11.1
-          key: qt6-linux-6.11.1-v1-${{ hashFiles('tools/linux/get-qt.sh') }}
+          path: ~/Qt/${{ needs.prepare.outputs.qt6 }}
+          key: qt6-linux-${{ needs.prepare.outputs.qt6 }}-v1-${{ hashFiles('tools/linux/get-qt.sh') }}
 
-      - name: Install Qt 6.11.1 (from Qt's own repository, not the distribution)
+      - name: Install Qt ${{ needs.prepare.outputs.qt6 }} (from Qt's own repository, not the distribution)
         if: steps.qt6cache.outputs.cache-hit != 'true'
         run: |
           python3 -m pip install --user py7zr
-          tools/linux/get-qt.sh --version 6.11.1 --dest "$HOME/Qt"
+          tools/linux/get-qt.sh --version ${{ needs.prepare.outputs.qt6 }} --dest "$HOME/Qt"
 
       # pkg-config and the probes in reggaefile.d (qtpaths6/qmake6 first) must answer with THIS Qt.
       # Prepended, not appended: the distribution's Qt 5 .pc files stay reachable for the Qt 5 half.
-      - name: Put Qt 6.11.1 first on PATH, pkg-config and the loader path
+      - name: Put Qt ${{ needs.prepare.outputs.qt6 }} first on PATH, pkg-config and the loader path
         run: |
-          q="$HOME/Qt/6.11.1/gcc_64"
+          q="$HOME/Qt/${{ needs.prepare.outputs.qt6 }}/gcc_64"
           echo "$q/bin" >> "$GITHUB_PATH"
           echo "PKG_CONFIG_PATH=$q/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$q/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       # ...and REFUSED if it does not: a runner where pkg-config still answers 6.4 would repeat the
       # run this replaces, green-or-red for reasons unrelated to the code.
-      - name: Assert the Qt 6 in use is 6.11.1
+      - name: Assert the Qt 6 in use is ${{ needs.prepare.outputs.qt6 }}
         run: |
           v=$(pkg-config --modversion Qt6Core); echo "Qt6Core: $v"
-          test "$v" = 6.11.1 || { echo "::error::pkg-config answers Qt $v, not 6.11.1"; exit 1; }
+          test "$v" = ${{ needs.prepare.outputs.qt6 }} || { echo "::error::pkg-config answers Qt $v, not ${{ needs.prepare.outputs.qt6 }}"; exit 1; }
           echo "qmake6: $(qmake6 -query QT_VERSION)  qtpaths6 QML: $(qtpaths6 --query QT_INSTALL_QML)"
-          test "$(qmake6 -query QT_VERSION)" = 6.11.1 || { echo "::error::qmake6 is not 6.11.1"; exit 1; }
+          test "$(qmake6 -query QT_VERSION)" = ${{ needs.prepare.outputs.qt6 }} || { echo "::error::qmake6 is not ${{ needs.prepare.outputs.qt6 }}"; exit 1; }
 
       # THE QML MODULES ARE A SEPARATE INSTALL, and without them the runner has a Qt Quick with no
       # Controls — which the build correctly turns into `qmltc-o3-gate-skipped` instead of the five
@@ -302,6 +329,7 @@ jobs:
   #
   # The full matrix is reachable by hand: `workflow_dispatch` with `windows_full: true`.
   windows:
+    needs: prepare
     runs-on: windows-2022
     timeout-minutes: 330
     steps:
@@ -338,7 +366,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: C:/Qt
-          key: qt-windows-6.11.1-5.15.2-v1
+          key: qt-windows-${{ needs.prepare.outputs.qt6 }}-5.15.2-v1
 
       # py7zr is how get-qt.ps1 unpacks Qt's .7z archives; it is not on the runner by default.
       - name: py7zr
@@ -350,7 +378,7 @@ jobs:
         if: steps.qtcache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          ./tools/win/get-qt.ps1 -Version 6.11.1 -Dest C:/Qt
+          ./tools/win/get-qt.ps1 -Version ${{ needs.prepare.outputs.qt6 }} -Dest C:/Qt
           # Qt 5.15.2's MSVC build is msvc2019_64 — there is no msvc2022 one — and the modules the
           # Qt6 default names (qtwebchannel, qtpositioning, qtshadertools) are Qt6 spellings. The
           # Qt5 matrix here needs base + declarative, which the base package carries.
@@ -402,7 +430,7 @@ jobs:
         shell: pwsh
         continue-on-error: true
         env:
-          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR6: C:/Qt/${{ needs.prepare.outputs.qt6 }}/msvc2022_64
           QTDIR5: C:/Qt/5.15.2/msvc2019_64
         run: ./tools/win/preflight.ps1
 
@@ -428,7 +456,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch' || inputs.windows_full != true
         shell: pwsh
         env:
-          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR6: C:/Qt/${{ needs.prepare.outputs.qt6 }}/msvc2022_64
           QTDIR5: C:/Qt/5.15.2/msvc2019_64
         run: |
           # MSYS2's, NAMED. Left to find `sh.exe` on PATH the launcher picked Git for Windows'
@@ -446,7 +474,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.windows_full == true
         shell: pwsh
         env:
-          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR6: C:/Qt/${{ needs.prepare.outputs.qt6 }}/msvc2022_64
           QTDIR5: C:/Qt/5.15.2/msvc2019_64
         run: |
           # MSYS2's, NAMED. Left to find `sh.exe` on PATH the launcher picked Git for Windows'
@@ -483,7 +511,7 @@ jobs:
         if: always()
         shell: pwsh
         env:
-          QTDIR6: C:/Qt/6.11.1/msvc2022_64
+          QTDIR6: C:/Qt/${{ needs.prepare.outputs.qt6 }}/msvc2022_64
           QTDIR5: C:/Qt/5.15.2/msvc2019_64
         run: |
           $msys = '${{ steps.msys2.outputs.msys2-location }}\usr\bin'
@@ -500,7 +528,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: wrapper-windows-qt6.11.1
+          name: wrapper-windows-qt${{ needs.prepare.outputs.qt6 }}
           path: dist/
           if-no-files-found: error
 

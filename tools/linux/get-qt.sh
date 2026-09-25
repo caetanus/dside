@@ -24,7 +24,14 @@
 # compile fails with a missing QtCore header.
 set -euo pipefail
 
-version=6.11.1
+# THE DEFAULT IS THE REPOSITORY'S PIN, not a literal. `qt-version.txt` at the repository root is
+# what the CI reads too, so a developer running this with no arguments installs the Qt the build
+# expects — and a bump is still one file. Resolved from THIS script's location rather than the
+# working directory, because it is run from everywhere; a checkout without the file (a copied
+# script, a shallow export) falls back to the literal rather than refusing.
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+pin="$here/../../qt-version.txt"
+version=$([ -r "$pin" ] && tr -d '[:space:]' < "$pin" || echo 6.11.1)
 dest="$HOME/Qt"
 webengine=1
 base=https://download.qt.io/online/qtsdkrepository/linux_x64
