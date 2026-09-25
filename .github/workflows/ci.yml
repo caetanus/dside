@@ -37,16 +37,63 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt5 + Qt6 (dev + private + tools), WebEngine, clang/libclang
+      # QT 5 FROM THE DISTRIBUTION, QT 6 FROM Qt. Ubuntu 24.04's Qt 5 is 5.15, which is the matrix's
+      # Qt 5. Its Qt 6 is 6.4.2, which is NOT the matrix's Qt 6 (6.11): run 34654242442 built against
+      # it and came back 647 pass / 698 fail — 641 of them qmltc, because moc 6.4 cannot parse
+      # `BINDABLE ... READ default` and the quick binding's private header is not in 6.4 — against
+      # 1199 / 0 on the machine the numbers are published from. Qt 6 is therefore fetched from Qt's
+      # own repository below, and no `qt6-*` package is installed here so that nothing can mix.
+      #
+      # ...which means installing by hand what the qt6-* packages used to pull in as dependencies:
+      # the system libraries the official Qt 6 binaries link against. The list is NOT remembered —
+      # it is every DT_NEEDED of lib/libQt6*.so.6, plugins/platforms/*.so and QtWebEngineProcess
+      # that the Qt tree does not itself provide, mapped to its noble package.
+      - name: Install Qt5 (distribution), clang/libclang, and what Qt 6's own binaries link against
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             qtbase5-dev qtbase5-private-dev qtdeclarative5-dev qtdeclarative5-private-dev \
             qttools5-dev qttools5-dev-tools libqt5webenginecore5 qtwebengine5-dev \
-            qt6-base-dev qt6-base-private-dev qt6-declarative-dev qt6-declarative-private-dev \
-            qt6-declarative-dev-tools qt6-tools-dev qt6-tools-dev-tools qt6-l10n-tools \
-            qt6-webengine-dev qt6-webengine-dev-tools \
-            clang libclang-dev llvm-dev pkg-config
+            clang libclang-dev llvm-dev pkg-config python3-pip \
+            libasound2t64 libbrotli1 libdbus-1-3 libdrm2 libegl1 libexpat1 libfontconfig1 \
+            libfreetype6 libgbm1 libglib2.0-0t64 libgl1 libgssapi-krb5-2 libnspr4 libnss3 libudev1 \
+            libwayland-client0 libwayland-cursor0 libx11-6 libx11-xcb1 libxcb1 libxcb-cursor0 \
+            libxcb-dri3-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 libxcb-xfixes0 \
+            libxcb-xkb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 \
+            libxkbcommon-x11-0 libxkbfile1 libxrandr2 libxtst6 zlib1g libzstd1
+
+      # Cached: ~400 MB, and the same bytes every run (the archives are sha256-checked on fetch).
+      - name: Cache Qt 6
+        id: qt6cache
+        uses: actions/cache@v4
+        with:
+          path: ~/Qt/6.11.1
+          key: qt6-linux-6.11.1-v1-${{ hashFiles('tools/linux/get-qt.sh') }}
+
+      - name: Install Qt 6.11.1 (from Qt's own repository, not the distribution)
+        if: steps.qt6cache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m pip install --user py7zr
+          tools/linux/get-qt.sh --version 6.11.1 --dest "$HOME/Qt"
+
+      # pkg-config and the probes in reggaefile.d (qtpaths6/qmake6 first) must answer with THIS Qt.
+      # Prepended, not appended: the distribution's Qt 5 .pc files stay reachable for the Qt 5 half.
+      - name: Put Qt 6.11.1 first on PATH, pkg-config and the loader path
+        run: |
+          q="$HOME/Qt/6.11.1/gcc_64"
+          echo "$q/bin" >> "$GITHUB_PATH"
+          echo "PKG_CONFIG_PATH=$q/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$q/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      # ...and REFUSED if it does not: a runner where pkg-config still answers 6.4 would repeat the
+      # run this replaces, green-or-red for reasons unrelated to the code.
+      - name: Assert the Qt 6 in use is 6.11.1
+        run: |
+          v=$(pkg-config --modversion Qt6Core); echo "Qt6Core: $v"
+          test "$v" = 6.11.1 || { echo "::error::pkg-config answers Qt $v, not 6.11.1"; exit 1; }
+          echo "qmake6: $(qmake6 -query QT_VERSION)  qtpaths6 QML: $(qtpaths6 --query QT_INSTALL_QML)"
+          test "$(qmake6 -query QT_VERSION)" = 6.11.1 || { echo "::error::qmake6 is not 6.11.1"; exit 1; }
 
       # THE QML MODULES ARE A SEPARATE INSTALL, and without them the runner has a Qt Quick with no
       # Controls — which the build correctly turns into `qmltc-o3-gate-skipped` instead of the five
@@ -56,12 +103,11 @@ jobs:
       # Installed rather than asserted away. Weakening the check to accept the skip would make the
       # runner's coverage a property of what apt happened to pull in, which is the shape of silent
       # capability loss this workflow already has one comment about.
+      # Qt 6's are part of the Qt fetched above (qtdeclarative ships Controls and every style); only
+      # Qt 5's come from the distribution now. The listing stays as the loud check it always was.
       - name: Install the QML runtime modules (QtQuick.Controls and what it depends on)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-templates \
-            qml6-module-qtquick-layouts qml6-module-qtquick-window qml6-module-qtquick-shapes \
-            qml6-module-qtqml-workerscript qml6-module-qtqml-models \
             qml-module-qtquick2 qml-module-qtquick-controls2
           echo "Qt6 QML dir: $(qmake6 -query QT_INSTALL_QML)"
           ls "$(qmake6 -query QT_INSTALL_QML)/QtQuick/Controls" | head
@@ -212,7 +258,15 @@ jobs:
       # that is the one thing a consumer has to match.
       - name: Build the wrapper package
         if: always()
-        run: ./build -s wrapper-package
+        run: |
+          ./build -s wrapper-package
+          # COPIED OUT OF .build/ BEFORE UPLOAD. `.build/*/pkg/` and then `.build/*/pkg/**` both came
+          # back `No files were found` over a package that had just been built, on Linux AND Windows
+          # (runs 34654242442, 36065639585). A third guess at @actions/glob's semantics for a hidden
+          # directory was not taken: a literal, non-hidden `dist/` removes the question.
+          mkdir -p dist
+          for d in .build/*/pkg; do cp -a "$d" "dist/$(basename "$(dirname "$d")")"; done
+          ls dist
 
       - name: Name the artifact after the Qt it was built against
         if: always()
@@ -224,10 +278,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wrapper-linux-qt${{ steps.qtver.outputs.v }}
-          # `**`, not a trailing slash: upload-artifact globs with @actions/glob rather than a
-          # shell, and `.build/*/pkg/` matched nothing there while expanding fine in a terminal —
-          # `No files were found with the provided path`, over a package that had just been built.
-          path: .build/*/pkg/**
+          path: dist/
           if-no-files-found: error
 
       - name: Upload report + coverage artifacts
@@ -438,15 +489,19 @@ jobs:
           $msys = '${{ steps.msys2.outputs.msys2-location }}\usr\bin'
           $env:PATH = "$msys;$env:PATH"
           & "$msys\sh.exe" -c "./build -s wrapper-package"
+          # COPIED OUT OF .build/ BEFORE UPLOAD. `.build/*/pkg/` and then `.build/*/pkg/**` both came
+          # back `No files were found` over a package that had just been built, on Linux AND Windows
+          # (runs 34654242442, 36065639585). A third guess at @actions/glob's semantics for a hidden
+          # directory was not taken: a literal, non-hidden `dist/` removes the question.
+          # No quotes INSIDE the argument: pwsh's handling of embedded double quotes passed to a native
+          # program is exactly the kind of thing that changes between versions. The paths have none.
+          & "$msys\sh.exe" -c 'mkdir -p dist && for d in .build/*/pkg; do cp -a $d dist/$(basename $(dirname $d)); done && ls dist'
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: wrapper-windows-qt6.11.1
-          # `**`, not a trailing slash: upload-artifact globs with @actions/glob rather than a
-          # shell, and `.build/*/pkg/` matched nothing there while expanding fine in a terminal —
-          # `No files were found with the provided path`, over a package that had just been built.
-          path: .build/*/pkg/**
+          path: dist/
           if-no-files-found: error
 
 
