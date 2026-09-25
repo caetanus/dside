@@ -135,7 +135,8 @@ jobs:
       - name: Install the QML runtime modules (QtQuick.Controls and what it depends on)
         run: |
           sudo apt-get install -y --no-install-recommends \
-            qml-module-qtquick2 qml-module-qtquick-controls2
+            qml-module-qtquick2 qml-module-qtquick-controls2 \
+            qml-module-qtqml qml-module-qtqml-models2
           echo "Qt6 QML dir: $(qmake6 -query QT_INSTALL_QML)"
           ls "$(qmake6 -query QT_INSTALL_QML)/QtQuick/Controls" | head
 
