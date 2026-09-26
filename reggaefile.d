@@ -345,6 +345,10 @@ Build reggaeBuild() {
             // of QVariantMap is already a QML model; what the D side could not do was build one, so
             // an application's only way to hand rows over was a JSON string the QML re-parsed.
             all ~= qtdTest("qmlmodel" ~ tag ~ "-" ~ dc, t("qml", "model_test.d"), b, dc, qmlExtra);
+            // ...and a QAbstractListModel subclassed IN D, driven incrementally (move, dataChanged,
+            // insert, remove) with the delegates it already built kept. An Instantiator is the view
+            // here, so the same test runs on Qt5; listmodel-* covers a ListView on Qt6 Quick.
+            all ~= qtdTest("qmllistmodel" ~ tag ~ "-" ~ dc, t("qml", "listmodel_qml_test.d"), b, dc, qmlExtra);
             all ~= qtdTest("qmltwo" ~ tag ~ "-" ~ dc, t("qml", "register_two_test.d"), b, dc, qmlExtra); // 2 distinct types
             all ~= qtdTest("homonym" ~ tag ~ "-" ~ dc, t("qml", "homonym_test.d"), b, dc, homoExtra); // 2 same-named types
             all ~= qtdTest("homocollide" ~ tag ~ "-" ~ dc, t("qml", "homonym_collision_test.d"), b, dc, homoExtra); // same key -> conflict
@@ -396,6 +400,13 @@ Build reggaeBuild() {
             // meta-object chain, and Qt uses it to decide policy on objects handed to it.
             all ~= qtdTest("subclasscast-" ~ dc, buildPath(root, "tests", "qml", "subclasscast_test.d"),
                            quick, dc);
+            // A QAbstractListModel subclassed in D, driving a real ListView INCREMENTALLY: move,
+            // dataChanged, insert and remove must keep the delegates the view already built.
+            all ~= qtdTest("listmodel-" ~ dc, buildPath(root, "tests", "qml", "listmodel_test.d"),
+                           quick, dc, buildPath(root, "runtime", "qrc", "qrc.d")
+                               ~ " -I" ~ buildPath(root, "runtime", "qrc")
+                               ~ " -J=" ~ buildPath(root, "tests", "qml")
+                               ~ " -I" ~ buildPath(root, "tests", "support"));
             // ...and the deployment question for a QML program, which is a different question from
             // the widgets one: the engine resolves module directories at run time, and the Qt Quick
             // Controls STYLE is picked at run time too, by neither the linker nor the qmldir.

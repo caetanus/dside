@@ -466,8 +466,14 @@ template propMembers(T) {
 // overload, so `__traits(getMember)` never has to re-resolve an overload set from argument types.
 template aliasPropMembers(T) {
     template isAliasProp(string m) {
+        // The FIRST overload, named explicitly: asking an overload set for its attributes is
+        // deprecated, and a subclass of a bound type has overload sets it never wrote
+        // (dataChanged/createIndex, mixed in by QtdWidget). The first overload is what the
+        // attribute query answered for before, and what aliasPropNames/Types/Notify and
+        // callPropAlias read — detecting the UDA on any OTHER overload would register a property
+        // whose metadata comes from a different function.
         static if (is(typeof(__traits(getMember, T, m)) == function))
-            enum isAliasProp = hasUDA!(__traits(getMember, T, m), PropertyAlias);
+            enum isAliasProp = hasUDA!(__traits(getOverloads, T, m)[0], PropertyAlias);
         else enum isAliasProp = false;
     }
     enum aliasPropMembers = mocFilter!(T, isAliasProp);
@@ -1062,7 +1068,7 @@ void qtdAttachFailed(const(char)* what) nothrow @nogc {
                     ~ "enter D for %s\n", what);
 }
 
-string __ovTramp(T, string vn, size_t idx)() {
+string __ovTramp(T, string vn, size_t idx, string conv = "")() {
     import std.traits : ReturnType, Parameters;
     alias R = ReturnType!(__traits(getMember, T, vn));
     alias P = Parameters!(__traits(getMember, T, vn));
@@ -1075,7 +1081,29 @@ string __ovTramp(T, string vn, size_t idx)() {
     auto call = "(cast(" ~ T.stringof ~ ") d)." ~ vn ~ "(" ~ as ~ ")";
     // A D exception can't unwind across the C++ virtual-call frame -> route it through the
     // callback error policy (counted/recorded/hooked), never silently swallowed.
-    static if (is(R == void))
+    auto head = "extern(C) static ";
+    auto attach = " nothrow { auto __at = qtdAttachThread();"
+        ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\".ptr); return";
+    // A CONTAINER return: the trampoline wants a heap handle, built from the override's idiomatic D
+    // container by the combo's `<id>_from` (qtvirt's __X_vconv names it). null = the override threw.
+    // `conv` is "<module>:<combo id>"; imported INSIDE the function, so nothing has to be in scope
+    // in the user's module, where this text lands.
+    static if (conv.length) {
+        enum colon = () { foreach (k, ch; conv) if (ch == ':') return k; return 0; }();
+        enum cmod = conv[0 .. colon], cid = conv[colon + 1 .. $];
+        return head ~ "void* " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "") ~ ")" ~ attach
+            ~ " null; } try { import " ~ cmod ~ " : " ~ cid ~ "_from; return " ~ cid ~ "_from(" ~ call ~ "); }"
+            ~ " catch (Exception e) { qtdOnCallbackError(e); return null; } }\n";
+    }
+    // A VALUE-RECORD return (QVariant, QModelIndex): the trampoline passes an OUT pointer to a value
+    // it default-constructed. Assignment, not construction: D's assignment of a struct with a
+    // destructor swaps, and the default value it displaces is destroyed on the D side — exactly
+    // one construction and one destruction per object, whichever language made it.
+    else static if (is(R == struct))
+        return head ~ "void " ~ nm ~ "(void* d, " ~ R.stringof ~ "* __out" ~ (ps.length ? ", " ~ ps : "")
+            ~ ")" ~ attach ~ "; } try { *__out = " ~ call ~ "; }"
+            ~ " catch (Exception e) { qtdOnCallbackError(e); } }\n";
+    else static if (is(R == void))
         return "extern(C) static void " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
             ~ ") nothrow { auto __at = qtdAttachThread();"
             ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\".ptr); return; }"
@@ -1109,11 +1137,34 @@ mixin template QtdWidget(Base) {
     private alias _Self = typeof(this);
     final void* __qtdObj() { return _qobj; }
     private enum string[] __vn = mixin("__" ~ Base.stringof ~ "_vnames");  // base virtuals (qtvirt)
+    private enum string[] __vc = mixin("__" ~ Base.stringof ~ "_vconv");   // container-return converters
+    private enum bool[] __vp = mixin("__" ~ Base.stringof ~ "_vpure");     // which are PURE
+    // A PURE virtual the class does not implement is a null callback the trampoline will call the
+    // first time Qt asks (it calls pure ones unconditionally). Refused here, by name, instead.
+    static foreach (i, vn; __vn)
+        static if (__vp[i])
+            static assert(__traits(hasMember, typeof(this), vn) && __qtdIsFn!(typeof(this), vn),
+                typeof(this).stringof ~ ": subclassing " ~ Base.stringof ~ " requires overriding its pure virtual `"
+                ~ vn ~ "` — Qt calls it unconditionally");
+
+    /// The C++ object, checked: once Qt has destroyed it (a parent deleted, deleteLater), the
+    /// registry entry is gone (~trampoline -> qtd_moc_detach), and entering C++ through the stale
+    /// pointer would be a use-after-free. The subclass thunks go through this.
+    final void* __qtdLiveObj() {
+        if (_qobj is null || (cast(void*) this) !in _reg)
+            throw new Error("use of a destroyed C++ object (" ~ typeof(this).stringof ~ ")");
+        return _qobj;
+    }
+    // What a subclass may call on its base but an outside caller may not — protected non-virtuals
+    // (beginInsertRows, createIndex) and the public signals it emits (dataChanged) — as methods of
+    // this class, through static members of the C++ trampoline. A member the D class declares with
+    // the same name hides these, which is the mixin rule and exactly what an override-by-name wants.
+    mixin(mixin("__" ~ Base.stringof ~ "_prot"));
 
     // extern(C) trampolines for the virtuals the class overrides (name matches).
     static foreach (i, vn; __vn)
         static if (__traits(hasMember, _Self, vn) && __qtdIsFn!(_Self, vn))
-            mixin(__ovTramp!(_Self, vn, i));
+            mixin(__ovTramp!(_Self, vn, i, __vc[i]));
 
     this() { __qtdBuild(null); }
     /// Construct INTO memory somebody ELSE allocated. QML's type registration hands its `create`

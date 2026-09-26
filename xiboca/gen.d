@@ -394,8 +394,15 @@ bool classExported(CXCursor decl) {
     return clang_getCursorVisibility(decl) == 3;   // CXVisibility_Default
 }
 
-bool isSubclassable(CXCursor node) {
-    if (clang_CXXRecord_isAbstract(node)) return false;
+// `allowAbstract`: an ABSTRACT class can still back a trampoline — the trampoline overrides its
+// pure virtuals and is then concrete — provided every pure virtual has a marshalable signature,
+// which the trampoline builder checks per virtual (and drops the class, naming the virtual, if one
+// does not). Refusing abstract classes here, before that check could run, is what kept
+// QAbstractListModel out of `subclass`: its two pure virtuals are the whole point of subclassing
+// it. Only the EXPLICIT list passes true; `subclass_derived` keeps the strict rule, so the
+// auto-subclassed set does not silently grow by every abstract class under a base.
+bool isSubclassable(CXCursor node, bool allowAbstract = false) {
+    if (!allowAbstract && clang_CXXRecord_isAbstract(node)) return false;
     // Must be EXPORTED: a subclass references the base's ctor + staticMetaObject, so those symbols
     // must be linkable. Legacy compat types (QQuickPre64TextEdit) are hidden -> their symbols
     // aren't in the library -> link error. This test only means something for a type coming from a

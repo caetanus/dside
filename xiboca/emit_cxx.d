@@ -470,8 +470,30 @@ struct TrampVirt {
     string name, cppRet, cbCppRet, cbDRet, overrideParams, passArgs, origArgs, cbCppParams, cbDParams;
     string[] imports;
     bool isPure, isConst, retVoid, retEnum;
+    // A VALUE-RECORD return (QVariant data(), QModelIndex index()): the callback gets an OUT
+    // pointer to a value the trampoline default-constructed, and returns void. `outD` is the D type.
+    bool retOut; string outD;
+    // A CONTAINER return (QHash<int,QByteArray> roleNames()): the D side builds a heap container
+    // with the combo's `<id>_from` and returns its handle; the trampoline moves it out and frees it.
+    string retConv, retCxx;
 }
-struct Trampoline { string dClass, cppClass; TrampVirt[] virts; }
+// A method a D SUBCLASS may call but a caller outside the class may not: a protected non-virtual
+// (QAbstractItemModel::beginInsertRows, createIndex) or a public signal the subclass emits
+// (dataChanged). Reached through a static member of the trampoline — the one place C++ grants
+// access to a protected base member — and mixed into the D subclass as a method. One entry per
+// ARITY: trailing parameters that have a C++ default get a shorter variant, so the C++ side applies
+// its own default rather than the binding guessing it in D.
+struct ThunkArg { string cDecl, cUse, dParam, dCabi, dPass, pre; }
+struct Thunk {
+    // `decl` is the class that DECLARES the method, and the call is qualified with it: a derived
+    // class that declares any member of the same name hides every base overload of it
+    // (QQuickLabel's fontChanged() hides QQuickText's fontChanged(const QFont&)), and the thunks
+    // gather overloads from the whole base chain.
+    string name, retKind, decl;    // retKind: void | prim | enum | cls | out
+    string cppRet, cRet, dRet;     // C ABI return (prim/enum-as-int/void*), D return
+    ThunkArg[] args;               // the args THIS variant takes
+}
+struct Trampoline { string dClass, cppClass; TrampVirt[] virts; Thunk[] thunks; string[] thunkImports; }
 __gshared Trampoline[] TRAMPS;
 
 // Value types that are NOT trivially copyable (hold a std::string/CoW/etc. by value):
@@ -588,18 +610,207 @@ void collectVirtuals(CXCursor cls, ref CXCursor[] result, ref bool[string] seen)
     }
 }
 
+// A D type as the subclass-thunk text must spell it. That text is mixed into the USER's class, where
+// nothing the binding imports is in scope — and making it so with a public import collided with
+// qtmoc's own `QObject` UDA. So every type goes through a RENAMED import the thunk text declares
+// itself (`import __qtdi_qmodelindex = qt.quick.qmodelindex;`): self-contained, and it adds exactly
+// one alias per module to the class scope. `dt` may carry mapCxxType's leading module-scope dot.
+string thunkQual(string dt, string mod) {
+    auto t = dt.length && dt[0] == '.' ? dt[1 .. $] : dt;
+    return "__qtdi_" ~ modBase(mod) ~ "." ~ t;
+}
+
+// Classify one parameter for a subclass thunk. false = unsupported (the whole method is skipped).
+bool thunkArg(CXType at, int i, ref ThunkArg ta, ref string[] imports) {
+    auto ak = clang_getCanonicalType(at);
+    auto cn = canon(at);
+    auto sp = clang_getTypeSpelling(at).str;
+    auto a = format("a%d", i);
+    ta.dPass = a;
+    // A supported CONTAINER by const& (QList<int> roles): D gives the idiomatic array/AA, the
+    // runtime builds a heap container, the thunk dereferences it, D frees it after the call.
+    if (ak.kind == CXType_LValueReference && cn.canFind("<")) {
+        auto pt = clang_getPointeeType(ak);
+        if (!sp.canFind("const")) return false;
+        auto id = registerCombo(pt);
+        if (!id.length) return false;
+        auto c = COMBOS[id];
+        ta.cDecl = "void* " ~ a; ta.cUse = format("*static_cast<const %s*>(%s)", c.cxxType, a);
+        ta.dParam = c.idiomD ~ " " ~ a; ta.dCabi = "void*";
+        ta.pre = format("auto __h%d = __qtdi_qtcontainers.%s_from(%s); scope (exit) __qtdi_qtcontainers.%s_del(__h%d); ",
+                        i, id, a, id, i);
+        ta.dPass = format("__h%d", i);
+        imports ~= "qtcontainers";
+        return true;
+    }
+    if (cn.canFind("<") || cn.canFind("std::")) return false;
+    if (auto p = cn in PRIM) { ta.cDecl = sp ~ " " ~ a; ta.cUse = a; ta.dParam = *p ~ " " ~ a; ta.dCabi = *p; return true; }
+    if (cn == "const void *" || cn == "void *") {
+        ta.cDecl = cn ~ " " ~ a; ta.cUse = a;
+        ta.dCabi = cn == "void *" ? "void*" : "const(void)*"; ta.dParam = ta.dCabi ~ " " ~ a; return true;
+    }
+    if (ak.kind == CXType_Enum) {
+        string ip; auto ed = mapCxxType(at, ip); if (ip.length) imports ~= ip;
+        ed = thunkQual(ed, ip);
+        ta.cDecl = "int " ~ a; ta.cUse = format("static_cast<%s>(%s)", cn, a);
+        ta.dParam = ed ~ " " ~ a; ta.dCabi = "int"; ta.dPass = format("cast(int) %s", a); return true;
+    }
+    if (ak.kind == CXType_Pointer && isRecord(clang_getPointeeType(ak))) {
+        auto pt = clang_getPointeeType(ak);
+        if (nestedInClass(pt)) return false;
+        auto dn = lastNs(canon(pt)); imports ~= dn;
+        ta.cDecl = sp ~ " " ~ a; ta.cUse = a; ta.dParam = thunkQual(dn, dn) ~ " " ~ a; ta.dCabi = "void*";
+        ta.dPass = WRAPPER ? format("(%s is null ? null : %s.ptr())", a, a) : format("cast(void*) %s", a);
+        return true;
+    }
+    if (ak.kind == CXType_LValueReference && isRecord(clang_getPointeeType(ak))
+            && isValueRecord(clang_getPointeeType(ak)) && sp.canFind("const")) {
+        auto pt = clang_getPointeeType(ak);
+        if (nestedInClass(pt)) return false;
+        auto dn = lastNs(canon(pt)); imports ~= dn;
+        // By VALUE on the D side: `ref const(T)` refuses an rvalue, and `m(QModelIndex(), 0, 0)` is
+        // the natural call. The copy is the value type's own copy constructor.
+        ta.cDecl = format("const %s* %s", canon(pt), a); ta.cUse = "*" ~ a;
+        ta.dParam = format("const(%s) %s", thunkQual(dn, dn), a); ta.dCabi = format("const(%s)*", thunkQual(dn, dn));
+        ta.dPass = "&" ~ a;
+        return true;
+    }
+    return false;
+}
+
+// Classify the return; false = unsupported.
+bool thunkRet(CXType rt, ref Thunk th, ref string[] imports) {
+    auto rk = clang_getCanonicalType(rt);
+    auto cn = canon(rt);
+    if (cn == "void") { th.retKind = "void"; th.cRet = "void"; th.dRet = "void"; return true; }
+    if (cn.canFind("<") || cn.canFind("std::")) return false;
+    if (auto p = cn in PRIM) { th.retKind = "prim"; th.cRet = clang_getTypeSpelling(rt).str; th.dRet = *p; return true; }
+    if (rk.kind == CXType_Enum) {
+        string ip; th.dRet = mapCxxType(rt, ip); if (ip.length) imports ~= ip;
+        th.dRet = thunkQual(th.dRet, ip);
+        th.retKind = "enum"; th.cRet = "int"; return true;
+    }
+    if (rk.kind == CXType_Pointer && isRecord(clang_getPointeeType(rk))) {
+        auto pt = clang_getPointeeType(rk);
+        if (nestedInClass(pt)) return false;
+        auto dn = lastNs(canon(pt)); imports ~= dn;
+        th.dRet = thunkQual(dn, dn);
+        th.retKind = "cls"; th.cRet = "void*"; return true;
+    }
+    if (isRecord(rk) && isValueRecord(rk) && !nestedInClass(rk)
+            && hasPublicDefaultCtor(clang_getTypeDeclaration(rk))) {
+        auto dn = lastNs(cn); imports ~= dn;
+        th.dRet = thunkQual(dn, dn);
+        th.retKind = "out"; th.cppRet = cn; th.cRet = "void"; return true;
+    }
+    return false;
+}
+
+// The protected non-virtuals and emittable public signals of a subclassed class and its bases, as
+// thunks. `virtNames` are EXCLUDED: QtdWidget decides that a virtual is overridden by asking whether
+// the D class has a member of that name, and a thunk of the same name would answer yes for it.
+// `publicNames` are excluded too: the D wrapper of the base already has a public method of that name
+// (possibly `final`), and a mixin member of the same name would collide with it.
+Thunk[] collectThunks(CXCursor cls, bool[string] virtNames, ref string[] imports) {
+    bool[string] publicNames, seen;
+    CXCursor[] cands;
+    void walk(CXCursor c) {
+        foreach (m; children(c)) {
+            if (m.kind != CXCursor_CXXMethod) continue;
+            auto nm = clang_getCursorSpelling(m).str;
+            auto acc = clang_getCXXAccessSpecifier(m);
+            bool sig = isSignal(m);
+            if (acc == CX_CXXPublic && !sig) { publicNames[nm] = true; continue; }
+            if (clang_CXXMethod_isStatic(m) || clang_CXXMethod_isVirtual(m)) continue;
+            if (nm.startsWith("operator") || nm.startsWith("qt_") || nm.startsWith("d_func")) continue;
+            // QObject's own public signal (destroyed) is emitted by QObject's destructor and by
+            // nothing else; offering it to a subclass would only invite emitting it by hand.
+            if (sig && clang_getCursorSpelling(c).str == "QObject") continue;
+            if (acc == CX_CXXProtected || (acc == CX_CXXPublic && sig)) cands ~= m;
+        }
+        foreach (b; baseDecls(c)) {
+            auto bd = clang_getCursorDefinition(b);
+            if (bd.kind == CXCursor_ClassDecl || bd.kind == CXCursor_StructDecl) walk(bd);
+        }
+    }
+    walk(cls);
+    Thunk[] out_;
+    foreach (m; cands) {
+        auto nm = clang_getCursorSpelling(m).str;
+        if (nm in virtNames || nm in publicNames) continue;
+        auto key = nm ~ "(" ~ clang_getTypeSpelling(clang_getCursorType(m)).str ~ ")";
+        if (key in seen) continue;
+        seen[key] = true;
+        auto na = clang_Cursor_getNumArguments(m);
+        bool priv = false;
+        foreach (i; 0 .. na)
+            if (canon(clang_getCursorType(clang_Cursor_getArgument(m, i))).canFind("QPrivateSignal")) priv = true;
+        if (priv) continue;
+        Thunk base; base.name = nm;
+        base.decl = canon(clang_getCursorType(clang_getCursorSemanticParent(m)));
+        string[] imps;
+        if (!thunkRet(clang_getCursorResultType(m), base, imps)) continue;
+        ThunkArg[] all; int firstDefault = na; bool ok = true;
+        foreach (i; 0 .. na) {
+            auto a = clang_Cursor_getArgument(m, i);
+            ThunkArg ta;
+            if (!thunkArg(clang_getCursorType(a), cast(int) i, ta, imps)) { ok = false; break; }
+            all ~= ta;
+            bool hasDef = hasDefault(a);
+            if (hasDef && firstDefault == na) firstDefault = cast(int) i;
+            if (!hasDef) firstDefault = na;   // only TRAILING defaults count
+        }
+        if (!ok) continue;
+        imports ~= imps;
+        foreach (k; firstDefault .. na + 1) {
+            auto th = base; th.args = all[0 .. k].dup;
+            out_ ~= th;
+        }
+    }
+    return out_;
+}
+
+// A record the trampoline can default-construct: `R __r;` must compile. Public default constructor,
+// or no user-declared constructor at all.
+bool hasPublicDefaultCtor(CXCursor decl) {
+    auto d = clang_getCursorDefinition(decl);
+    bool anyCtor = false;
+    foreach (c; children(d))
+        if (c.kind == CXCursor_Constructor) {
+            anyCtor = true;
+            if (clang_getCXXAccessSpecifier(c) == CX_CXXPublic && clang_CXXConstructor_isDefaultConstructor(c))
+                return true;
+        }
+    return !anyCtor;
+}
+
 // Build a TrampVirt for a virtual whose signature the trampoline supports (prim /
 // class-ptr / const-ref-to-value args; void / prim / class-ptr return). Returns
 // false to skip virtuals with types we can't marshal yet (value return, etc.).
 bool trampVirt(CXCursor m, string cppClass, out TrampVirt tv) {
     auto rt = clang_getCursorResultType(m);
     auto rc = canon(rt);
-    if (rc.canFind("<") || rc.canFind("std::")) return false;   // template/std return
-    tv.retVoid = rc == "void";
     auto rck = clang_getCanonicalType(rt);
-    // return: void / primitive / enum / class-pointer
     tv.cppRet = clang_getTypeSpelling(rt).str;
-    if (tv.retVoid) { tv.cbDRet = "void"; tv.cbCppRet = "void"; }
+    // A supported CONTAINER return first — it is a template, which the next line refuses. The combo
+    // is the same one the binding uses for a container PARAM, so the D override returns the same
+    // idiomatic D type (ubyte[][int] for QHash<int,QByteArray>) that calling the method yields.
+    {
+        auto dn = clang_getCursorSpelling(clang_getTypeDeclaration(rck)).str;
+        if (dn == "QHash" || dn == "QMultiHash" || dn == "QMap" || dn == "QMultiMap" || dn == "QSet"
+                || dn == "QList" || dn == "QVector") {
+            auto id = registerCombo(rck);
+            if (!id.length) return false;
+            tv.retConv = id; tv.retCxx = COMBOS[id].cxxType;
+            tv.cbCppRet = "void*"; tv.cbDRet = "void*";
+            tv.imports ~= "qtcontainers";
+        }
+    }
+    if (!tv.retConv.length && (rc.canFind("<") || rc.canFind("std::"))) return false;   // template/std return
+    tv.retVoid = rc == "void";
+    // return: void / primitive / enum / class-pointer / value record / container (above)
+    if (tv.retConv.length) {}
+    else if (tv.retVoid) { tv.cbDRet = "void"; tv.cbCppRet = "void"; }
     else if (auto p = rc in PRIM) { tv.cbDRet = *p; tv.cbCppRet = tv.cppRet; }
     else if (rck.kind == CXType_Enum) {   // ABI = int; marshal as int (C++ side), enum (D side)
         string ip; tv.cbDRet = mapCxxType(rt, ip); if (ip.length) tv.imports ~= ip;
@@ -607,6 +818,13 @@ bool trampVirt(CXCursor m, string cppClass, out TrampVirt tv) {
     } else if (rck.kind == CXType_Pointer && isRecord(clang_getPointeeType(rck))) {
         tv.cbDRet = lastNs(canon(clang_getPointeeType(rck))); tv.imports ~= tv.cbDRet;
         tv.cbCppRet = tv.cppRet;
+    } else if (isRecord(rck) && isValueRecord(rck) && !nestedInClass(rck)
+               && hasPublicDefaultCtor(clang_getTypeDeclaration(rck))) {
+        // BY VALUE, through an out pointer: the trampoline default-constructs the result, the D
+        // callback writes it, the trampoline returns it. The D override simply returns the value
+        // (`QVariant data(...) { return QVariant(42); }`); the mixin assigns it through the pointer.
+        tv.retOut = true; tv.outD = lastNs(canon(rck)); tv.imports ~= tv.outD;
+        tv.cbDRet = "void"; tv.cbCppRet = "void";
     } else return false;
     string[] op, pass, cbc, cbd, orig;
     auto na = clang_Cursor_getNumArguments(m);
@@ -1814,7 +2032,28 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         // so leaving it in advertises a QML type the binding cannot back, and qmltc-d emitted
         // `mixin QtdWidget!QQuickIntValidator` against an undefined `__QQuickIntValidator_vnames`
         // (SpinBox, DoubleSpinBox). The vocabulary must promise only what the binding delivers.
-        if (buildable && tvs.length) TRAMPS ~= Trampoline(name, cppName, tvs);
+        // An ABSTRACT class is admitted only if the trampoline overrides EVERY pure virtual of its
+        // chain — including PRIVATE ones, which collectVirtuals skips (it cannot call them), and
+        // which would leave the trampoline abstract: `new Qtd_X` would not compile.
+        if (buildable) {
+            bool[string] pur, impl, seenV;
+            collectVirt(cur, pur, impl, seenV);
+            bool[string] have;
+            foreach (tv; tvs) have[tv.name] = true;
+            foreach (pn; pur.byKey)
+                if (pn !in impl && pn !in have) {
+                    stderr.writefln("subclass %s skipped: pure virtual %s(...) cannot be overridden "
+                                    ~ "(private, or not marshalable)", name, pn);
+                    buildable = false; break;
+                }
+        }
+        if (buildable && tvs.length) {
+            bool[string] vnames;
+            foreach (v; vs) vnames[clang_getCursorSpelling(v).str] = true;
+            string[] timps;
+            auto ths = collectThunks(cur, vnames, timps);
+            TRAMPS ~= Trampoline(name, cppName, tvs, ths, timps);
+        }
         else SUBCLASS.remove(name);
     }
 
@@ -3764,7 +4003,9 @@ string virtCpp(string manifest, string includeLine) {
     foreach (t; TRAMPS) {
         // C++ function-pointer field/param declarator for virtual #i.
         string cbDecl(TrampVirt v, string nm) {
-            auto ps = v.cbCppParams.length ? "void*, " ~ v.cbCppParams : "void*";
+            // A by-value return travels as an OUT pointer right after the context.
+            auto lead = v.retOut ? "void*, " ~ v.cppRet ~ "*" : "void*";
+            auto ps = v.cbCppParams.length ? lead ~ ", " ~ v.cbCppParams : lead;
             return format("%s(*%s)(%s)", v.cbCppRet, nm, ps);   // enum returns marshal as int
         }
         string fields, ctorPs, ctorInit, methods, subPs, subAs;
@@ -3778,7 +4019,19 @@ string virtCpp(string manifest, string includeLine) {
             auto ccast = v.retEnum ? format("(%s)", v.cppRet) : "";   // int -> enum on return
             auto call = format("%scb_%d(d%s)", ccast, i, v.passArgs);
             string fwd;
-            if (v.retVoid)
+            if (v.retOut) {
+                auto obody = format("%s __r; cb_%d(d, &__r%s); return __r;", v.cppRet, i, v.passArgs);
+                fwd = v.isPure ? obody
+                    : format("if (cb_%d) { %s } return %s::%s(%s);", i, obody, t.cppClass, v.name, v.origArgs);
+            } else if (v.retConv.length) {
+                // The D side built the container on the heap (the combo's `_new`, compiled into
+                // qtcontainers.cpp — same global operator new as this delete). Null means the D
+                // override threw (routed to the callback-error policy): return an empty container.
+                auto cbody = format("auto* __h = static_cast<%s*>(cb_%d(d%s)); if (!__h) return {}; "
+                    ~ "%s __r = std::move(*__h); delete __h; return __r;", v.retCxx, i, v.passArgs, v.retCxx);
+                fwd = v.isPure ? cbody
+                    : format("if (cb_%d) { %s } return %s::%s(%s);", i, cbody, t.cppClass, v.name, v.origArgs);
+            } else if (v.retVoid)
                 fwd = v.isPure ? format("%s;", call)
                     : format("if (cb_%d) %s; else %s::%s(%s);", i, call, t.cppClass, v.name, v.origArgs);
             else
@@ -3786,6 +4039,30 @@ string virtCpp(string manifest, string includeLine) {
                     : format("return cb_%d ? %s : %s::%s(%s);", i, call, t.cppClass, v.name, v.origArgs);
             methods ~= format("    %s %s(%s)%s override { %s }\n",
                 v.cppRet, v.name, v.overrideParams, cst, fwd);
+        }
+        // Subclass thunks: static MEMBERS, because only a member of the derived class may reach a
+        // protected member of the base (through an object of the derived type).
+        string thunkExt;
+        foreach (j, th; t.thunks) {
+            string[] ps = ["void* s"], uses, cps;
+            if (th.retKind == "out") ps ~= th.cppRet ~ "* o";
+            foreach (a; th.args) { ps ~= a.cDecl; uses ~= a.cUse; }
+            auto call = format("static_cast<Qtd_%s*>(s)->%s::%s(%s)", t.dClass, th.decl, th.name, uses.join(", "));
+            string ret, tbody;
+            final switch (th.retKind) {
+                case "void": ret = "void";   tbody = call ~ ";"; break;
+                case "prim": ret = th.cRet;  tbody = "return " ~ call ~ ";"; break;
+                case "enum": ret = "int";    tbody = "return static_cast<int>(" ~ call ~ ");"; break;
+                case "cls":  ret = "void*";  tbody = "return (void*)(" ~ call ~ ");"; break;
+                case "out":  ret = "void";   tbody = "*o = " ~ call ~ ";"; break;
+            }
+            methods ~= format("    static %s __t_%d(%s) { %s }
+", ret, j, ps.join(", "), tbody);
+            string[] names = ["s"];
+            if (th.retKind == "out") names ~= "o";
+            foreach (i, a; th.args) names ~= format("a%d", i);
+            thunkExt ~= format("extern \"C\" %s qtd_subt_%s_%d(%s) { %sQtd_%s::__t_%d(%s); }\n",
+                ret, t.dClass, j, ps.join(", "), ret == "void" ? "" : "return ", t.dClass, j, names.join(", "));
         }
         // Attachable moc: the trampoline delegates metaObject/qt_metacall to the
         // generic helpers (qtdmoc.cpp) — so a D subclass can be @QObject (have its
@@ -3840,6 +4117,7 @@ string virtCpp(string manifest, string includeLine) {
             t.dClass, t.cppClass,                      // _super
             t.dClass, t.dClass,                        // _parser_cast
             t.dClass, t.cppClass);
+        body ~= thunkExt;
     }
     // declares the generic moc helpers (in qtdmoc.cpp / lib qtmoc) used above.
     auto mocDecl =
@@ -3856,7 +4134,7 @@ string virtCpp(string manifest, string includeLine) {
         // registration needs. The offset is what Qt's own QQmlPrivate::StaticCastSelector computes;
         // it is spelled out here from the PUBLIC header so the shim never needs QtQml private
         // headers, and it degrades to -1 (does not implement it) in a binding without QtQml.
-        ~ "#include <new>\n#include <type_traits>\n"
+        ~ "#include <new>\n#include <type_traits>\n#include <utility>\n"
         ~ "#if __has_include(<QQmlParserStatus>)\n#include <QQmlParserStatus>\n"
         ~ "template<class T> static int qtd_parser_cast_of() {\n"
         ~ "    if constexpr (std::is_base_of_v<QQmlParserStatus, T>) {\n"
@@ -3884,14 +4162,15 @@ string virtCpp(string manifest, string includeLine) {
 string virtD(string manifest, string dpkg, out string[] imps) {
     auto head = manifest ~ "\nmodule " ~ dpkg ~ ".qtvirt;\n";
     if (!TRAMPS.length) return head;
-    bool[string] impSet;
+    bool[string] impSet, thunkMods;
     string aliases, decls, facts;
     foreach (t; TRAMPS) {
         impSet[t.dClass] = true;
         string[] declPs, factPs, factAs;
         foreach (i, v; t.virts) {
             auto al = format("Cb_%s_%d", t.dClass, i);
-            auto ps = v.cbDParams.length ? "void*, " ~ v.cbDParams : "void*";
+            auto lead = v.retOut ? "void*, " ~ v.outD ~ "*" : "void*";
+            auto ps = v.cbDParams.length ? lead ~ ", " ~ v.cbDParams : lead;
             aliases ~= format("alias %s = extern (C) %s function(%s) nothrow;\n", al, v.cbDRet, ps);
             declPs ~= al;
             factPs ~= format("%s cb%d", al, i);
@@ -3915,13 +4194,63 @@ string virtD(string manifest, string dpkg, out string[] imps) {
         facts ~= format("%s %s_subclass_place(void* mem, void* ctx, %s) {\n"
             ~ "    return cast(%s) qtd_sub_%s_place(mem, ctx, %s);\n}\n",
             t.dClass, t.dClass, factPs.join(", "), t.dClass, t.dClass, factAs.join(", "));
+        // The subclass thunks: extern(C) decls, and the D methods QtdWidget mixes into the subclass.
+        foreach (im; t.thunkImports) { impSet[im] = true; thunkMods[modBase(im)] = true; }
+        string prot;
+        {
+            bool[string] mods;
+            foreach (im; t.thunkImports) mods[modBase(im)] = true;
+            foreach (mb; mods.byKey.array.sort) prot ~= format("import __qtdi_%s = %s.%s;\n", mb, dpkg, mb);
+        }
+        foreach (j, th; t.thunks) {
+            string[] cps = ["void*"], dps, pass = ["__qtdLiveObj()"], pre;
+            if (th.retKind == "out") { cps ~= th.dRet ~ "*"; pass ~= "&__r"; }
+            foreach (a; th.args) { cps ~= a.dCabi; dps ~= a.dParam; pass ~= a.dPass; if (a.pre.length) pre ~= a.pre; }
+            string cret;
+            final switch (th.retKind) {
+                case "void": cret = "void"; break;
+                case "prim": cret = th.dRet; break;
+                case "enum": cret = "int"; break;
+                case "cls":  cret = "void*"; break;
+                case "out":  cret = "void"; break;
+            }
+            auto fn = format("qtd_subt_%s_%d", t.dClass, j);
+            decls ~= format("    %s %s(%s);\n", cret, fn, cps.join(", "));
+            auto call = format("%s(%s)", fn, pass.join(", "));
+            string tbody;
+            final switch (th.retKind) {
+                case "void": tbody = call ~ ";"; break;
+                case "prim": tbody = "return " ~ call ~ ";"; break;
+                case "enum": tbody = format("return cast(%s) %s;", th.dRet, call); break;
+                case "cls":  tbody = WRAPPER ? format("return %s.wrap(%s);", th.dRet, call)
+                                            : format("return cast(%s) %s;", th.dRet, call); break;
+                case "out":  tbody = format("%s __r; %s; return __r;", th.dRet, call); break;
+            }
+            prot ~= format("final %s %s(%s) { %s%s }\n", th.dRet, th.name, dps.join(", "), pre.join(""), tbody);
+        }
+        assert(!prot.canFind('"') && !prot.canFind('\\'), "thunk text must fit a plain string literal");
+        facts ~= format("enum string __%s_prot = \"%s\";\n", t.dClass, prot.replace("\n", "\\n"));
         facts ~= format("enum string[] __%s_vnames = [%s];\n",
             t.dClass, t.virts.map!(v => '"' ~ v.name ~ '"').join(", "));
+        // ...and, per virtual in the same order, the combo whose `<id>_from` turns the D override's
+        // container into the heap handle the trampoline expects ("" = not a container return).
+        // ...and which of them are PURE: QtdWidget refuses at compile time a subclass that leaves
+        // one of these unimplemented. The trampoline calls a pure virtual's callback
+        // unconditionally, so a missing override is a null call the first time Qt asks.
+        facts ~= format("enum bool[] __%s_vpure = [%s];\n",
+            t.dClass, t.virts.map!(v => v.isPure ? "true" : "false").join(", "));
+        facts ~= format("enum string[] __%s_vconv = [%s];\n",
+            t.dClass, t.virts.map!(v => '"' ~ (v.retConv.length ? dpkg ~ ".qtcontainers:" ~ v.retConv : "") ~ '"').join(", "));
     }
     auto cbAliases = "alias __QtdSlotCb = extern (C) void function(void*, int, void**) nothrow;\n"
         ~ "alias __QtdPropCb = extern (C) void function(void*, int, int, void**) nothrow;\n";
     imps = impSet.byKey.array.sort.array;
+    // qtcontainers PUBLICLY: the QtdWidget mixin that calls `<id>_from` is instantiated in the
+    // USER's module, which imports qtvirt (for `__X_vnames`) but has no reason to know qtcontainers.
     auto impLines = imps.map!(m => format("import %s.%s;", dpkg, modBase(m))).join("\n");
+    // ...and the renamed ones the thunk declarations below are spelled with (the same aliases the
+    // mixed-in thunk text declares for itself inside the user's class).
+    foreach (mb; thunkMods.byKey.array.sort) impLines ~= format("\nimport __qtdi_%s = %s.%s;", mb, dpkg, mb);
     return head ~ impLines ~ "\n" ~ cbAliases ~ aliases ~ "extern (C) nothrow {\n" ~ decls ~ "}\n" ~ facts;
 }
 

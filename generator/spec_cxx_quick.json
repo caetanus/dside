@@ -76,6 +76,7 @@
     "/usr/lib/qt6/qml/QtQuick/plugins.qmltypes"
   ],
   "subclass": [
+    "QAbstractListModel",
     "QQuickBasePositioner",
     "QQuickBehavior",
     "QQuickDoubleValidator",

@@ -377,8 +377,8 @@ void main(string[] args) {
         if ("subclass" in spec.object) {
             foreach (cur; targets) {
                 auto nm = clang_getCursorSpelling(cur).str;
-                if (nm !in SUBCLASS || isSubclassable(cur)) continue;
-                writefln("spec `subclass`: %s cannot be subclassed (abstract, or no public default "
+                if (nm !in SUBCLASS || isSubclassable(cur, true)) continue;
+                writefln("spec `subclass`: %s cannot be subclassed (not exported, or no public default "
                          ~ "constructor) — dropped; a trampoline for it would not compile", nm);
                 SUBCLASS.remove(nm);
             }

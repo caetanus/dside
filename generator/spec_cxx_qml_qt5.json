@@ -6,5 +6,6 @@
   "d_package": "qt.qml",
   "abi": "cxx",
   "wrapper": true,
-  "discover_module": "QtQml"
+  "discover_module": "QtQml",
+  "subclass": ["QAbstractListModel"]
 }
