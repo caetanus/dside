@@ -31,6 +31,7 @@
 #include <QtCore/private/qmetaobjectbuilder_p.h>
 #include <cstring>
 #include <type_traits>
+#include <utility>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -1969,10 +1970,17 @@ extern "C++" {
 /// `attachedPropertiesFunction` takes a QQmlTypeLoader* in recent Qt and a QQmlEnginePrivate* in
 /// older ones, and 6.10 briefly carried both — which is why the argument is cast rather than left
 /// as a bare `nullptr` (ambiguous there). The cast target is whichever the declaration wants.
+/// The test is on the CALL, not on `&QT::attachedPropertiesFunction`: while 6.10 carries both
+/// overloads, taking the member's address is itself ambiguous ("reference to overloaded function
+/// could not be resolved") and the file did not compile against Qt 6.10 at all.
+template <class QT, class = void>
+struct qtdTakesTypeLoader : std::false_type {};
+template <class QT>
+struct qtdTakesTypeLoader<QT, std::void_t<decltype(std::declval<const QT &>()
+        .attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr)))>> : std::true_type {};
 template <class QT>
 static auto qtdAttachedFn(const QT &t) {
-    if constexpr (std::is_invocable_v<decltype(&QT::attachedPropertiesFunction), const QT &,
-                                      QQmlTypeLoader *>)
+    if constexpr (qtdTakesTypeLoader<QT>::value)
         return t.attachedPropertiesFunction(static_cast<QQmlTypeLoader *>(nullptr));
     else
         return t.attachedPropertiesFunction(static_cast<QQmlEnginePrivate *>(nullptr));
