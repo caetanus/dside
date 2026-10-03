@@ -50,6 +50,14 @@ Discovery
    * - ``source_filter``
      - Path fragment for *your own code* mode: keep any class declared under it,
        whatever it is named. Overrides the ``Q``-prefix rule.
+   * - ``own_sources``
+     - A list of path fragments for *your own code beside Qt's*. A class (or free
+       function) declared under any of them is kept whatever it is named, **in
+       addition to** the Qt discovery the spec already does — unlike
+       ``source_filter``, which replaces it. Your classes and Qt's then share one
+       binding, so a ``QQmlEngine`` your class takes is the same D type the Qt
+       half's ``QQmlApplicationEngine`` derives from. Name the static archive that
+       defines them in ``libs``, so the symbol check sees their definitions.
    * - ``include_paths``
      - Extra ``-I`` directories. Relative entries resolve against the spec file.
    * - ``classes``

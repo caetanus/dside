@@ -73,7 +73,33 @@ void loadDefinedSymbols(string[] pkgs, string[] extraLibs = null) {
             DEFINED_SYMS[sym.idup] = true;
         }
     }
+    // The order is intentional: `.lib` import libraries are the Windows shape and say everything
+    // there is to say; the `.a` below is the Unix shape of a library of your own.
     if (sawLibFile) return;
+    // A STATIC ARCHIVE named by path — your own library, linked into the program. Without it an
+    // `own_sources` class bound beside Qt had every method refused: the table held Qt's symbols, so
+    // it was not empty, and none of them was the class's.
+    //
+    // STRONG definitions only. The archive also carries every Qt INLINE function its code happened
+    // to instantiate, as a weak symbol (`W`) — `QArrayData::ref()` among them. Counted, those made
+    // inline Qt methods look exported, and the binding declared `ref_()` beside the field `ref_`:
+    //     qarraydata.d: function `QArrayData.ref_` conflicts with variable `QArrayData.ref_`
+    foreach (l; libs) {
+        if (!l.endsWith(".a") || !exists(l)) continue;
+        auto r = execute(["nm", "--defined-only", l]);
+        if (r.status != 0) continue;
+        foreach (line; r.output.splitter('\n')) {
+            auto f = line.split();
+            if (f.length >= 3 && f[1].length == 1 && "TDBR".canFind(f[1][0]))
+                DEFINED_SYMS[f[2].idup] = true;
+        }
+    }
+    // `own_sources` with no library of yours in `libs` fails the same way, OPEN and silent: the
+    // table holds Qt's symbols, none of them your classes', and every method of theirs is refused.
+    if (ownSources.length && !libs.any!(l => l.endsWith(".a") && exists(l))
+            && !extraLibs.any!(l => l.startsWith("-l")))
+        stderr.writeln("xiboca: own_sources is set but `libs` names no archive or library of yours:"
+                     ~ " the methods of your classes will be refused");
     foreach (l; libs) {
         if (!l.startsWith("-l")) continue;
         foreach (dir; dirs) {
@@ -1308,7 +1334,10 @@ bool nonTriviallyCopyable(CXType t) {
     // would emit an unlinkable dtor reference. classExported() asks that the way the ABI in
     // front of us answers it; asking the ELF way on MSVC said "no" for every class, and the
     // crash it produced is the one this comment goes on to describe.
-    bool exported = classExported(decl);
+    // An `own_sources` class is not exported either — it is linked INTO the program — and its
+    // copy-ctor/dtor are linkable all the same. Left out, a value type of yours with its own
+    // `~Foo()` came out trivial in D: register return in D, sret in C++, the crash above.
+    bool exported = classExported(decl) || isOwnClass(decl);
     foreach (c; children(decl)) {
         // (a) a USER-PROVIDED (not =default/=delete) copy-ctor or dtor -> the C++ ABI returns
         // this type via sret and expects a real copy/dtor. This is the Qt CoW case (QIcon/

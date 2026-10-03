@@ -97,6 +97,21 @@ Rules RULES;
 __gshared string qtMarker = "/qt6/";   // path fragment identifying Qt framework headers
 __gshared string sourceFilter;         // when set: bind ANY class defined in files
                                        // whose path contains this (your own Qt C++)
+// YOUR CODE BESIDE QT'S, in ONE binding. `source_filter` REPLACES Qt discovery, so a userlib binding
+// re-emits QObject/QString under its own package — a second universe whose types do not unify with
+// the Qt binding's, and an app needing both (a QML engine from `qt.quick`, a C++ QML plugin taking
+// that engine) could not pass one to the other. `own_sources` ADDS: a class declared under any of
+// these fragments is kept whatever its name, alongside the Qt discovery the spec already does.
+__gshared string[] ownSources;
+bool isOwnSource(string loc) { return ownSources.any!(f => loc.canFind(f)); }
+// Your own classes are compiled into the program, not imported from a shared library, so the
+// export question `classExported` asks of Qt's does not apply to them.
+bool isOwnClass(CXCursor decl) {
+    if (!ownSources.length) return false;
+    CXFile f; uint ln, col, off;
+    clang_getFileLocation(clang_getCursorLocation(decl), &f, &ln, &col, &off);
+    return f && isOwnSource(clang_getFileName(f).str.replace("\\", "/"));
+}
 
 string lastNs(string s) { auto i = s.lastIndexOf("::"); return i >= 0 ? s[i + 2 .. $] : s; }
 
@@ -415,7 +430,7 @@ bool isSubclassable(CXCursor node, bool allowAbstract = false) {
     // so Q_WIDGETS_EXPORT classes read as hidden and QWidget was dropped from `subclass` with the
     // diagnostic "cannot be subclassed (abstract, or no public default constructor)" — which was
     // true of neither. Q_*_EXPORT is __declspec(dllimport) there, an attribute child of the class.
-    if (!sourceFilter.length && !classExported(node)) return false;
+    if (!sourceFilter.length && !classExported(node) && !isOwnClass(node)) return false;
     bool anyCtor = false, pubDefault = false;
     foreach (c; children(node))
         if (c.kind == CXCursor_Constructor) {

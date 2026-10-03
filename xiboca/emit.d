@@ -36,7 +36,7 @@ extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
             auto loc = declPath(f);
             // your-own-code mode: any class defined in your files; else Qt framework
             bool want = sourceFilter.length ? loc.canFind(sourceFilter)
-                                            : (n[0] == 'Q' && loc.canFind(qtMarker));
+                                            : ((n[0] == 'Q' && loc.canFind(qtMarker)) || isOwnSource(loc));
             if (want) { ctx.seen[n] = true; ctx.classes ~= c; }
         }
     }
@@ -47,7 +47,8 @@ extern (C) CXChildVisitResult discVisit(CXCursor c, CXCursor, CXClientData d) {
             CXFile f; uint ln, col, off;
             clang_getFileLocation(clang_getCursorLocation(c), &f, &ln, &col, &off);
             auto loc = declPath(f);
-            bool want = sourceFilter.length ? loc.canFind(sourceFilter) : loc.canFind(qtMarker);
+            bool want = sourceFilter.length ? loc.canFind(sourceFilter)
+                                            : (loc.canFind(qtMarker) || isOwnSource(loc));
             if (want) ctx.functions ~= c;   // overloads kept (distinct cursors)
         }
     }
@@ -97,6 +98,7 @@ void main(string[] args) {
     mkdirRecurse(dsub);
     if (auto qm = "qt_marker" in spec.object) qtMarker = qm.str;
     if (auto sf = "source_filter" in spec.object) sourceFilter = sf.str;
+    if (auto os = "own_sources" in spec.object) foreach (x; os.array) ownSources ~= x.str;
 
     // "what doesn't come for free": rules from PySide/shiboken's typesystem XML
     if (auto ts = "typesystem_dir" in spec.object) {
@@ -330,7 +332,8 @@ void main(string[] args) {
                 if (!classExported(cur)) { droppedPriv++; continue; }
                 includes ~= decl;
             }
-            else if (discMod.length) includes ~= discMod;
+            // An `own_sources` class is not reachable through the Qt umbrella: it needs its own header.
+            else if (discMod.length && !isOwnSource(decl)) includes ~= discMod;
             // headers-mode: your own class -> the header it's defined in. Prefer the name AS
             // LISTED in the spec: `decl` is the path libclang resolved, which for a relative
             // include_path is relative to the GENERATOR's cwd and so unusable from the build's.
@@ -596,7 +599,8 @@ void main(string[] args) {
         // Signal/slot bridge — one functor-connect shim per parameterless signal.
         // The umbrella <QtQuick> reaches only public types; private types (QQuickGradient etc.) the
         // aggregated shims reference need their own header appended.
-        auto privInc = includes.dup.sort.uniq.filter!(i => i.canFind("/private/") || i.canFind("/qpa/"))
+        auto privInc = includes.dup.sort.uniq.filter!(i => i.canFind("/private/") || i.canFind("/qpa/")
+                                                         || isOwnSource(i))
             .map!(i => format("#include \"%s\"\n", i)).join;
         auto sigInc = discMod.length ? (format("#include <%s>\n", discMod) ~ privInc)
             : includes.sort.uniq.map!(i => (i.canFind('/') || i.endsWith(".h"))
