@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Marcelo A Caetano
 // SPDX-License-Identifier: BSL-1.0
 import holder, core.memory, std.stdio;
-extern(C) nothrow @nogc { void* ht_make(); void ht_setparent(void*,void*); void ht_delete(void*); void* ht_app(); void ht_process(); }
+extern(C) nothrow @nogc { void* ht_make(); void* ht_make_timer(); void ht_setparent(void*,void*); void ht_delete(void*); void* ht_app(); void ht_process(); }
 alias HookFn = extern(C) void function(void*) nothrow;
 extern(C) nothrow @nogc { void qtd_holder_set_destroyed_hook(HookFn); void qtd_holder_unreg(void*); }
 class QObj : QtdObject { this(void* c) @nogc nothrow { super(c, true); } }
 QObj wrapObj(void* c) { return cast(QObj) holder.wrap(c, (void* p) => cast(QtdObject) new QObj(p)); }
+class QTim : QObj { this(void* c) @nogc nothrow { super(c); } }
+QTim wrapTim(void* c) { return holder.wrapAs!QTim(c, (void* p) => cast(QtdObject) new QTim(p), "QTimer"); }
 void makeOrphans(void*[] os) { foreach (o; os) { auto w = wrapObj(o); } }  // wrap+drop, no lingering ref
 void main() {
     ht_app();
@@ -34,6 +36,7 @@ void main() {
     assert(after < before / 2, "most orphans collected+unregistered via finalizer");
     countersMove();
     trackedOnce();
+    promotion();
     writeln("holder OK");
 }
 
@@ -82,3 +85,30 @@ void trackedOnce() {
 
 __gshared int hits;
 extern (C) void countingHook(void* c) nothrow { hits++; holder.onDestroyed(c); }
+
+/// A pointer first wrapped as its BASE (the way Qt hands back `QObject*`) must still be reachable as
+/// what it is. Asked for as a QTimer, the QObject view is promoted: the QTimer wrapper takes the
+/// identity entry and the pin, and destroying the object invalidates BOTH views — the retired one
+/// is no longer in the map, so only the alias link can reach it. Asked for as a QTimer, an object
+/// that is not one still answers null.
+void promotion() {
+    auto parent = ht_make();
+    auto t = ht_make_timer(); ht_setparent(t, parent);
+    auto asObj = wrapObj(t);
+    assert(cast(QTim) asObj is null, "the first view is the base one");
+    auto asTim = wrapTim(t);
+    assert(asTim !is null, "a QObject view of a QTimer is promoted, not refused");
+    assert(holder.find(t) is asTim, "the promoted wrapper owns the identity entry");
+    assert(wrapTim(t) is asTim && wrapObj(t) is asTim, "identity holds after promotion");
+    auto plain = ht_make(); wrapObj(plain);
+    assert(wrapTim(plain) is null, "an object that is not a QTimer is not promoted");
+    foreach (_; 0 .. 5) GC.collect();
+    assert(holder.find(t) is asTim, "the promoted wrapper stays pinned by the parent");
+    ht_delete(parent); ht_process();
+    bool oldThrew = false, newThrew = false;
+    try asObj.checkAlive(); catch (Error) oldThrew = true;
+    try asTim.checkAlive(); catch (Error) newThrew = true;
+    assert(oldThrew && newThrew, "destroyed() invalidates the retired view too");
+    ht_delete(plain); ht_process();
+    writeln("promotion: QObject view -> QTimer wrapper, identity + pin + invalidation kept");
+}

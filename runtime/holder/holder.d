@@ -32,6 +32,7 @@ extern (C) nothrow @nogc {
     void  qtd_holder_reg(void *, void *);
     void *qtd_holder_find(void *);
     void  qtd_holder_unreg(void *);
+    int   qtd_holder_inherits(void *, const(char) *);
     size_t qtd_holder_count();
 }
 
@@ -74,8 +75,18 @@ class QtdObject {
 
     this(void *c, bool isQObj) @nogc nothrow { _cpp = c; _isQObj = isQObj; }
 
+    // THE LESS-DERIVED VIEWS THIS WRAPPER REPLACED (see `wrapAs`). They hold the same C++ pointer
+    // but are no longer in the identity map, so `destroyed()` would never reach them; it reaches
+    // them through here. `_successor` is the other direction: it keeps the replacing wrapper alive
+    // for as long as an old view is, so the pair lives and dies together.
+    package QtdObject[] _aliases;
+    package QtdObject _successor;
+
     /// C++ deleted the object -> mark dead; a later call throws via checkAlive.
-    final void _invalidate() @nogc nothrow { _cpp = null; }
+    final void _invalidate() @nogc nothrow {
+        _cpp = null;
+        foreach (a; _aliases) a._cpp = null;
+    }
 
     /// Register a freshly-constructed wrapper (built by a `new X(args)` ctor, whose _cpp is
     /// already set via super) for identity + lifetime: the same step wrap() runs after make() —
@@ -130,7 +141,9 @@ class QtdObject {
         // may already have freed.
         else if (_ownedByD && !_isQObj && _cpp !is null && _deleter !is null)
             _deleter(_cpp);
-        if (_cpp !is null)
+        // Only the wrapper the map holds may remove the entry: after a promotion the retired view
+        // shares the pointer, and its finalizer must not unmap the wrapper that replaced it.
+        if (_cpp !is null && qtd_holder_find(_cpp) is cast(void *) this)
             qtd_holder_unreg(_cpp);
     }
 }
@@ -173,6 +186,32 @@ QtdObject wrap(void *cptr, scope QtdObject delegate(void *) make) {
     auto w = make(cptr);           // make() sets w._cpp = cptr via the adopt ctor
     w._register(false);            // BORROWED: Qt handed us this pointer, we did not allocate it
     return w;
+}
+
+/// `wrap`, ASKED FOR A TYPE. Identity makes the FIRST wrapper of a pointer the only one, and Qt
+/// mostly hands objects back as `QObject*` — `QQmlApplicationEngine::rootObjects()` does — so the
+/// QObject view came first and `QQuickWindow.wrap(p)` returned it, cast to null: a window the
+/// binding could never reach as a window. When the existing wrapper is not a `T` and Qt's
+/// meta-object says the object IS a `cppClass`, the existing view is PROMOTED: a `T` wrapper
+/// takes over the map entry, the pin and the ownership, and the old view is kept as its alias so
+/// `destroyed()` still invalidates it. A pointer Qt says is not a `cppClass` answers null, as before.
+T wrapAs(T : QtdObject)(void *cptr, scope QtdObject delegate(void *) make, const(char) *cppClass) {
+    if (cptr is null) return null;
+    auto old = find(cptr);
+    if (old is null) return cast(T) wrap(cptr, make);
+    if (auto t = cast(T) old) return t;
+    if (!old._isQObj || old._cpp is null || qtd_holder_inherits(cptr, cppClass) == 0) return null;
+    QtdObject w = make(cptr);   // typed as the base: the fields below are `package`, and a
+    auto t = cast(T) w;         // `T` from another package does not see them
+    if (t is null) return null;
+    w._ownedByD = old._ownedByD;
+    old._ownedByD = false;   // ownership moves with the map entry: only one finalizer may act
+    w._aliases = old._aliases ~ old;
+    old._aliases = null;
+    old._successor = w;
+    qtd_holder_reg(cptr, cast(void *) w);   // destroyed() is already tracked: once per object
+    if (cptr in _pinned) _pinned[cptr] = w;
+    return t;
 }
 
 /// Parenting pins the child; call when a parent is established (ctor-with-parent / setParent).

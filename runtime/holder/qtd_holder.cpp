@@ -67,6 +67,10 @@ void qtd_holder_delete_later(void *obj) { static_cast<QObject *>(obj)->deleteLat
 // it tears down the platform plugin under Qt's feet). The user owns it for the app's lifetime.
 int  qtd_holder_is_app(void *obj) { return obj == QCoreApplication::instance() ? 1 : 0; }
 
+// Is this QObject an instance of the C++ class `cls` (or derived from it)? The meta-object chain
+// answers, which is what qobject_cast asks too — so it holds for a D subclass's builder meta-object.
+int  qtd_holder_inherits(void *obj, const char *cls) { return static_cast<QObject *>(obj)->inherits(cls) ? 1 : 0; }
+
 // identity map
 void  qtd_holder_reg(void *cptr, void *wrapper) { std::lock_guard<std::recursive_mutex> g(g_lock()); g_wrappers()[cptr] = wrapper; }
 void *qtd_holder_find(void *cptr) { std::lock_guard<std::recursive_mutex> g(g_lock()); auto it = g_wrappers().find(cptr); return it == g_wrappers().end() ? nullptr : it->second; }

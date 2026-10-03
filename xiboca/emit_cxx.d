@@ -2810,8 +2810,8 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                      ~ "auto w = new %s(QtdAdopt(c)); w._register(true); return w; }", name, name)
             : "";
         auto ctorBody = format("    this(QtdAdopt __a) @nogc nothrow { %s;%s }\n"
-            ~ "    static %s wrap(void* c) { return cast(%s) holder.wrap(c, (void* p) => cast(QtdObject) new %s(QtdAdopt(p))); }%s",
-            ctorSuper, delSet, name, name, name, ownFn);
+            ~ "    static %s wrap(void* c) { return holder.wrapAs!%s(c, (void* p) => cast(QtdObject) new %s(QtdAdopt(p)), \"%s\"); }%s",
+            ctorSuper, delSet, name, name, name, cppName, ownFn);
         // Un-hide the base overloads a same-named derived method would shadow in D. The
         // `static if (hasMember)` guard is the same safety net the raw path uses: the base may
         // have skipped that method for an unmappable type, in which case there is nothing to alias.
