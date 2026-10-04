@@ -107,9 +107,16 @@ void loadDefinedSymbols(string[] pkgs, string[] extraLibs = null) {
             if (!exists(so)) continue;
             auto r = execute(["nm", "-D", "--defined-only", so]);
             if (r.status != 0) break;
+            // A library the SPEC names (`libs`) is your own, and an ordinary shared build exports
+            // the weak copies of every Qt inline it instantiated — `QArrayData::ref()` again, the
+            // same collision as the static case. Qt's own libraries hide their inlines, so only
+            // a spec-named library is read for strong definitions alone.
+            const own = extraLibs.canFind(l);
             foreach (line; r.output.splitter('\n')) {
                 auto f = line.split();
-                if (f.length >= 3) DEFINED_SYMS[f[2].split('@')[0].idup] = true;
+                if (f.length < 3) continue;
+                if (own && !(f[1].length == 1 && "TDBR".canFind(f[1][0]))) continue;
+                DEFINED_SYMS[f[2].split('@')[0].idup] = true;
             }
             break;
         }
@@ -3437,21 +3444,43 @@ string emitFunctionsModule(CXCursor[] fns, string dpkg, string manifest, out str
             string imp;
             auto retD = mapCxxType(clang_getCursorResultType(c), imp);
             if (imp.length) impSet[imp] = true;
-            string[] ps, pds;
+            string[] ps, pds, declps, callargs;
+            bool wrapped;
             auto na = clang_Cursor_getNumArguments(c);
             foreach (i; 0 .. na) {
                 auto a = clang_Cursor_getArgument(c, i);
                 string pimp;
                 auto pd = mapCxxType(clang_getCursorType(a), pimp);
                 if (pimp.length) impSet[pimp] = true;
+                auto pw = WRAPPER ? wrapperTypeOf(clang_getCursorType(a)) : "";
+                if (pw.length) wrapped = true;
                 ps ~= format("%s a%d", pd, i);
                 pds ~= pd;
+                declps ~= format("%s a%d", pw.length ? "void*" : pd, i);
+                callargs ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
             }
             auto sig = dname(mn) ~ "(" ~ pds.join(",") ~ ")";
             if (sig in seenSig) continue;
             seenSig[sig] = true;
             auto mg = clang_Cursor_getMangling(c).str;
-            lines ~= format("pragma(mangle, \"%s\") %s %s(%s);", mg, retD, dname(mn), ps.join(", "));
+            // IN WRAPPER MODE A CLASS-TYPED PARAMETER IS A GC WRAPPER, NOT THE C++ OBJECT. Declared
+            // directly, `init(QQmlEngine e)` handed C++ the WRAPPER's address. Methods have always
+            // converted (`.ptr()` in, `X.wrap()` out); free functions now do the same, through a
+            // private raw declaration. A signature with no wrapped type is emitted as before.
+            auto rw = WRAPPER ? wrapperTypeOf(clang_getCursorResultType(c)) : "";
+            if (wrapped || rw.length) {
+                // A body CALLS the symbol, so — as for methods — it must be one the libraries
+                // define: `QQml_guiProvider()` is declared in a header and not exported, and dmd's
+                // whole-program link failed on the reference even though nothing called it.
+                if (!symbolDefined(mg)) continue;
+                auto raw = format("__fn_%s_%d", dname(mn), lines.length);
+                lines ~= format("private pragma(mangle, \"%s\") extern(C++) %s %s(%s);",
+                                mg, rw.length ? "void*" : retD, raw, declps.join(", "));
+                auto call = format("%s(%s)", raw, callargs.join(", "));
+                lines ~= format("%s %s(%s) { %s%s; }", retD, dname(mn), ps.join(", "),
+                                retD == "void" ? "" : "return ", rw.length ? rw ~ ".wrap(" ~ call ~ ")" : call);
+            } else
+                lines ~= format("pragma(mangle, \"%s\") %s %s(%s);", mg, retD, dname(mn), ps.join(", "));
         } catch (Unmappable) { /* skip unmapped free function */ }
     }
     imports = impSet.byKey.array.sort.array;
