@@ -434,7 +434,16 @@ bool signalArg(CXType at, int i, ref Signal s) {
         // proper QMetaType: Qt5's functor-connect instantiates QMetaTypeId<T*>, which needs T
         // complete. It's also opaque from D. Skip the whole signal (bound module types are full
         // definitions here, so this only drops genuinely-foreign object signals).
-        if (!clang_isCursorDefinition(clang_getTypeDeclaration(clang_getPointeeType(ak)))) return false;
+        //
+        // "Is there a definition?" is asked of the DEFINITION cursor, not of the declaration the
+        // type points at: that one may be a forward declaration even when the class is defined
+        // in this unit. QDBusPendingCallWatcher::finished(QDBusPendingCallWatcher*) was refused
+        // for that — qdbuspendingcall.h forward-declares the watcher before its own header
+        // defines it — and the manifest still called it a bound `signal`.
+        {
+            auto pdef = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getPointeeType(ak)));
+            if (pdef.kind != CXCursor_ClassDecl && pdef.kind != CXCursor_StructDecl) return false;
+        }
         auto dn = clang_getPointeeType(ak).canon.lastNs; s.imports ~= dn;
         lp = "%s a%d".format(cpp, i); pass = "a%d".format(i);   // cpp spelling keeps ptr/qualification
         cbc = cpp; cbd = dn;
@@ -1660,6 +1669,40 @@ bool containerReturn(CXType t, out string helper, out string idiom, out string r
     helper = id; idiom = COMBOS[id].idiomD; retStruct = "Ret_" ~ id; return true;
 }
 
+// WHICH C++ OVERLOAD A D `string` MEANS. `const QString&` and `const QByteArray&` both become a
+// `string` parameter, so a class with both (QVariant(const QString&) / QVariant(const QByteArray&))
+// gets ONE `string` overload, and it used to be whichever the header declared first: QVariant's
+// QByteArray constructor comes first, so `QVariant("x")` built a byte array. Over D-Bus that is
+// `ay` where `s` was expected (solid-mail, GNOME Online Accounts refused the call). A D `string`
+// is text; C++'s own `QVariant("x")` (a `const char*`) is a QString too. So the overload with the
+// FEWEST QByteArray-sourced `string`s wins, wherever it is declared; a tie keeps the first.
+//
+// The winner can come later than the first, so the first emits a placeholder line holding a SLOT
+// and the unit's text is resolved once complete (emitCxxUnit). `seen` still marks a key taken;
+// the slot is keyed by the dedup map's address too, as raw and wrapper paths dedup separately.
+__gshared string[] STROV_TEXT;
+__gshared int[] STROV_RANK;
+__gshared size_t[string] STROV_SLOT;
+
+string strOvSlot(ref bool[string] seen, string key, string text, int rank) {
+    auto sk = format("%s@%s", cast(size_t) &seen, key);
+    if (key !in seen) {
+        seen[key] = true;
+        STROV_SLOT[sk] = STROV_TEXT.length;
+        STROV_TEXT ~= text; STROV_RANK ~= rank;
+        return format("\x01STROV%d\x01", STROV_TEXT.length - 1);
+    }
+    if (auto slot = sk in STROV_SLOT)
+        if (rank < STROV_RANK[*slot]) { STROV_TEXT[*slot] = text; STROV_RANK[*slot] = rank; }
+    return "";
+}
+
+string resolveStrOv(string unit) {
+    import std.regex : regex, replaceAll;
+    if (!STROV_TEXT.length) return unit;
+    return unit.replaceAll!(m => STROV_TEXT[m[1].to!size_t])(regex("\x01STROV([0-9]+)\x01"));
+}
+
 // PySide-style `string` overload for a method with `const QString&` params
 // (`w.setText("hi")`): converts each to a scoped QString and calls the raw. ""
 // if the method has no such param. `pds` are the raw D param types in order.
@@ -1680,9 +1723,9 @@ string ctorStrOv(string[] pds, ref bool[string] seen) {
         } else { op ~= format("%s a%d", pd, i); ca ~= format("a%d", i); }
     }
     auto key = "this|" ~ op.map!(o => o[0 .. o.lastIndexOf(' ')]).join(",");
-    if (key in seen) return "";
-    seen[key] = true;
-    return format("    extern(D) this(%s) {\n%s\n        this(%s);\n    }", op.join(", "), pre.join("\n"), ca.join(", "));
+    return strOvSlot(seen, key,
+        format("    extern(D) this(%s) {\n%s\n        this(%s);\n    }", op.join(", "), pre.join("\n"), ca.join(", ")),
+        cast(int) pds.count!(p => p == "ref const(QByteArray)"));
 }
 
 string strOverload(string mn, string retD, string kw, string cst, string[] pds, ref bool[string] seen) {
@@ -1710,13 +1753,14 @@ string strOverload(string mn, string retD, string kw, string cst, string[] pds, 
         } else { op ~= format("%s a%d", pd, i); ca ~= format("a%d", i); }
     }
     // dedup: an overload on both `const QString&` AND `const QByteArray&` (same other
-    // params) would yield two identical `(..., string)` overloads — keep the first.
+    // params) would yield two identical `(..., string)` overloads — the QString one wins
+    // (strOvSlot).
     auto key = dname(mn) ~ "|" ~ op.map!(o => o[0 .. o.lastIndexOf(' ')]).join(",") ~ "|" ~ cst;
-    if (key in seen) return "";
-    seen[key] = true;
     auto ret = retD == "void" ? "" : "return ";
-    return format("    extern(D) %s%s %s(%s)%s {\n%s\n        %s%s(%s);\n    }",
-        kw, retD, dname(mn), op.join(", "), cst, pre.join("\n"), ret, dname(mn), ca.join(", "));
+    return strOvSlot(seen, key,
+        format("    extern(D) %s%s %s(%s)%s {\n%s\n        %s%s(%s);\n    }",
+            kw, retD, dname(mn), op.join(", "), cst, pre.join("\n"), ret, dname(mn), ca.join(", ")),
+        cast(int) pds.count!(p => p == "ref const(QByteArray)"));
 }
 
 // The D primitive a field really is, unwrapping single-member wrapper structs
@@ -2041,6 +2085,12 @@ string operatorWrapper(string cxxOp, int nargs, string retD, string rawName, str
 
 string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                    string manifest, out string[] imports) {
+    STROV_TEXT = null; STROV_RANK = null; STROV_SLOT = null;
+    return resolveStrOv(emitCxxUnitText(cur, name, cppName, dpkg, manifest, imports));
+}
+
+string emitCxxUnitText(CXCursor cur, string name, string cppName, string dpkg,
+                       string manifest, out string[] imports) {
     // template classes (QMetaTypeId<T>, ...) can't be bound and their qualified name
     // carries '<' that would break the extern(C++, ns) clause — skip (becomes a stub).
     if (cppName.canFind("<")) throw new Unmappable("template class: " ~ cppName);
@@ -2622,6 +2672,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         try { if (!signalArg(at, cast(int) i, s)) { ok = false; break; } }
                         catch (Unmappable) { ok = false; break; }
                     }
+                    if (!ok) { _fate = "unmapped-type"; _why = "signal argument not marshalable"; }
                     if (ok) {
                         seenSigW[mn] = true; SIGNALS ~= s; impSet["qtsignals"] = true;
                         foreach (im; s.imports) impSet[im] = true;
@@ -3051,6 +3102,9 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     try { if (!signalArg(at, cast(int) i, s)) { ok = false; break; } }
                     catch (Unmappable) { ok = false; break; }
                 }
+                // A refused signal is NOT a `signal` row: the manifest said "signal" for
+                // QDBusPendingCallWatcher::finished while no connect method existed.
+                if (!ok) { _fate = "unmapped-type"; _why = "signal argument not marshalable"; }
                 if (ok) {
                     seenSig[mn] = true;
                     SIGNALS ~= s;

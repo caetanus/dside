@@ -171,7 +171,8 @@ Build reggaeBuild() {
     void netdbus(string spec, string[] mods, string tag) {
         auto b = qtdBinding(root, spec, mods);
         foreach (dc; DCS)
-            all ~= qtdTest("netdbus" ~ tag ~ "-" ~ dc, t("netdbus", "netdbus_test.d"), b, dc);
+            all ~= qtdTest("netdbus" ~ tag ~ "-" ~ dc, t("netdbus", "netdbus_test.d"), b, dc,
+                           "-I" ~ buildPath(root, "tests", "support"));   // appctor
     }
     netdbus("spec_cxx_netdbus.json", ["Qt6Network", "Qt6DBus", "Qt6Core"], "");
     if (haveQt5()) netdbus("spec_cxx_netdbus_qt5.json", ["Qt5Network", "Qt5DBus", "Qt5Core"], "-qt5");
