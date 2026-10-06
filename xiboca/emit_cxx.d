@@ -669,7 +669,11 @@ bool thunkArg(CXType at, int i, ref ThunkArg ta, ref string[] imports) {
         if (!id.length) return false;
         auto c = COMBOS[id];
         ta.cDecl = "void* " ~ a; ta.cUse = format("*static_cast<const %s*>(%s)", c.cxxType, a);
-        ta.dParam = c.idiomD ~ " " ~ a; ta.dCabi = "void*";
+        // A container of VALUE RECORDS names the record in its D type, and this text is mixed into
+        // the user's module: qualified through the same renamed import as every other thunk type.
+        auto idiom = c.idiomD;
+        if (c.val.kind == "rec") { idiom = idiom.replace(c.val.dtype, thunkQual(c.val.dtype, c.val.dtype)); imports ~= c.val.dtype; }
+        ta.dParam = idiom ~ " " ~ a; ta.dCabi = "void*";
         ta.pre = format("auto __h%d = __qtdi_qtcontainers.%s_from(%s); scope (exit) __qtdi_qtcontainers.%s_del(__h%d); ",
                         i, id, a, id, i);
         ta.dPass = format("__h%d", i);
@@ -1344,7 +1348,7 @@ bool nonTriviallyCopyable(CXType t) {
     // An `own_sources` class is not exported either — it is linked INTO the program — and its
     // copy-ctor/dtor are linkable all the same. Left out, a value type of yours with its own
     // `~Foo()` came out trivial in D: register return in D, sret in C++, the crash above.
-    bool exported = classExported(decl) || isOwnClass(decl);
+    bool exported = classExported(decl) || isLinkedIn(decl);
     foreach (c; children(decl)) {
         // (a) a USER-PROVIDED (not =default/=delete) copy-ctor or dtor -> the C++ ABI returns
         // this type via sret and expects a real copy/dtor. This is the Qt CoW case (QIcon/
@@ -1495,7 +1499,7 @@ enum CKind { seq, set, assoc }
 struct CElem {
     string cxx;    // C++ element type for the typedef: QString / QByteArray / int / double ...
     string dtype;  // D idiomatic element type: string / ubyte[] / int / double ...
-    string kind;   // marshaling strategy: "str" | "bytes" | "prim"
+    string kind;   // marshaling strategy: "str" | "bytes" | "prim" | "rec"
 }
 struct Combo {
     CKind  kind;
@@ -1503,6 +1507,7 @@ struct Combo {
     string cxxType;  // full C++ type: QHash<QString,QString>
     string id;       // unique symbol id: qhash_str_str / qlist_int / qset_str ...
     string idiomD;   // D container type: string[string] / int[] / string[] ...
+    int    words;    // the C++ container's size in pointers: the by-value return struct must match it
     CElem  key;      // assoc only
     CElem  val;      // element (seq/set) or value (assoc)
 }
@@ -1515,7 +1520,47 @@ bool comboElem(CXType t, out CElem e) {
     if (c == "QByteArray") { e = CElem("QByteArray", "ubyte[]", "bytes"); return true; }
     if (c == "void") return false;
     if (auto p = c in PRIM) { e = CElem(c, *p, "prim"); return true; }
+    // A VALUE RECORD the binding emits as a D struct (QDnsMailExchangeRecord, QPointF...): crossed
+    // as `const T*` both ways, and COPIED on the far side by the type's own copy constructor —
+    // the C++ one into the container, the D one (a shim to the C++ one, for a type with a
+    // user-provided copy/dtor) into the D array. A d-pointer CoW record therefore keeps a correct
+    // reference count across the boundary rather than being duplicated byte for byte.
+    auto ck = clang_getCanonicalType(t);
+    if (isRecord(ck) && isValueRecord(ck) && !nestedInClass(ck) && !c.canFind("<") && !c.canFind("std::")
+            && recCopiesCorrectly(ck)) {
+        e = CElem(c, lastNs(c), "rec"); return true;
+    }
     return false;
+}
+
+// A record may cross as a container ELEMENT only if its D struct copies it CORRECTLY, because the
+// D array is built by copying. Two ways to be sure: the binding gives the struct the REAL C++ copy
+// constructor and destructor (nonTriviallyCopyable: a user-provided copy/dtor, as every d-pointer Qt
+// record has), or the record is plain data all the way down, so a byte copy IS its copy. Neither
+// holds for a record whose copy is non-trivial only IMPLICITLY — QQuickStateAction holds a
+// QQmlProperty and a QVariant by value and declares no copy constructor — and the D struct of such
+// a type has no copy constructor at all, so a byte copy would duplicate those members' pointers
+// without their reference counts. Those stay unmapped.
+bool recCopiesCorrectly(CXType t) {
+    auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(clang_getCanonicalType(t)));
+    if (copyDeleted(decl)) return false;
+    return nonTriviallyCopyable(t) || plainData(t);
+}
+bool plainData(CXType t, int depth = 0) {
+    if (depth > 8) return false;
+    auto ck = clang_getCanonicalType(t);
+    if (canon(t) in PRIM || ck.kind == CXType_Enum || ck.kind == CXType_Pointer) return true;
+    if (ck.kind == CXType_ConstantArray) return plainData(clang_getArrayElementType(ck), depth + 1);
+    if (!isRecord(ck)) return false;
+    auto decl = clang_getCursorDefinition(clang_getTypeDeclaration(ck));
+    foreach (c; children(decl)) {
+        if (c.kind == CXCursor_FieldDecl && !plainData(clang_getCursorType(c), depth + 1)) return false;
+        if (c.kind == CXCursor_CXXBaseSpecifier && !plainData(clang_getCursorType(c), depth + 1)) return false;
+        bool special = c.kind == CXCursor_Destructor
+            || (c.kind == CXCursor_Constructor && clang_CXXConstructor_isCopyConstructor(c));
+        if (special && clang_CXXMethod_isDefaulted(c) == 0 && clang_CXXMethod_isDeleted(c) == 0) return false;
+    }
+    return true;
 }
 string elemSlug(CElem e) { return e.kind == "str" ? "str" : e.kind == "bytes" ? "bytes" : e.dtype; }
 
@@ -1534,6 +1579,7 @@ string registerCombo(CXType t) {
     if (kind == CKind.assoc) {
         if (nargs < 2) return "";
         if (!comboElem(clang_Type_getTemplateArgumentAsType(ck, 0), cb.key)) return "";
+        if (cb.key.kind == "rec") return "";   // a struct as a D AA key: not supported
         if (!comboElem(clang_Type_getTemplateArgumentAsType(ck, 1), cb.val)) return "";
         cb.id      = dn.toLower ~ "_" ~ elemSlug(cb.key) ~ "_" ~ elemSlug(cb.val);
         cb.cxxType = format("%s<%s,%s>", dn, cb.key.cxx, cb.val.cxx);
@@ -1545,8 +1591,27 @@ string registerCombo(CXType t) {
         cb.cxxType = format("%s<%s>", dn, cb.val.cxx);
         cb.idiomD  = cb.val.dtype ~ "[]";
     }
+    // THE CONTAINER'S SIZE, which the D return struct must reproduce exactly. Asked of clang first —
+    // but a QList<RecItem> that appears only in declarations is NEVER INSTANTIATED in the translation
+    // unit, and its size is then unknown (negative), which a first version turned silently into one
+    // pointer: Qt 6 wrote its 24-byte QList into an 8-byte D struct and smashed the caller's stack.
+    // So: the measured size when there is one, else Qt's layout — a Qt 6 sequence is QArrayDataPointer
+    // (d, ptr, size), everything else one d-pointer — and comboCpp static_asserts the result in C++,
+    // where the size IS known, so a wrong answer is a compile error and never a corruption.
+    auto sz = clang_Type_getSizeOf(ck);
+    cb.words = sz > 0 ? cast(int) ((sz + 7) / 8) : (kind == CKind.seq && !QT5 ? 3 : 1);
     COMBOS[cb.id] = cb;
     return cb.id;
+}
+
+// A method that uses combo `id` imports the container runtime — and, for a combo of VALUE
+// RECORDS, the records' own modules: its D signature names them (`QDnsMailExchangeRecord[]`).
+void useCombo(ref bool[string] impSet, string id) {
+    impSet["qtcontainers"] = true;
+    if (auto c = id in COMBOS) {
+        if (c.val.kind == "rec") impSet[c.val.dtype] = true;
+        if (c.key.kind == "rec") impSet[c.key.dtype] = true;
+    }
 }
 
 // Param is a supported container? -> helper = combo id, idiom = D container type.
@@ -1564,7 +1629,19 @@ bool containerParam(CXType t, out string helper, out string idiom) {
 bool containerReturn(CXType t, out string helper, out string idiom, out string retStruct) {
     auto ck = clang_getCanonicalType(t);
     auto dn = clang_getCursorSpelling(clang_getTypeDeclaration(ck)).str;
-    if (dn != "QSet" && dn != "QHash" && dn != "QMultiHash" && dn != "QMap" && dn != "QMultiMap") return false;
+    // A SEQUENCE of value records takes this path too. Every other sequence stays on tryQList's
+    // pure-D path, which reads QList's layout directly — and that layout, for a record element on
+    // Qt 5 (inline vs heap-allocated slots), is what this path avoids by iterating in C++. Decided
+    // BEFORE registering, so no other QList ever creates a combo here.
+    bool seqRec = false;
+    if (dn == "QList" || dn == "QVector" || dn == "QStack" || dn == "QQueue") {
+        CElem e;
+        if (clang_Type_getNumTemplateArguments(ck) != 1
+                || !comboElem(clang_Type_getTemplateArgumentAsType(ck, 0), e) || e.kind != "rec")
+            return false;
+        seqRec = true;
+    }
+    if (!seqRec && dn != "QSet" && dn != "QHash" && dn != "QMultiHash" && dn != "QMap" && dn != "QMultiMap") return false;
     auto id = registerCombo(ck);
     if (!id.length) return false;
     helper = id; idiom = COMBOS[id].idiomD; retStruct = "Ret_" ~ id; return true;
@@ -2500,9 +2577,9 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             // since pragma(mangle) on the declaring class's symbol would bypass the override.
             if (containerReturn(rrt, _a, _b, _cc)) {
                 string ch = _a, cid = _b, crs = _cc;
-                impSet["qtcontainers"] = true;
+                useCombo(impSet, ch);
                 auto kwc = clang_CXXMethod_isStatic(c) ? "static " : "final ";
-                string[] rpsC, cargsC, cppPsC, anamesC; bool okc = true;
+                string[] rpsC, rawPsC, cargsC, cppPsC, anamesC; bool okc = true;
                 auto nac = clang_Cursor_getNumArguments(c);
                 foreach (i; 0 .. nac) {
                     auto a = clang_Cursor_getArgument(c, i);
@@ -2511,6 +2588,11 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     if (pimp.length) impSet[pimp] = true;
                     auto pwc = wrapperTypeOf(clang_getCursorType(a));
                     rpsC ~= format("%s a%d", pd, i);
+                    // The RAW declaration takes what the call passes: a wrapped object goes in as its
+                    // C++ pointer, so it is declared `void*`, not as the wrapper class. Declaring the
+                    // wrapper type here only went unnoticed while no container-returning method had a
+                    // wrapped parameter — QFileDialog::getOpenFileUrls(QWidget*, ...) is the first.
+                    rawPsC ~= format("%s a%d", pwc.length ? "void*" : pd, i);
                     cargsC ~= pwc.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
                     cppPsC ~= format("%s a%d",
                         clang_getTypeSpelling(clang_getCanonicalType(clang_getCursorType(a))).str, i);
@@ -2530,12 +2612,12 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                         clang_getTypeSpelling(clang_getCanonicalType(rrt)).str,
                         mn, cppPsC, anamesC, clang_CXXMethod_isStatic(c) != 0,
                         clang_CXXMethod_isConst(c) != 0);
-                    wd ~= format("extern(C) private %s %s(%s%s);", crs, rawN, declSelfC, rpsC.join(", "));
+                    wd ~= format("extern(C) private %s %s(%s%s);", crs, rawN, declSelfC, rawPsC.join(", "));
                     _fate = "shimmed";
                 } else {
                     rawN = "__" ~ dname(mn) ~ "_qc";
                     wd ~= format("private pragma(mangle, \"%s\") extern(C++) %s %s(%s%s);",
-                        clang_Cursor_getMangling(c).str, crs, rawN, declSelfC, rpsC.join(", "));
+                        clang_Cursor_getMangling(c).str, crs, rawN, declSelfC, rawPsC.join(", "));
                 }
                 wm ~= format("    %s%s %s(%s) {\n        auto _r = %s(%s%s);\n        return %s_to(cast(void*) &_r);\n    }",
                     kwc, cid, dname(mn), rpsC.join(", "), rawN, selfA, cargsC.join(", "), ch);
@@ -2589,7 +2671,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                     // along; bailing here cost `QSplitter::setSizes(int[])`, `QProcess::start` and
                     // every other container-taking method in wrapper mode.
                     if (containerParam(clang_getCursorType(a), helper, idiom)) {
-                        impSet["qtcontainers"] = true;
+                        useCombo(impSet, helper);
                         wps ~= format("void* a%d", i);
                         wpds ~= "C:" ~ helper ~ ":" ~ idiom;
                         declps ~= format("void* a%d", i);
@@ -3036,7 +3118,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
         try {
             string ch, cid, crs;   // QHash<K,V> return -> V[K] via sret + iterate shim
             if (containerReturn(clang_getCursorResultType(c), ch, cid, crs)) {
-                impSet["qtcontainers"] = true;
+                useCombo(impSet, ch);
                 auto kw2 = clang_CXXMethod_isStatic(c) ? "static " : "final ";
                 auto cst2 = clang_CXXMethod_isConst(c) ? " const" : "";
                 string[] rps, cargs; bool okc = true;
@@ -3079,7 +3161,7 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
                 auto a = clang_Cursor_getArgument(c, i);
                 string helper, idiom;
                 if (containerParam(clang_getCursorType(a), helper, idiom)) {
-                    impSet["qtcontainers"] = true;      // raw takes the container ptr as void*
+                    useCombo(impSet, helper);      // raw takes the container ptr as void*
                     ps ~= format("void* a%d", i);
                     psPub ~= format("void* a%d", i);
                     pcall ~= format("a%d", i);
@@ -3728,17 +3810,21 @@ extern (C++) struct QAnyStringView {
 // extraction from an accessor. `p` disambiguates key ("k") vs value ("v") vs the
 // lone element (""). `acc` is the C++ element accessor ((*i), i.key(), i.value()).
 private string cInsParams(CElem e, string p) {
+    if (e.kind == "rec") return format("const %s* %sv", e.cxx, p);
     return e.kind == "prim" ? format("%s %sv", e.cxx, p) : format("const char* %sd, long %sn", p, p);
 }
 private string cInsBuild(CElem e, string p) {
+    if (e.kind == "rec")   return format("*%sv", p);
     if (e.kind == "str")   return format("QString::fromUtf8(%sd,%sn)", p, p);
     if (e.kind == "bytes") return format("QByteArray(%sd,%sn)", p, p);
     return format("%sv", p);
 }
 private string cCbParams(CElem e, string p) {
+    if (e.kind == "rec") return format("const %s* %sv", e.cxx, p);
     return e.kind == "prim" ? format("%s %sv", e.cxx, p) : format("const void* %sd, long %sn", p, p);
 }
 private string cCbExtract(CElem e, string acc) {
+    if (e.kind == "rec")   return format("&(%s)", acc);
     if (e.kind == "str")   return format("%s.utf16(), %s.size()", acc, acc);
     if (e.kind == "bytes") return format("%s.constData(), %s.size()", acc, acc);
     return acc;
@@ -3746,17 +3832,21 @@ private string cCbExtract(CElem e, string acc) {
 // D side: extern(C) insert / callback param decls, native->raw insert args,
 // raw->native reconstruction.
 private string dInsParams(CElem e, string p) {
+    if (e.kind == "rec") return format("const(%s)* %sv", e.dtype, p);
     return e.kind == "prim" ? format("%s %sv", e.dtype, p) : format("const(char)* %sd, long %sn", p, p);
 }
 private string dCbParams(CElem e, string p) {
+    if (e.kind == "rec") return format("const(%s)* %sv", e.dtype, p);
     return e.kind == "prim" ? format("%s %sv", e.dtype, p) : format("const(void)* %sd, long %sn", p, p);
 }
 private string dToArgs(CElem e, string x) {
+    if (e.kind == "rec")   return format("&%s", x);
     if (e.kind == "str")   return format("%s.ptr, cast(long) %s.length", x, x);
     if (e.kind == "bytes") return format("cast(const(char)*) %s.ptr, cast(long) %s.length", x, x);
     return x;
 }
 private string dFrom(CElem e, string p) {
+    if (e.kind == "rec")   return format("*%sv", p);   // the D struct's copy constructor
     if (e.kind == "str")   return format("__u16(%sd, %sn)", p, p);
     if (e.kind == "bytes") return format("__bytes(%sd, %sn)", p, p);
     return format("%sv", p);
@@ -3773,6 +3863,10 @@ private string keyFrom(CElem e, string p) {
 private string comboCpp(Combo c) {
     auto T = "T_" ~ c.id;
     string s = format("typedef %s %s;\n", c.cxxType, T);
+    // The D side's Ret_<id> (qtcontainers.d) is exactly this many pointers; checked HERE, where
+    // the size is known, so a disagreement fails the build instead of corrupting a stack.
+    s ~= format("static_assert(sizeof(%s) == %d * sizeof(void*), \"Ret_%s in qtcontainers.d does not match "
+                ~ "sizeof(%s)\");\n", T, c.words, c.id, c.cxxType);
     s ~= format("void* __%s_new() { return new %s(); }\n", c.id, T);
     if (c.kind == CKind.assoc) {
         s ~= format("void __%s_insert(void* h, %s, %s) { static_cast<%s*>(h)->insert(%s, %s); }\n",
@@ -4316,13 +4410,15 @@ string virtD(string manifest, string dpkg, out string[] imps) {
 // phase into qtcontainers.o. Demand-driven: exactly the combos seen this run.
 // Thin per-container shims: D feeds native data (from) / Qt hands raw basic data
 // back to a D callback (iterate/to). Both directions, no QVariant.
-string containersCpp(string manifest) {
+string containersCpp(string manifest, string recInclude = "") {
     if (!COMBOS.length) return manifest ~ "\n";
     string body;
     foreach (id; COMBOS.keys.sort) body ~= comboCpp(COMBOS[id]);
+    bool anyRec = COMBOS.byValue.any!(c => c.val.kind == "rec");
     return manifest ~ "\n"
         ~ "#include <QString>\n#include <QByteArray>\n#include <QList>\n#include <QStack>\n"
         ~ "#include <QQueue>\n#include <QSet>\n#include <QHash>\n#include <QMap>\n"
+        ~ (anyRec ? recInclude : "")
         ~ "extern \"C\" {\n" ~ body ~ "}\n";
 }
 
@@ -4331,6 +4427,12 @@ string containersCpp(string manifest) {
 string containersD(string manifest, string dpkg) {
     auto head = manifest ~ "\nmodule " ~ dpkg ~ ".qtcontainers;\n";
     if (!COMBOS.length) return head;
+    // The D structs a record combo copies into and out of.
+    {
+        bool[string] recMods;
+        foreach (c; COMBOS.byValue) if (c.val.kind == "rec") recMods[modBase(c.val.dtype)] = true;
+        foreach (m; recMods.byKey.array.sort) head ~= format("import %s.%s;\n", dpkg, m);
+    }
     string aliases, decls, rets, helpers;
     foreach (id; COMBOS.keys.sort) {
         auto c = COMBOS[id];
@@ -4354,7 +4456,13 @@ string containersD(string manifest, string dpkg) {
         }
         // by-value (sret) return struct; QHash/QSet/QMap dtors are inline so release
         // is hand-rolled via the destruct shim.
-        rets ~= format("extern (C++) struct Ret_%s { void* d; ~this() { __%s_destruct(&this); } }\n", c.id, c.id);
+        // Exactly the container's size: it IS the container (an sret return writes it in place,
+        // `_to(&_r)` iterates it, `~this` destroys it). One pointer is QHash/QSet/QMap; Qt 6's QList
+        // is THREE (d, ptr, size) — a one-pointer struct there would have Qt write 24 bytes into 8.
+        auto words = c.words;
+        rets ~= words > 1
+            ? format("extern (C++) struct Ret_%s { void*[%d] d; ~this() { __%s_destruct(&this); } }\n", c.id, words, c.id)
+            : format("extern (C++) struct Ret_%s { void* d; ~this() { __%s_destruct(&this); } }\n", c.id, c.id);
         helpers ~= format("%s %s_to(void* h) { %s r; __%s_iterate(h, &__%s_cb, &r); return r; }\n",
             c.idiomD, c.id, c.idiomD, c.id, c.id);
         helpers ~= format("void %s_del(void* h) { __%s_delete(h); }\n", c.id, c.id);

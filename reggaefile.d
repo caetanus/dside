@@ -150,6 +150,21 @@ Build reggaeBuild() {
         all ~= qtdTest("conn-" ~ dc, t("wrapper", "conn.d"), wrap, dc);             // connection-handle lifetime
     }
 
+    // --- QList<T> of a VALUE RECORD (QDnsLookup::mailExchangeRecords' shape), both directions,
+    // with a fixture that counts live instances so a byte copy or a leaked container shows. Qt5
+    // and Qt6: the container's size differs between them (8 vs 24 bytes), which is the point.
+    void reclist(string spec, string mod, string tag) {
+        auto b = qtdBinding(root, spec, [mod]);
+        auto src = t("reclist", "reclist.cpp");
+        auto obj = buildPath(b.bdir, "reclist_fixture.o");
+        auto objT = Target(obj, "clang++ " ~ pkgCflags([mod]) ~ " -std=c++17 " ~ cxxPic()
+            ~ " -I" ~ buildPath(root, "tests", "reclist") ~ " -c " ~ src ~ " -o $out", [Target(src)]);
+        foreach (dc; DCS)
+            all ~= qtdTest("reclist" ~ tag ~ "-" ~ dc, t("reclist", "reclist_test.d"), b, dc, obj, [objT]);
+    }
+    reclist("spec_cxx_reclist.json", "Qt6Core", "");
+    if (haveQt5()) reclist("spec_cxx_reclist_qt5.json", "Qt5Core", "-qt5");
+
     // The bindings the ctor-guard gate reads. Collected as they are created so the gate depends on
     // their gen targets rather than on whatever happens to be on disk.
     QtdBinding[] ctorGuardBindings;

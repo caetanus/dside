@@ -106,6 +106,17 @@ __gshared string[] ownSources;
 bool isOwnSource(string loc) { return ownSources.any!(f => loc.canFind(f)); }
 // Your own classes are compiled into the program, not imported from a shared library, so the
 // export question `classExported` asks of Qt's does not apply to them.
+// ...and the same holds in headers mode (`source_filter`): every class bound there is the user's,
+// compiled into the program, so its copy constructor and destructor are linkable whatever its
+// export macro says. Asking `classExported` alone left such a value type's D struct with NO copy
+// constructor — a QString member copied byte for byte, and a by-value return on the wrong ABI.
+bool isLinkedIn(CXCursor decl) {
+    if (isOwnClass(decl)) return true;
+    if (!sourceFilter.length) return false;
+    CXFile f; uint ln, col, off;
+    clang_getFileLocation(clang_getCursorLocation(decl), &f, &ln, &col, &off);
+    return f && clang_getFileName(f).str.replace("\\", "/").canFind(sourceFilter);
+}
 bool isOwnClass(CXCursor decl) {
     if (!ownSources.length) return false;
     CXFile f; uint ln, col, off;

@@ -1,0 +1,7 @@
+{
+  "qt_version": "5.15", "pkg_config": "Qt5Core",
+  "out_dir": "../generated/qt-5.15/cxx-reclist", "d_package": "qt.reclist", "abi": "cxx",
+  "headers": ["reclist.h"],
+  "source_filter": "tests/reclist",
+  "include_paths": ["../tests/reclist"]
+}

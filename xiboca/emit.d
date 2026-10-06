@@ -593,10 +593,6 @@ void main(string[] args) {
         // COMBOS) so it's demand-driven. Template shims are the ONLY generated C++.
         // The generator is a pure code generator: it EMITS every .cpp/.d source here
         // but compiles nothing — reggae owns the whole build graph (C+++D->link).
-        std.file.write(buildPath(outDir, "qtcontainers.cpp"), containersCpp(manifest));
-        std.file.write(buildPath(dsub, "qtcontainers.d"), containersD(manifest, dpkg));
-        if (COMBOS.length) cxxGen["qtcontainers"] = true;
-        // Signal/slot bridge — one functor-connect shim per parameterless signal.
         // The umbrella <QtQuick> reaches only public types; private types (QQuickGradient etc.) the
         // aggregated shims reference need their own header appended.
         auto privInc = includes.dup.sort.uniq.filter!(i => i.canFind("/private/") || i.canFind("/qpa/")
@@ -605,6 +601,12 @@ void main(string[] args) {
         auto sigInc = discMod.length ? (format("#include <%s>\n", discMod) ~ privInc)
             : includes.sort.uniq.map!(i => (i.canFind('/') || i.endsWith(".h"))
                 ? format("#include \"%s\"\n", i) : format("#include <%s>\n", i)).join;
+        // A combo of VALUE RECORDS names the record's type, so it needs the binding's headers too;
+        // the others need only Qt's container headers and are emitted exactly as before.
+        std.file.write(buildPath(outDir, "qtcontainers.cpp"), containersCpp(manifest, sigInc));
+        std.file.write(buildPath(dsub, "qtcontainers.d"), containersD(manifest, dpkg));
+        if (COMBOS.length) cxxGen["qtcontainers"] = true;
+        // Signal/slot bridge — one functor-connect shim per parameterless signal.
         std.file.write(buildPath(outDir, "qtsignals.cpp"), signalsCpp(manifest, sigInc));
         std.file.write(buildPath(dsub, "qtsignals.d"), signalsD(manifest, dpkg));
         if (SIGNALS.length) cxxGen["qtsignals"] = true;

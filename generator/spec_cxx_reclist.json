@@ -1,0 +1,7 @@
+{
+  "qt_version": "6.11", "pkg_config": "Qt6Core",
+  "out_dir": "../generated/qt-6.11/cxx-reclist", "d_package": "qt.reclist", "abi": "cxx",
+  "headers": ["reclist.h"],
+  "source_filter": "tests/reclist",
+  "include_paths": ["../tests/reclist"]
+}
