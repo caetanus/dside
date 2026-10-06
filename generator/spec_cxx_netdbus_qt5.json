@@ -1,0 +1,10 @@
+{
+  "qt_version": "5.15",
+  "pkg_config": "Qt5Network Qt5DBus Qt5Core",
+  "out_dir": "../generated/qt-5.15/cxx-netdbus",
+  "d_package": "qt.netdbus",
+  "abi": "cxx",
+  "discover_module": "QtNetwork",
+  "qt_marker": "/qt/",
+  "headers": ["QtDBus/QtDBus"]
+}

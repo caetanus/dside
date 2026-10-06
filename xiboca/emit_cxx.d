@@ -1099,6 +1099,14 @@ string mapCxxType(CXType t, ref string imp) {
         // the same enclosing scope, e.g. QThread::setPriority(QThread::Priority)).
         if (parent.kind == CXCursor_ClassDecl || parent.kind == CXCursor_StructDecl) {
             auto pn = clang_getCursorSpelling(parent).str;
+            // QString / QByteArray / QAnyStringView are the hand-written runtime structs, not
+            // emitted from the header, so no nested enum of theirs exists in D. Qt 5's
+            // QStringRef::split(const QString&, QString::SplitBehavior, ...) spelled
+            // `QString.SplitBehavior` and the binding stopped compiling — it surfaced only when
+            // value types gained container returns; until then every method naming one was
+            // already refused for another reason.
+            if (pn == "QString" || pn == "QByteArray" || pn == "QAnyStringView")
+                throw new Unmappable("nested enum of a runtime-provided type: " ~ c);
             auto pdef = clang_getCursorDefinition(parent);
             if (pdef.kind == CXCursor_ClassDecl || pdef.kind == CXCursor_StructDecl)
                 PENDING_ENUMSCOPE[pn] = pdef;   // stub must still carry the enum (see decl)
@@ -1599,7 +1607,12 @@ string registerCombo(CXType t) {
     // (d, ptr, size), everything else one d-pointer — and comboCpp static_asserts the result in C++,
     // where the size IS known, so a wrong answer is a compile error and never a corruption.
     auto sz = clang_Type_getSizeOf(ck);
-    cb.words = sz > 0 ? cast(int) ((sz + 7) / 8) : (kind == CKind.seq && !QT5 ? 3 : 1);
+    // Measured on Qt 6.11 / 5.15 (sizeof of each container): Qt 6 sequences 24 bytes, Qt 6
+    // QMultiHash 16 (d-pointer + its own element count), every other container 8; all of Qt 5 is 8.
+    // The QMultiHash row was found by the static_assert below, on a QtDBus binding — the guess of
+    // one pointer for it had been an 8-byte struct receiving a 16-byte sret.
+    int fallback = QT5 ? 1 : kind == CKind.seq ? 3 : dn == "QMultiHash" ? 2 : 1;
+    cb.words = sz > 0 ? cast(int) ((sz + 7) / 8) : fallback;
     COMBOS[cb.id] = cb;
     return cb.id;
 }
@@ -2220,6 +2233,64 @@ string emitCxxUnit(CXCursor cur, string name, string cppName, string dpkg,
             string _fate = "bound"; string _why;
             scope(exit) recordSym(cppName, mn, _fate, c, _why);
             try {
+                // CONTAINERS ON A VALUE TYPE'S METHOD (QDBusMessage::arguments() -> QList<QVariant>,
+                // setArguments(const QList<QVariant>&)). This emitter mapped every type through
+                // mapCxxType, which refuses a template, so a value type never got the container
+                // treatment the class emitter has: the method was `template/std … unmapped-type`
+                // however supported its container was. Same shape as the class path — a return
+                // through the combo's sret struct and `<id>_to`, a parameter built with `<id>_from`
+                // and released after the call, a wrapped object passed as its C++ pointer.
+                if (!isInline(c) && !isOp) {
+                    auto cst = clang_CXXMethod_isConst(c) ? " const" : "";
+                    auto kw = clang_CXXMethod_isStatic(c) ? "static " : "";
+                    auto rt0 = clang_getCursorResultType(c);
+                    string chR, idiomR, crsR;
+                    bool retC = containerReturn(rt0, chR, idiomR, crsR);
+                    auto nac = clang_Cursor_getNumArguments(c);
+                    bool anyC = retC;
+                    foreach (i; 0 .. nac) {
+                        string h_, i_;
+                        if (containerParam(clang_getCursorType(clang_Cursor_getArgument(c, i)), h_, i_)) anyC = true;
+                    }
+                    if (anyC) {
+                        string impC, retD2;
+                        if (retC) { retD2 = idiomR; useCombo(impSet, chR); }
+                        else { retD2 = mapCxxType(rt0, impC); if (impC.length) impSet[impC] = true; }
+                        string[] rawPs, pubPs, args, pre;
+                        foreach (i; 0 .. nac) {
+                            auto at = clang_getCursorType(clang_Cursor_getArgument(c, i));
+                            string helper, idiom;
+                            if (containerParam(at, helper, idiom)) {
+                                useCombo(impSet, helper);
+                                rawPs ~= format("void* a%d", i);
+                                pubPs ~= format("%s a%d", idiom, i);
+                                pre ~= format("auto __h%d = %s_from(a%d); scope (exit) %s_del(__h%d); ",
+                                              i, helper, i, helper, i);
+                                args ~= format("__h%d", i);
+                                continue;
+                            }
+                            string pimp;
+                            auto pd = mapCxxType(at, pimp);
+                            if (pimp.length) impSet[pimp] = true;
+                            auto pw = WRAPPER ? wrapperTypeOf(at) : "";
+                            rawPs ~= format("%s a%d", pw.length ? "void*" : pd, i);
+                            pubPs ~= format("%s a%d", pd, i);
+                            args ~= pw.length ? format("(a%d is null ? null : a%d.ptr())", i, i) : format("a%d", i);
+                        }
+                        auto sigKey = dname(mn) ~ "|vc|" ~ pubPs.join(",") ~ cst ~ kw;
+                        if (sigKey in seenStrOv) continue;
+                        seenStrOv[sigKey] = true;
+                        auto rawN = format("__%s_vc%d", dname(mn), rvIdx++);
+                        rawDecls ~= format("    private pragma(mangle, \"%s\") %s%s %s(%s)%s;",
+                            clang_Cursor_getMangling(c).str, kw, retC ? crsR : retD2, rawN, rawPs.join(", "), cst);
+                        auto call = format("%s(%s)", rawN, args.join(", "));
+                        string body = retC ? format("auto _r = %s; return %s_to(cast(void*) &_r);", call, chR)
+                                    : (retD2 == "void" ? call ~ ";" : "return " ~ call ~ ";");
+                        rawDecls ~= format("    extern(D) %s%s %s(%s)%s { %s%s }",
+                            kw, retD2, dname(mn), pubPs.join(", "), cst, pre.join(""), body);
+                        continue;
+                    }
+                }
                 // A BY-VALUE RETURN OF A CLASS-EMITTED RECORD: a VALUE type handing back a QImage
                 // or a QPixmap (QIcon::pixmap, QCursor::mask, QImageReader::read). There is no
                 // direct declaration that can receive one — see ownedReturnClass — so it goes

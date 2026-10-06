@@ -165,6 +165,17 @@ Build reggaeBuild() {
     reclist("spec_cxx_reclist.json", "Qt6Core", "");
     if (haveQt5()) reclist("spec_cxx_reclist_qt5.json", "Qt5Core", "-qt5");
 
+    // --- A SECOND MODULE named in `headers` beside a discovered one (QtDBus beside QtNetwork), and
+    // QList<QVariant> on a value type (QDBusMessage::arguments). Building it tests the first: the
+    // shims must include the named module's header.
+    void netdbus(string spec, string[] mods, string tag) {
+        auto b = qtdBinding(root, spec, mods);
+        foreach (dc; DCS)
+            all ~= qtdTest("netdbus" ~ tag ~ "-" ~ dc, t("netdbus", "netdbus_test.d"), b, dc);
+    }
+    netdbus("spec_cxx_netdbus.json", ["Qt6Network", "Qt6DBus", "Qt6Core"], "");
+    if (haveQt5()) netdbus("spec_cxx_netdbus_qt5.json", ["Qt5Network", "Qt5DBus", "Qt5Core"], "-qt5");
+
     // The bindings the ctor-guard gate reads. Collected as they are created so the gate depends on
     // their gen targets rather than on whatever happens to be on disk.
     QtdBinding[] ctorGuardBindings;

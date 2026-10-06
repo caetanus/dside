@@ -598,7 +598,17 @@ void main(string[] args) {
         auto privInc = includes.dup.sort.uniq.filter!(i => i.canFind("/private/") || i.canFind("/qpa/")
                                                          || isOwnSource(i))
             .map!(i => format("#include \"%s\"\n", i)).join;
-        auto sigInc = discMod.length ? (format("#include <%s>\n", discMod) ~ privInc)
+        // ...and the PUBLIC headers the spec names beside the discovered module. A spec that binds a
+        // second module next to the first (QtDBus beside QtQuick: `pkg_config` + `headers:
+        // ["QtDBus/QtDBus"]`) gets that module's classes discovered — the parse sees the header —
+        // but the shims used to include only the first umbrella, so the C++ failed on
+        //     qtdctor.cpp: error: unknown type name 'QDBusError'
+        // Only the listed public ones are added here; the private ones are already in privInc.
+        auto pubInc = discMod.length
+            ? headers.filter!(h => !h.canFind("/private/") && !h.canFind("/qpa/") && h != discMod)
+                     .map!(h => isAbsolute(h) ? format("#include \"%s\"\n", h) : format("#include <%s>\n", h)).join
+            : "";
+        auto sigInc = discMod.length ? (format("#include <%s>\n", discMod) ~ pubInc ~ privInc)
             : includes.sort.uniq.map!(i => (i.canFind('/') || i.endsWith(".h"))
                 ? format("#include \"%s\"\n", i) : format("#include <%s>\n", i)).join;
         // A combo of VALUE RECORDS names the record's type, so it needs the binding's headers too;

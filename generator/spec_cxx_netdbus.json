@@ -1,0 +1,9 @@
+{
+  "qt_version": "6.11",
+  "pkg_config": "Qt6Network Qt6DBus Qt6Core",
+  "out_dir": "../generated/qt-6.11/cxx-netdbus",
+  "d_package": "qt.netdbus",
+  "abi": "cxx",
+  "discover_module": "QtNetwork",
+  "headers": ["QtDBus/QtDBus"]
+}
