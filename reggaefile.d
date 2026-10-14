@@ -180,6 +180,7 @@ Build reggaeBuild() {
     // The bindings the ctor-guard gate reads. Collected as they are created so the gate depends on
     // their gen targets rather than on whatever happens to be on disk.
     QtdBinding[] ctorGuardBindings;
+    QtdBinding[] symGateBindings;   // ...also read by the no-cxx-defs gate (with ctorGuardBindings)
 
     // --- WRAPPER mode QtWidgets (Qt6 + Qt5): widget app + moc/trampoline ---
     void widgets(string spec, string[] mods, string tag) {
@@ -409,6 +410,7 @@ Build reggaeBuild() {
     // (b) QtQuick: a bound-type root (Item -> QQuickItem) compiled to a D subclass, diffed vs the engine.
     if (qtHasModule("Qt6Quick")) {
         auto quick = qtdBinding(root, "spec_cxx_quick.json", ["Qt6Quick", "Qt6QmlModels", "Qt6Qml", "Qt6Gui"]);
+        symGateBindings ~= quick;
         all ~= qmltcTargets(root, quick, buildPath(root, "tests", "qmltc", "quick"), "q");
         // ...and the GAP PROBES, which are documents expected to DIFFER from the engine. They are
         // reachable by name and deliberately NOT in `all`: a probe that passes is news (the gap
@@ -857,6 +859,18 @@ Build reggaeBuild() {
                 all ~= Target.phony("ownership-gate-" ~ b.specName.stripExtension.replace("spec_cxx_", ""),
                     "sh " ~ og ~ " " ~ buildPath(root, "generator", b.specName) ~ " " ~ b.genDir,
                     [Target(og), b.gen]);
+    }
+
+    // --- no D body may carry a Qt member's C++ symbol (no-cxx-defs.sh says why) ---
+    // Reads the ARCHIVE, the artifact an app links, so it fails on what actually ships.
+    version (Posix) {
+        auto nd = buildPath(root, "tests", "no-cxx-defs.sh");
+        foreach (b; ctorGuardBindings ~ symGateBindings)
+            foreach (dc; DCS) {
+                auto lib = qtdBindLib(b, dc);
+                all ~= Target.phony("no-cxx-defs-" ~ b.specName.stripExtension.replace("spec_cxx_", "") ~ "-" ~ dc,
+                    "sh " ~ nd ~ " " ~ buildPath(b.bdir, "libbinding_" ~ dc ~ ".a"), [Target(nd), lib]);
+            }
     }
 
     // --- every allocating wrapper ctor frees its block if construction throws ---

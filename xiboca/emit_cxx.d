@@ -307,7 +307,7 @@ string[] emitQListReturn(CXCursor c, string mn, string qtid, string kw, string c
         } else
             raw = format("private pragma(mangle, \"%s\") extern(C++) QList_%s %s(%s%s);",
                 mg, qtid, rawName, declSelf, declps.join(", "));
-        auto idiom = format("    %s%s[] %s(%s) {\n"
+        auto idiom = format("    extern(D) %s%s[] %s(%s) {\n"
             ~ "        auto _l = %s(%s%s);\n        %s[] _r; _r.length = cast(size_t) _l.length;\n"
             ~ "        foreach (_i; 0 .. _l.length) _r[_i] = %s;\n        return _r;\n    }",
             kw, e.idiomTy, dname(mn), rps.join(", "), rawName, self, callargs.join(", "),
@@ -922,9 +922,9 @@ bool trampVirt(CXCursor m, string cppClass, out TrampVirt tv) {
 // The as<Base>() method: upcast this to a secondary base via the offset shim.
 string miCastMethod(string dClass, string sbDClass) {
     if (WRAPPER)   // secondary-base subobject pointer -> wrap it (a distinct holder key)
-        return format("    final %s as%s() { return %s.wrap(qtd_upcast_%s_%s(this.ptr())); }",
+        return format("    extern(D) final %s as%s() { return %s.wrap(qtd_upcast_%s_%s(this.ptr())); }",
             sbDClass, sbDClass, sbDClass, dClass, sbDClass);
-    return format("    final %s as%s() { return cast(%s) qtd_upcast_%s_%s(cast(void*) this); }",
+    return format("    extern(D) final %s as%s() { return cast(%s) qtd_upcast_%s_%s(cast(void*) this); }",
         sbDClass, sbDClass, sbDClass, dClass, sbDClass);
 }
 
@@ -2074,12 +2074,12 @@ string operatorWrapper(string cxxOp, int nargs, string retD, string rawName, str
     auto sym = cxxOp["operator".length .. $];
     enum string[] bin = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"];
     if (nargs == 1 && bin.canFind(sym))
-        return format("    %s opBinary(string op)(%s rhs)%s if (op == \"%s\") { return %s(rhs); }",
+        return format("    extern(D) %s opBinary(string op)(%s rhs)%s if (op == \"%s\") { return %s(rhs); }",
             retD, pv, cst, sym, rawName);
     if (nargs == 1 && sym == "==")
-        return format("    bool opEquals(%s rhs)%s { return %s(rhs); }", pv, cst, rawName);
+        return format("    extern(D) bool opEquals(%s rhs)%s { return %s(rhs); }", pv, cst, rawName);
     if (nargs == 0 && (sym == "-" || sym == "+" || sym == "~"))
-        return format("    %s opUnary(string op)()%s if (op == \"%s\") { return %s(); }", retD, cst, sym, rawName);
+        return format("    extern(D) %s opUnary(string op)()%s if (op == \"%s\") { return %s(); }", retD, cst, sym, rawName);
     return "";   // comparison (< > need opCmp/int), []/(), assignment, etc. — not yet
 }
 
@@ -2253,6 +2253,15 @@ string emitCxxUnitText(CXCursor cur, string name, string cppName, string dpkg,
         int ptrConvIdx;   // unique names for the wrapper->C++ forwarders
         int rvIdx;        // ...and for the by-value-return shims (see ownedReturnClass)
         bool[string] seenPtrConv;
+        // EVERY D-BODIED MEMBER OF THIS STRUCT, by D signature. They all have D linkage (a D body
+        // must never carry the Qt member's C++ symbol — see tests/no-cxx-defs.sh), so two C++
+        // overloads that map to one D signature — QMetaObject::cast(QObject*) inline and
+        // cast(const QObject*) — are now one D function defined twice. They used to coexist only
+        // because one of them had C++ linkage. The first one emitted is kept.
+        bool[string] dDefSig;
+        string dSig(string mn, string[] params, bool isStatic, string cst) {
+            return format("%s|%s|%s%s", dname(mn), params.join(","), isStatic ? "s" : "", cst);
+        }
         collectValueFields(cur, fields, seenF);   // base fields flattened in first (layout order)
         // A value type whose ONLY data member is an anonymous union / bitfield struct
         // (e.g. QSizePolicy's `union { Bits bits; quint32 data; }`) yields NO nameable
@@ -2382,7 +2391,12 @@ string emitCxxUnitText(CXCursor cur, string name, string cppName, string dpkg,
                         fps ~= format("%s a%d", pd, i);
                         anames ~= format("a%d", i);
                     }
-                    inlineDefs ~= format("    %s%s %s(%s)%s %s", kw, retD, dname(mn), ps.join(", "), cst, b);
+                    {
+                        auto dk = dSig(mn, fps, clang_CXXMethod_isStatic(c) != 0, cst);
+                        if (dk in dDefSig) continue;   // another overload already owns this D signature
+                        dDefSig[dk] = true;
+                    }
+                    inlineDefs ~= format("    extern(D) %s%s %s(%s)%s %s", kw, retD, dname(mn), ps.join(", "), cst, b);
                     // Precompute the trampoline fallback (activated only if this body is dropped).
                     // Skip if the D name collides with a field (e.g. QArrayData: field `ref_` +
                     // method `ref()`), or if a prior inline collapsed to the same D signature.
@@ -2399,7 +2413,7 @@ string emitCxxUnitText(CXCursor cur, string name, string cppName, string dpkg,
                         auto self = isStat ? "" : "cast(void*)&this";
                         auto callList = self ~ ((self.length && anames.length) ? ", " : "") ~ anames.join(", ");
                         auto ret = retD == "void" ? "" : "return ";
-                        inFwd ~= format("    %s%s %s(%s)%s { %s%s(%s); }",
+                        inFwd ~= format("    extern(D) %s%s %s(%s)%s { %s%s(%s); }",
                             kw, retD, dname(mn), fps.join(", "), cst, ret, shimFn, callList);
                         auto declSelf = isStat ? "" : (fps.length ? "void* self, " : "void* self");
                         inDecl ~= format("extern(C) private %s %s(%s%s);",
@@ -2446,6 +2460,9 @@ string emitCxxUnitText(CXCursor cur, string name, string cppName, string dpkg,
                         auto pcKey = dname(mn) ~ "|" ~ psPub.join(",") ~ "|" ~ cst ~ kw;
                         if (pcKey in seenPtrConv) continue;
                         seenPtrConv[pcKey] = true;
+                        auto dk = dSig(mn, psPub, clang_CXXMethod_isStatic(c) != 0, cst);
+                        if (dk in dDefSig) continue;
+                        dDefSig[dk] = true;
                         auto rawn = format("__pc_%s_%d", name, ptrConvIdx++);
                         rawDecls ~= format("    private pragma(mangle, \"%s\") %s%s %s(%s)%s;",
                             mg, kw, retD, rawn, ps.join(", "), cst);
@@ -2559,7 +2576,7 @@ string emitCxxUnitText(CXCursor cur, string name, string cppName, string dpkg,
                 // Factory reached via `make!T(args)` (cxxrt.make -> T.__make). JUSTIFIED only
                 // because a struct can't have a no-arg this() and a CoW type's `.init` is a null
                 // d-pointer; parameterized value types should prefer the plain `T(args)` ctor below.
-                ctorMethods ~= format("    static %s __make(%s) {\n        %s r = void;\n        %s(&r%s);\n        return r;\n    }",
+                ctorMethods ~= format("    extern(D) static %s __make(%s) {\n        %s r = void;\n        %s(&r%s);\n        return r;\n    }",
                     name, fps.join(", "), name, rawNm, ca.length ? ", " ~ ca.join(", ") : "");
                 auto ov = strOverload("__make", name, "static ", "", pds, seenStrOv);
                 if (ov.length) ctorMethods ~= ov;
@@ -3501,7 +3518,7 @@ string emitCxxUnitText(CXCursor cur, string name, string cppName, string dpkg,
             // for a POD or a raw type that cannot offer a real constructor (D's `new` would
             // GC-allocate memory that C++ deletes). So the factory stays for raw bindings, but as the
             // `static __make` that cxxrt's `make!T` dispatches to: one spelling, and X_new is gone.
-            ctorStatics ~= format("    static %s __make(%s) {", name, dparams.join(", "));
+            ctorStatics ~= format("    extern(D) static %s __make(%s) {", name, dparams.join(", "));
             if (valueType) {                                // by-value on the stack
                 ctorStatics ~= format("        %s self = void;", name);
                 ctorStatics ~= format("        %s(&self%s);", ctorFn, callTail);
@@ -3853,8 +3870,8 @@ extern (C++) struct QByteArray {
         auto refp = cast(shared(int)*) d;
         if (*cast(int*) d >= 0) atomicOp!"+="(*refp, 1);   // sentinel: plain read (shared/static in .rodata)
     }
-    private const(char)* __data() const { return cast(const(char)*) d + *cast(const(long)*)(cast(const(char)*) d + 16); }
-    private int __size() const { return d is null ? 0 : *cast(const(int)*)(cast(const(char)*) d + 4); }
+    private extern (D) const(char)* __data() const { return cast(const(char)*) d + *cast(const(long)*)(cast(const(char)*) d + 16); }
+    private extern (D) int __size() const { return d is null ? 0 : *cast(const(int)*)(cast(const(char)*) d + 4); }
     extern (D) ubyte[] toBytes() const { auto n = __size(); return n == 0 ? null : (cast(ubyte*) __data())[0 .. n].dup; }
     extern (D) void __release() {
         if (d is null) return;
@@ -4586,8 +4603,8 @@ string containersD(string manifest, string dpkg) {
         // is THREE (d, ptr, size) — a one-pointer struct there would have Qt write 24 bytes into 8.
         auto words = c.words;
         rets ~= words > 1
-            ? format("extern (C++) struct Ret_%s { void*[%d] d; ~this() { __%s_destruct(&this); } }\n", c.id, words, c.id)
-            : format("extern (C++) struct Ret_%s { void* d; ~this() { __%s_destruct(&this); } }\n", c.id, c.id);
+            ? format("extern (C++) struct Ret_%s { void*[%d] d; extern(D) ~this() { __%s_destruct(&this); } }\n", c.id, words, c.id)
+            : format("extern (C++) struct Ret_%s { void* d; extern(D) ~this() { __%s_destruct(&this); } }\n", c.id, c.id);
         helpers ~= format("%s %s_to(void* h) { %s r; __%s_iterate(h, &__%s_cb, &r); return r; }\n",
             c.idiomD, c.id, c.idiomD, c.id, c.id);
         helpers ~= format("void %s_del(void* h) { __%s_delete(h); }\n", c.id, c.id);
