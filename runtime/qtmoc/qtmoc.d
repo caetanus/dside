@@ -126,24 +126,64 @@ void* qtd_qml_singleton(const(char)*, const(char)*, int, int);
 void* qtd_invoke_str(void*, const(char)*, const(char)**, int);
 void* qtd_prop_get_enum_key(void*, const(char)*);
     int    qtd_prop_set_qs(void*, const(char)*, const(char)*, int);
+    void   qtd_log_critical(const(char)*, int) nothrow;   // qCritical, so Qt's handler routes it
 }
 
 // ---- callback error policy (round-4 #6: silence is not acceptable) ----------
 // A slot/property/signal callback invoked BY Qt must be `nothrow` — a D exception can't
 // unwind across the C++ frame. Instead of swallowing it, record it: a thread-local last
-// error + count (inspectable/testable), an optional global hook, and a debug stderr note.
+// error + count (inspectable/testable), an optional global hook, and a LOG LINE.
 // (Errors — asserts, etc. — are bugs and are intentionally NOT caught here: they terminate.)
+//
+// THE LOG LINE IS ON IN EVERY BUILD. It used to sit in `debug { }`, so a release build said
+// nothing at all: solid-mail saved a draft from a QML-called @Slot, the store threw (a NOT NULL
+// column bound as NULL), and the user saw no message, no log line and no saved draft — only an
+// outside code review found it. Recording without telling anyone is still silence.
+//
+// It goes through Qt's own logging (qCritical), not straight to stderr, so it lands wherever the
+// app's Qt messages land: the terminal, journald, Android's logcat (where stderr is discarded),
+// or a handler the app installed. The first exception from each THROW SITE prints in full
+// (`toString`: type, file:line, message, stack); a repeat from the same site prints one line,
+// so a slot that throws on every frame does not flood the log with traces.
 __gshared void function(Throwable) nothrow qtdCallbackErrorHook;   // opt-in global sink
+/// The default log line. An app whose hook already reports the error elsewhere (its own UI or
+/// log) may turn it off; it is on unless someone decides otherwise.
+__gshared bool qtdCallbackErrorLog = true;
 size_t qtdCallbackErrors;          // thread-local (module scope) — count for asserts/tests
 Throwable qtdLastCallbackError;    // thread-local — the most recent swallowed exception
-void qtdOnCallbackError(Throwable e) nothrow {
+/// thread-local — WHAT threw, as "Class.member" (a slot, a property read/write, a QML
+/// constructor, a virtual override, a signal handler), when the call site knows it; null if not.
+/// Set before the hook runs, so a hook can name the failing slot in a toast.
+string qtdLastCallbackWhere;
+private bool[string] _qtdLoggedSites;   // thread-local — throw sites already printed in full
+
+void qtdOnCallbackError(Throwable e, string where = null) nothrow {
     qtdCallbackErrors++;
     qtdLastCallbackError = e;
+    qtdLastCallbackWhere = where;
+    // Logged BEFORE the hook: whatever the hook does, the line is already out.
+    if (qtdCallbackErrorLog) qtdLogCallbackError(e, where);
     if (qtdCallbackErrorHook !is null) qtdCallbackErrorHook(e);
-    debug {
-        import core.stdc.stdio : fprintf, stderr;
-        fprintf(stderr, "qtd: callback threw (swallowed at C++ boundary): %.*s\n",
-            cast(int) e.msg.length, e.msg.ptr);
+}
+
+private void qtdLogCallbackError(Throwable e, string where) nothrow {
+    import std.format : format;
+    try {
+        auto site = format("%s:%s", e.file, e.line);
+        bool first = (site in _qtdLoggedSites) is null;
+        if (first) _qtdLoggedSites[site] = true;
+        auto head = format("qtd: a D exception escaped %s and was swallowed at the Qt boundary "
+            ~ "(the call did not complete; error #%s on this thread)",
+            where.length ? where : "a callback from Qt", qtdCallbackErrors);
+        auto text = first
+            ? head ~ ":\n" ~ e.toString()
+            : format("%s: %s@%s(%s): %s (repeat of this site; its trace was printed the first time)",
+                     head, typeid(e).name, e.file, e.line, e.msg);
+        qtd_log_critical(text.ptr, cast(int) text.length);
+    } catch (Throwable t) {
+        // Formatting failed (out of memory, a throwing toString): still say SOMETHING, with no
+        // allocation — the message slice the exception already holds.
+        qtd_log_critical(e.msg.ptr, cast(int) e.msg.length);
     }
 }
 
@@ -790,21 +830,31 @@ private void wireQObject(T)(T o, void* qobj) {
         __traits(getMember, o, m)._bind(qobj, si);
         si++;
     }
+    // Each member catches its OWN exception, so the record names it ("Draft.save"): the name is
+    // a compile-time constant per branch, and an app's hook can show which slot failed.
     void delegate(int, void**) nothrow disp = (int idx, void** a) nothrow {
-        try {
-            static foreach (i, f; slotSymbols!T)
-                if (idx == i) { callSlot!f(o, a); return; }
-        } catch (Exception e) { qtdOnCallbackError(e); }
+        static foreach (i, f; slotSymbols!T)
+            if (idx == i) {
+                try callSlot!f(o, a);
+                catch (Exception e) qtdOnCallbackError(e, T.stringof ~ "." ~ __traits(identifier, f));
+                return;
+            }
     };
     void delegate(int, int, void**) nothrow prop = (int idx, int write, void** a) nothrow {
-        try {
-            static foreach (i, m; propMembers!T)
-                if (idx == i) { callProp!(T, m)(o, qobj, pnotif[i], write, a); return; }
-            static foreach (j, m; aliasPropMembers!T)
-                if (idx == propMembers!T.length + j) {
-                    callPropAlias!(T, m)(o, qobj, pnotif[propMembers!T.length + j], write, a); return;
-                }
-        } catch (Exception e) { qtdOnCallbackError(e); }
+        static foreach (i, m; propMembers!T)
+            if (idx == i) {
+                try callProp!(T, m)(o, qobj, pnotif[i], write, a);
+                catch (Exception e) qtdOnCallbackError(e, write ? T.stringof ~ "." ~ m ~ " (write)"
+                                                                : T.stringof ~ "." ~ m ~ " (read)");
+                return;
+            }
+        static foreach (j, m; aliasPropMembers!T)
+            if (idx == propMembers!T.length + j) {
+                try callPropAlias!(T, m)(o, qobj, pnotif[propMembers!T.length + j], write, a);
+                catch (Exception e) qtdOnCallbackError(e, write ? T.stringof ~ "." ~ m ~ " (write)"
+                                                                : T.stringof ~ "." ~ m ~ " (read)");
+                return;
+            }
     };
     _reg[cast(void*) o] = MocReg(qobj, disp, prop);
     _byQObj[qobj] = cast(void*) o;
@@ -900,7 +950,7 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
         // there and wires itself exactly as `new T()` does.
         _qmlPlacers[subKey] = (void* mem) nothrow {
             try { return cast(void*) new T(QtdPlace(mem)); }
-            catch (Exception e) { qtdOnCallbackError(e); return null; }
+            catch (Exception e) { qtdOnCallbackError(e, T.stringof ~ " constructor (QML)"); return null; }
         };
         _qmlRegistered[pubKey] = typeId;
         return;
@@ -920,7 +970,7 @@ void qmlRegisterType(T)(string uri, int vmaj, int vmin, string qmlName) {
             T o = new T();
             wireQObject(o, qobj);
             return cast(void*) o;
-        } catch (Exception e) { qtdOnCallbackError(e); return null; }
+        } catch (Exception e) { qtdOnCallbackError(e, T.stringof ~ " constructor (QML)"); return null; }
     };
     _qmlRegistered[pubKey] = typeId;
 }
@@ -1093,7 +1143,7 @@ string __ovTramp(T, string vn, size_t idx, string conv = "")() {
         enum cmod = conv[0 .. colon], cid = conv[colon + 1 .. $];
         return head ~ "void* " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "") ~ ")" ~ attach
             ~ " null; } try { import " ~ cmod ~ " : " ~ cid ~ "_from; return " ~ cid ~ "_from(" ~ call ~ "); }"
-            ~ " catch (Exception e) { qtdOnCallbackError(e); return null; } }\n";
+            ~ " catch (Exception e) { qtdOnCallbackError(e, \"" ~ T.stringof ~ "." ~ vn ~ "\"); return null; } }\n";
     }
     // A VALUE-RECORD return (QVariant, QModelIndex): the trampoline passes an OUT pointer to a value
     // it default-constructed. Assignment, not construction: D's assignment of a struct with a
@@ -1102,20 +1152,20 @@ string __ovTramp(T, string vn, size_t idx, string conv = "")() {
     else static if (is(R == struct))
         return head ~ "void " ~ nm ~ "(void* d, " ~ R.stringof ~ "* __out" ~ (ps.length ? ", " ~ ps : "")
             ~ ")" ~ attach ~ "; } try { *__out = " ~ call ~ "; }"
-            ~ " catch (Exception e) { qtdOnCallbackError(e); } }\n";
+            ~ " catch (Exception e) { qtdOnCallbackError(e, \"" ~ T.stringof ~ "." ~ vn ~ "\"); } }\n";
     else static if (is(R == void))
         return "extern(C) static void " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
             ~ ") nothrow { auto __at = qtdAttachThread();"
             ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\".ptr); return; }"
             ~ " try { " ~ call
-            ~ "; } catch (Exception e) { qtdOnCallbackError(e); } }\n";
+            ~ "; } catch (Exception e) { qtdOnCallbackError(e, \"" ~ T.stringof ~ "." ~ vn ~ "\"); } }\n";
     else
         return "extern(C) static " ~ R.stringof ~ " " ~ nm ~ "(void* d" ~ (ps.length ? ", " ~ ps : "")
             ~ ") nothrow { auto __at = qtdAttachThread();"
             ~ " if (!__at.ok) { qtdAttachFailed(\"" ~ T.stringof ~ "." ~ vn ~ "\".ptr); return "
             ~ R.stringof ~ ".init; }"
             ~ " try { return " ~ call
-            ~ "; } catch (Exception e) { qtdOnCallbackError(e); return " ~ R.stringof ~ ".init; } }\n";
+            ~ "; } catch (Exception e) { qtdOnCallbackError(e, \"" ~ T.stringof ~ "." ~ vn ~ "\"); return " ~ R.stringof ~ ".init; } }\n";
 }
 
 /// Mixin for a Qt class subclassed in D that is ALSO @QObject: it overrides
@@ -1211,19 +1261,29 @@ mixin template QtdWidget(Base) {
         static foreach (m; signalMembers!_Self) { __traits(getMember, this, m)._bind(_qobj, __si); __si++; }
         auto __self = this;
         void delegate(int, void**) nothrow __disp = (int idx, void** a) nothrow {
-            try { static foreach (i, f; slotSymbols!_Self) if (idx == i) { callSlot!f(__self, a); return; } }
-            catch (Exception e) { qtdOnCallbackError(e); }
+            static foreach (i, f; slotSymbols!_Self)
+                if (idx == i) {
+                    try callSlot!f(__self, a);
+                    catch (Exception e) qtdOnCallbackError(e, _Self.stringof ~ "." ~ __traits(identifier, f));
+                    return;
+                }
         };
         void delegate(int, int, void**) nothrow __prp = (int idx, int write, void** a) nothrow {
-            try {
-                static foreach (i, m; propMembers!_Self)
-                    if (idx == i) { callProp!(_Self, m)(__self, _qobj, pnotif[i], write, a); return; }
-                static foreach (j, m; aliasPropMembers!_Self)
-                    if (idx == propMembers!_Self.length + j) {
-                        callPropAlias!(_Self, m)(__self, _qobj,
-                                                 pnotif[propMembers!_Self.length + j], write, a); return;
-                    }
-            } catch (Exception e) { qtdOnCallbackError(e); }
+            static foreach (i, m; propMembers!_Self)
+                if (idx == i) {
+                    try callProp!(_Self, m)(__self, _qobj, pnotif[i], write, a);
+                    catch (Exception e) qtdOnCallbackError(e, write ? _Self.stringof ~ "." ~ m ~ " (write)"
+                                                                    : _Self.stringof ~ "." ~ m ~ " (read)");
+                    return;
+                }
+            static foreach (j, m; aliasPropMembers!_Self)
+                if (idx == propMembers!_Self.length + j) {
+                    try callPropAlias!(_Self, m)(__self, _qobj,
+                                                 pnotif[propMembers!_Self.length + j], write, a);
+                    catch (Exception e) qtdOnCallbackError(e, write ? _Self.stringof ~ "." ~ m ~ " (write)"
+                                                                    : _Self.stringof ~ "." ~ m ~ " (read)");
+                    return;
+                }
         };
         _reg[cast(void*) this] = MocReg(_qobj, __disp, __prp);
         _byQObj[_qobj] = cast(void*) this;

@@ -4067,8 +4067,8 @@ string signalsD(string manifest, string dpkg) {
         auto trampPs = s.cbDParams.length ? "void* ctx, " ~ signalTrampParams(s) : "void* ctx";
         perSig ~= format("private struct DgBox_%s_%s { %s dg; }\n", s.dClass, s.name, dgT);
         perSig ~= format("private extern (C) void __tramp_%s_%s(%s) nothrow "
-            ~ "{ try { (cast(DgBox_%s_%s*) ctx).dg(%s); } catch (Exception e) { qtdOnCallbackError(e); } }\n",
-            s.dClass, s.name, trampPs, s.dClass, s.name, s.trampArgs);
+            ~ "{ try { (cast(DgBox_%s_%s*) ctx).dg(%s); } catch (Exception e) { qtdOnCallbackError(e, \"a handler of %s.%s\"); } }\n",
+            s.dClass, s.name, trampPs, s.dClass, s.name, s.trampArgs, s.dClass, s.name);
         perSig ~= format("alias Cb_%s_%s = extern (C) void function(%s) nothrow;\n", s.dClass, s.name, cbPs);
         perSig ~= format("private extern (C) void* qtd_conn_%s_%s(void*, Cb_%s_%s, void function(void*) nothrow, void*) nothrow;\n",
             s.dClass, s.name, s.dClass, s.name);
@@ -4568,16 +4568,16 @@ string containersD(string manifest, string dpkg) {
                 c.id, c.id, dInsParams(c.key, "k"), dInsParams(c.val, "v"), c.id, c.id, c.id, c.id);
             helpers ~= format("void* %s_from(%s aa) { auto h = __%s_new(); foreach (k, v; aa) __%s_insert(h, %s, %s); return h; }\n",
                 c.id, c.idiomD, c.id, c.id, dToArgs(c.key, "k"), dToArgs(c.val, "v"));
-            helpers ~= format("private extern (C) void __%s_cb(%s, %s, void* ctx) nothrow { try { (*cast(%s*) ctx)[%s] = %s; } catch (Exception e) { qtdOnCallbackError(e); } }\n",
-                c.id, dCbParams(c.key, "k"), dCbParams(c.val, "v"), c.idiomD, keyFrom(c.key, "k"), dFrom(c.val, "v"));
+            helpers ~= format("private extern (C) void __%s_cb(%s, %s, void* ctx) nothrow { try { (*cast(%s*) ctx)[%s] = %s; } catch (Exception e) { qtdOnCallbackError(e, \"%s conversion\"); } }\n",
+                c.id, dCbParams(c.key, "k"), dCbParams(c.val, "v"), c.idiomD, keyFrom(c.key, "k"), dFrom(c.val, "v"), c.id);
         } else {
             aliases ~= format("alias Emit_%s = extern (C) void function(%s, void*) nothrow;\n", c.id, dCbParams(c.val, ""));
             decls ~= format("    void* __%s_new(); void __%s_add(void*, %s); void __%s_iterate(void*, Emit_%s, void*); void __%s_delete(void*); void __%s_destruct(void*);\n",
                 c.id, c.id, dInsParams(c.val, ""), c.id, c.id, c.id, c.id);
             helpers ~= format("void* %s_from(%s a) { auto h = __%s_new(); foreach (x; a) __%s_add(h, %s); return h; }\n",
                 c.id, c.idiomD, c.id, c.id, dToArgs(c.val, "x"));
-            helpers ~= format("private extern (C) void __%s_cb(%s, void* ctx) nothrow { try { (*cast(%s*) ctx) ~= %s; } catch (Exception e) { qtdOnCallbackError(e); } }\n",
-                c.id, dCbParams(c.val, ""), c.idiomD, dFrom(c.val, ""));
+            helpers ~= format("private extern (C) void __%s_cb(%s, void* ctx) nothrow { try { (*cast(%s*) ctx) ~= %s; } catch (Exception e) { qtdOnCallbackError(e, \"%s conversion\"); } }\n",
+                c.id, dCbParams(c.val, ""), c.idiomD, dFrom(c.val, ""), c.id);
         }
         // by-value (sret) return struct; QHash/QSet/QMap dtors are inline so release
         // is hand-rolled via the destruct shim.

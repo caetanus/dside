@@ -373,6 +373,11 @@ void qtd_moc_activate(void* self, int sigIdx, void** args) {
     if (it != g_moAttach.end()) QMetaObject::activate(static_cast<QObject*>(self), it->second.mo, sigIdx, args);
 }
 
+// The callback-error log line (qtmoc.qtdOnCallbackError). qCritical rather than fprintf: it
+// reaches whatever handles the app's Qt messages — the terminal, journald, Android's logcat (where
+// stderr goes nowhere), or the app's own handler. "%.*s" because the D text is not NUL-terminated.
+void qtd_log_critical(const char* p, int n) { qCritical("%.*s", n, p); }
+
 // QString marshaling for signal/slot args (the D side is fixed runtime and can't
 // import the generated QString helpers; here we already link QtCore).
 void* qtd_str_to_qs(const char* p, int n) { return new QString(QString::fromUtf8(p, n)); }
